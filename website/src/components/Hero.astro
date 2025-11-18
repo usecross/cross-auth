@@ -1,0 +1,67 @@
+---
+import LogoExtended from "./LogoExtended.astro";
+
+// Hero Section with version badge and install command
+---
+
+<section class="relative overflow-hidden flex items-center justify-center flex-1">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+    <h1
+      class="text-5xl md:text-7xl font-extrabold tracking-tight mb-6"
+    >
+      Modern <br />
+      <span class="text-[#6466F1]">Authentication</span>
+      library for Python
+    </h1>
+
+    <p class="text-xl text-gray-800 max-w-2xl mx-auto mb-10">More info coming soon</p>
+
+    <div class="flex flex-col sm:flex-row justify-center gap-4 items-center">
+      <a
+        href="/docs"
+        class="px-8 h-12 flex items-center bg-[#6466F1] hover:bg-[#6466F1]/90 text-white rounded-lg font-bold"
+      >
+        Get Started
+      </a>
+      <div
+        class="group relative flex h-12 items-center bg-dark-800 border border-gray-700 rounded-lg px-4 py-3 font-mono text-sm text-gray-300 hover:border-gray-600 transition cursor-pointer"
+        id="install-command"
+      >
+        <span class="text-brand-400 mr-2">$</span>
+        <span id="pip-command">uv add cross-auth</span>
+        <i
+          class="fa-regular fa-copy ml-4 text-gray-500 group-hover:text-white transition"
+          id="copy-icon"></i>
+
+        <!-- Tooltip -->
+        <span
+          id="copy-tooltip"
+          class="absolute -top-8 left-1/2 -translate-x-1/2 bg-black text-white text-xs py-1 px-2 rounded opacity-0 transition-opacity duration-300"
+          >Copied!</span
+        >
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  document.getElementById('install-command')?.addEventListener('click', () => {
+    const command = document.getElementById('pip-command')?.innerText || '';
+    navigator.clipboard.writeText(command).then(() => {
+      const tooltip = document.getElementById('copy-tooltip');
+      const icon = document.getElementById('copy-icon');
+
+      if (tooltip && icon) {
+        tooltip.classList.remove('opacity-0');
+        icon.classList.replace('fa-copy', 'fa-check');
+        icon.classList.add('text-green-400');
+
+        setTimeout(() => {
+          tooltip.classList.add('opacity-0');
+          icon.classList.replace('fa-check', 'fa-copy');
+          icon.classList.remove('text-green-400');
+        }, 2000);
+      }
+    });
+  });
+</script>

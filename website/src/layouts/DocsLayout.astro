@@ -1,0 +1,87 @@
+---
+import Layout from './Layout.astro';
+import TableOfContents from '../components/TableOfContents.astro';
+import { getCollection } from 'astro:content';
+
+interface Props {
+  title: string;
+  description: string;
+  headings?: { depth: number; slug: string; text: string }[];
+}
+
+const { title, description, headings = [] } = Astro.props;
+
+// Get all docs and organize by section
+const allDocs = await getCollection('docs');
+const docsBySection = allDocs.reduce(
+  (acc, doc) => {
+    const section = doc.data.section || 'Other';
+    if (!acc[section]) {
+      acc[section] = [];
+    }
+    acc[section].push(doc);
+    return acc;
+  },
+  {} as Record<string, typeof allDocs>,
+);
+
+// Sort docs within each section by order
+Object.keys(docsBySection).forEach((section) => {
+  docsBySection[section].sort((a, b) => (a.data.order || 999) - (b.data.order || 999));
+});
+
+const currentPath = Astro.url.pathname;
+---
+
+<Layout title={title} description={description}>
+  <div class="min-h-screen bg-white pt-16">
+    <div class="mx-auto max-w-8xl px-4 py-12 sm:px-6 lg:px-8">
+      <div class="docs-container lg:grid lg:grid-cols-12 lg:gap-x-12 xl:gap-x-16">
+        <aside class="hidden lg:col-span-2 lg:block">
+          <nav class="sticky top-24 space-y-8 max-h-[calc(100vh-8rem)] overflow-y-auto pb-8">
+            {
+              Object.entries(docsBySection).map(([section, docs]) => (
+                <div>
+                  <h3 class="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    {section}
+                  </h3>
+                  <ul class="space-y-1 border-l border-slate-200">
+                    {docs.map((doc) => {
+                      const href = `/docs/${doc.slug}`;
+                      const isActive = currentPath === href;
+                      return (
+                        <li>
+                          <a
+                            href={href}
+                            class:list={[
+                              'block border-l-2 py-1 pl-4 text-sm transition-colors',
+                              isActive
+                                ? '-ml-px border-slate-900 text-slate-900 font-medium'
+                                : '-ml-px border-transparent text-slate-600 hover:border-slate-400 hover:text-slate-900',
+                            ]}
+                          >
+                            {doc.data.title}
+                          </a>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))
+            }
+          </nav>
+        </aside>
+
+        <main class="lg:col-span-7 lg:pl-8 xl:pl-12">
+          <article class="prose md:prose-lg prose-headings:mt-0 prose-headings:mb-2 prose-p:mt-4 prose-li:my-1">
+            <slot />
+          </article>
+        </main>
+
+        <aside class="hidden lg:col-span-3 lg:block">
+          <TableOfContents headings={headings} />
+        </aside>
+      </div>
+    </div>
+  </div>
+</Layout>

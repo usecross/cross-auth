@@ -1,0 +1,141 @@
+---
+interface Props {
+  headings: { depth: number; slug: string; text: string }[];
+}
+
+const { headings } = Astro.props;
+
+// Filter to only show h2 and h3 headings
+const tocHeadings = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
+---
+
+{
+  tocHeadings.length > 0 && (
+    <nav class="toc-nav">
+      <h4 class="toc-title">On this page</h4>
+      <ul class="toc-list">
+        {tocHeadings.map((heading) => (
+          <li class:list={[`toc-item toc-depth-${heading.depth}`]}>
+            <a href={`#${heading.slug}`} class="toc-link">
+              {heading.text}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  )
+}
+
+<script>
+  // Highlight current section on scroll
+  function setupTocHighlight() {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          const id = entry.target.getAttribute('id');
+          const tocLink = document.querySelector(`.toc-link[href="#${id}"]`);
+          
+          if (entry.isIntersecting) {
+            // Remove active class from all links
+            document.querySelectorAll('.toc-link').forEach((link) => {
+              link.classList.remove('toc-active');
+            });
+            // Add active class to current link
+            tocLink?.classList.add('toc-active');
+          }
+        });
+      },
+      {
+        rootMargin: '-100px 0px -66%',
+        threshold: 1,
+      }
+    );
+
+    // Observe all headings
+    document.querySelectorAll('article h2, article h3').forEach((heading) => {
+      observer.observe(heading);
+    });
+  }
+
+  // Run on page load
+  setupTocHighlight();
+
+  // Re-run on view transitions (if using Astro's view transitions)
+  document.addEventListener('astro:page-load', setupTocHighlight);
+</script>
+
+<style>
+  .toc-nav {
+    position: sticky;
+    top: 5rem;
+    max-height: calc(100vh - 8rem);
+    overflow-y: auto;
+    padding-bottom: 2rem;
+  }
+
+  .toc-title {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: rgb(100 116 139);
+    margin-bottom: 0.75rem;
+  }
+
+  .toc-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    border-left: 1px solid rgb(226 232 240);
+  }
+
+  .toc-item {
+    margin: 0;
+  }
+
+  .toc-link {
+    display: block;
+    padding: 0.25rem 0 0.25rem 1rem;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: rgb(71 85 105);
+    text-decoration: none;
+    border-left: 2px solid transparent;
+    margin-left: -1px;
+    transition: all 0.15s ease;
+  }
+
+  .toc-link:hover {
+    color: rgb(15 23 42);
+    border-left-color: rgb(148 163 184);
+  }
+
+  .toc-link.toc-active {
+    color: rgb(15 23 42);
+    border-left-color: rgb(15 23 42);
+    font-weight: 500;
+  }
+
+  .toc-depth-3 .toc-link {
+    padding-left: 1.5rem;
+    font-size: 0.8125rem;
+  }
+
+  /* Scrollbar styling */
+  .toc-nav::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  .toc-nav::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .toc-nav::-webkit-scrollbar-thumb {
+    background: rgb(203 213 225);
+    border-radius: 2px;
+  }
+
+  .toc-nav::-webkit-scrollbar-thumb:hover {
+    background: rgb(148 163 184);
+  }
+</style>

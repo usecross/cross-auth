@@ -1,0 +1,91 @@
+@import 'tailwindcss';
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --color-brand-50: #f0f9ff;
+  --color-brand-100: #e0f2fe;
+  --color-brand-400: #38bdf8;
+  --color-brand-500: #0ea5e9;
+  --color-brand-600: #0284c7;
+  --color-brand-900: #0c4a6e;
+
+  --color-dark-800: #1e293b;
+  --color-dark-900: #0f172a;
+
+  --font-sans: 'roc-grotesk', sans-serif;
+  --font-mono: 'Fira Code', monospace;
+}
+
+/* Body uses light font weight by default */
+body {
+  font-family: 'roc-grotesk', sans-serif;
+  font-weight: 300;
+  background: #ffffff;
+  color: #1f2937;
+}
+
+/* Headings use bold font weight */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-weight: 600;
+}
+
+/* Add scroll margin to headings so they don't get hidden under the fixed header */
+article h1,
+article h2,
+article h3,
+article h4,
+article h5,
+article h6 {
+  scroll-margin-top: 6rem;
+}
+
+/* Style the page title (h1) with purple background */
+article h1:first-of-type {
+  background-color: #6466f1;
+  color: white;
+  padding: 1rem 2rem;
+  margin-left: -2rem;
+  margin-right: -2rem;
+  margin-bottom: 2rem;
+}
+
+/* Different selection style for the purple heading */
+article h1:first-of-type::selection {
+  background-color: white;
+  color: #6466f1;
+}
+
+article h1:first-of-type::-moz-selection {
+  background-color: white;
+  color: #6466f1;
+}
+
+/* Custom Gradient Text */
+.text-gradient {
+  background: linear-gradient(to right, #38bdf8, #818cf8);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Glass Panel Effect */
+.glass-panel {
+  background: rgba(30, 41, 59, 0.7);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Custom text selection style */
+::selection {
+  background-color: #6466f1;
+  color: white;
+}
+
+::-moz-selection {
+  background-color: #6466f1;
+  color: white;
+}
