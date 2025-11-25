@@ -1,41 +1,53 @@
 ---
 import Layout from './Layout.astro';
 import TableOfContents from '../components/TableOfContents.astro';
+import MobileSidebar from '../components/MobileSidebar.astro';
 import { getCollection } from 'astro:content';
 
 interface Props {
   title: string;
   description: string;
+  section?: string;
   headings?: { depth: number; slug: string; text: string }[];
 }
 
-const { title, description, headings = [] } = Astro.props;
+const { title, description, section, headings = [] } = Astro.props;
 
 // Get all docs and organize by section
 const allDocs = await getCollection('docs');
 const docsBySection = allDocs.reduce(
   (acc, doc) => {
-    const section = doc.data.section || 'Other';
-    if (!acc[section]) {
-      acc[section] = [];
+    const docSection = doc.data.section || 'Other';
+    if (!acc[docSection]) {
+      acc[docSection] = [];
     }
-    acc[section].push(doc);
+    acc[docSection].push(doc);
     return acc;
   },
   {} as Record<string, typeof allDocs>,
 );
 
 // Sort docs within each section by order
-Object.keys(docsBySection).forEach((section) => {
-  docsBySection[section].sort((a, b) => (a.data.order || 999) - (b.data.order || 999));
+Object.keys(docsBySection).forEach((sec) => {
+  docsBySection[sec].sort((a, b) => (a.data.order || 999) - (b.data.order || 999));
 });
 
 const currentPath = Astro.url.pathname;
+const currentSection = section;
+const currentPage = title;
 ---
 
 <Layout title={title} description={description}>
   <div class="min-h-screen bg-white pt-16">
-    <div class="mx-auto max-w-8xl px-4 py-12 sm:px-6 lg:px-8">
+    <!-- Mobile Sidebar -->
+    <MobileSidebar
+      docsBySection={docsBySection}
+      currentPath={currentPath}
+      currentSection={currentSection}
+      currentPage={currentPage}
+    />
+
+    <div class="mx-auto max-w-8xl px-4 py-8 sm:px-6 lg:px-8 lg:py-12">
       <div class="docs-container lg:grid lg:grid-cols-12 lg:gap-x-12 xl:gap-x-16">
         <aside class="hidden lg:col-span-2 lg:block">
           <nav class="sticky top-24 space-y-8 max-h-[calc(100vh-8rem)] overflow-y-auto pb-8">
