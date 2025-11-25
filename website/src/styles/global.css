@@ -17,6 +17,12 @@
   --font-mono: 'Fira Code', monospace;
 }
 
+/* Sidebar navigation uses system fonts */
+.docs-container aside nav {
+  font-family: -apple-system, "system-ui", "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  line-height: 1.4;
+}
+
 /* Body uses Roc Grotesk */
 body {
   font-family: 'roc-grotesk', sans-serif;
@@ -35,9 +41,11 @@ h6 {
   font-weight: 700;
 }
 
-/* Prose content uses Georgia serif, headings use Roc */
+/* Prose content uses system fonts, headings use Roc */
 .prose {
-  font-family: Georgia, serif;
+  font-family: -apple-system, "system-ui", "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  font-size: 0.9375rem;
+  line-height: 1.6;
 }
 
 .prose h1,
@@ -61,8 +69,9 @@ article h6 {
 
 article h1:first-of-type {
   border-bottom: 3px solid #6466f1;
-  padding: 1rem 2rem;
+  padding: 0 2rem 1rem 2rem;
   color: #6466f1;
+  margin-top: -0.5rem;
   margin-left: -2rem;
   margin-right: -2rem;
   margin-bottom: 2rem;
