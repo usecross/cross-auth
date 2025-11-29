@@ -1,0 +1,86 @@
+---
+title: OAuth Providers
+description: Configure OAuth providers for authentication
+section: Core Concepts
+order: 1
+---
+
+# OAuth Providers
+
+Cross Auth currently supports GitHub and Discord OAuth providers with built-in PKCE support.
+
+## GitHub Provider
+
+The GitHub provider fetches user email and profile information:
+
+```python
+from cross_auth.social_providers.github import GitHubProvider
+
+github = GitHubProvider(
+    client_id="your-github-client-id",
+    client_secret="your-github-client-secret",
+)
+```
+
+### GitHub OAuth App Setup
+
+1. Go to GitHub Settings → Developer settings → OAuth Apps
+2. Create a new OAuth App
+3. Set Authorization callback URL to: `https://your-app.com/auth/github/callback`
+4. Copy the Client ID and Client Secret
+
+### Scopes
+
+The GitHub provider requests the `user:email` scope to access verified email addresses.
+
+## Discord Provider
+
+The Discord provider fetches user profile and email:
+
+```python
+from cross_auth.social_providers.discord import DiscordProvider
+
+discord = DiscordProvider(
+    client_id="your-discord-client-id",
+    client_secret="your-discord-client-secret",
+)
+```
+
+### Discord Application Setup
+
+1. Go to Discord Developer Portal
+2. Create a new Application
+3. Navigate to OAuth2 settings
+4. Add redirect URL: `https://your-app.com/auth/discord/callback`
+5. Copy the Client ID and Client Secret
+
+### Scopes
+
+The Discord provider requests `identify` and `email` scopes.
+
+## Multiple Providers
+
+You can use multiple providers simultaneously:
+
+```python
+auth_router = AuthRouter(
+    providers=[github, discord],
+    # ... other config
+)
+```
+
+## Custom Providers
+
+To add a custom OAuth provider, extend the `OAuth2Provider` class:
+
+```python
+from cross_auth.social_providers.oauth import OAuth2Provider
+
+class CustomProvider(OAuth2Provider):
+    id = "custom"
+    authorization_endpoint = "https://provider.com/oauth/authorize"
+    token_endpoint = "https://provider.com/oauth/token"
+    user_info_endpoint = "https://provider.com/api/user"
+    scopes = ["profile", "email"]
+    supports_pkce = True
+```

@@ -1,0 +1,30 @@
+{
+  "name": "website",
+  "type": "module",
+  "version": "0.0.1",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{astro,js,mjs,ts,tsx,css,json}": [
+      "prettier --write"
+    ]
+  },
+  "dependencies": {
+    "@astrojs/mdx": "^4.3.11",
+    "astro": "^5.15.9",
+    "@usecross/astro-docs-theme": "file:../../../usecross/astro-docs-theme"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.6",
+    "prettier": "^3.6.2",
+    "prettier-plugin-astro": "^0.14.1"
+  }
+}

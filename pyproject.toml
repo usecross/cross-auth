@@ -6,10 +6,10 @@ readme = "README.md"
 authors = [{ name = "Patrick Arminio", email = "patrick.arminio@gmail.com" }]
 requires-python = ">=3.11"
 dependencies = [
- "lia-web>=0.1.2",
- "passlib[bcrypt]>=1.7.4",
- "pydantic[email]>=2.11.3",
- "bcrypt>=4.0.0,<5.0.0",
+    "lia-web>=0.1.2",
+    "passlib[bcrypt]>=1.7.4",
+    "pydantic[email]>=2.11.3",
+    "bcrypt>=4.0.0,<5.0.0",
 ]
 
 [build-system]
@@ -20,7 +20,7 @@ build-backend = "hatchling.build"
 dev = [
     "fastapi>=0.115.12",
     "httpx>=0.28.1",
-    "pytest>=7.4.4",
+    "pytest>=9.0",
     "pytest-asyncio>=0.23.8",
     "python-multipart>=0.0.20",
     "starlette>=0.46.1",
@@ -36,3 +36,11 @@ format-command = "ruff format --stdin-filename {filename}"
 
 [tool.autopub]
 plugins = ["autopub.plugins.github", "autopub.plugins.uv"]
+
+[tool.pytest]
+minversion = "9.0"
+strict = true
+addopts = ["-ra", "-q"]
+testpaths = [
+    "tests",
+]
