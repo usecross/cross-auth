@@ -11,7 +11,7 @@ Welcome to Cross Auth! A modern OAuth 2.0 authentication library for FastAPI app
 
 ## Features
 
-- **OAuth 2.0 Providers**: Built-in support for GitHub and Discord
+- **OAuth 2.0 Providers**: Built-in support for Apple, GitHub, and Discord
 - **PKCE Support**: Enhanced security with Proof Key for Code Exchange
 - **Account Linking**: Allow users to link multiple OAuth providers to their account
 - **FastAPI Native**: First-class integration with FastAPI
@@ -28,6 +28,6 @@ pip install cross-auth
 
 ## Next Steps
 
-- [Installation](/docs/installation) - Set up Cross Auth in your FastAPI application
-- [OAuth Providers](/docs/providers) - Configure GitHub and Discord providers
+- [Installation](/docs/getting-started) - Set up Cross Auth in your FastAPI application
+- [OAuth Providers](/docs/providers/) - Configure Apple, GitHub, and Discord providers
 - [Token Storage](/docs/storage) - Implement storage for your database

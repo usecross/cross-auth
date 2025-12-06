@@ -1,8 +1,6 @@
 # build output
-dist/
-
-# generated types
-.astro/
+frontend/dist/
+.vite/
 
 # dependencies
 node_modules/
@@ -10,7 +8,6 @@ node_modules/
 # logs
 npm-debug.log*
 yarn-debug.log*
-yarn-error.log*
 pnpm-debug.log*
 
 # environment variables
@@ -19,6 +16,10 @@ pnpm-debug.log*
 
 # macOS-specific files
 .DS_Store
+
+# Python
+__pycache__/
+*.pyc
 
 # jetbrains setting folder
 .idea/

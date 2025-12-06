@@ -73,9 +73,9 @@ def get_current_user(request: AsyncHTTPRequest) -> User | None:
     auth_header = request.headers.get("authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         return None
-    
+
     token = auth_header[7:]
-    
+
     try:
         payload = decode_jwt(token)
         user_id = payload.get("sub")

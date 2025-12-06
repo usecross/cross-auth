@@ -1,0 +1,25 @@
+[project]
+name = "cross-auth-website"
+version = "0.1.0"
+description = "Cross Auth Documentation Website"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi[standard]>=0.121.1",
+    "cross-inertia>=0.10.0",
+    "cross-docs",
+]
+
+[tool.uv.sources]
+cross-docs = { path = "../../../usecross/cross-docs/python" }
+
+[tool.cross-docs]
+content_dir = "content"
+prefix = "/docs"
+index_page = "introduction"
+section_order = ["Getting Started", "Core Concepts", "Framework Guides", "Advanced"]
+logo_url = "/static/logo-full.svg"
+github_url = "https://github.com/patrick91/cross-auth"
+
+[[tool.cross-docs.nav_links]]
+label = "Docs"
+href = "/docs"

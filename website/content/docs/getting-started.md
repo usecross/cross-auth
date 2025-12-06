@@ -58,6 +58,6 @@ You need to implement:
 
 ## Next Steps
 
-- [OAuth Providers](/docs/providers) - Configure GitHub and Discord
+- [OAuth Providers](/docs/providers/) - Configure Apple, GitHub, and Discord
 - [Storage Implementation](/docs/storage) - Implement the storage protocols
 - [FastAPI Integration](/docs/fastapi) - Complete integration example

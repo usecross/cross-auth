@@ -19,18 +19,18 @@ from cross_auth._storage import SecondaryStorage
 class RedisSecondaryStorage(SecondaryStorage):
     def __init__(self, redis_client):
         self.redis = redis_client
-    
+
     def set(self, key: str, value: str):
         # Set with TTL (e.g., 10 minutes)
         self.redis.setex(key, 600, value)
-    
+
     def get(self, key: str) -> str | None:
         value = self.redis.get(key)
         return value.decode() if value else None
-    
+
     def delete(self, key: str):
         self.redis.delete(key)
-    
+
     def pop(self, key: str) -> str | None:
         # Atomically get and delete
         value = self.get(key)
@@ -52,10 +52,10 @@ class DatabaseAccountsStorage(AccountsStorage):
     def find_user_by_email(self, email: str) -> User | None:
         # Query your database
         return db.query(UserModel).filter_by(email=email).first()
-    
+
     def find_user_by_id(self, id: Any) -> User | None:
         return db.query(UserModel).filter_by(id=id).first()
-    
+
     def find_social_account(
         self,
         *,
@@ -66,7 +66,7 @@ class DatabaseAccountsStorage(AccountsStorage):
             provider=provider,
             provider_user_id=provider_user_id
         ).first()
-    
+
     def create_user(self, *, user_info: dict[str, Any]) -> User:
         user = UserModel(
             email=user_info["email"],
@@ -75,7 +75,7 @@ class DatabaseAccountsStorage(AccountsStorage):
         db.add(user)
         db.commit()
         return user
-    
+
     def create_social_account(
         self,
         *,
@@ -99,7 +99,7 @@ class DatabaseAccountsStorage(AccountsStorage):
         db.add(account)
         db.commit()
         return account
-    
+
     def update_social_account(
         self,
         social_account_id: Any,
@@ -128,11 +128,11 @@ class User(Protocol):
     id: Any
     email: str
     hashed_password: str | None
-    
+
     @property
     def social_accounts(self) -> Iterable[SocialAccount]: ...
 
-# SocialAccount Protocol  
+# SocialAccount Protocol
 class SocialAccount(Protocol):
     id: Any
     user_id: Any

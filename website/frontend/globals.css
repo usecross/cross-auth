@@ -1,0 +1,28 @@
+/* Import cross-docs base styles */
+@import '@usecross/docs/styles.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Site-specific customizations */
+@layer base {
+  :root {
+    /* Override heading font to use Typekit roc-grotesk */
+    --font-heading: "roc-grotesk", sans-serif;
+
+    /* Primary brand color for cross-auth */
+    --primary-color: #0ea5e9;
+  }
+
+  /* Custom text selection style */
+  ::selection {
+    background-color: var(--primary-color);
+    color: white;
+  }
+
+  ::-moz-selection {
+    background-color: var(--primary-color);
+    color: white;
+  }
+}
