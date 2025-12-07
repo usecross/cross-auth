@@ -1,9 +1,15 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from inertia.fastapi import InertiaMiddleware, InertiaDep
 from inertia.fastapi.experimental import inertia_lifespan
 
-app = FastAPI(title="Cross-Auth Docs", docs_url=None, redoc_url=None, lifespan=inertia_lifespan)
+# Only use inertia_lifespan in dev mode (auto-starts Vite)
+# In production, we don't need it since we serve pre-built static files
+lifespan = inertia_lifespan if os.getenv("INERTIA_DEV") else None
+
+app = FastAPI(title="Cross-Auth Docs", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
