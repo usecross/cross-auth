@@ -4,16 +4,9 @@ from inertia.fastapi import InertiaMiddleware, InertiaDep
 
 app = FastAPI(title="Cross-Auth Docs", docs_url=None, redoc_url=None)
 
-app.add_middleware(
-    InertiaMiddleware,
-    templates_dir="templates",
-    manifest_path="static/build/.vite/manifest.json",
-    environment="development",
-    dev_url="http://localhost:5173",
-    entrypoint="frontend/app.tsx",
-)
-
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+app.add_middleware(InertiaMiddleware)
 
 
 @app.get("/")
