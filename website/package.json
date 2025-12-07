@@ -1,30 +1,34 @@
 {
-  "name": "website",
+  "name": "cross-auth-docs",
+  "version": "0.1.0",
+  "private": true,
   "type": "module",
-  "version": "0.0.1",
   "scripts": {
-    "dev": "astro dev",
-    "build": "astro build",
-    "preview": "astro preview",
-    "astro": "astro",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "prepare": "husky"
-  },
-  "lint-staged": {
-    "*.{astro,js,mjs,ts,tsx,css,json}": [
-      "prettier --write"
-    ]
+    "dev": "vite",
+    "build": "vite build",
+    "build:ssr": "vite build --ssr",
+    "ssr:serve": "bun run static/build/ssr/ssr.js",
+    "preview": "vite preview"
   },
   "dependencies": {
-    "@astrojs/mdx": "^4.3.11",
-    "astro": "^5.15.9",
-    "@usecross/astro-docs-theme": "file:../../../usecross/astro-docs-theme"
+    "@inertiajs/react": "^2.0.0",
+    "@usecross/docs": "^0.2.6",
+    "clsx": "^2.1.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "shiki": "^1.24.0",
+    "tailwind-merge": "^2.6.0"
   },
   "devDependencies": {
-    "husky": "^9.1.7",
-    "lint-staged": "^16.2.6",
-    "prettier": "^3.6.2",
-    "prettier-plugin-astro": "^0.14.1"
+    "@tailwindcss/typography": "^0.5.15",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.5.3",
+    "vite": "^6.0.0"
   }
 }

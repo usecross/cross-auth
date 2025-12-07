@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% if page_title %}{{ page_title }}{% else %}Cross-Auth{% endif %}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    {{ vite() | safe }}
+</head>
+<body>
+    <div id="app" data-page='{{ page | safe }}'></div>
+</body>
+</html>
