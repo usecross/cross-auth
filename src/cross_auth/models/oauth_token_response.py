@@ -20,6 +20,10 @@ class TokenResponse(BaseModel):
         None,
         description="Space-delimited list of scopes associated with the access token",
     )
+    id_token: str | None = Field(
+        None,
+        description="OpenID Connect ID token returned alongside access token",
+    )
 
     @property
     def access_token_expires_at(self) -> datetime | None:

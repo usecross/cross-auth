@@ -204,6 +204,12 @@ def test_router(test_app: FastAPI):
                                 "title": "Scope",
                                 "description": "Space-delimited list of scopes associated with the access token",
                             },
+                            "id_token": {
+                                "anyOf": [{"type": "string"}, {"type": "null"}],
+                                "default": None,
+                                "title": "Id Token",
+                                "description": "OpenID Connect ID token returned alongside access token",
+                            },
                         },
                         "type": "object",
                         "required": ["token_type", "access_token"],
