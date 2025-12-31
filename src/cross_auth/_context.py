@@ -29,8 +29,14 @@ class Context:
         self.config: Config = config or {}
 
     @property
-    def link_by_email(self) -> bool:
-        return self.config.get("account_linking", {}).get("link_by_email", False)
+    def account_linking_enabled(self) -> bool:
+        return self.config.get("account_linking", {}).get("enabled", False)
+
+    @property
+    def allow_different_emails(self) -> bool:
+        return self.config.get("account_linking", {}).get(
+            "allow_different_emails", False
+        )
 
     def is_valid_redirect_uri(self, redirect_uri: str) -> bool:
         host = urlparse(redirect_uri).netloc

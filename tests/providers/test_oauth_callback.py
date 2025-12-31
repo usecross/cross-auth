@@ -453,7 +453,7 @@ async def test_fails_if_there_is_user_with_the_same_email_but_different_provider
     assert response.status_code == 302
     assert response.headers is not None
     assert response.headers["Location"] == snapshot(
-        "http://valid-frontend.com/callback?error=account_exists&error_description=An+account+with+this+email+already+exists.&state=test_client_state"
+        "http://valid-frontend.com/callback?error=account_not_linked&error_description=An+account+with+this+email+exists+but+could+not+be+linked+automatically.&state=test_client_state"
     )
 
 

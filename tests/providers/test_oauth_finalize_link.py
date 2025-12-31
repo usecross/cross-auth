@@ -16,6 +16,29 @@ from cross_auth.social_providers.oauth import OAuth2LinkCodeData, OAuth2Provider
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture
+def context(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    logged_in_user: User,
+) -> Context:
+    """Override context with account linking enabled for finalize_link tests."""
+
+    def _get_user_from_request(request: AsyncHTTPRequest) -> User | None:
+        if request.headers.get("Authorization") == "Bearer test":
+            return logged_in_user
+        return None
+
+    return Context(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        create_token=lambda id: (f"token-{id}", 0),
+        get_user_from_request=_get_user_from_request,
+        trusted_origins=["valid-frontend.com"],
+        config={"account_linking": {"enabled": True}},
+    )
+
+
 async def test_fails_if_not_logged_in(
     oauth_provider: OAuth2Provider,
     context: Context,
@@ -314,23 +337,24 @@ async def test_fails_if_account_already_exists_on_another_user(
     valid_link_code: str,
     respx_mock: MockRouter,
 ) -> None:
+    # Create another user who already has the social account linked
     accounts_storage.create_user(
-        user_info={"email": "pollo@example.com", "id": "pollo"},
-        email="pollo@example.com",
+        user_info={"email": "other@example.com", "id": "other"},
+        email="other@example.com",
         email_verified=True,
     )
 
     accounts_storage.create_social_account(
-        user_id="pollo",
+        user_id="other",
         provider="test",
-        provider_user_id="pollo",
+        provider_user_id="existing_provider_id",
         access_token=None,
         access_token_expires_at=None,
         refresh_token=None,
         refresh_token_expires_at=None,
         scope=None,
-        user_info={"email": "pollo@example.com", "id": "pollo"},
-        provider_email="pollo@example.com",
+        user_info={"email": "other@example.com", "id": "existing_provider_id"},
+        provider_email="other@example.com",
         provider_email_verified=True,
         is_login_method=True,
     )
@@ -351,10 +375,12 @@ async def test_fails_if_account_already_exists_on_another_user(
         )
     )
 
+    # Provider returns same provider_user_id that's already linked to "other" user,
+    # but with logged-in user's email so we pass the email match check
     respx_mock.get(oauth_provider.user_info_endpoint).mock(
         return_value=httpx.Response(
             status_code=200,
-            json={"email": "pollo@example.com", "id": "pollo", "social_accounts": []},
+            json={"email": "test@example.com", "id": "existing_provider_id"},
         )
     )
 
@@ -413,7 +439,8 @@ async def test_links_to_correct_user(
     respx_mock.get(oauth_provider.user_info_endpoint).mock(
         return_value=httpx.Response(
             status_code=200,
-            json={"email": "pollo@example.com", "id": "pollo", "social_accounts": []},
+            # Use same email as logged-in user (test@example.com)
+            json={"email": "test@example.com", "id": "provider_user_123"},
         )
     )
 
@@ -443,7 +470,7 @@ async def test_links_to_correct_user(
 
     assert len(social_accounts) == 1
     assert social_accounts[0].provider == "test"
-    assert social_accounts[0].provider_user_id == "pollo"
+    assert social_accounts[0].provider_user_id == "provider_user_123"
 
 
 @time_machine.travel(datetime(2012, 10, 1, 1, 0, tzinfo=timezone.utc), tick=False)

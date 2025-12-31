@@ -351,20 +351,24 @@ class OAuth2Provider:
         else:
             user = None
 
-            # Try to find existing user by email (if email linking enabled)
-            if context.link_by_email:
+            # Auto-link by email if enabled AND (provider is trusted OR email is verified)
+            can_auto_link = context.account_linking_enabled and (
+                self.trust_email or validated.email_verified is True
+            )
+
+            if can_auto_link:
                 user = context.accounts_storage.find_user_by_email(validated.email)
 
             if not user:
-                # Check if email exists but linking is disabled
+                # Check if email exists but auto-linking wasn't allowed
                 existing_user = context.accounts_storage.find_user_by_email(
                     validated.email
                 )
                 if existing_user:
                     return Response.error_redirect(
                         redirect_uri,
-                        error="account_exists",
-                        error_description="An account with this email already exists.",
+                        error="account_not_linked",
+                        error_description="An account with this email exists but could not be linked automatically.",
                         state=provider_data.client_state,
                     )
 
@@ -755,6 +759,28 @@ class OAuth2Provider:
                 e.error,
                 error_description=e.error_description,
             )
+
+        # Manual linking requires: enabled AND (trusted OR verified)
+        if not context.account_linking_enabled:
+            return Response.error(
+                "linking_disabled",
+                error_description="Account linking is not enabled.",
+            )
+
+        if not self.trust_email and validated.email_verified is not True:
+            return Response.error(
+                "email_not_verified",
+                error_description="Cannot link account: email not verified by provider.",
+            )
+
+        # If emails differ, require allow_different_emails
+        if validated.email and user.email:
+            if validated.email.lower() != user.email.lower():
+                if not context.allow_different_emails:
+                    return Response.error(
+                        "email_mismatch",
+                        error_description="Provider email does not match account email.",
+                    )
 
         social_account = context.accounts_storage.find_social_account(
             provider=self.id,
