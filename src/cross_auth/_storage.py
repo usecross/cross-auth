@@ -11,6 +11,7 @@ class SocialAccount(Protocol):
     provider: str
     provider_email: str | None
     provider_email_verified: bool | None
+    # TODO: Add endpoint to toggle is_login_method for existing social accounts
     is_login_method: bool
 
 
