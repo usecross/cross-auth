@@ -3,7 +3,7 @@ from urllib.parse import urlparse
 
 from lia import AsyncHTTPRequest
 
-from ._config import Config
+from ._config import AccountLinkingConfig, Config
 from ._storage import AccountsStorage, SecondaryStorage, User
 from .utils._is_same_host import is_same_host
 
@@ -29,14 +29,8 @@ class Context:
         self.config: Config = config or {}
 
     @property
-    def account_linking_enabled(self) -> bool:
-        return self.config.get("account_linking", {}).get("enabled", False)
-
-    @property
-    def allow_different_emails(self) -> bool:
-        return self.config.get("account_linking", {}).get(
-            "allow_different_emails", False
-        )
+    def account_linking(self) -> AccountLinkingConfig:
+        return self.config.get("account_linking", {})
 
     def is_valid_redirect_uri(self, redirect_uri: str) -> bool:
         host = urlparse(redirect_uri).netloc
