@@ -83,6 +83,16 @@ class OAuth2Provider:
     supports_pkce: ClassVar[bool]
 
     def __init__(self, client_id: str, client_secret: str, trust_email: bool = True):
+        """
+        Initialize the OAuth2 provider.
+
+        Args:
+            client_id: OAuth2 client ID.
+            client_secret: OAuth2 client secret.
+            trust_email: If True, emails from this provider are trusted for account
+                linking even without explicit email_verified=True. Set to False for
+                providers that don't verify email ownership.
+        """
         self.client_id = client_id
         self.client_secret = client_secret
         self.trust_email = trust_email
