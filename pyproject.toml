@@ -20,6 +20,7 @@ build-backend = "hatchling.build"
 dev = [
     "fastapi>=0.115.12",
     "httpx>=0.28.1",
+    "nox>=2024.10.9",
     "pytest>=9.0",
     "pytest-asyncio>=0.23.8",
     "python-multipart>=0.0.20",
@@ -43,4 +44,19 @@ strict = true
 addopts = ["-ra", "-q"]
 testpaths = [
     "tests",
+]
+
+[tool.coverage.run]
+parallel = true
+branch = true
+source = ["cross_auth"]
+
+[tool.coverage.paths]
+source = ["src"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "@overload",
 ]
