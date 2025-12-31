@@ -528,6 +528,75 @@ async def test_fails_if_provider_email_does_not_match(
 
 
 @time_machine.travel(datetime(2012, 10, 1, 1, 0, tzinfo=timezone.utc), tick=False)
+async def test_allows_different_emails_when_configured(
+    oauth_provider: OAuth2Provider,
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    logged_in_user: User,
+    valid_link_code: str,
+    respx_mock: MockRouter,
+) -> None:
+    """Linking succeeds with different emails when allow_different_emails is True."""
+
+    def _get_user_from_request(request: AsyncHTTPRequest) -> User | None:
+        if request.headers.get("Authorization") == "Bearer test":
+            return logged_in_user
+        return None
+
+    context_allow_different = Context(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        create_token=lambda id: (f"token-{id}", 0),
+        get_user_from_request=_get_user_from_request,
+        trusted_origins=["valid-frontend.com"],
+        config={"account_linking": {"enabled": True, "allow_different_emails": True}},
+    )
+
+    respx_mock.post(oauth_provider.token_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={
+                "access_token": "test_token",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+            },
+        )
+    )
+
+    # Provider returns a different email than the logged-in user (test@example.com)
+    respx_mock.get(oauth_provider.user_info_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={"email": "different@example.com", "id": "provider_456"},
+        )
+    )
+
+    response = await oauth_provider.finalize_link(
+        AsyncHTTPRequest(
+            TestingRequestAdapter(
+                method="POST",
+                url="http://localhost:8000/test/finalize-link",
+                json={
+                    "link_code": valid_link_code,
+                    "code_verifier": "test",
+                },
+                headers={"Authorization": "Bearer test"},
+            )
+        ),
+        context_allow_different,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == snapshot({"message": "Link finalized"})
+
+    # Verify the social account was created
+    social_accounts = list(logged_in_user.social_accounts)
+    assert len(social_accounts) == 1
+    assert social_accounts[0].provider_user_id == "provider_456"
+    assert social_accounts[0].provider_email == "different@example.com"
+
+
+@time_machine.travel(datetime(2012, 10, 1, 1, 0, tzinfo=timezone.utc), tick=False)
 async def test_links_to_correct_user(
     oauth_provider: OAuth2Provider,
     context: Context,
