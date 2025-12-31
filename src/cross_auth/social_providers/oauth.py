@@ -359,7 +359,8 @@ class OAuth2Provider:
             user = None
 
             # Auto-link by email if enabled AND (provider is trusted OR email is verified)
-            can_auto_link = context.account_linking.get("enabled", False) and (
+            account_linking = context.config.get("account_linking", {})
+            can_auto_link = account_linking.get("enabled", False) and (
                 self.trust_email or validated.email_verified is True
             )
 
@@ -768,7 +769,9 @@ class OAuth2Provider:
             )
 
         # Manual linking requires: enabled AND (trusted OR verified)
-        if not context.account_linking.get("enabled", False):
+        account_linking = context.config.get("account_linking", {})
+
+        if not account_linking.get("enabled", False):
             return Response.error(
                 "linking_disabled",
                 error_description="Account linking is not enabled.",
@@ -783,7 +786,7 @@ class OAuth2Provider:
         # If emails differ, require allow_different_emails
         if validated.email and user.email:
             if validated.email.lower() != user.email.lower():
-                if not context.account_linking.get("allow_different_emails", False):
+                if not account_linking.get("allow_different_emails", False):
                     return Response.error(
                         "email_mismatch",
                         error_description="Provider email does not match account email.",
