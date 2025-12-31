@@ -1,5 +1,7 @@
 """Tests for GitHubProvider.fetch_user_info() method."""
 
+from typing import Any, cast
+
 import pytest
 import respx
 
@@ -22,7 +24,7 @@ async def test_fetch_user_info_success(
         return_value=respx.MockResponse(200, json=mock_emails_verified_primary)
     )
 
-    user_info = github_provider.fetch_user_info("test_token")
+    user_info = cast(dict[str, Any], github_provider.fetch_user_info("test_token"))
 
     assert user_info["id"] == 1
     assert user_info["login"] == "octocat"
@@ -45,6 +47,6 @@ async def test_name_fallback_to_login(
         return_value=respx.MockResponse(200, json=mock_emails_verified_primary)
     )
 
-    user_info = github_provider.fetch_user_info("test_token")
+    user_info = cast(dict[str, Any], github_provider.fetch_user_info("test_token"))
 
     assert user_info["name"] == "octocat"
