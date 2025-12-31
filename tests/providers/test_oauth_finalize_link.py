@@ -425,14 +425,13 @@ async def test_fails_if_account_linking_disabled(
             return logged_in_user
         return None
 
-    # Context with account linking disabled (default)
     context_disabled = Context(
         secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
         create_token=lambda id: (f"token-{id}", 0),
         get_user_from_request=_get_user_from_request,
         trusted_origins=["valid-frontend.com"],
-        # No config = account linking disabled
+        config={"account_linking": {"enabled": False}},
     )
 
     respx_mock.post(oauth_provider.token_endpoint).mock(
