@@ -660,7 +660,8 @@ class OAuth2Provider:
 
         request_data = json.loads(await request.get_body())
         code = request_data.get("link_code")
-        allow_login = request_data.get("allow_login", False)
+        allow_login_raw = request_data.get("allow_login", False)
+        allow_login = allow_login_raw is True  # Strict boolean check
 
         if not code:
             logger.error("No link code found in request")
