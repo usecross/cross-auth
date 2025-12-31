@@ -31,12 +31,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python
         run: uv python install ${{ matrix.python-version }}
 
-      - name: Run tests with coverage
-        run: |
-          uv run --python ${{ matrix.python-version }} coverage run -m pytest
+      - name: Run tests with nox
+        run: uvx nox -s tests-${{ matrix.python-version }}
 
       - name: Upload coverage data
         uses: actions/upload-artifact@v4
