@@ -31,9 +31,13 @@ from ..models.oauth_token_response import (
 logger = logging.getLogger(__name__)
 
 
-class UserInfo(TypedDict):
+class UserInfo(TypedDict, total=False):
     email: str
     id: str
+    email_verified: bool | None
+    # Provider-specific fields that may be present
+    login: str  # GitHub username
+    name: str  # Display name
 
 
 @dataclass
@@ -732,7 +736,6 @@ class OAuth2Provider:
                 error_description="Invalid code challenge",
             )
 
-        redirect_uri = link_data.redirect_uri
         proxy_redirect_uri = construct_relative_url(
             str(request.url), "callback", context.base_url
         )

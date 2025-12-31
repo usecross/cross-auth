@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, EmailStr, Field
 
-from .oauth import OAuth2Provider
+from .oauth import OAuth2Provider, UserInfo
 
 
 class DiscordUser(BaseModel):
@@ -40,8 +40,8 @@ class DiscordProvider(OAuth2Provider):
     scopes = ["identify", "email"]
     supports_pkce = True
 
-    def fetch_user_info(self, token: str) -> dict:
-        info = super().fetch_user_info(token)
+    def fetch_user_info(self, access_token: str) -> UserInfo:
+        info = super().fetch_user_info(access_token)
 
         # Map Discord's 'verified' field to our standard 'email_verified'
         info["email_verified"] = info.get("verified")
