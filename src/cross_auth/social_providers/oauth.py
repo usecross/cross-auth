@@ -31,7 +31,7 @@ from ..models.oauth_token_response import (
 logger = logging.getLogger(__name__)
 
 
-class UserInfo(TypedDict, total=False):
+class UserInfo(TypedDict, total=True):
     email: str | None
     id: str | int
     email_verified: bool | None
