@@ -105,24 +105,53 @@ class GitHubProvider(OAuth2Provider):
 
             emails = response.json()
 
-            primary_email = next(
-                (
-                    email["email"]
-                    for email in emails
-                    if email["primary"] and email["verified"]
-                ),
+            # Filter out noreply emails
+            emails = [
+                e for e in emails
+                if not e["email"].endswith("@users.noreply.github.com")
+            ]
+
+            # Try to find the best email in order of preference:
+            # 1. Primary + verified
+            # 2. Any verified
+            # 3. Primary (even if unverified)
+            # 4. Any email (last resort)
+            # 5. None
+            primary_verified = next(
+                (e for e in emails if e["primary"] and e["verified"]),
                 None,
             )
 
+            if primary_verified:
+                info["email"] = primary_verified["email"]
+                info["email_verified"] = True
+            else:
+                any_verified = next(
+                    (e for e in emails if e["verified"]),
+                    None,
+                )
+
+                if any_verified:
+                    info["email"] = any_verified["email"]
+                    info["email_verified"] = True
+                else:
+                    primary = next((e for e in emails if e["primary"]), None)
+
+                    if primary:
+                        info["email"] = primary["email"]
+                        info["email_verified"] = False
+                    elif emails:
+                        # Last resort: use any remaining email
+                        info["email"] = emails[0]["email"]
+                        info["email_verified"] = emails[0]["verified"]
+                    else:
+                        info["email"] = None
+                        info["email_verified"] = None
+
         except Exception as e:
-            logger.error(f"Failed to fetch user emails: {str(e)}")
-
-            raise
-
-        if not primary_email:
-            raise ValueError("No verified email found")
-
-        info["email"] = primary_email
+            logger.error(f"Failed to fetch user emails: {e}")
+            info["email"] = None
+            info["email_verified"] = None
 
         # Ensure name is always a string, falling back to login (username)
         if not info.get("name"):
