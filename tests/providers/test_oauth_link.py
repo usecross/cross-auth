@@ -6,11 +6,35 @@ from inline_snapshot import snapshot
 from lia import AsyncHTTPRequest
 from lia.request import TestingRequestAdapter
 
-from cross_auth._context import Context
+from cross_auth._context import Context, SecondaryStorage
+from cross_auth._storage import AccountsStorage, User
 from cross_auth.social_providers.oauth import OAuth2Provider
 from tests.conftest import MemoryStorage
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture
+def context(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    logged_in_user: User,
+) -> Context:
+    """Override context with account linking enabled for link tests."""
+
+    def _get_user_from_request(request: AsyncHTTPRequest) -> User | None:
+        if request.headers.get("Authorization") == "Bearer test":
+            return logged_in_user
+        return None
+
+    return Context(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        create_token=lambda id: (f"token-{id}", 0),
+        get_user_from_request=_get_user_from_request,
+        trusted_origins=["valid-frontend.com"],
+        config={"account_linking": {"enabled": True}},
+    )
 
 
 async def test_stores_the_correct_request_data(

@@ -100,6 +100,18 @@ class OAuth2Provider:
     def _generate_code(self) -> str:
         return str(uuid.uuid4())
 
+    def can_auto_link(self, context: Context, email_verified: bool | None) -> bool:
+        """Check if auto-linking by email is allowed.
+
+        Auto-linking requires account linking to be enabled AND either:
+        - The provider is trusted (trust_email=True), OR
+        - The email is verified by the provider
+        """
+        account_linking = context.config.get("account_linking", {})
+        return account_linking.get("enabled", False) and (
+            self.trust_email or email_verified is True
+        )
+
     def get_redirect_params(
         self, state: str, redirect_uri: str, response_type: str = "code", **kwargs: str
     ) -> dict[str, str]:
@@ -370,13 +382,7 @@ class OAuth2Provider:
         else:
             user = None
 
-            # Auto-link by email if enabled AND (provider is trusted OR email is verified)
-            account_linking = context.config.get("account_linking", {})
-            can_auto_link = account_linking.get("enabled", False) and (
-                self.trust_email or validated.email_verified is True
-            )
-
-            if can_auto_link:
+            if self.can_auto_link(context, validated.email_verified):
                 user = context.accounts_storage.find_user_by_email(validated.email)
 
             if not user:
