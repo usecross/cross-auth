@@ -592,6 +592,7 @@ class OAuth2Provider:
                 self.user_info_endpoint,
                 headers={"Authorization": f"Bearer {access_token}"},
             )
+            response.raise_for_status()
             user_info = response.json()
         except Exception as e:
             logger.error(f"Failed to fetch user info: {str(e)}")

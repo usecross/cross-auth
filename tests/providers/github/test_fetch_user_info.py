@@ -29,10 +29,6 @@ async def test_fetch_user_info_success(
     assert user_info["email"] == "octocat@github.com"
 
 
-# TODO: test_fetch_user_info_user_endpoint_fails should be in base OAuth2Provider tests
-# The base class currently doesn't check HTTP status codes (bug)
-
-
 @respx.mock
 async def test_name_fallback_to_login(
     github_provider: GitHubProvider,
