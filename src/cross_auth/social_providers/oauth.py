@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 
 
 class UserInfo(TypedDict, total=False):
-    email: str
-    id: str
+    email: str | None
+    id: str | int
     email_verified: bool | None
     # Provider-specific fields that may be present
     login: str  # GitHub username
