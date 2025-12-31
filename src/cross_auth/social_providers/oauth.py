@@ -655,6 +655,7 @@ class OAuth2Provider:
 
         request_data = json.loads(await request.get_body())
         code = request_data.get("link_code")
+        allow_login = request_data.get("allow_login", False)
 
         if not code:
             logger.error("No link code found in request")
@@ -786,7 +787,7 @@ class OAuth2Provider:
                 user_info=cast(dict[str, Any], user_info),
                 provider_email=validated.email,
                 provider_email_verified=validated.email_verified,
-                is_login_method=False,  # Linked account, not primary login method
+                is_login_method=allow_login,
             )
 
         return Response(status_code=200, body='{"message": "Link finalized"}')
