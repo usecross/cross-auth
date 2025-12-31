@@ -28,7 +28,9 @@ async def test_stores_the_correct_request_data(
                 "code_challenge_method": "S256",
                 "response_type": "link_code",
             },
-            headers={"Authorization": "Bearer test"},  # User must be authenticated for link flow
+            headers={
+                "Authorization": "Bearer test"
+            },  # User must be authenticated for link flow
         )
     )
 

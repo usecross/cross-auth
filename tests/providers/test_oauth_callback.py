@@ -679,6 +679,7 @@ async def test_callback_returns_client_state_for_csrf_protection(
 
     # The callback should redirect with both code AND state
     assert callback_response.status_code == 302
+    assert callback_response.headers is not None
     callback_redirect = callback_response.headers["Location"]
 
     # The redirect should include the authorization code

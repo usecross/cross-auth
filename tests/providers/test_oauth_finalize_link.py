@@ -256,7 +256,7 @@ async def test_fails_if_link_code_belongs_to_different_user(
     into using the attacker's link code.
     """
     # Create a different user (not the logged-in "test" user)
-    other_user = accounts_storage.create_user(
+    _other_user = accounts_storage.create_user(
         user_info={"email": "other@example.com", "id": "other"}
     )
 

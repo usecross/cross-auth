@@ -1,7 +1,7 @@
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from lia.request import AsyncHTTPRequest
@@ -9,7 +9,7 @@ from passlib.context import CryptContext
 
 from cross_auth._context import Context
 from cross_auth._issuer import AuthorizationCodeGrantData, Issuer
-from cross_auth._storage import AccountsStorage, SecondaryStorage
+from cross_auth._storage import AccountsStorage, SecondaryStorage, User as UserProtocol
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.social_providers.oauth import OAuth2LinkCodeData
 
@@ -193,13 +193,15 @@ def secondary_storage() -> SecondaryStorage:
 
 
 @pytest.fixture
-def accounts_storage(test_password_hash: str) -> AccountsStorage:
+def accounts_storage(test_password_hash: str) -> MemoryAccountsStorage:
     return MemoryAccountsStorage(test_password_hash)
 
 
 @pytest.fixture
 def logged_in_user(accounts_storage: MemoryAccountsStorage) -> User:
-    return accounts_storage.find_user_by_email("test@example.com")
+    user = accounts_storage.find_user_by_email("test@example.com")
+    assert user is not None
+    return user
 
 
 @pytest.fixture
@@ -208,9 +210,9 @@ def context(
     accounts_storage: AccountsStorage,
     logged_in_user: User,
 ) -> Context:
-    def _get_user_from_request(request: AsyncHTTPRequest) -> User | None:
+    def _get_user_from_request(request: AsyncHTTPRequest) -> UserProtocol | None:
         if request.headers.get("Authorization") == "Bearer test":
-            return logged_in_user
+            return cast(UserProtocol, logged_in_user)
 
         return None
 

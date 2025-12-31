@@ -100,6 +100,7 @@ async def test_pkce_flow_includes_code_verifier(
     )
 
     assert authorize_response.status_code == 302
+    assert authorize_response.headers is not None
 
     location = authorize_response.headers["Location"]
     state = location.split("state=")[1].split("&")[0]

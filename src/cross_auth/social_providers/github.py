@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from typing import Any, cast
 
 import httpx
 from pydantic import AnyUrl, BaseModel, EmailStr, Field
 
-from .oauth import OAuth2Provider
+from .oauth import OAuth2Provider, UserInfo
 
 logger = logging.getLogger(__name__)
 
@@ -90,20 +91,21 @@ class GitHubProvider(OAuth2Provider):
     scopes = ["user:email"]
     supports_pkce = True
 
-    def fetch_user_info(self, token: str) -> dict:
-        info = super().fetch_user_info(token)
+    def fetch_user_info(self, access_token: str) -> UserInfo:
+        # Cast to dict[str, Any] since GitHub API returns more fields than UserInfo
+        info = cast(dict[str, Any], super().fetch_user_info(access_token))
 
         try:
             response = httpx.get(
                 "https://api.github.com/user/emails",
-                headers={"Authorization": f"Bearer {token}"},
+                headers={"Authorization": f"Bearer {access_token}"},
             )
 
             response.raise_for_status()
 
             emails = response.json()
 
-            info["email"] = next(
+            primary_email = next(
                 (
                     email["email"]
                     for email in emails
@@ -117,11 +119,13 @@ class GitHubProvider(OAuth2Provider):
 
             raise
 
-        if not info["email"]:
+        if not primary_email:
             raise ValueError("No verified email found")
+
+        info["email"] = primary_email
 
         # Ensure name is always a string, falling back to login (username)
         if not info.get("name"):
             info["name"] = info["login"]
 
-        return info
+        return cast(UserInfo, info)
