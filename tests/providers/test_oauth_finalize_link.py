@@ -477,6 +477,57 @@ async def test_fails_if_account_linking_disabled(
 
 
 @time_machine.travel(datetime(2012, 10, 1, 1, 0, tzinfo=timezone.utc), tick=False)
+async def test_fails_if_provider_email_does_not_match(
+    oauth_provider: OAuth2Provider,
+    context: Context,
+    valid_link_code: str,
+    respx_mock: MockRouter,
+) -> None:
+    """Linking fails when provider email differs from account email."""
+    respx_mock.post(oauth_provider.token_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={
+                "access_token": "test_token",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+            },
+        )
+    )
+
+    # Provider returns a different email than the logged-in user (test@example.com)
+    respx_mock.get(oauth_provider.user_info_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={"email": "different@example.com", "id": "provider_123"},
+        )
+    )
+
+    response = await oauth_provider.finalize_link(
+        AsyncHTTPRequest(
+            TestingRequestAdapter(
+                method="POST",
+                url="http://localhost:8000/test/finalize-link",
+                json={
+                    "link_code": valid_link_code,
+                    "code_verifier": "test",
+                },
+                headers={"Authorization": "Bearer test"},
+            )
+        ),
+        context,
+    )
+
+    assert response.status_code == 400
+    assert response.json() == snapshot(
+        {
+            "error": "email_mismatch",
+            "error_description": "Provider email does not match account email.",
+        }
+    )
+
+
+@time_machine.travel(datetime(2012, 10, 1, 1, 0, tzinfo=timezone.utc), tick=False)
 async def test_links_to_correct_user(
     oauth_provider: OAuth2Provider,
     context: Context,
