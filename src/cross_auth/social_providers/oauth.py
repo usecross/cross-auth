@@ -347,7 +347,7 @@ class OAuth2Provider:
             user = None
 
             # Try to find existing user by email (if email linking enabled)
-            if context.account_linking.link_by_email:
+            if context.link_by_email:
                 user = context.accounts_storage.find_user_by_email(validated.email)
 
             if not user:
