@@ -19,7 +19,7 @@ repos:
     hooks:
       - id: ty
         name: ty check
-        entry: uv run ty check . --exclude website
+        entry: uv run --with ty ty check . --exclude website
         language: system
         pass_filenames: false
         types: [python]
