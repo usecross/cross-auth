@@ -22,6 +22,7 @@ from cross_auth.utils._url import construct_relative_url
 from .._context import Context
 from .._issuer import AuthorizationCodeGrantData
 from .._route import Route
+from .._storage import User
 from ..models.oauth_token_response import (
     OAuth2TokenEndpointResponse,
     TokenErrorResponse,
@@ -108,9 +109,29 @@ class OAuth2Provider:
         - The email is verified by the provider
         """
         account_linking = context.config.get("account_linking", {})
+
         return account_linking.get("enabled", False) and (
             self.trust_email or email_verified is True
         )
+
+    def allows_different_emails(
+        self, context: Context, provider_email: str | None, user_email: str | None
+    ) -> bool:
+        """Check if linking is allowed when emails differ.
+
+        Returns True if:
+        - Either email is missing (no comparison possible), OR
+        - Emails match (case-insensitive), OR
+        - allow_different_emails is enabled
+        """
+        if not provider_email or not user_email:
+            return True
+
+        if provider_email.lower() == user_email.lower():
+            return True
+
+        account_linking = context.config.get("account_linking", {})
+        return account_linking.get("allow_different_emails", False)
 
     def get_redirect_params(
         self, state: str, redirect_uri: str, response_type: str = "code", **kwargs: str
@@ -380,7 +401,7 @@ class OAuth2Provider:
             user = context.accounts_storage.find_user_by_id(social_account.user_id)
             assert user is not None, "User not found for social account"
         else:
-            user = None
+            user: User | None = None
 
             if self.can_auto_link(context, validated.email_verified):
                 user = context.accounts_storage.find_user_by_email(validated.email)
@@ -801,14 +822,11 @@ class OAuth2Provider:
                 error_description="Cannot link account: email not verified by provider.",
             )
 
-        # If emails differ, require allow_different_emails
-        if validated.email and user.email:
-            if validated.email.lower() != user.email.lower():
-                if not account_linking.get("allow_different_emails", False):
-                    return Response.error(
-                        "email_mismatch",
-                        error_description="Provider email does not match account email.",
-                    )
+        if not self.allows_different_emails(context, validated.email, user.email):
+            return Response.error(
+                "email_mismatch",
+                error_description="Provider email does not match account email.",
+            )
 
         social_account = context.accounts_storage.find_social_account(
             provider=self.id,
