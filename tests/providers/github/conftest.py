@@ -61,12 +61,6 @@ def mock_emails_verified_primary() -> list[dict]:
             "primary": True,
             "visibility": "public",
         },
-        {
-            "email": "octocat@example.com",
-            "verified": True,
-            "primary": False,
-            "visibility": "private",
-        },
     ]
 
 
@@ -79,82 +73,6 @@ def mock_emails_unverified_primary() -> list[dict]:
             "verified": False,
             "primary": True,
             "visibility": "public",
-        },
-        {
-            "email": "octocat@example.com",
-            "verified": True,
-            "primary": False,
-            "visibility": "private",
-        },
-    ]
-
-
-@pytest.fixture
-def mock_emails_noreply_only() -> list[dict]:
-    """GitHub emails response with only noreply email (user hides email)."""
-    return [
-        {
-            "email": "12345+octocat@users.noreply.github.com",
-            "verified": True,
-            "primary": True,
-            "visibility": None,
-        },
-    ]
-
-
-@pytest.fixture
-def mock_emails_noreply_and_unverified() -> list[dict]:
-    """GitHub emails with noreply primary and unverified secondary."""
-    return [
-        {
-            "email": "12345+octocat@users.noreply.github.com",
-            "verified": True,
-            "primary": True,
-            "visibility": None,
-        },
-        {
-            "email": "octocat@example.com",
-            "verified": False,
-            "primary": False,
-            "visibility": "private",
-        },
-    ]
-
-
-@pytest.fixture
-def mock_emails_noreply_and_verified() -> list[dict]:
-    """GitHub emails with noreply primary but verified secondary."""
-    return [
-        {
-            "email": "12345+octocat@users.noreply.github.com",
-            "verified": True,
-            "primary": True,
-            "visibility": None,
-        },
-        {
-            "email": "octocat@example.com",
-            "verified": True,
-            "primary": False,
-            "visibility": "private",
-        },
-    ]
-
-
-@pytest.fixture
-def mock_emails_all_unverified() -> list[dict]:
-    """GitHub emails response with no verified emails."""
-    return [
-        {
-            "email": "octocat@github.com",
-            "verified": False,
-            "primary": True,
-            "visibility": "public",
-        },
-        {
-            "email": "octocat@example.com",
-            "verified": False,
-            "primary": False,
-            "visibility": "private",
         },
     ]
 
