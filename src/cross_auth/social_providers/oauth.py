@@ -307,7 +307,7 @@ class OAuth2Provider:
 
             user_info = self.fetch_user_info(token_response.access_token)
 
-            email, provider_user_id = self.validate_user_info(user_info)
+            email, provider_user_id, email_verified = self.validate_user_info(user_info)
         except OAuth2Exception as e:
             return Response.error_redirect(
                 redirect_uri,
@@ -330,32 +330,43 @@ class OAuth2Provider:
                 refresh_token_expires_at=token_response.refresh_token_expires_at,
                 scope=token_response.scope,
                 user_info=cast(dict[str, Any], user_info),
+                provider_email=email,
+                provider_email_verified=email_verified,
             )
 
             user = context.accounts_storage.find_user_by_id(social_account.user_id)
             assert user is not None, "User not found for social account"
         else:
-            user = context.accounts_storage.find_user_by_email(email)
+            user = None
 
-            if user:
-                return Response.error_redirect(
-                    redirect_uri,
-                    error="account_exists",
-                    error_description="An account with this email already exists.",
-                    state=provider_data.client_state,
-                )
+            # Try to find existing user by email (if email linking enabled)
+            if context.account_linking.link_by_email:
+                user = context.accounts_storage.find_user_by_email(email)
 
-            try:
-                user = context.accounts_storage.create_user(
-                    user_info=cast(dict[str, Any], user_info)
-                )
-            except CrossAuthException as e:
-                return Response.error_redirect(
-                    redirect_uri,
-                    error=e.error,
-                    error_description=e.error_description,
-                    state=provider_data.client_state,
-                )
+            if not user:
+                # Check if email exists but linking is disabled
+                existing_user = context.accounts_storage.find_user_by_email(email)
+                if existing_user:
+                    return Response.error_redirect(
+                        redirect_uri,
+                        error="account_exists",
+                        error_description="An account with this email already exists.",
+                        state=provider_data.client_state,
+                    )
+
+                try:
+                    user = context.accounts_storage.create_user(
+                        user_info=cast(dict[str, Any], user_info),
+                        email=email,
+                        email_verified=email_verified or False,
+                    )
+                except CrossAuthException as e:
+                    return Response.error_redirect(
+                        redirect_uri,
+                        error=e.error,
+                        error_description=e.error_description,
+                        state=provider_data.client_state,
+                    )
 
             context.accounts_storage.create_social_account(
                 user_id=user.id,
@@ -367,6 +378,9 @@ class OAuth2Provider:
                 refresh_token_expires_at=token_response.refresh_token_expires_at,
                 scope=token_response.scope,
                 user_info=cast(dict[str, Any], user_info),
+                provider_email=email,
+                provider_email_verified=email_verified,
+                is_login_method=True,
             )
 
         code = self._generate_code()
@@ -588,7 +602,16 @@ class OAuth2Provider:
 
         return user_info
 
-    def validate_user_info(self, user_info: UserInfo) -> tuple[str, str]:
+    def validate_user_info(self, user_info: UserInfo) -> tuple[str, str, bool | None]:
+        """
+        Validate and extract user info from provider response.
+
+        Returns:
+            tuple of (email, provider_user_id, email_verified)
+
+        Raises:
+            OAuth2Exception: If email or provider_user_id is missing
+        """
         email = user_info.get("email")
 
         if not email:
@@ -607,7 +630,9 @@ class OAuth2Provider:
                 error_description="No provider user ID found in user info",
             )
 
-        return email, provider_user_id
+        email_verified = user_info.get("email_verified")
+
+        return email, str(provider_user_id), email_verified
 
     async def finalize_link(
         self, request: AsyncHTTPRequest, context: Context
@@ -709,18 +734,16 @@ class OAuth2Provider:
             )
 
             user_info = self.fetch_user_info(token_response.access_token)
-            email, provider_user_id = self.validate_user_info(user_info)
+            email, provider_user_id, email_verified = self.validate_user_info(user_info)
         except OAuth2Exception as e:
-            return Response.error_redirect(
-                redirect_uri,
-                error=e.error,
+            return Response.error(
+                e.error,
                 error_description=e.error_description,
-                state=link_data.client_state,
             )
 
         social_account = context.accounts_storage.find_social_account(
             provider=self.id,
-            provider_user_id=user_info["id"],
+            provider_user_id=provider_user_id,
         )
 
         if social_account:
@@ -738,18 +761,23 @@ class OAuth2Provider:
                 refresh_token_expires_at=token_response.refresh_token_expires_at,
                 scope=token_response.scope,
                 user_info=cast(dict[str, Any], user_info),
+                provider_email=email,
+                provider_email_verified=email_verified,
             )
         else:
             context.accounts_storage.create_social_account(
                 user_id=user.id,
                 provider=self.id,
-                provider_user_id=user_info["id"],
+                provider_user_id=provider_user_id,
                 access_token=token_response.access_token,
                 refresh_token=token_response.refresh_token,
                 access_token_expires_at=token_response.access_token_expires_at,
                 refresh_token_expires_at=token_response.refresh_token_expires_at,
                 scope=token_response.scope,
                 user_info=cast(dict[str, Any], user_info),
+                provider_email=email,
+                provider_email_verified=email_verified,
+                is_login_method=False,  # Linked account, not primary login method
             )
 
         return Response(status_code=200, body='{"message": "Link finalized"}')

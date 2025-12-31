@@ -3,6 +3,7 @@ from urllib.parse import urlparse
 
 from lia import AsyncHTTPRequest
 
+from ._config import AccountLinkingConfig
 from ._storage import AccountsStorage, SecondaryStorage, User
 from .utils._is_same_host import is_same_host
 
@@ -17,6 +18,7 @@ class Context:
         trusted_origins: list[str],
         get_user_from_request: Callable[[AsyncHTTPRequest], User | None],
         base_url: str | None = None,
+        account_linking: AccountLinkingConfig | None = None,
     ):
         self.secondary_storage = secondary_storage
         self.accounts_storage = accounts_storage
@@ -24,6 +26,7 @@ class Context:
         self.trusted_origins = trusted_origins
         self.get_user_from_request = get_user_from_request
         self.base_url = base_url
+        self.account_linking = account_linking or AccountLinkingConfig()
 
     def is_valid_redirect_uri(self, redirect_uri: str) -> bool:
         host = urlparse(redirect_uri).netloc

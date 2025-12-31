@@ -257,7 +257,9 @@ async def test_fails_if_link_code_belongs_to_different_user(
     """
     # Create a different user (not the logged-in "test" user)
     _other_user = accounts_storage.create_user(
-        user_info={"email": "other@example.com", "id": "other"}
+        user_info={"email": "other@example.com", "id": "other"},
+        email="other@example.com",
+        email_verified=True,
     )
 
     # Create a link code that belongs to the other user
@@ -313,7 +315,9 @@ async def test_fails_if_account_already_exists_on_another_user(
     respx_mock: MockRouter,
 ) -> None:
     accounts_storage.create_user(
-        user_info={"email": "pollo@example.com", "id": "pollo"}
+        user_info={"email": "pollo@example.com", "id": "pollo"},
+        email="pollo@example.com",
+        email_verified=True,
     )
 
     accounts_storage.create_social_account(
@@ -326,6 +330,9 @@ async def test_fails_if_account_already_exists_on_another_user(
         refresh_token_expires_at=None,
         scope=None,
         user_info={"email": "pollo@example.com", "id": "pollo"},
+        provider_email="pollo@example.com",
+        provider_email_verified=True,
+        is_login_method=True,
     )
 
     access_token = "test_access_token"
