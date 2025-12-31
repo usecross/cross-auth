@@ -410,6 +410,74 @@ async def test_fails_if_account_already_exists_on_another_user(
 
 
 @time_machine.travel(datetime(2012, 10, 1, 1, 0, tzinfo=timezone.utc), tick=False)
+async def test_fails_if_account_linking_disabled(
+    oauth_provider: OAuth2Provider,
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    logged_in_user: User,
+    valid_link_code: str,
+    respx_mock: MockRouter,
+) -> None:
+    """Account linking must be enabled to finalize a link."""
+
+    def _get_user_from_request(request: AsyncHTTPRequest) -> User | None:
+        if request.headers.get("Authorization") == "Bearer test":
+            return logged_in_user
+        return None
+
+    # Context with account linking disabled (default)
+    context_disabled = Context(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        create_token=lambda id: (f"token-{id}", 0),
+        get_user_from_request=_get_user_from_request,
+        trusted_origins=["valid-frontend.com"],
+        # No config = account linking disabled
+    )
+
+    respx_mock.post(oauth_provider.token_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={
+                "access_token": "test_token",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+            },
+        )
+    )
+
+    respx_mock.get(oauth_provider.user_info_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={"email": "test@example.com", "id": "provider_123"},
+        )
+    )
+
+    response = await oauth_provider.finalize_link(
+        AsyncHTTPRequest(
+            TestingRequestAdapter(
+                method="POST",
+                url="http://localhost:8000/test/finalize-link",
+                json={
+                    "link_code": valid_link_code,
+                    "code_verifier": "test",
+                },
+                headers={"Authorization": "Bearer test"},
+            )
+        ),
+        context_disabled,
+    )
+
+    assert response.status_code == 400
+    assert response.json() == snapshot(
+        {
+            "error": "linking_disabled",
+            "error_description": "Account linking is not enabled.",
+        }
+    )
+
+
+@time_machine.travel(datetime(2012, 10, 1, 1, 0, tzinfo=timezone.utc), tick=False)
 async def test_links_to_correct_user(
     oauth_provider: OAuth2Provider,
     context: Context,
