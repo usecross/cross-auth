@@ -81,9 +81,10 @@ class OAuth2Provider:
     scopes: ClassVar[list[str]]
     supports_pkce: ClassVar[bool]
 
-    def __init__(self, client_id: str, client_secret: str):
+    def __init__(self, client_id: str, client_secret: str, trust_email: bool = True):
         self.client_id = client_id
         self.client_secret = client_secret
+        self.trust_email = trust_email
 
     def _generate_code(self) -> str:
         return str(uuid.uuid4())

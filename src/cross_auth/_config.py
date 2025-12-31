@@ -9,10 +9,6 @@ class AccountLinkingConfig(TypedDict, total=False):
     # Automatically link accounts by verified email?
     link_by_email: bool
 
-    # Providers to trust (bypass verification checks for linking)
-    # None = trust all, [] = trust none
-    trusted_providers: list[str] | None
-
     # Allow linking accounts with different emails?
     allow_different_emails: bool
 

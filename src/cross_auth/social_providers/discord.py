@@ -32,7 +32,7 @@ class DiscordUser(BaseModel):
 
 class DiscordProvider(OAuth2Provider):
     # NOTE: Discord users without an email will fail authentication
-    # (email is required). This matches Better Auth's approach.
+    # (email is required).
     id = "discord"
     authorization_endpoint = "https://discord.com/oauth2/authorize"
     token_endpoint = "https://discord.com/api/oauth2/token"
