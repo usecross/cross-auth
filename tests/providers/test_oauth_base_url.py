@@ -94,6 +94,7 @@ async def test_authorize_with_nested_path_and_base_url(
     response = await oauth_provider.authorize(request, context_with_base_url)
 
     assert response.status_code == 302
+    assert response.headers is not None
     location = response.headers["Location"]
 
     # Should preserve the full path structure
@@ -126,6 +127,7 @@ async def test_authorize_without_base_url_fallback(
     response = await oauth_provider.authorize(request, context)
 
     assert response.status_code == 302
+    assert response.headers is not None
     location = response.headers["Location"]
 
     # Without base_url, should use the request URL
@@ -168,6 +170,7 @@ async def test_authorize_base_url_with_trailing_slash(
     response = await oauth_provider.authorize(request, context)
 
     assert response.status_code == 302
+    assert response.headers is not None
     location = response.headers["Location"]
 
     # Should handle trailing slash correctly and not create double slashes
@@ -216,6 +219,7 @@ async def test_authorize_base_url_with_different_port(
     response = await oauth_provider.authorize(request, context)
 
     assert response.status_code == 302
+    assert response.headers is not None
     location = response.headers["Location"]
 
     # Should use the configured base_url with its port

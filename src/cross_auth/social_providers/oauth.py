@@ -3,7 +3,7 @@ import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, ClassVar, Literal, TypedDict
+from typing import Any, ClassVar, Literal, TypedDict, cast
 
 import httpx
 from lia import AsyncHTTPRequest
@@ -62,6 +62,7 @@ class OAuth2LinkCodeData(BaseModel):
     user_id: str  # User who initiated the link flow
     provider_code: str
     provider_code_verifier: str | None = None
+    client_state: str | None = None
 
 
 class OAuth2Provider:
@@ -328,10 +329,11 @@ class OAuth2Provider:
                 access_token_expires_at=token_response.access_token_expires_at,
                 refresh_token_expires_at=token_response.refresh_token_expires_at,
                 scope=token_response.scope,
-                user_info=user_info,
+                user_info=cast(dict[str, Any], user_info),
             )
 
             user = context.accounts_storage.find_user_by_id(social_account.user_id)
+            assert user is not None, "User not found for social account"
         else:
             user = context.accounts_storage.find_user_by_email(email)
 
@@ -344,7 +346,9 @@ class OAuth2Provider:
                 )
 
             try:
-                user = context.accounts_storage.create_user(user_info=user_info)
+                user = context.accounts_storage.create_user(
+                    user_info=cast(dict[str, Any], user_info)
+                )
             except CrossAuthException as e:
                 return Response.error_redirect(
                     redirect_uri,
@@ -362,7 +366,7 @@ class OAuth2Provider:
                 access_token_expires_at=token_response.access_token_expires_at,
                 refresh_token_expires_at=token_response.refresh_token_expires_at,
                 scope=token_response.scope,
-                user_info=user_info,
+                user_info=cast(dict[str, Any], user_info),
             )
 
         code = self._generate_code()
@@ -417,6 +421,7 @@ class OAuth2Provider:
             user_id=provider_data.user_id,
             provider_code=provider_code,
             provider_code_verifier=provider_data.provider_code_verifier,
+            client_state=provider_data.client_state,
         )
 
         code = self._generate_code()
@@ -549,6 +554,7 @@ class OAuth2Provider:
                     error_description=f"Token exchange failed: {token_response.root.error}",
                 )
 
+            assert isinstance(token_response.root, TokenResponse)
             return token_response.root
 
         except httpx.HTTPStatusError as e:
@@ -709,7 +715,7 @@ class OAuth2Provider:
                 redirect_uri,
                 error=e.error,
                 error_description=e.error_description,
-                state=provider_data.client_state,
+                state=link_data.client_state,
             )
 
         social_account = context.accounts_storage.find_social_account(
@@ -731,7 +737,7 @@ class OAuth2Provider:
                 access_token_expires_at=token_response.access_token_expires_at,
                 refresh_token_expires_at=token_response.refresh_token_expires_at,
                 scope=token_response.scope,
-                user_info=user_info,
+                user_info=cast(dict[str, Any], user_info),
             )
         else:
             context.accounts_storage.create_social_account(
@@ -743,7 +749,7 @@ class OAuth2Provider:
                 access_token_expires_at=token_response.access_token_expires_at,
                 refresh_token_expires_at=token_response.refresh_token_expires_at,
                 scope=token_response.scope,
-                user_info=user_info,
+                user_info=cast(dict[str, Any], user_info),
             )
 
         return Response(status_code=200, body='{"message": "Link finalized"}')

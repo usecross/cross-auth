@@ -152,9 +152,9 @@ class Issuer:
         # TODO: validate client_id exists in client registry
         # TODO: support confidential clients (client_secret)
 
-        if token_request.grant_type == "authorization_code":
+        if isinstance(token_request, AuthorizationCodeGrantRequest):
             return self._authorization_code_grant(token_request, context)
-        elif token_request.grant_type == "password":
+        elif isinstance(token_request, PasswordGrantRequest):
             return self._password_grant(token_request, context)
 
     def _authorization_code_grant(
@@ -262,7 +262,7 @@ class Issuer:
             pwd_context.verify(request.password, DUMMY_PASSWORD_HASH)
             valid = False
 
-        if not valid:
+        if not valid or user is None:
             return self._error_response("invalid_grant", "Invalid username or password")
 
         token, expires_in = context.create_token(str(user.id))
