@@ -211,6 +211,18 @@ class OAuth2Provider:
                     error_description="User must be authenticated to initiate link flow",
                     state=client_state,
                 )
+
+            # Fail fast if account linking is disabled
+            account_linking = context.config.get("account_linking", {})
+            if not account_linking.get("enabled", False):
+                logger.error("Account linking is not enabled")
+                return Response.error_redirect(
+                    redirect_uri,
+                    error="linking_disabled",
+                    error_description="Account linking is not enabled",
+                    state=client_state,
+                )
+
             user_id = str(user.id)
 
         provider_code_verifier: str | None = None
