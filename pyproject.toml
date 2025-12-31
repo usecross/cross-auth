@@ -44,3 +44,18 @@ addopts = ["-ra", "-q"]
 testpaths = [
     "tests",
 ]
+
+[tool.coverage.run]
+parallel = true
+branch = true
+source = ["cross_auth"]
+
+[tool.coverage.paths]
+source = ["src"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "@overload",
+]
