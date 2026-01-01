@@ -88,8 +88,37 @@ class GitHubProvider(OAuth2Provider):
     authorization_endpoint = "https://github.com/login/oauth/authorize"
     token_endpoint = "https://github.com/login/oauth/access_token"
     user_info_endpoint = "https://api.github.com/user"
+    emails_endpoint = "https://api.github.com/user/emails"
     scopes = ["user:email"]
     supports_pkce = True
+
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str,
+        trust_email: bool = True,
+        *,
+        base_url: str | None = None,
+    ):
+        """
+        Initialize the GitHub OAuth2 provider.
+
+        Args:
+            client_id: OAuth2 client ID.
+            client_secret: OAuth2 client secret.
+            trust_email: If True, emails from this provider are trusted for account
+                linking even without explicit email_verified=True.
+            base_url: Base URL for GitHub Enterprise Server
+                (e.g., "https://github.mycompany.com").
+        """
+        super().__init__(client_id, client_secret, trust_email)
+
+        if base_url is not None:
+            base_url = base_url.rstrip("/")
+            self.authorization_endpoint = f"{base_url}/login/oauth/authorize"
+            self.token_endpoint = f"{base_url}/login/oauth/access_token"
+            self.user_info_endpoint = f"{base_url}/api/v3/user"
+            self.emails_endpoint = f"{base_url}/api/v3/user/emails"
 
     def fetch_user_info(self, access_token: str) -> UserInfo:
         # Cast to dict[str, Any] since GitHub API returns more fields than UserInfo
@@ -97,7 +126,7 @@ class GitHubProvider(OAuth2Provider):
 
         try:
             response = httpx.get(
-                "https://api.github.com/user/emails",
+                self.emails_endpoint,
                 headers={"Authorization": f"Bearer {access_token}"},
             )
 
