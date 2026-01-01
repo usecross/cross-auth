@@ -18,7 +18,8 @@ class Config(TypedDict, total=False):
 
     account_linking: AccountLinkingConfig
 
-    # If True, reject OAuth login/signup when the provider reports the email
-    # as unverified. This ensures users have verified their email with the
-    # OAuth provider before accessing the application.
+    # If True, reject OAuth signup when the provider reports the email as
+    # unverified. This ensures new users have verified their email with the
+    # OAuth provider before creating an account. Returning users with existing
+    # linked accounts are not affected - they can still login.
     require_verified_email: bool
