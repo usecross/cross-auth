@@ -386,6 +386,18 @@ class OAuth2Provider:
                 state=provider_data.client_state,
             )
 
+        # Check if email verification is required but not provided
+        if (
+            context.config.get("require_verified_email", False)
+            and validated.email_verified is not True
+        ):
+            return Response.error_redirect(
+                redirect_uri,
+                error="email_not_verified",
+                error_description="Please verify your email with the provider before signing in.",
+                state=provider_data.client_state,
+            )
+
         social_account = context.accounts_storage.find_social_account(
             provider=self.id,
             provider_user_id=validated.provider_user_id,

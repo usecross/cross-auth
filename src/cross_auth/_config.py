@@ -17,3 +17,8 @@ class Config(TypedDict, total=False):
     """Cross-auth configuration."""
 
     account_linking: AccountLinkingConfig
+
+    # If True, reject OAuth login/signup when the provider reports the email
+    # as unverified. This ensures users have verified their email with the
+    # OAuth provider before accessing the application.
+    require_verified_email: bool
