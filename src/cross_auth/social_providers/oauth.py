@@ -58,6 +58,7 @@ class OAuth2AuthorizationRequestData(BaseModel):
     state: str
     code_challenge: str
     code_challenge_method: Literal["S256"]
+    client_id: str  # The client's client_id (e.g., "fastapicloud")
     link: bool = False
     user_id: str | None = None  # User who initiated the link flow
     provider_code_verifier: str | None = None  # PKCE verifier for provider OAuth flow
@@ -207,6 +208,10 @@ class OAuth2Provider:
                 state=client_state,
             )
 
+        # Get client_id from request, default to "default" if not provided
+        # TODO: implement proper client registry and validation
+        client_id = request.query_params.get("client_id", "default")
+
         code_challenge = request.query_params.get("code_challenge")
         code_challenge_method = request.query_params.get("code_challenge_method")
 
@@ -275,6 +280,7 @@ class OAuth2Provider:
                 "state": state,
                 "code_challenge": code_challenge,
                 "code_challenge_method": code_challenge_method,
+                "client_id": client_id,
                 "link": response_type == "link_code",
                 "user_id": user_id,
                 "provider_code_verifier": provider_code_verifier,
@@ -453,7 +459,7 @@ class OAuth2Provider:
         data = AuthorizationCodeGrantData(
             user_id=str(user.id),
             expires_at=datetime.now(tz=timezone.utc) + timedelta(minutes=10),
-            client_id=self.client_id,
+            client_id=provider_data.client_id,
             redirect_uri=redirect_uri,
             code_challenge=provider_data.code_challenge,
             code_challenge_method=provider_data.code_challenge_method,
