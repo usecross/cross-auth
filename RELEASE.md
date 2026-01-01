@@ -6,11 +6,11 @@ Add secure account linking for social authentication providers.
 
 **New features:**
 
-- Manual account linking via `response_type=link_code` flow
-- Automatic account linking by email (when enabled)
 - Configurable `account_linking` settings:
-  - `enabled`: Enable/disable account linking
+  - `enabled`: Enable/disable account linking (required for both manual and automatic linking)
   - `allow_different_emails`: Allow linking accounts with different emails
+- Manual account linking via `response_type=link_code` flow
+- Automatic account linking by email during login
 
 **Security improvements:**
 
