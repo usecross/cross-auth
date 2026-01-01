@@ -98,7 +98,9 @@ class GitHubProvider(OAuth2Provider):
         client_secret: str,
         trust_email: bool = True,
         *,
-        base_url: str | None = None,
+        authorization_endpoint: str | None = None,
+        token_endpoint: str | None = None,
+        api_base_url: str | None = None,
     ):
         """
         Initialize the GitHub OAuth2 provider.
@@ -108,17 +110,21 @@ class GitHubProvider(OAuth2Provider):
             client_secret: OAuth2 client secret.
             trust_email: If True, emails from this provider are trusted for account
                 linking even without explicit email_verified=True.
-            base_url: Base URL for GitHub Enterprise Server
-                (e.g., "https://github.mycompany.com").
+            authorization_endpoint: Custom authorization URL (for browser redirects).
+            token_endpoint: Custom token exchange URL (for server-to-server calls).
+            api_base_url: Custom API base URL for user info and emails
+                (for server-to-server calls). Should not include trailing slash.
         """
         super().__init__(client_id, client_secret, trust_email)
 
-        if base_url is not None:
-            base_url = base_url.rstrip("/")
-            self.authorization_endpoint = f"{base_url}/login/oauth/authorize"
-            self.token_endpoint = f"{base_url}/login/oauth/access_token"
-            self.user_info_endpoint = f"{base_url}/api/v3/user"
-            self.emails_endpoint = f"{base_url}/api/v3/user/emails"
+        if authorization_endpoint is not None:
+            self.authorization_endpoint = authorization_endpoint
+        if token_endpoint is not None:
+            self.token_endpoint = token_endpoint
+        if api_base_url is not None:
+            api_base_url = api_base_url.rstrip("/")
+            self.user_info_endpoint = f"{api_base_url}/user"
+            self.emails_endpoint = f"{api_base_url}/user/emails"
 
     def fetch_user_info(self, access_token: str) -> UserInfo:
         # Cast to dict[str, Any] since GitHub API returns more fields than UserInfo
