@@ -89,7 +89,6 @@ async def test_stores_the_correct_request_data(
             "redirect_uri": "http://valid-frontend.com/callback",
             "login_hint": None,
             "client_state": None,
-            "client_id": "default",
             "state": state,
             "code_challenge": "test",
             "code_challenge_method": "S256",
