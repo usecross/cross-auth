@@ -16,6 +16,29 @@ from cross_auth.social_providers.oauth import OAuth2LinkCodeData, OAuth2Provider
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture
+def context(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    logged_in_user: User,
+) -> Context:
+    """Override context with account linking enabled for finalize_link tests."""
+
+    def _get_user_from_request(request: AsyncHTTPRequest) -> User | None:
+        if request.headers.get("Authorization") == "Bearer test":
+            return logged_in_user
+        return None
+
+    return Context(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        create_token=lambda id: (f"token-{id}", 0),
+        get_user_from_request=_get_user_from_request,
+        trusted_origins=["valid-frontend.com"],
+        config={"account_linking": {"enabled": True}},
+    )
+
+
 async def test_fails_if_not_logged_in(
     oauth_provider: OAuth2Provider,
     context: Context,
@@ -257,7 +280,9 @@ async def test_fails_if_link_code_belongs_to_different_user(
     """
     # Create a different user (not the logged-in "test" user)
     _other_user = accounts_storage.create_user(
-        user_info={"email": "other@example.com", "id": "other"}
+        user_info={"email": "other@example.com", "id": "other"},
+        email="other@example.com",
+        email_verified=True,
     )
 
     # Create a link code that belongs to the other user
@@ -312,20 +337,26 @@ async def test_fails_if_account_already_exists_on_another_user(
     valid_link_code: str,
     respx_mock: MockRouter,
 ) -> None:
+    # Create another user who already has the social account linked
     accounts_storage.create_user(
-        user_info={"email": "pollo@example.com", "id": "pollo"}
+        user_info={"email": "other@example.com", "id": "other"},
+        email="other@example.com",
+        email_verified=True,
     )
 
     accounts_storage.create_social_account(
-        user_id="pollo",
+        user_id="other",
         provider="test",
-        provider_user_id="pollo",
+        provider_user_id="existing_provider_id",
         access_token=None,
         access_token_expires_at=None,
         refresh_token=None,
         refresh_token_expires_at=None,
         scope=None,
-        user_info={"email": "pollo@example.com", "id": "pollo"},
+        user_info={"email": "other@example.com", "id": "existing_provider_id"},
+        provider_email="other@example.com",
+        provider_email_verified=True,
+        is_login_method=True,
     )
 
     access_token = "test_access_token"
@@ -344,10 +375,12 @@ async def test_fails_if_account_already_exists_on_another_user(
         )
     )
 
+    # Provider returns same provider_user_id that's already linked to "other" user,
+    # but with logged-in user's email so we pass the email match check
     respx_mock.get(oauth_provider.user_info_endpoint).mock(
         return_value=httpx.Response(
             status_code=200,
-            json={"email": "pollo@example.com", "id": "pollo", "social_accounts": []},
+            json={"email": "test@example.com", "id": "existing_provider_id"},
         )
     )
 
@@ -374,6 +407,193 @@ async def test_fails_if_account_already_exists_on_another_user(
             "error_description": "Social account already exists",
         }
     )
+
+
+@time_machine.travel(datetime(2012, 10, 1, 1, 0, tzinfo=timezone.utc), tick=False)
+async def test_fails_if_account_linking_disabled(
+    oauth_provider: OAuth2Provider,
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    logged_in_user: User,
+    valid_link_code: str,
+    respx_mock: MockRouter,
+) -> None:
+    """Account linking must be enabled to finalize a link."""
+
+    def _get_user_from_request(request: AsyncHTTPRequest) -> User | None:
+        if request.headers.get("Authorization") == "Bearer test":
+            return logged_in_user
+        return None
+
+    context_disabled = Context(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        create_token=lambda id: (f"token-{id}", 0),
+        get_user_from_request=_get_user_from_request,
+        trusted_origins=["valid-frontend.com"],
+        config={"account_linking": {"enabled": False}},
+    )
+
+    respx_mock.post(oauth_provider.token_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={
+                "access_token": "test_token",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+            },
+        )
+    )
+
+    respx_mock.get(oauth_provider.user_info_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={"email": "test@example.com", "id": "provider_123"},
+        )
+    )
+
+    response = await oauth_provider.finalize_link(
+        AsyncHTTPRequest(
+            TestingRequestAdapter(
+                method="POST",
+                url="http://localhost:8000/test/finalize-link",
+                json={
+                    "link_code": valid_link_code,
+                    "code_verifier": "test",
+                },
+                headers={"Authorization": "Bearer test"},
+            )
+        ),
+        context_disabled,
+    )
+
+    assert response.status_code == 400
+    assert response.json() == snapshot(
+        {
+            "error": "linking_disabled",
+            "error_description": "Account linking is not enabled.",
+        }
+    )
+
+
+@time_machine.travel(datetime(2012, 10, 1, 1, 0, tzinfo=timezone.utc), tick=False)
+async def test_fails_if_provider_email_does_not_match(
+    oauth_provider: OAuth2Provider,
+    context: Context,
+    valid_link_code: str,
+    respx_mock: MockRouter,
+) -> None:
+    """Linking fails when provider email differs from account email."""
+    respx_mock.post(oauth_provider.token_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={
+                "access_token": "test_token",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+            },
+        )
+    )
+
+    # Provider returns a different email than the logged-in user (test@example.com)
+    respx_mock.get(oauth_provider.user_info_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={"email": "different@example.com", "id": "provider_123"},
+        )
+    )
+
+    response = await oauth_provider.finalize_link(
+        AsyncHTTPRequest(
+            TestingRequestAdapter(
+                method="POST",
+                url="http://localhost:8000/test/finalize-link",
+                json={
+                    "link_code": valid_link_code,
+                    "code_verifier": "test",
+                },
+                headers={"Authorization": "Bearer test"},
+            )
+        ),
+        context,
+    )
+
+    assert response.status_code == 400
+    assert response.json() == snapshot(
+        {
+            "error": "email_mismatch",
+            "error_description": "Provider email does not match account email.",
+        }
+    )
+
+
+@time_machine.travel(datetime(2012, 10, 1, 1, 0, tzinfo=timezone.utc), tick=False)
+async def test_allows_different_emails_when_configured(
+    oauth_provider: OAuth2Provider,
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    logged_in_user: User,
+    valid_link_code: str,
+    respx_mock: MockRouter,
+) -> None:
+    """Linking succeeds with different emails when allow_different_emails is True."""
+
+    def _get_user_from_request(request: AsyncHTTPRequest) -> User | None:
+        if request.headers.get("Authorization") == "Bearer test":
+            return logged_in_user
+        return None
+
+    context_allow_different = Context(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        create_token=lambda id: (f"token-{id}", 0),
+        get_user_from_request=_get_user_from_request,
+        trusted_origins=["valid-frontend.com"],
+        config={"account_linking": {"enabled": True, "allow_different_emails": True}},
+    )
+
+    respx_mock.post(oauth_provider.token_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={
+                "access_token": "test_token",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+            },
+        )
+    )
+
+    # Provider returns a different email than the logged-in user (test@example.com)
+    respx_mock.get(oauth_provider.user_info_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={"email": "different@example.com", "id": "provider_456"},
+        )
+    )
+
+    response = await oauth_provider.finalize_link(
+        AsyncHTTPRequest(
+            TestingRequestAdapter(
+                method="POST",
+                url="http://localhost:8000/test/finalize-link",
+                json={
+                    "link_code": valid_link_code,
+                    "code_verifier": "test",
+                },
+                headers={"Authorization": "Bearer test"},
+            )
+        ),
+        context_allow_different,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == snapshot({"message": "Link finalized"})
+
+    # Verify the social account was created
+    social_accounts = list(logged_in_user.social_accounts)
+    assert len(social_accounts) == 1
+    assert social_accounts[0].provider_user_id == "provider_456"
+    assert social_accounts[0].provider_email == "different@example.com"
 
 
 @time_machine.travel(datetime(2012, 10, 1, 1, 0, tzinfo=timezone.utc), tick=False)
@@ -406,7 +626,8 @@ async def test_links_to_correct_user(
     respx_mock.get(oauth_provider.user_info_endpoint).mock(
         return_value=httpx.Response(
             status_code=200,
-            json={"email": "pollo@example.com", "id": "pollo", "social_accounts": []},
+            # Use same email as logged-in user (test@example.com)
+            json={"email": "test@example.com", "id": "provider_user_123"},
         )
     )
 
@@ -436,7 +657,7 @@ async def test_links_to_correct_user(
 
     assert len(social_accounts) == 1
     assert social_accounts[0].provider == "test"
-    assert social_accounts[0].provider_user_id == "pollo"
+    assert social_accounts[0].provider_user_id == "provider_user_123"
 
 
 @time_machine.travel(datetime(2012, 10, 1, 1, 0, tzinfo=timezone.utc), tick=False)

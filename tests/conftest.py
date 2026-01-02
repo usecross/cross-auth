@@ -32,12 +32,16 @@ class SocialAccount:
     access_token_expires_at: datetime | None = None
     refresh_token_expires_at: datetime | None = None
     scope: str | None = None
+    provider_email: str | None = None
+    provider_email_verified: bool | None = None
+    is_login_method: bool = True
 
 
 @dataclass
 class User:
     id: str
     email: str
+    email_verified: bool
     hashed_password: str
     social_accounts: list[SocialAccount]
 
@@ -67,6 +71,7 @@ class MemoryAccountsStorage:
             "test": User(
                 id="test",
                 email="test@example.com",
+                email_verified=True,
                 hashed_password=test_password_hash,
                 social_accounts=[],
             )
@@ -78,24 +83,31 @@ class MemoryAccountsStorage:
     def find_user_by_id(self, id: Any) -> User | None:
         return self.data.get(id)
 
-    def create_user(self, *, user_info: dict[str, Any]) -> User:
-        if self.find_user_by_email(user_info["email"]) is not None:
+    def create_user(
+        self,
+        *,
+        user_info: dict[str, Any],
+        email: str,
+        email_verified: bool,
+    ) -> User:
+        if self.find_user_by_email(email) is not None:
             raise ValueError("User already exists")
 
-        if user_info["email"] == "not-allowed@example.com":
+        if email == "not-allowed@example.com":
             raise CrossAuthException(
                 "email_not_invited",
                 "This email has not yet been invited to join FastAPI Cloud",
             )
 
         user = User(
-            id=user_info["id"],
-            email=user_info["email"],
+            id=str(user_info["id"]),
+            email=email,
+            email_verified=email_verified,
             hashed_password=self.test_password_hash,
             social_accounts=[],
         )
 
-        self.data[user_info["id"]] = user
+        self.data[str(user_info["id"])] = user
 
         return user
 
@@ -125,6 +137,9 @@ class MemoryAccountsStorage:
         refresh_token_expires_at: datetime | None,
         scope: str | None,
         user_info: dict[str, Any],
+        provider_email: str | None,
+        provider_email_verified: bool | None,
+        is_login_method: bool,
     ) -> SocialAccount:
         if user_id not in self.data:
             raise ValueError("User does not exist")
@@ -141,6 +156,9 @@ class MemoryAccountsStorage:
             access_token_expires_at=access_token_expires_at,
             refresh_token_expires_at=refresh_token_expires_at,
             scope=scope,
+            provider_email=provider_email,
+            provider_email_verified=provider_email_verified,
+            is_login_method=is_login_method,
         )
 
         user.social_accounts.append(social_account)
@@ -159,6 +177,8 @@ class MemoryAccountsStorage:
         refresh_token_expires_at: datetime | None,
         scope: str | None,
         user_info: dict[str, Any],
+        provider_email: str | None,
+        provider_email_verified: bool | None,
     ) -> SocialAccount:
         social_account = next(
             (
@@ -178,6 +198,8 @@ class MemoryAccountsStorage:
         social_account.access_token_expires_at = access_token_expires_at
         social_account.refresh_token_expires_at = refresh_token_expires_at
         social_account.scope = scope
+        social_account.provider_email = provider_email
+        social_account.provider_email_verified = provider_email_verified
 
         return social_account
 

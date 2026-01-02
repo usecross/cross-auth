@@ -407,7 +407,9 @@ async def test_fails_if_there_is_user_with_the_same_email_but_different_provider
     access_token = "test_access_token"
 
     accounts_storage.create_user(
-        user_info={"email": "pollo@example.com", "id": "pollo"}
+        user_info={"email": "pollo@example.com", "id": "pollo"},
+        email="pollo@example.com",
+        email_verified=True,
     )
 
     accounts_storage.create_social_account(
@@ -420,6 +422,9 @@ async def test_fails_if_there_is_user_with_the_same_email_but_different_provider
         refresh_token_expires_at=None,
         scope=None,
         user_info={"email": "pollo@example.com", "id": "pollo"},
+        provider_email="pollo@example.com",
+        provider_email_verified=True,
+        is_login_method=True,
     )
 
     data = {
@@ -448,7 +453,7 @@ async def test_fails_if_there_is_user_with_the_same_email_but_different_provider
     assert response.status_code == 302
     assert response.headers is not None
     assert response.headers["Location"] == snapshot(
-        "http://valid-frontend.com/callback?error=account_exists&error_description=An+account+with+this+email+already+exists.&state=test_client_state"
+        "http://valid-frontend.com/callback?error=account_not_linked&error_description=An+account+with+this+email+exists+but+could+not+be+linked+automatically.&state=test_client_state"
     )
 
 
@@ -461,6 +466,8 @@ async def test_works_when_there_is_user_with_the_same_email_and_provider(
 ):
     accounts_storage.create_user(
         user_info={"email": "pollo@example.com", "id": "pollo"},
+        email="pollo@example.com",
+        email_verified=True,
     )
 
     accounts_storage.create_social_account(
@@ -473,6 +480,9 @@ async def test_works_when_there_is_user_with_the_same_email_and_provider(
         refresh_token_expires_at=None,
         scope=None,
         user_info={"email": "pollo@example.com", "id": "pollo"},
+        provider_email="pollo@example.com",
+        provider_email_verified=True,
+        is_login_method=True,
     )
 
     data = {
@@ -519,6 +529,8 @@ async def test_updates_the_social_account_if_it_already_exists(
 ):
     accounts_storage.create_user(
         user_info={"email": "pollo@example.com", "id": "pollo"},
+        email="pollo@example.com",
+        email_verified=True,
     )
 
     accounts_storage.create_social_account(
@@ -531,6 +543,9 @@ async def test_updates_the_social_account_if_it_already_exists(
         refresh_token_expires_at=None,
         scope="old_scope",
         user_info={"email": "pollo@example.com", "id": "pollo"},
+        provider_email="pollo@example.com",
+        provider_email_verified=True,
+        is_login_method=True,
     )
 
     data = {

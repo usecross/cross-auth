@@ -127,3 +127,34 @@ async def test_invalid_redirect_uri_error(
 
     assert response.status_code == 400
     assert response.json() == {"error": "invalid_redirect_uri"}
+
+
+async def test_link_code_fails_fast_if_linking_disabled(
+    oauth_provider: OAuth2Provider, context: Context
+):
+    """
+    When a user tries to initiate a link flow but account linking is disabled,
+    we should fail fast at authorize time rather than after the OAuth dance.
+    """
+    request = AsyncHTTPRequest(
+        TestingRequestAdapter(
+            method="GET",
+            url="http://localhost:8000/test/authorize",
+            query_params={
+                "redirect_uri": "http://valid-frontend.com/callback",
+                "state": "client_state_123",
+                "response_type": "link_code",
+                "code_challenge": "test_challenge",
+                "code_challenge_method": "S256",
+            },
+            headers={"Authorization": "Bearer test"},
+        )
+    )
+
+    response = await oauth_provider.authorize(request, context)
+
+    assert response.status_code == 302
+    assert response.headers is not None
+    location = response.headers["Location"]
+    assert "error=linking_disabled" in location
+    assert "state=client_state_123" in location

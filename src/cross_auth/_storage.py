@@ -9,11 +9,16 @@ class SocialAccount(Protocol):
     user_id: Any
     provider_user_id: str
     provider: str
+    provider_email: str | None
+    provider_email_verified: bool | None
+    # TODO: Add endpoint to toggle is_login_method for existing social accounts
+    is_login_method: bool
 
 
 class User(Protocol):
     id: Any
     email: str
+    email_verified: bool
     hashed_password: str | None
 
     @property
@@ -44,7 +49,13 @@ class AccountsStorage(Protocol):
         provider_user_id: str,
     ) -> SocialAccount | None: ...
 
-    def create_user(self, *, user_info: dict[str, Any]) -> User: ...
+    def create_user(
+        self,
+        *,
+        user_info: dict[str, Any],
+        email: str,
+        email_verified: bool,
+    ) -> User: ...
 
     def create_social_account(
         self,
@@ -58,6 +69,9 @@ class AccountsStorage(Protocol):
         refresh_token_expires_at: datetime | None,
         scope: str | None,
         user_info: dict[str, Any],
+        provider_email: str | None,
+        provider_email_verified: bool | None,
+        is_login_method: bool,
     ) -> SocialAccount: ...
 
     def update_social_account(
@@ -70,4 +84,6 @@ class AccountsStorage(Protocol):
         refresh_token_expires_at: datetime | None,
         scope: str | None,
         user_info: dict[str, Any],
+        provider_email: str | None,
+        provider_email_verified: bool | None,
     ) -> SocialAccount: ...
