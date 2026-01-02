@@ -1,6 +1,6 @@
 [project]
 name = "cross-auth"
-version = "0.2.0"
+version = "0.3.0"
 description = "A modern Authentication Framework for Python"
 readme = "README.md"
 authors = [{ name = "Patrick Arminio", email = "patrick.arminio@gmail.com" }]
