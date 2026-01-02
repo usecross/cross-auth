@@ -28,6 +28,7 @@ def valid_callback_request(secondary_storage: SecondaryStorage) -> AsyncHTTPRequ
                 "login_hint": "test_login_hint",
                 "state": "test_state",
                 "client_state": "test_client_state",
+                "client_id": "test_client_id",
                 "code_challenge": "test",
                 "code_challenge_method": "S256",
                 "provider_code_verifier": "test_provider_verifier",
@@ -95,6 +96,7 @@ async def test_fails_if_there_was_no_code_in_request(
                 "login_hint": "test_login_hint",
                 "state": "test_state",
                 "client_state": "test_client_state",
+                "client_id": "test_client_id",
                 "code_challenge": "test",
                 "code_challenge_method": "S256",
                 "provider_code_verifier": "test_provider_verifier",
@@ -650,6 +652,7 @@ async def test_callback_returns_client_state_for_csrf_protection(
                 "login_hint": None,
                 "state": provider_state,
                 "client_state": client_state,  # This should be returned!
+                "client_id": "test_client_id",
                 "code_challenge": "test_challenge",
                 "code_challenge_method": "S256",
                 "provider_code_verifier": "test_provider_verifier",

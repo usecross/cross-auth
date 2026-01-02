@@ -27,6 +27,7 @@ def valid_link_callback_request(
                 "login_hint": "test_login_hint",
                 "state": "test_state",
                 "client_state": "test_client_state",
+                "client_id": "test_client_id",
                 "code_challenge": "test",
                 "code_challenge_method": "S256",
                 "link": True,
