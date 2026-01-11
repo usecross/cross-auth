@@ -2,8 +2,8 @@ import os
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from inertia.fastapi import InertiaMiddleware, InertiaDep
-from inertia.fastapi.experimental import inertia_lifespan
+from cross_inertia.fastapi import InertiaMiddleware, InertiaDep
+from cross_inertia.fastapi.experimental import inertia_lifespan
 
 # Only use inertia_lifespan in dev mode (auto-starts Vite)
 # In production, we don't need it since we serve pre-built static files
