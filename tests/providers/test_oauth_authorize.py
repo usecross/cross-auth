@@ -133,12 +133,12 @@ async def test_invalid_redirect_uri_error(
     assert response.json() == {"error": "invalid_redirect_uri"}
 
 
-async def test_link_code_fails_fast_if_linking_disabled(
+async def test_link_code_response_type_not_supported(
     oauth_provider: OAuth2Provider, context: Context
 ):
     """
-    When a user tries to initiate a link flow but account linking is disabled,
-    we should fail fast at authorize time rather than after the OAuth dance.
+    The authorize endpoint no longer supports response_type=link_code.
+    Use POST /{provider}/link instead.
     """
     request = AsyncHTTPRequest(
         TestingRequestAdapter(
@@ -161,7 +161,7 @@ async def test_link_code_fails_fast_if_linking_disabled(
     assert response.status_code == 302
     assert response.headers is not None
     location = response.headers["Location"]
-    assert "error=linking_disabled" in location
+    assert "error=invalid_request" in location
     assert "state=client_state_123" in location
 
 
