@@ -52,6 +52,7 @@ class OAuth2Exception(Exception):
 
 
 class OAuth2AuthorizationRequestData(BaseModel):
+    client_id: str  # The app's client_id (not the provider's)
     redirect_uri: str
     login_hint: str | None
     client_state: str | None
@@ -230,6 +231,28 @@ class OAuth2Provider:
                 state=client_state,
             )
 
+        client_id = request.query_params.get("client_id")
+
+        if not client_id:
+            logger.error("No client_id provided")
+
+            return Response.error_redirect(
+                redirect_uri,
+                error="invalid_request",
+                error_description="No client_id provided",
+                state=client_state,
+            )
+
+        if not context.is_valid_client_id(client_id):
+            logger.error("Invalid client_id: %s", client_id)
+
+            return Response.error_redirect(
+                redirect_uri,
+                error="invalid_client",
+                error_description="Invalid client_id",
+                state=client_state,
+            )
+
         login_hint = request.query_params.get("login_hint")
         state = secrets.token_hex(16)
 
@@ -269,6 +292,7 @@ class OAuth2Provider:
 
         data = OAuth2AuthorizationRequestData.model_validate(
             {
+                "client_id": client_id,
                 "redirect_uri": redirect_uri,
                 "login_hint": login_hint,
                 "client_state": client_state,
@@ -465,7 +489,7 @@ class OAuth2Provider:
         data = AuthorizationCodeGrantData(
             user_id=str(user.id),
             expires_at=datetime.now(tz=timezone.utc) + timedelta(minutes=10),
-            client_id=self.client_id,
+            client_id=provider_data.client_id,
             redirect_uri=redirect_uri,
             code_challenge=provider_data.code_challenge,
             code_challenge_method=provider_data.code_challenge_method,
@@ -505,7 +529,7 @@ class OAuth2Provider:
 
         data = OAuth2LinkCodeData(
             expires_at=datetime.now(tz=timezone.utc) + timedelta(minutes=10),
-            client_id=self.client_id,
+            client_id=provider_data.client_id,
             redirect_uri=provider_data.redirect_uri,
             code_challenge=provider_data.code_challenge,
             code_challenge_method=provider_data.code_challenge_method,

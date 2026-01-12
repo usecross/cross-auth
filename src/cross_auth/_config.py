@@ -23,3 +23,8 @@ class Config(TypedDict, total=False):
     # OAuth provider before creating an account. Returning users with existing
     # linked accounts are not affected - they can still login.
     require_verified_email: bool
+
+    # List of allowed client_ids. If not set or empty, client_id validation
+    # is skipped (any client_id is accepted). When set, only these client_ids
+    # are allowed to initiate OAuth flows.
+    allowed_client_ids: list[str]
