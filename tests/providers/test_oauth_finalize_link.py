@@ -4,9 +4,8 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 import time_machine
+from cross_web import AsyncHTTPRequest, TestingRequestAdapter
 from inline_snapshot import snapshot
-from lia import AsyncHTTPRequest
-from lia.request import TestingRequestAdapter
 from respx import MockRouter
 
 from cross_auth._context import Context, SecondaryStorage

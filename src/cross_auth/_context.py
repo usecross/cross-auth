@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from urllib.parse import urlparse
 
-from lia import AsyncHTTPRequest
+from cross_web import AsyncHTTPRequest
 
 from ._config import Config
 from ._storage import AccountsStorage, SecondaryStorage, User

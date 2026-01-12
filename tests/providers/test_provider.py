@@ -3,8 +3,7 @@ import json
 import httpx
 import pytest
 import respx
-from lia import AsyncHTTPRequest
-from lia.request import TestingRequestAdapter
+from cross_web import AsyncHTTPRequest, TestingRequestAdapter
 
 from cross_auth._context import Context
 from cross_auth.social_providers.oauth import OAuth2Provider

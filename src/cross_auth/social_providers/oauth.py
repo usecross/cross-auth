@@ -3,11 +3,12 @@ import logging
 import secrets
 import uuid
 from dataclasses import dataclass
+from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone
 from typing import Any, ClassVar, Literal, TypedDict, cast
 
 import httpx
-from lia import AsyncHTTPRequest
+from cross_web import AsyncHTTPRequest
 from pydantic import BaseModel, HttpUrl, TypeAdapter, ValidationError
 
 from cross_auth.exceptions import CrossAuthException
@@ -74,6 +75,18 @@ class OAuth2LinkCodeData(BaseModel):
     provider_code: str
     provider_code_verifier: str | None = None
     client_state: str | None = None
+
+
+class InitiateLinkRequest(BaseModel):
+    redirect_uri: str
+    code_challenge: str
+    code_challenge_method: Literal["S256"]
+    client_id: str
+    state: str | None = None
+
+
+class InitiateLinkResponse(BaseModel):
+    authorization_url: str
 
 
 class OAuth2Provider:
@@ -198,7 +211,7 @@ class OAuth2Provider:
                 state=client_state,
             )
 
-        if response_type not in ["code", "link_code"]:
+        if response_type != "code":
             logger.error("Unsupported response type")
 
             return Response.error_redirect(
@@ -256,31 +269,6 @@ class OAuth2Provider:
         login_hint = request.query_params.get("login_hint")
         state = secrets.token_hex(16)
 
-        # For link flows, capture the user_id to ensure only the initiating user can finalize
-        user_id: str | None = None
-        if response_type == "link_code":
-            if not (user := context.get_user_from_request(request)):
-                logger.error("User must be authenticated to initiate link flow")
-                return Response.error_redirect(
-                    redirect_uri,
-                    error="unauthorized",
-                    error_description="User must be authenticated to initiate link flow",
-                    state=client_state,
-                )
-
-            # Fail fast if account linking is disabled
-            account_linking = context.config.get("account_linking", {})
-            if not account_linking.get("enabled", False):
-                logger.error("Account linking is not enabled")
-                return Response.error_redirect(
-                    redirect_uri,
-                    error="linking_disabled",
-                    error_description="Account linking is not enabled",
-                    state=client_state,
-                )
-
-            user_id = str(user.id)
-
         provider_code_verifier: str | None = None
         provider_code_challenge: str | None = None
         provider_code_challenge_method: str | None = None
@@ -299,8 +287,8 @@ class OAuth2Provider:
                 "state": state,
                 "code_challenge": code_challenge,
                 "code_challenge_method": code_challenge_method,
-                "link": response_type == "link_code",
-                "user_id": user_id,
+                "link": False,
+                "user_id": None,
                 "provider_code_verifier": provider_code_verifier,
             }
         )
@@ -905,6 +893,117 @@ class OAuth2Provider:
 
         return Response(status_code=200, body='{"message": "Link finalized"}')
 
+    async def initiate_link(
+        self, request: AsyncHTTPRequest, context: Context
+    ) -> Response:
+        """
+        Initiate a link flow. This endpoint accepts a POST request with
+        Authorization header and returns the provider's authorization URL.
+
+        This is the preferred way to start a link flow since it doesn't
+        require passing tokens in URL parameters.
+        """
+        user = context.get_user_from_request(request)
+
+        if not user:
+            logger.error("User must be authenticated to initiate link flow")
+            return Response.error(
+                "unauthorized",
+                error_description="User must be authenticated to initiate link flow",
+                status_code=401,
+            )
+
+        account_linking = context.config.get("account_linking", {})
+
+        if not account_linking.get("enabled", False):
+            logger.error("Account linking is not enabled")
+            return Response.error(
+                "linking_disabled",
+                error_description="Account linking is not enabled",
+            )
+
+        try:
+            link_request = InitiateLinkRequest.model_validate_json(
+                await request.get_body()
+            )
+        except (json.JSONDecodeError, ValidationError) as e:
+            logger.error("Invalid request body: %s", e)
+
+            return Response.error(
+                "invalid_request",
+                error_description="Invalid request body",
+            )
+
+        if not context.is_valid_redirect_uri(link_request.redirect_uri):
+            logger.error("Invalid redirect_uri: %s", link_request.redirect_uri)
+
+            return Response.error(
+                "invalid_redirect_uri",
+                error_description="Invalid redirect_uri",
+            )
+
+        if not context.is_valid_client_id(link_request.client_id):
+            logger.error("Invalid client_id: %s", link_request.client_id)
+
+            return Response.error(
+                "invalid_client",
+                error_description="Invalid client_id",
+            )
+
+        state = secrets.token_hex(16)
+
+        provider_code_verifier: str | None = None
+        provider_code_challenge: str | None = None
+        provider_code_challenge_method: str | None = None
+
+        if self.supports_pkce:
+            provider_code_verifier = generate_code_verifier()
+            provider_code_challenge = calculate_s256_challenge(provider_code_verifier)
+            provider_code_challenge_method = "S256"
+
+        data = OAuth2AuthorizationRequestData.model_validate(
+            {
+                "client_id": link_request.client_id,
+                "redirect_uri": link_request.redirect_uri,
+                "login_hint": None,
+                "client_state": link_request.state,
+                "state": state,
+                "code_challenge": link_request.code_challenge,
+                "code_challenge_method": link_request.code_challenge_method,
+                "link": True,
+                "user_id": str(user.id),
+                "provider_code_verifier": provider_code_verifier,
+            }
+        )
+
+        context.secondary_storage.set(
+            f"oauth:authorization_request:{state}",
+            data.model_dump_json(),
+        )
+
+        proxy_redirect_uri = construct_relative_url(
+            str(request.url), "callback", context.base_url
+        )
+
+        query_params = self.build_authorization_params(
+            state=state,
+            proxy_redirect_uri=proxy_redirect_uri,
+            response_type="code",
+            code_challenge=provider_code_challenge,
+            code_challenge_method=provider_code_challenge_method,
+            login_hint=None,
+        )
+
+        authorization_url = f"{self.authorization_endpoint}?{urlencode(query_params)}"
+
+        return Response(
+            status_code=200,
+            body=InitiateLinkResponse(
+                authorization_url=authorization_url
+            ).model_dump_json(),
+            headers={"Content-Type": "application/json"},
+        )
+
     @property
     def routes(self) -> list[Route]:
         # TODO: add support for response models (for OpenAPI)
@@ -926,5 +1025,11 @@ class OAuth2Provider:
                 methods=["POST"],
                 function=self.finalize_link,
                 operation_id=f"{self.id}_finalize_link",
+            ),
+            Route(
+                path=f"/{self.id}/link",
+                methods=["POST"],
+                function=self.initiate_link,
+                operation_id=f"{self.id}_initiate_link",
             ),
         ]

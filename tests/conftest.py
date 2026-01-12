@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 import pytest
-from lia.request import AsyncHTTPRequest
+from cross_web import AsyncHTTPRequest
 from passlib.context import CryptContext
 
 from cross_auth._context import Context
