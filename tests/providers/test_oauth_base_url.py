@@ -44,6 +44,7 @@ async def test_authorize_uses_base_url_for_redirect_uri(
             method="GET",
             url="http://backend:8000/auth/github/authorize",
             query_params={
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "state": "test_state",
                 "response_type": "code",
@@ -82,6 +83,7 @@ async def test_authorize_with_nested_path_and_base_url(
             method="GET",
             url="http://backend:8000/api/v1/auth/github/authorize",
             query_params={
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "state": "test_state",
                 "response_type": "code",
@@ -115,6 +117,7 @@ async def test_authorize_without_base_url_fallback(
             method="GET",
             url="http://backend:8000/test/authorize",
             query_params={
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "state": "test_state",
                 "response_type": "code",
@@ -158,6 +161,7 @@ async def test_authorize_base_url_with_trailing_slash(
             method="GET",
             url="http://backend:8000/auth/authorize",
             query_params={
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "state": "test_state",
                 "response_type": "code",
@@ -207,6 +211,7 @@ async def test_authorize_base_url_with_different_port(
             method="GET",
             url="http://internal-service:8080/auth/provider/authorize",
             query_params={
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "state": "test_state",
                 "response_type": "code",

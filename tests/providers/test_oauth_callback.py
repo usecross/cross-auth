@@ -24,6 +24,7 @@ def valid_callback_request(secondary_storage: SecondaryStorage) -> AsyncHTTPRequ
         "oauth:authorization_request:test_state",
         json.dumps(
             {
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "login_hint": "test_login_hint",
                 "state": "test_state",
@@ -91,6 +92,7 @@ async def test_fails_if_there_was_no_code_in_request(
         "oauth:authorization_request:test_state",
         json.dumps(
             {
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "login_hint": "test_login_hint",
                 "state": "test_state",
@@ -390,7 +392,7 @@ async def test_stores_the_code_in_the_session(
         "expires_at": datetime.datetime(
             2012, 10, 1, 1, 10, tzinfo=datetime.timezone.utc
         ),
-        "client_id": "test_client_id",
+        "client_id": "my_app_client_id",
         "redirect_uri": "http://valid-frontend.com/callback",
         "code_challenge": "test",
         "code_challenge_method": "S256",
@@ -646,6 +648,7 @@ async def test_callback_returns_client_state_for_csrf_protection(
         f"oauth:authorization_request:{provider_state}",
         json.dumps(
             {
+                "client_id": "my_app_client_id",
                 "redirect_uri": "https://valid-frontend.com/callback",
                 "login_hint": None,
                 "state": provider_state,

@@ -36,3 +36,15 @@ class Context:
                 return True
 
         return False
+
+    def is_valid_client_id(self, client_id: str) -> bool:
+        """Validate client_id against allowed_client_ids config.
+
+        If allowed_client_ids is not configured or empty, any client_id is accepted.
+        """
+        allowed = self.config.get("allowed_client_ids")
+
+        if not allowed:
+            return True
+
+        return client_id in allowed

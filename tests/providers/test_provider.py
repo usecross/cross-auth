@@ -87,6 +87,7 @@ async def test_pkce_flow_includes_code_verifier(
             method="GET",
             url="http://localhost:8000/example_pkce/authorize",
             query_params={
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "code_challenge": "client_code_challenge",
                 "code_challenge_method": "S256",

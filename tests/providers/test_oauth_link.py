@@ -47,6 +47,7 @@ async def test_stores_the_correct_request_data(
             method="GET",
             url="http://localhost:8000/test/authorize",
             query_params={
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "code_challenge": "test",
                 "code_challenge_method": "S256",
@@ -86,6 +87,7 @@ async def test_stores_the_correct_request_data(
 
     assert data == snapshot(
         {
+            "client_id": "my_app_client_id",
             "redirect_uri": "http://valid-frontend.com/callback",
             "login_hint": None,
             "client_state": None,
