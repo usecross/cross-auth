@@ -3,11 +3,12 @@ import logging
 import secrets
 import uuid
 from dataclasses import dataclass
+from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone
 from typing import Any, ClassVar, Literal, TypedDict, cast
 
 import httpx
-from lia import AsyncHTTPRequest
+from cross_web import AsyncHTTPRequest
 from pydantic import BaseModel, HttpUrl, TypeAdapter, ValidationError
 
 from cross_auth.exceptions import CrossAuthException
@@ -216,7 +217,7 @@ class OAuth2Provider:
             return Response.error_redirect(
                 redirect_uri,
                 error="invalid_request",
-                error_description="Unsupported response type. Use POST /{provider}/link for account linking.",
+                error_description="Unsupported response type",
                 state=client_state,
             )
 
@@ -912,8 +913,8 @@ class OAuth2Provider:
                 status_code=401,
             )
 
-        # Check if account linking is enabled
         account_linking = context.config.get("account_linking", {})
+
         if not account_linking.get("enabled", False):
             logger.error("Account linking is not enabled")
             return Response.error(
@@ -921,28 +922,29 @@ class OAuth2Provider:
                 error_description="Account linking is not enabled",
             )
 
-        # Parse request body
         try:
-            body = json.loads(await request.get_body())
-            link_request = InitiateLinkRequest.model_validate(body)
+            link_request = InitiateLinkRequest.model_validate_json(
+                await request.get_body()
+            )
         except (json.JSONDecodeError, ValidationError) as e:
             logger.error("Invalid request body: %s", e)
+
             return Response.error(
                 "invalid_request",
                 error_description="Invalid request body",
             )
 
-        # Validate redirect_uri
         if not context.is_valid_redirect_uri(link_request.redirect_uri):
             logger.error("Invalid redirect_uri: %s", link_request.redirect_uri)
+
             return Response.error(
                 "invalid_redirect_uri",
                 error_description="Invalid redirect_uri",
             )
 
-        # Validate client_id
         if not context.is_valid_client_id(link_request.client_id):
             logger.error("Invalid client_id: %s", link_request.client_id)
+
             return Response.error(
                 "invalid_client",
                 error_description="Invalid client_id",
@@ -991,9 +993,6 @@ class OAuth2Provider:
             code_challenge_method=provider_code_challenge_method,
             login_hint=None,
         )
-
-        # Build the authorization URL
-        from urllib.parse import urlencode
 
         authorization_url = f"{self.authorization_endpoint}?{urlencode(query_params)}"
 

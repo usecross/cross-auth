@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from cross_web import AsyncHTTPRequest
 from inline_snapshot import snapshot
-from lia import AsyncHTTPRequest
 
 from cross_auth._context import Context
 from cross_auth._issuer import AuthorizationCodeGrantData, Issuer

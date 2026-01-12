@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
-from lia import AsyncHTTPRequest, Response
+from cross_web import AsyncHTTPRequest, Response
 from passlib.context import CryptContext
 from pydantic import AwareDatetime, BaseModel, Discriminator, Field, ValidationError
 from pydantic.type_adapter import TypeAdapter

@@ -4,7 +4,7 @@ from itertools import chain
 from typing import Any
 
 from fastapi import APIRouter
-from lia import AsyncHTTPRequest
+from cross_web import AsyncHTTPRequest
 
 from ._config import Config
 from ._context import AccountsStorage, Context, SecondaryStorage, User

@@ -2,9 +2,8 @@ import json
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from cross_web import AsyncHTTPRequest, TestingRequestAdapter
 from inline_snapshot import snapshot
-from lia import AsyncHTTPRequest
-from lia.request import TestingRequestAdapter
 
 from cross_auth._context import Context, SecondaryStorage
 from cross_auth._storage import AccountsStorage, User

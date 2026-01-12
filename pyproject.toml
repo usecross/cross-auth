@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [{ name = "Patrick Arminio", email = "patrick.arminio@gmail.com" }]
 requires-python = ">=3.11"
 dependencies = [
-    "lia-web>=0.1.2",
+    "cross-web>=0.4.0",
     "passlib[bcrypt]>=1.7.4",
     "pydantic[email]>=2.11.3",
     "bcrypt>=4.0.0,<5.0.0",

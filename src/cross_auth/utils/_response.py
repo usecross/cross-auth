@@ -1,7 +1,7 @@
 import json
 from typing import Self
 
-from lia import Response as DuckResponse
+from cross_web import Response as DuckResponse
 
 
 class Response(DuckResponse):
