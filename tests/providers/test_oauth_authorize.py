@@ -3,10 +3,8 @@ from cross_web import AsyncHTTPRequest, TestingRequestAdapter
 
 from cross_auth._context import Context
 from cross_auth._storage import SecondaryStorage
-from cross_auth.social_providers.oauth import (
-    OAuth2AuthorizationRequestData,
-    OAuth2Provider,
-)
+from cross_auth.models.authorization_request import CodeFlowRequest
+from cross_auth.social_providers.oauth import OAuth2Provider
 
 pytestmark = pytest.mark.asyncio
 
@@ -82,7 +80,7 @@ async def test_authorize_redirects_to_provider(
 
     assert raw_authorization_request_data is not None
 
-    authorization_request_data = OAuth2AuthorizationRequestData.model_validate_json(
+    authorization_request_data = CodeFlowRequest.model_validate_json(
         raw_authorization_request_data
     )
 
@@ -94,6 +92,7 @@ async def test_authorize_redirects_to_provider(
     assert authorization_request_data.state == state
     assert authorization_request_data.code_challenge == "test"
     assert authorization_request_data.code_challenge_method == "S256"
+    assert authorization_request_data.flow_type == "code"
 
 
 async def test_authorize_requires_redirect_uri(

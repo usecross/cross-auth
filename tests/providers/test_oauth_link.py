@@ -98,6 +98,7 @@ async def test_initiate_link_stores_correct_request_data(
             "code_challenge_method": "S256",
             "link": True,
             "user_id": "test",
+            "auth_mode": "code",
         }
     )
 
