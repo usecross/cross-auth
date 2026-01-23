@@ -4,6 +4,51 @@ from typing import Any, Iterable
 from typing_extensions import Protocol
 
 
+class Session(Protocol):
+    """Session protocol for session-based authentication."""
+
+    id: str
+    user_id: Any
+    expires_at: datetime
+    created_at: datetime
+    ip_address: str | None
+    user_agent: str | None
+
+
+class SessionStorage(Protocol):
+    """Storage protocol for session management."""
+
+    def create_session(
+        self,
+        user_id: Any,
+        expires_at: datetime,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> Session:
+        """Create a new session for a user."""
+        ...
+
+    def get_session(self, session_id: str) -> Session | None:
+        """Get a session by its ID. Returns None if not found or expired."""
+        ...
+
+    def delete_session(self, session_id: str) -> None:
+        """Delete a session by its ID."""
+        ...
+
+    def delete_user_sessions(self, user_id: Any) -> None:
+        """Delete all sessions for a user."""
+        ...
+
+    def list_user_sessions(self, user_id: Any) -> list[Session]:
+        """List all active sessions for a user."""
+        ...
+
+    def update_session_expiry(self, session_id: str, expires_at: datetime) -> None:
+        """Update the expiry time of a session (for sliding sessions)."""
+        ...
+
+
 class SocialAccount(Protocol):
     id: Any
     user_id: Any
@@ -87,3 +132,29 @@ class AccountsStorage(Protocol):
         provider_email: str | None,
         provider_email_verified: bool | None,
     ) -> SocialAccount: ...
+
+    def create_user_with_password(
+        self,
+        *,
+        email: str,
+        hashed_password: str,
+        email_verified: bool = False,
+        user_info: dict[str, Any] | None = None,
+    ) -> User:
+        """Create a new user with email and password.
+
+        This is used for email/password signup flows.
+
+        Args:
+            email: The user's email address
+            hashed_password: The bcrypt-hashed password
+            email_verified: Whether the email has been verified (default: False)
+            user_info: Optional additional user info
+
+        Returns:
+            The created user
+
+        Raises:
+            ValueError or similar if user with email already exists
+        """
+        ...

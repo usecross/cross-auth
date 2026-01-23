@@ -12,6 +12,12 @@ from cross_web import AsyncHTTPRequest
 from pydantic import BaseModel, HttpUrl, TypeAdapter, ValidationError
 
 from cross_auth.exceptions import CrossAuthException
+from cross_auth.models.authorization_request import (
+    AuthorizationRequestData,
+    CodeFlowRequest,
+    LinkFlowRequest,
+    SessionFlowRequest,
+)
 from cross_auth.utils._pkce import (
     calculate_s256_challenge,
     generate_code_verifier,
@@ -50,19 +56,6 @@ class OAuth2Exception(Exception):
     def __init__(self, error: str, error_description: str):
         self.error = error
         self.error_description = error_description
-
-
-class OAuth2AuthorizationRequestData(BaseModel):
-    client_id: str  # The app's client_id (not the provider's)
-    redirect_uri: str
-    login_hint: str | None
-    client_state: str | None
-    state: str
-    code_challenge: str
-    code_challenge_method: Literal["S256"]
-    link: bool = False
-    user_id: str | None = None  # User who initiated the link flow
-    provider_code_verifier: str | None = None  # PKCE verifier for provider OAuth flow
 
 
 class OAuth2LinkCodeData(BaseModel):
@@ -221,29 +214,6 @@ class OAuth2Provider:
                 state=client_state,
             )
 
-        code_challenge = request.query_params.get("code_challenge")
-        code_challenge_method = request.query_params.get("code_challenge_method")
-
-        if not code_challenge:
-            logger.error("No code challenge provided")
-
-            return Response.error_redirect(
-                redirect_uri,
-                error="invalid_request",
-                error_description="No code challenge provided",
-                state=client_state,
-            )
-
-        if code_challenge_method != "S256":
-            logger.error("Unsupported code challenge method")
-
-            return Response.error_redirect(
-                redirect_uri,
-                error="invalid_request",
-                error_description="Unsupported code challenge method",
-                state=client_state,
-            )
-
         client_id = request.query_params.get("client_id")
 
         if not client_id:
@@ -269,6 +239,54 @@ class OAuth2Provider:
         login_hint = request.query_params.get("login_hint")
         state = secrets.token_hex(16)
 
+        # Auth mode: "code" (default) returns authorization code for PKCE exchange
+        # "session" creates session cookie directly (requires session_storage)
+        auth_mode = request.query_params.get("auth_mode", "code")
+        if auth_mode not in ("code", "session"):
+            return Response.error_redirect(
+                redirect_uri,
+                error="invalid_request",
+                error_description="Invalid auth_mode (must be 'code' or 'session')",
+                state=client_state,
+            )
+
+        # Session mode requires session storage to be configured
+        if auth_mode == "session" and not context.session_enabled:
+            return Response.error_redirect(
+                redirect_uri,
+                error="invalid_request",
+                error_description="Session-based auth is not enabled",
+                state=client_state,
+            )
+
+        # PKCE is required for code flow (not session flow)
+        code_challenge: str | None = None
+        code_challenge_method: str | None = None
+
+        if auth_mode == "code":
+            code_challenge = request.query_params.get("code_challenge")
+            code_challenge_method = request.query_params.get("code_challenge_method")
+
+            if not code_challenge:
+                logger.error("No code challenge provided")
+
+                return Response.error_redirect(
+                    redirect_uri,
+                    error="invalid_request",
+                    error_description="No code challenge provided",
+                    state=client_state,
+                )
+
+            if code_challenge_method != "S256":
+                logger.error("Unsupported code challenge method")
+
+                return Response.error_redirect(
+                    redirect_uri,
+                    error="invalid_request",
+                    error_description="Unsupported code challenge method",
+                    state=client_state,
+                )
+
         provider_code_verifier: str | None = None
         provider_code_challenge: str | None = None
         provider_code_challenge_method: str | None = None
@@ -278,20 +296,28 @@ class OAuth2Provider:
             provider_code_challenge = calculate_s256_challenge(provider_code_verifier)
             provider_code_challenge_method = "S256"
 
-        data = OAuth2AuthorizationRequestData.model_validate(
-            {
-                "client_id": client_id,
-                "redirect_uri": redirect_uri,
-                "login_hint": login_hint,
-                "client_state": client_state,
-                "state": state,
-                "code_challenge": code_challenge,
-                "code_challenge_method": code_challenge_method,
-                "link": False,
-                "user_id": None,
-                "provider_code_verifier": provider_code_verifier,
-            }
-        )
+        # Create the appropriate request type based on auth_mode
+        data: CodeFlowRequest | SessionFlowRequest
+        if auth_mode == "session":
+            data = SessionFlowRequest(
+                redirect_uri=redirect_uri,
+                state=state,
+                client_state=client_state,
+                provider_code_verifier=provider_code_verifier,
+            )
+        else:
+            # code_challenge is guaranteed to be set here (validated above)
+            assert code_challenge is not None
+            data = CodeFlowRequest(
+                redirect_uri=redirect_uri,
+                state=state,
+                client_state=client_state,
+                provider_code_verifier=provider_code_verifier,
+                client_id=client_id,
+                login_hint=login_hint,
+                code_challenge=code_challenge,
+                code_challenge_method="S256",
+            )
 
         context.secondary_storage.set(
             f"oauth:authorization_request:{state}",
@@ -345,7 +371,8 @@ class OAuth2Provider:
             )
 
         try:
-            provider_data = OAuth2AuthorizationRequestData.model_validate_json(
+            # Parse as discriminated union
+            provider_data = TypeAdapter(AuthorizationRequestData).validate_json(
                 raw_provider_data
             )
         except ValidationError as e:
@@ -368,7 +395,8 @@ class OAuth2Provider:
                 state=provider_data.client_state,
             )
 
-        if provider_data.link:
+        # Dispatch based on flow type
+        if isinstance(provider_data, LinkFlowRequest):
             return self._link_flow(request, context, provider_data, code)
 
         redirect_uri = provider_data.redirect_uri
@@ -472,7 +500,13 @@ class OAuth2Provider:
                 is_login_method=True,
             )
 
-        code = self._generate_code()
+        # Dispatch based on flow type: session creates cookie, code returns authorization code
+        if isinstance(provider_data, SessionFlowRequest):
+            return self._create_session_response(user, provider_data, context, request)
+
+        # Code flow: generate authorization code for client PKCE exchange
+        assert isinstance(provider_data, CodeFlowRequest)
+        auth_code = self._generate_code()
 
         data = AuthorizationCodeGrantData(
             user_id=str(user.id),
@@ -484,12 +518,12 @@ class OAuth2Provider:
         )
 
         context.secondary_storage.set(
-            f"oauth:code:{code}",
+            f"oauth:code:{auth_code}",
             data.model_dump_json(),
         )
 
         # Include client_state in redirect for CSRF protection
-        query_params = {"code": code}
+        query_params = {"code": auth_code}
         if provider_data.client_state:
             query_params["state"] = provider_data.client_state
 
@@ -498,30 +532,73 @@ class OAuth2Provider:
             query_params=query_params,
         )
 
+    def _create_session_response(
+        self,
+        user: User,
+        provider_data: SessionFlowRequest,
+        context: Context,
+        request: AsyncHTTPRequest,
+    ) -> Response:
+        """Create a session and redirect with cookie set.
+
+        Used for session flow to bypass the authorization code exchange.
+        """
+        if not context.session_storage:
+            logger.error("Session storage not configured for session mode")
+            return Response.error_redirect(
+                provider_data.redirect_uri,
+                error="server_error",
+                error_description="Session storage not configured",
+                state=provider_data.client_state,
+            )
+
+        # Get session config
+        expires_in = int(context.get_session_config("expires_in") or 604800)
+        expires_at = datetime.now(tz=timezone.utc) + timedelta(seconds=expires_in)
+
+        # Extract client info for session
+        ip_address = (
+            request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or request.headers.get("X-Real-IP")
+            or None
+        )
+        user_agent = request.headers.get("User-Agent")
+
+        session = context.session_storage.create_session(
+            user_id=user.id,
+            expires_at=expires_at,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+
+        cookie = context.create_session_cookie(session)
+
+        # Build redirect URL with state for CSRF protection
+        query_params = {}
+        if provider_data.client_state:
+            query_params["state"] = provider_data.client_state
+
+        return Response.redirect(
+            provider_data.redirect_uri,
+            query_params=query_params if query_params else None,
+            cookies=[cookie],
+        )
+
     def _link_flow(
         self,
         request: AsyncHTTPRequest,
         context: Context,
-        provider_data: OAuth2AuthorizationRequestData,
+        provider_data: LinkFlowRequest,
         provider_code: str,
     ) -> Response:
-        # user_id should always be present for link flows (validated in authorize)
-        if not provider_data.user_id:
-            logger.error("No user_id in provider_data for link flow")
-            return Response.error_redirect(
-                provider_data.redirect_uri,
-                error="server_error",
-                error_description="Invalid link flow data",
-                state=provider_data.client_state,
-            )
-
+        """Handle account linking callback."""
         data = OAuth2LinkCodeData(
             expires_at=datetime.now(tz=timezone.utc) + timedelta(minutes=10),
             client_id=provider_data.client_id,
             redirect_uri=provider_data.redirect_uri,
             code_challenge=provider_data.code_challenge,
             code_challenge_method=provider_data.code_challenge_method,
-            user_id=provider_data.user_id,
+            user_id=provider_data.user_id,  # Required in LinkFlowRequest
             provider_code=provider_code,
             provider_code_verifier=provider_data.provider_code_verifier,
             client_state=provider_data.client_state,
@@ -961,19 +1038,16 @@ class OAuth2Provider:
             provider_code_challenge = calculate_s256_challenge(provider_code_verifier)
             provider_code_challenge_method = "S256"
 
-        data = OAuth2AuthorizationRequestData.model_validate(
-            {
-                "client_id": link_request.client_id,
-                "redirect_uri": link_request.redirect_uri,
-                "login_hint": None,
-                "client_state": link_request.state,
-                "state": state,
-                "code_challenge": link_request.code_challenge,
-                "code_challenge_method": link_request.code_challenge_method,
-                "link": True,
-                "user_id": str(user.id),
-                "provider_code_verifier": provider_code_verifier,
-            }
+        data = LinkFlowRequest(
+            client_id=link_request.client_id,
+            redirect_uri=link_request.redirect_uri,
+            state=state,
+            client_state=link_request.state,
+            login_hint=None,
+            provider_code_verifier=provider_code_verifier,
+            user_id=str(user.id),
+            code_challenge=link_request.code_challenge,
+            code_challenge_method=link_request.code_challenge_method,
         )
 
         context.secondary_storage.set(

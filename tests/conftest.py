@@ -9,7 +9,12 @@ from passlib.context import CryptContext
 
 from cross_auth._context import Context
 from cross_auth._issuer import AuthorizationCodeGrantData, Issuer
-from cross_auth._storage import AccountsStorage, SecondaryStorage, User as UserProtocol
+from cross_auth._storage import (
+    AccountsStorage,
+    SecondaryStorage,
+    Session as SessionProtocol,
+    User as UserProtocol,
+)
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.social_providers.oauth import OAuth2LinkCodeData
 
@@ -19,6 +24,79 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Test password constant
 TEST_PASSWORD = "password123"
+
+
+@dataclass
+class Session:
+    """In-memory session for testing."""
+
+    id: str
+    user_id: str
+    expires_at: datetime
+    created_at: datetime
+    ip_address: str | None = None
+    user_agent: str | None = None
+
+
+class MemorySessionStorage:
+    """In-memory session storage for testing.
+
+    Implements SessionStorage protocol via duck typing.
+    """
+
+    def __init__(self):
+        self.sessions: dict[str, Session] = {}
+
+    def create_session(
+        self,
+        user_id: Any,
+        expires_at: datetime,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> SessionProtocol:
+        session_id = str(uuid.uuid4())
+        session = Session(
+            id=session_id,
+            user_id=str(user_id),
+            expires_at=expires_at,
+            created_at=datetime.now(tz=timezone.utc),
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        self.sessions[session_id] = session
+        return session
+
+    def get_session(self, session_id: str) -> SessionProtocol | None:
+        session = self.sessions.get(session_id)
+        if session and session.expires_at < datetime.now(tz=timezone.utc):
+            # Session expired, clean up
+            del self.sessions[session_id]
+            return None
+        return session
+
+    def delete_session(self, session_id: str) -> None:
+        self.sessions.pop(session_id, None)
+
+    def delete_user_sessions(self, user_id: Any) -> None:
+        user_id_str = str(user_id)
+        to_delete = [
+            sid for sid, s in self.sessions.items() if str(s.user_id) == user_id_str
+        ]
+        for sid in to_delete:
+            del self.sessions[sid]
+
+    def list_user_sessions(self, user_id: Any) -> list[SessionProtocol]:
+        user_id_str = str(user_id)
+        now = datetime.now(tz=timezone.utc)
+        return [
+            s
+            for s in self.sessions.values()
+            if str(s.user_id) == user_id_str and s.expires_at > now
+        ]
+
+    def update_session_expiry(self, session_id: str, expires_at: datetime) -> None:
+        if session_id in self.sessions:
+            self.sessions[session_id].expires_at = expires_at
 
 
 @dataclass
@@ -108,6 +186,36 @@ class MemoryAccountsStorage:
         )
 
         self.data[str(user_info["id"])] = user
+
+        return user
+
+    def create_user_with_password(
+        self,
+        *,
+        email: str,
+        hashed_password: str,
+        email_verified: bool = False,
+        user_info: dict[str, Any] | None = None,
+    ) -> User:
+        if self.find_user_by_email(email) is not None:
+            raise ValueError("User already exists")
+
+        if email == "not-allowed@example.com":
+            raise CrossAuthException(
+                "email_not_invited",
+                "This email has not yet been invited to join FastAPI Cloud",
+            )
+
+        user_id = str(uuid.uuid4())
+        user = User(
+            id=user_id,
+            email=email,
+            email_verified=email_verified,
+            hashed_password=hashed_password,
+            social_accounts=[],
+        )
+
+        self.data[user_id] = user
 
         return user
 
@@ -227,6 +335,11 @@ def logged_in_user(accounts_storage: MemoryAccountsStorage) -> User:
 
 
 @pytest.fixture
+def session_storage() -> MemorySessionStorage:
+    return MemorySessionStorage()
+
+
+@pytest.fixture
 def context(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
@@ -244,6 +357,38 @@ def context(
         create_token=lambda id: (f"token-{id}", 0),
         get_user_from_request=_get_user_from_request,
         trusted_origins=["valid-frontend.com"],
+    )
+
+
+@pytest.fixture
+def context_with_sessions(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: MemorySessionStorage,
+    logged_in_user: User,
+) -> Context:
+    def _get_user_from_request(request: AsyncHTTPRequest) -> UserProtocol | None:
+        if request.headers.get("Authorization") == "Bearer test":
+            return cast(UserProtocol, logged_in_user)
+
+        return None
+
+    return Context(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        create_token=lambda id: (f"token-{id}", 3600),
+        get_user_from_request=_get_user_from_request,
+        trusted_origins=["valid-frontend.com"],
+        session_storage=session_storage,
+        session_config={
+            "cookie_name": "session_id",
+            "expires_in": 7 * 24 * 60 * 60,  # 7 days
+            "refresh_threshold": 24 * 60 * 60,  # 1 day
+            "cookie_secure": False,  # Allow non-HTTPS in tests
+            "cookie_httponly": True,
+            "cookie_samesite": "lax",
+            "cookie_path": "/",
+        },
     )
 
 

@@ -60,7 +60,43 @@ def test_router(test_app: FastAPI):
                             },
                         },
                     }
-                }
+                },
+                "/signup": {
+                    "post": {
+                        "summary": "Create account with email and password",
+                        "operationId": "signup",
+                        "responses": {
+                            "200": {
+                                "description": "Successful Response",
+                                "content": {"application/json": {"schema": {}}},
+                            }
+                        },
+                    }
+                },
+                "/login": {
+                    "post": {
+                        "summary": "Login with email and password",
+                        "operationId": "login",
+                        "responses": {
+                            "200": {
+                                "description": "Successful Response",
+                                "content": {"application/json": {"schema": {}}},
+                            }
+                        },
+                    }
+                },
+                "/logout": {
+                    "post": {
+                        "summary": "Logout",
+                        "operationId": "logout",
+                        "responses": {
+                            "200": {
+                                "description": "Successful Response",
+                                "content": {"application/json": {"schema": {}}},
+                            }
+                        },
+                    }
+                },
             },
             "components": {
                 "schemas": {
