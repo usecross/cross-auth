@@ -92,7 +92,7 @@ def delete_session(
 ) -> None:
     try:
         storage.delete(f"session:{session_id}")
-    except (KeyError, Exception):
+    except KeyError:
         pass
 
 

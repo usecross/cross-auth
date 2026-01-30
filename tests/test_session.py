@@ -9,7 +9,7 @@ from cross_auth._session import (
 )
 from cross_auth._storage import AccountsStorage, SecondaryStorage
 
-TEST_PASSWORD = "password123"
+TEST_PASSWORD = "password123"  # noqa: S105
 
 
 def test_authenticate_success(accounts_storage: AccountsStorage):
