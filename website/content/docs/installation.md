@@ -21,4 +21,5 @@ pip install cross-auth
 
 - Python 3.10 or higher
 - A web framework (FastAPI, Django, Flask, etc.)
-- A database for user storage (any ORM or driver that implements the storage protocols)
+- A database for user storage (any ORM or driver that implements the storage
+  protocols)

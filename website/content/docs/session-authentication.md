@@ -7,13 +7,18 @@ section: Guides
 
 ## Overview
 
-Session-based authentication is the traditional approach for server-rendered web applications. After a user logs in with their email and password, the server creates a session and sends a session ID cookie to the browser. Subsequent requests include this cookie, allowing the server to identify the user.
+Session-based authentication is the traditional approach for server-rendered web
+applications. After a user logs in with their email and password, the server
+creates a session and sends a session ID cookie to the browser. Subsequent
+requests include this cookie, allowing the server to identify the user.
 
-Cross-Auth provides plain functions for session management -- no framework-specific middleware required.
+Cross-Auth provides plain functions for session management -- no
+framework-specific middleware required.
 
 ## Authenticating Users
 
-The `authenticate` function verifies an email/password combination against your user storage:
+The `authenticate` function verifies an email/password combination against your
+user storage:
 
 ```python
 from cross_auth import authenticate
@@ -25,7 +30,9 @@ if user is None:
     ...
 ```
 
-This function uses **constant-time verification** -- it always runs bcrypt even for non-existent users, preventing timing attacks that could enumerate valid email addresses.
+This function uses **constant-time verification** -- it always runs bcrypt even
+for non-existent users, preventing timing attacks that could enumerate valid
+email addresses.
 
 ## Creating Sessions
 
@@ -37,11 +44,14 @@ from cross_auth import create_session
 session_id, session_data = create_session(str(user.id), session_storage)
 ```
 
-The session ID is a cryptographically secure random token (`secrets.token_urlsafe(32)`, ~192 bits of entropy). Session data is stored in your `SecondaryStorage` under the key `session:{session_id}`.
+The session ID is a cryptographically secure random token
+(`secrets.token_urlsafe(32)`, ~192 bits of entropy). Session data is stored in
+your `SecondaryStorage` under the key `session:{session_id}`.
 
 ### Session Fixation Protection
 
-Always create a **new** session after authentication. Never reuse an existing session ID from before login -- this prevents session fixation attacks.
+Always create a **new** session after authentication. Never reuse an existing
+session ID from before login -- this prevents session fixation attacks.
 
 ## Reading Sessions
 
@@ -108,7 +118,7 @@ from cross_auth import SessionConfig, make_session_cookie
 
 config: SessionConfig = {
     "cookie_name": "my_app_session",
-    "max_age": 3600,       # 1 hour
+    "max_age": 3600,  # 1 hour
     "secure": True,
     "httponly": True,
     "samesite": "strict",
@@ -121,12 +131,12 @@ cookie = make_session_cookie(session_id, config)
 
 ## Cookie Defaults
 
-| Setting | Default | Notes |
-|---------|---------|-------|
-| `cookie_name` | `"session_id"` | Name of the cookie |
-| `max_age` | `86400` (24h) | Session lifetime in seconds |
-| `secure` | `True` | Only sent over HTTPS |
-| `httponly` | `True` | Not accessible via JavaScript |
-| `samesite` | `"lax"` | Prevents CSRF on cross-origin requests |
-| `path` | `"/"` | Cookie is valid for all paths |
-| `domain` | `None` | Scoped to the current domain |
+| Setting       | Default        | Notes                                  |
+| ------------- | -------------- | -------------------------------------- |
+| `cookie_name` | `"session_id"` | Name of the cookie                     |
+| `max_age`     | `86400` (24h)  | Session lifetime in seconds            |
+| `secure`      | `True`         | Only sent over HTTPS                   |
+| `httponly`    | `True`         | Not accessible via JavaScript          |
+| `samesite`    | `"lax"`        | Prevents CSRF on cross-origin requests |
+| `path`        | `"/"`          | Cookie is valid for all paths          |
+| `domain`      | `None`         | Scoped to the current domain           |

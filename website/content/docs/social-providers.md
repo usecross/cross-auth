@@ -7,7 +7,9 @@ section: Guides
 
 ## Overview
 
-Cross-Auth supports social login through OAuth 2.0 providers. Users can sign in with their existing accounts from services like GitHub and Google, and Cross-Auth will create or link accounts in your storage.
+Cross-Auth supports social login through OAuth 2.0 providers. Users can sign in
+with their existing accounts from services like GitHub and Google, and
+Cross-Auth will create or link accounts in your storage.
 
 ## How It Works
 
@@ -19,9 +21,12 @@ Cross-Auth supports social login through OAuth 2.0 providers. Users can sign in 
 
 ## Account Linking
 
-Cross-Auth supports linking multiple social accounts to a single user. If a user signs in with GitHub and later connects their Google account, both providers are linked to the same user record via the `SocialAccount` model.
+Cross-Auth supports linking multiple social accounts to a single user. If a user
+signs in with GitHub and later connects their Google account, both providers are
+linked to the same user record via the `SocialAccount` model.
 
-The `POST /{provider}/link` endpoint handles account linking for authenticated users.
+The `POST /{provider}/link` endpoint handles account linking for authenticated
+users.
 
 ## Configuration
 
