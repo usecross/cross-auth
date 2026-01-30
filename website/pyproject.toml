@@ -4,12 +4,53 @@ version = "0.1.0"
 description = "Cross-Auth documentation website"
 requires-python = ">=3.10"
 dependencies = [
-    "cross-docs>=0.2.6",
-    "cross-inertia",
-    "fastapi[standard]>=0.100.0",
-    "uvicorn[standard]>=0.20.0",
-    "jinja2>=3.0.0",
+    "cross-docs>=0.3.0",
+    "cross-inertia>=0.10.0",
+    "fastapi[standard]>=0.115.0",
+    "jinja2>=3.1.0",
+    "httpx>=0.27.0",
+    "python-multipart>=0.0.9",
+    "pybun>=1.0.0",
 ]
 
 [dependency-groups]
 dev = []
+
+[tool.cross-docs]
+content_dir = "content"
+prefix = "/docs"
+index_page = "introduction"
+section_order = ["Getting Started", "Guides", "API Reference"]
+logo_url = "/static/logo.svg"
+footer_logo_url = "/static/logo-full.svg"
+github_url = "https://github.com/patrick91/cross-auth"
+
+[[tool.cross-docs.nav_links]]
+label = "Docs"
+href = "/docs"
+
+[tool.cross-docs.home]
+enabled = true
+component = "Home"
+title = "Cross-Auth"
+tagline = "Python Authentication"
+description = "Simple, secure authentication for Python web applications. Works with Django, Flask, and FastAPI."
+install_command = "uv add cross-auth"
+cta_text = "Get Started"
+cta_href = "/docs"
+
+[[tool.cross-docs.home.features]]
+title = "Framework Agnostic"
+description = "Works seamlessly with Django, Flask, FastAPI, and other Python web frameworks."
+
+[[tool.cross-docs.home.features]]
+title = "Secure by Default"
+description = "Built-in protection against common vulnerabilities. Secure session handling out of the box."
+
+[[tool.cross-docs.home.features]]
+title = "Easy to Use"
+description = "Simple API that gets you up and running in minutes. No complex configuration required."
+
+[[tool.cross-docs.home.features]]
+title = "Extensible"
+description = "Customizable authentication flows. Add your own providers and strategies."
