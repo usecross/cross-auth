@@ -1,23 +1,29 @@
 ---
 title: Quick Start
-description: Get up and running with Cross-Auth session authentication in minutes.
+description:
+  Get up and running with Cross-Auth session authentication in minutes.
 order: 3
 section: Getting Started
 ---
 
 ## Overview
 
-This guide walks you through adding email/password login to a FastAPI application using Cross-Auth's session functions. The same functions work with any Python web framework.
+This guide walks you through adding email/password login to a FastAPI
+application using Cross-Auth's session functions. The same functions work with
+any Python web framework.
 
 ## Step 1: Implement Storage
 
-Cross-Auth uses protocol classes to abstract storage. You need two implementations:
+Cross-Auth uses protocol classes to abstract storage. You need two
+implementations:
 
 - **`AccountsStorage`** -- For looking up users by email or ID.
-- **`SecondaryStorage`** -- For storing sessions (Redis, in-memory dict, database, etc.).
+- **`SecondaryStorage`** -- For storing sessions (Redis, in-memory dict,
+  database, etc.).
 
 ```python
 from cross_auth._storage import AccountsStorage, SecondaryStorage
+
 
 # Example: in-memory secondary storage (use Redis in production)
 class MemoryStorage:
@@ -42,6 +48,7 @@ class MemoryStorage:
 ```python
 from cross_auth import authenticate, create_session, make_session_cookie
 
+
 def login(email: str, password: str):
     user = authenticate(email, password, accounts_storage)
     if user is None:
@@ -57,6 +64,7 @@ def login(email: str, password: str):
 ```python
 from cross_auth import get_session
 
+
 def get_current_user(session_id: str):
     session = get_session(session_id, session_storage)
     if session is None:
@@ -70,6 +78,7 @@ def get_current_user(session_id: str):
 ```python
 from cross_auth import delete_session, make_clear_cookie
 
+
 def logout(session_id: str):
     delete_session(session_id, session_storage)
     return make_clear_cookie()
@@ -77,6 +86,7 @@ def logout(session_id: str):
 
 ## Next Steps
 
-- [Session Authentication](/docs/session-authentication) -- Full guide on session management.
+- [Session Authentication](/docs/session-authentication) -- Full guide on
+  session management.
 - [Storage](/docs/storage) -- How to implement the storage protocols.
 - [OAuth 2.0](/docs/oauth) -- Add OAuth authorization flows.

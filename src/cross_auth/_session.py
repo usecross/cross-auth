@@ -51,7 +51,9 @@ def authenticate(
     user = accounts_storage.find_user_by_email(email)
 
     if user is not None:
-        valid = pwd_context.verify(password, user.hashed_password or DUMMY_PASSWORD_HASH)
+        valid = pwd_context.verify(
+            password, user.hashed_password or DUMMY_PASSWORD_HASH
+        )
     else:
         pwd_context.verify(password, DUMMY_PASSWORD_HASH)
         valid = False

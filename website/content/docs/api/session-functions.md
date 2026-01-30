@@ -17,11 +17,11 @@ session_id, session_data = create_session(user_id, storage, max_age=86400)
 
 ### Parameters
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `user_id` | `str` | — | The ID of the authenticated user. |
-| `storage` | `SecondaryStorage` | — | Storage backend for sessions. |
-| `max_age` | `int` | `86400` | Session lifetime in seconds. |
+| Parameter | Type               | Default | Description                       |
+| --------- | ------------------ | ------- | --------------------------------- |
+| `user_id` | `str`              | —       | The ID of the authenticated user. |
+| `storage` | `SecondaryStorage` | —       | Storage backend for sessions.     |
+| `max_age` | `int`              | `86400` | Session lifetime in seconds.      |
 
 ### Returns
 
@@ -41,10 +41,10 @@ session = get_session(session_id, storage)
 
 ### Parameters
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `session_id` | `str` | The session ID from the cookie. |
-| `storage` | `SecondaryStorage` | Storage backend for sessions. |
+| Parameter    | Type               | Description                     |
+| ------------ | ------------------ | ------------------------------- |
+| `session_id` | `str`              | The session ID from the cookie. |
+| `storage`    | `SecondaryStorage` | Storage backend for sessions.   |
 
 ### Returns
 
@@ -64,10 +64,10 @@ delete_session(session_id, storage)
 
 ### Parameters
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `session_id` | `str` | The session ID to delete. |
-| `storage` | `SecondaryStorage` | Storage backend for sessions. |
+| Parameter    | Type               | Description                   |
+| ------------ | ------------------ | ----------------------------- |
+| `session_id` | `str`              | The session ID to delete.     |
+| `storage`    | `SecondaryStorage` | Storage backend for sessions. |
 
 ---
 
@@ -83,10 +83,10 @@ cookie = make_session_cookie(session_id, config=None)
 
 ### Parameters
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `session_id` | `str` | — | The session ID to store in the cookie. |
-| `config` | `SessionConfig \| None` | `None` | Optional configuration overrides. |
+| Parameter    | Type                    | Default | Description                            |
+| ------------ | ----------------------- | ------- | -------------------------------------- |
+| `session_id` | `str`                   | —       | The session ID to store in the cookie. |
+| `config`     | `SessionConfig \| None` | `None`  | Optional configuration overrides.      |
 
 ### Returns
 
@@ -96,7 +96,8 @@ cookie = make_session_cookie(session_id, config=None)
 
 ## make_clear_cookie()
 
-Creates a `Cookie` object that clears the session cookie (empty value, `max_age=0`).
+Creates a `Cookie` object that clears the session cookie (empty value,
+`max_age=0`).
 
 ```python
 from cross_auth import make_clear_cookie
@@ -106,10 +107,11 @@ cookie = make_clear_cookie(config=None)
 
 ### Parameters
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `config` | `SessionConfig \| None` | `None` | Optional configuration (uses same `name`, `path`, `domain` so the browser matches the correct cookie). |
+| Parameter | Type                    | Default | Description                                                                                            |
+| --------- | ----------------------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| `config`  | `SessionConfig \| None` | `None`  | Optional configuration (uses same `name`, `path`, `domain` so the browser matches the correct cookie). |
 
 ### Returns
 
-`Cookie` -- A cookie object that instructs the browser to delete the session cookie.
+`Cookie` -- A cookie object that instructs the browser to delete the session
+cookie.
