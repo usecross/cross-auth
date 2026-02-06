@@ -4,7 +4,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Literal, TypedDict
 
-from cross_web import Cookie
+from cross_web import AsyncHTTPRequest, Cookie
 from pydantic import AwareDatetime, BaseModel
 
 from ._password import DUMMY_PASSWORD_HASH, pwd_context
@@ -120,6 +120,22 @@ def make_session_cookie(
         httponly=resolved["httponly"],
         samesite=resolved["samesite"],
     )
+
+
+def get_current_user(
+    request: AsyncHTTPRequest,
+    storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    config: SessionConfig | None = None,
+) -> User | None:
+    resolved = _resolve_config(config)
+    session_id = request.cookies.get(resolved["cookie_name"])
+    if session_id is None:
+        return None
+    session = get_session(session_id, storage)
+    if session is None:
+        return None
+    return accounts_storage.find_user_by_id(session.user_id)
 
 
 def make_clear_cookie(
