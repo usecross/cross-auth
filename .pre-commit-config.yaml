@@ -3,7 +3,9 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
+        exclude: CHANGELOG\.md
       - id: end-of-file-fixer
+        exclude: CHANGELOG\.md
       - id: check-yaml
       - id: check-added-large-files
       - id: check-merge-conflict
