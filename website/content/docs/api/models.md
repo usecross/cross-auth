@@ -20,6 +20,7 @@ from cross_auth import SessionData
 | ------------ | --------------- | ----------------------------------- |
 | `user_id`    | `str`           | The ID of the authenticated user.   |
 | `created_at` | `AwareDatetime` | When the session was created (UTC). |
+| `expires_at` | `AwareDatetime` | When the session expires (UTC).     |
 
 ---
 

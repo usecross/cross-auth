@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal, TypedDict
 
 from cross_web import Cookie
@@ -14,6 +14,7 @@ from ._storage import AccountsStorage, SecondaryStorage, User
 class SessionData(BaseModel):
     user_id: str
     created_at: AwareDatetime
+    expires_at: AwareDatetime
 
 
 class SessionConfig(TypedDict, total=False):
@@ -70,9 +71,11 @@ def create_session(
     max_age: int = 86400,
 ) -> tuple[str, SessionData]:
     session_id = secrets.token_urlsafe(32)
+    now = datetime.now(tz=timezone.utc)
     session_data = SessionData(
         user_id=user_id,
-        created_at=datetime.now(tz=timezone.utc),
+        created_at=now,
+        expires_at=now + timedelta(seconds=max_age),
     )
     storage.set(f"session:{session_id}", session_data.model_dump_json())
     return session_id, session_data
@@ -85,7 +88,11 @@ def get_session(
     raw = storage.get(f"session:{session_id}")
     if raw is None:
         return None
-    return SessionData.model_validate_json(raw)
+    session = SessionData.model_validate_json(raw)
+    if datetime.now(tz=timezone.utc) > session.expires_at:
+        storage.delete(f"session:{session_id}")
+        return None
+    return session
 
 
 def delete_session(

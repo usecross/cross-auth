@@ -45,7 +45,7 @@ session_id, session_data = create_session(str(user.id), session_storage)
 ```
 
 The session ID is a cryptographically secure random token
-(`secrets.token_urlsafe(32)`, ~192 bits of entropy). Session data is stored in
+(`secrets.token_urlsafe(32)`, ~256 bits of entropy). Session data is stored in
 your `SecondaryStorage` under the key `session:{session_id}`.
 
 ### Session Fixation Protection
