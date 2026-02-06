@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from cross_auth._session import (
     SessionConfig,
     authenticate,
@@ -35,6 +37,8 @@ def test_create_session(secondary_storage: SecondaryStorage):
     assert len(session_id) > 0
     assert session_data.user_id == "test-user"
     assert session_data.created_at is not None
+    assert session_data.expires_at is not None
+    assert session_data.expires_at > session_data.created_at
 
     raw = secondary_storage.get(f"session:{session_id}")
     assert raw is not None
@@ -47,6 +51,20 @@ def test_get_session(secondary_storage: SecondaryStorage):
     assert retrieved is not None
     assert retrieved.user_id == "test-user"
     assert retrieved.created_at == original.created_at
+
+
+def test_get_session_expired(secondary_storage: SecondaryStorage):
+    session_id, _ = create_session("test-user", secondary_storage, max_age=1)
+
+    from datetime import datetime, timezone
+
+    future = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    with patch("cross_auth._session.datetime") as mock_dt:
+        mock_dt.now.return_value = future
+        result = get_session(session_id, secondary_storage)
+
+    assert result is None
+    assert secondary_storage.get(f"session:{session_id}") is None
 
 
 def test_get_session_not_found(secondary_storage: SecondaryStorage):
