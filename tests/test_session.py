@@ -1,10 +1,13 @@
 from unittest.mock import patch
 
+from cross_web import AsyncHTTPRequest, TestingRequestAdapter
+
 from cross_auth._session import (
     SessionConfig,
     authenticate,
     create_session,
     delete_session,
+    get_current_user,
     get_session,
     make_clear_cookie,
     make_session_cookie,
@@ -132,3 +135,85 @@ def test_make_clear_cookie():
     assert cookie.max_age == 0
     assert cookie.path == "/app"
     assert cookie.domain == "example.com"
+
+
+def _make_request(cookies: dict[str, str] | None = None) -> AsyncHTTPRequest:
+    return AsyncHTTPRequest(TestingRequestAdapter(cookies=cookies))
+
+
+def test_get_current_user(
+    accounts_storage: AccountsStorage,
+    secondary_storage: SecondaryStorage,
+):
+    session_id, _ = create_session("test", secondary_storage)
+    request = _make_request({"session_id": session_id})
+
+    user = get_current_user(request, secondary_storage, accounts_storage)
+
+    assert user is not None
+    assert user.email == "test@example.com"
+
+
+def test_get_current_user_no_cookie(
+    accounts_storage: AccountsStorage,
+    secondary_storage: SecondaryStorage,
+):
+    request = _make_request()
+
+    result = get_current_user(request, secondary_storage, accounts_storage)
+
+    assert result is None
+
+
+def test_get_current_user_invalid_session(
+    accounts_storage: AccountsStorage,
+    secondary_storage: SecondaryStorage,
+):
+    request = _make_request({"session_id": "nonexistent"})
+
+    result = get_current_user(request, secondary_storage, accounts_storage)
+
+    assert result is None
+
+
+def test_get_current_user_expired_session(
+    accounts_storage: AccountsStorage,
+    secondary_storage: SecondaryStorage,
+):
+    session_id, _ = create_session("test", secondary_storage, max_age=1)
+    request = _make_request({"session_id": session_id})
+
+    from datetime import datetime, timezone
+
+    future = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    with patch("cross_auth._session.datetime") as mock_dt:
+        mock_dt.now.return_value = future
+        result = get_current_user(request, secondary_storage, accounts_storage)
+
+    assert result is None
+
+
+def test_get_current_user_user_not_found(
+    accounts_storage: AccountsStorage,
+    secondary_storage: SecondaryStorage,
+):
+    session_id, _ = create_session("nonexistent-user", secondary_storage)
+    request = _make_request({"session_id": session_id})
+
+    result = get_current_user(request, secondary_storage, accounts_storage)
+
+    assert result is None
+
+
+def test_get_current_user_custom_cookie_name(
+    accounts_storage: AccountsStorage,
+    secondary_storage: SecondaryStorage,
+):
+    session_id, _ = create_session("test", secondary_storage)
+    config: SessionConfig = {"cookie_name": "my_session"}
+    request = _make_request({"my_session": session_id})
+
+    user = get_current_user(request, secondary_storage, accounts_storage, config)
+
+    assert user is not None
+    assert user.email == "test@example.com"
