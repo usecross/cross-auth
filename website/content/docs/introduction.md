@@ -41,16 +41,24 @@ Cross-Auth separates concerns into three layers:
    web framework of choice.
 
 ```python
-from cross_auth import authenticate, create_session, make_session_cookie
+from cross_auth.fastapi import CrossAuth
+
+auth = CrossAuth(
+    providers=[],
+    storage=session_storage,
+    accounts_storage=accounts_storage,
+    create_token=lambda _: ("", 0),
+    trusted_origins=["https://myapp.com"],
+)
 
 # Authenticate a user
-user = authenticate(email, password, accounts_storage)
+user = auth.authenticate(email, password)
 
-# Create a session
-session_id, session_data = create_session(str(user.id), session_storage)
+# Login: creates session + returns cookie
+cookie = auth.login(str(user.id))
 
-# Get a cookie to send to the browser
-cookie = make_session_cookie(session_id)
+# Logout: deletes session + returns clear cookie
+cookie = auth.logout(request)
 ```
 
 ## Next Steps

@@ -23,7 +23,7 @@ index_page = "introduction"
 section_order = ["Getting Started", "Guides", "API Reference"]
 logo_url = "/static/logo.svg"
 footer_logo_url = "/static/logo-full.svg"
-github_url = "https://github.com/patrick91/cross-auth"
+github_url = "https://github.com/usecross/cross-auth"
 
 [[tool.cross-docs.nav_links]]
 label = "Docs"

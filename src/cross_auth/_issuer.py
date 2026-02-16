@@ -9,9 +9,8 @@ from cross_auth.models.oauth_token_response import TokenResponse
 from cross_auth.utils._pkce import validate_pkce
 
 from ._context import Context
-from ._password import DUMMY_PASSWORD_HASH, pwd_context
+from ._password import DUMMY_PASSWORD_HASH, pwd_context, validate_password
 from ._route import Form, Route
-from ._storage import User
 
 
 class AuthorizationCodeGrantRequest(BaseModel):
@@ -235,12 +234,6 @@ class Issuer:
             cookies=[],
         )
 
-    def validate_password(self, user: User, password: str) -> bool:
-        if user.hashed_password is None:
-            return False
-
-        return pwd_context.verify(password, user.hashed_password)
-
     def _password_grant(
         self, request: PasswordGrantRequest, context: Context
     ) -> Response:
@@ -249,7 +242,7 @@ class Issuer:
         # Always perform password verification to prevent timing attacks
         # that could be used to enumerate valid user accounts
         if user:
-            valid = self.validate_password(user, request.password)
+            valid = validate_password(user, request.password)
         else:
             # Perform dummy hash verification for non-existent users
             # to maintain constant time and prevent user enumeration

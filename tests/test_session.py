@@ -1,10 +1,12 @@
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from cross_web import AsyncHTTPRequest, TestingRequestAdapter
 
+from cross_auth import AccountsStorage, SecondaryStorage
+from cross_auth._password import authenticate
 from cross_auth._session import (
     SessionConfig,
-    authenticate,
     create_session,
     delete_session,
     get_current_user,
@@ -12,7 +14,6 @@ from cross_auth._session import (
     make_clear_cookie,
     make_session_cookie,
 )
-from cross_auth._storage import AccountsStorage, SecondaryStorage
 
 TEST_PASSWORD = "password123"  # noqa: S105
 
@@ -58,8 +59,6 @@ def test_get_session(secondary_storage: SecondaryStorage):
 
 def test_get_session_expired(secondary_storage: SecondaryStorage):
     session_id, _ = create_session("test-user", secondary_storage, max_age=1)
-
-    from datetime import datetime, timezone
 
     future = datetime(2099, 1, 1, tzinfo=timezone.utc)
     with patch("cross_auth._session.datetime") as mock_dt:
@@ -182,8 +181,6 @@ def test_get_current_user_expired_session(
 ):
     session_id, _ = create_session("test", secondary_storage, max_age=1)
     request = _make_request({"session_id": session_id})
-
-    from datetime import datetime, timezone
 
     future = datetime(2099, 1, 1, tzinfo=timezone.utc)
     with patch("cross_auth._session.datetime") as mock_dt:

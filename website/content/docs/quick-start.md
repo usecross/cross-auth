@@ -9,8 +9,9 @@ section: Getting Started
 ## Overview
 
 This guide walks you through adding email/password login to a FastAPI
-application using Cross-Auth's session functions. The same functions work with
-any Python web framework.
+application using Cross-Auth's `CrossAuth` class. The class provides high-level
+`login()` and `logout()` methods that handle session creation, deletion, and
+cookie management for you.
 
 ## Step 1: Implement Storage
 
@@ -22,7 +23,7 @@ implementations:
   database, etc.).
 
 ```python
-from cross_auth._storage import AccountsStorage, SecondaryStorage
+from cross_auth import AccountsStorage, SecondaryStorage
 
 
 # Example: in-memory secondary storage (use Redis in production)
@@ -43,45 +44,71 @@ class MemoryStorage:
         return self.data.pop(key, None)
 ```
 
-## Step 2: Authenticate and Create a Session
+## Step 2: Create the CrossAuth Instance
 
 ```python
-from cross_auth import authenticate, create_session, make_session_cookie
+from cross_auth.fastapi import CrossAuth
 
-
-def login(email: str, password: str):
-    user = authenticate(email, password, accounts_storage)
-    if user is None:
-        return None  # Invalid credentials
-
-    session_id, session_data = create_session(str(user.id), session_storage)
-    cookie = make_session_cookie(session_id)
-    return cookie
+auth = CrossAuth(
+    providers=[],
+    storage=session_storage,
+    accounts_storage=accounts_storage,
+    create_token=lambda _: ("", 0),
+    trusted_origins=["https://myapp.com"],
+)
 ```
 
-## Step 3: Read the Session
+## Step 3: Login
 
 ```python
-from cross_auth import get_session
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+app = FastAPI()
+app.include_router(auth.router)
 
 
-def get_current_user(session_id: str):
-    session = get_session(session_id, session_storage)
-    if session is None:
-        return None  # No valid session
+@app.post("/login")
+def login(email: str, password: str):
+    user = auth.authenticate(email, password)
+    if user is None:
+        return JSONResponse({"error": "Invalid credentials"}, status_code=401)
 
-    return accounts_storage.find_user_by_id(session.user_id)
+    cookie = auth.login(str(user.id))
+    response = JSONResponse({"user": user.id})
+    response.set_cookie(**cookie.to_dict())
+    return response
 ```
 
 ## Step 4: Logout
 
 ```python
-from cross_auth import delete_session, make_clear_cookie
+@app.post("/logout")
+def logout(request: Request):
+    cookie = auth.logout(request)
+    response = JSONResponse({"ok": True})
+    response.set_cookie(**cookie.to_dict())
+    return response
+```
+
+## Step 5: Get the Current User
+
+```python
+from typing import Annotated
+
+from fastapi import Depends
 
 
-def logout(session_id: str):
-    delete_session(session_id, session_storage)
-    return make_clear_cookie()
+@app.get("/me")
+def me(user: Annotated[User | None, Depends(auth.get_current_user)]):
+    if user is None:
+        return {"user": None}
+    return {"user": user.id}
+
+
+@app.get("/protected")
+def protected(user: Annotated[User, Depends(auth.require_current_user)]):
+    return {"user": user.id}  # raises 401 if not logged in
 ```
 
 ## Next Steps

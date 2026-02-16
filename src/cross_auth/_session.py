@@ -7,8 +7,10 @@ from typing import Literal, TypedDict
 from cross_web import AsyncHTTPRequest, Cookie
 from pydantic import AwareDatetime, BaseModel
 
-from ._password import DUMMY_PASSWORD_HASH, pwd_context
 from ._storage import AccountsStorage, SecondaryStorage, User
+
+_SESSION_KEY_PREFIX = "session:"
+_DEFAULT_MAX_AGE = 86400
 
 
 class SessionData(BaseModel):
@@ -29,7 +31,7 @@ class SessionConfig(TypedDict, total=False):
 
 _SESSION_CONFIG_DEFAULTS: SessionConfig = {
     "cookie_name": "session_id",
-    "max_age": 86400,
+    "max_age": _DEFAULT_MAX_AGE,
     "secure": True,
     "httponly": True,
     "samesite": "lax",
@@ -38,37 +40,16 @@ _SESSION_CONFIG_DEFAULTS: SessionConfig = {
 }
 
 
-def _resolve_config(config: SessionConfig | None) -> SessionConfig:
+def resolve_config(config: SessionConfig | None) -> SessionConfig:
     if config is None:
         return _SESSION_CONFIG_DEFAULTS
     return {**_SESSION_CONFIG_DEFAULTS, **config}  # type: ignore[typeddict-item]
 
 
-def authenticate(
-    email: str,
-    password: str,
-    accounts_storage: AccountsStorage,
-) -> User | None:
-    user = accounts_storage.find_user_by_email(email)
-
-    if user is not None:
-        valid = pwd_context.verify(
-            password, user.hashed_password or DUMMY_PASSWORD_HASH
-        )
-    else:
-        pwd_context.verify(password, DUMMY_PASSWORD_HASH)
-        valid = False
-
-    if not valid:
-        return None
-
-    return user
-
-
 def create_session(
     user_id: str,
     storage: SecondaryStorage,
-    max_age: int = 86400,
+    max_age: int = _DEFAULT_MAX_AGE,
 ) -> tuple[str, SessionData]:
     session_id = secrets.token_urlsafe(32)
     now = datetime.now(tz=timezone.utc)
@@ -77,7 +58,7 @@ def create_session(
         created_at=now,
         expires_at=now + timedelta(seconds=max_age),
     )
-    storage.set(f"session:{session_id}", session_data.model_dump_json())
+    storage.set(f"{_SESSION_KEY_PREFIX}{session_id}", session_data.model_dump_json())
     return session_id, session_data
 
 
@@ -85,12 +66,12 @@ def get_session(
     session_id: str,
     storage: SecondaryStorage,
 ) -> SessionData | None:
-    raw = storage.get(f"session:{session_id}")
+    raw = storage.get(f"{_SESSION_KEY_PREFIX}{session_id}")
     if raw is None:
         return None
     session = SessionData.model_validate_json(raw)
     if datetime.now(tz=timezone.utc) > session.expires_at:
-        storage.delete(f"session:{session_id}")
+        storage.delete(f"{_SESSION_KEY_PREFIX}{session_id}")
         return None
     return session
 
@@ -100,26 +81,42 @@ def delete_session(
     storage: SecondaryStorage,
 ) -> None:
     try:
-        storage.delete(f"session:{session_id}")
+        storage.delete(f"{_SESSION_KEY_PREFIX}{session_id}")
     except KeyError:
+        # MemoryStorage.delete raises KeyError for missing keys;
+        # silently ignore since the goal is to ensure the session is gone.
         pass
+
+
+def _build_cookie(
+    value: str,
+    max_age: int,
+    resolved: SessionConfig,
+) -> Cookie:
+    return Cookie(
+        name=resolved["cookie_name"],
+        value=value,
+        secure=resolved["secure"],
+        path=resolved["path"],
+        domain=resolved["domain"],
+        max_age=max_age,
+        httponly=resolved["httponly"],
+        samesite=resolved["samesite"],
+    )
 
 
 def make_session_cookie(
     session_id: str,
     config: SessionConfig | None = None,
 ) -> Cookie:
-    resolved = _resolve_config(config)
-    return Cookie(
-        name=resolved["cookie_name"],
-        value=session_id,
-        secure=resolved["secure"],
-        path=resolved["path"],
-        domain=resolved.get("domain"),
-        max_age=resolved["max_age"],
-        httponly=resolved["httponly"],
-        samesite=resolved["samesite"],
-    )
+    resolved = resolve_config(config)
+    return _build_cookie(session_id, resolved["max_age"], resolved)
+
+
+def make_clear_cookie(
+    config: SessionConfig | None = None,
+) -> Cookie:
+    return _build_cookie("", 0, resolve_config(config))
 
 
 def get_current_user(
@@ -128,7 +125,7 @@ def get_current_user(
     accounts_storage: AccountsStorage,
     config: SessionConfig | None = None,
 ) -> User | None:
-    resolved = _resolve_config(config)
+    resolved = resolve_config(config)
     session_id = request.cookies.get(resolved["cookie_name"])
     if session_id is None:
         return None
@@ -136,19 +133,3 @@ def get_current_user(
     if session is None:
         return None
     return accounts_storage.find_user_by_id(session.user_id)
-
-
-def make_clear_cookie(
-    config: SessionConfig | None = None,
-) -> Cookie:
-    resolved = _resolve_config(config)
-    return Cookie(
-        name=resolved["cookie_name"],
-        value="",
-        secure=resolved["secure"],
-        path=resolved["path"],
-        domain=resolved.get("domain"),
-        max_age=0,
-        httponly=resolved["httponly"],
-        samesite=resolved["samesite"],
-    )

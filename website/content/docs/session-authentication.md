@@ -12,16 +12,79 @@ applications. After a user logs in with their email and password, the server
 creates a session and sends a session ID cookie to the browser. Subsequent
 requests include this cookie, allowing the server to identify the user.
 
-Cross-Auth provides plain functions for session management -- no
-framework-specific middleware required.
+Cross-Auth provides a high-level `CrossAuth` class with `login()` and `logout()`
+methods for framework integrations, as well as lower-level functions for custom
+session management.
 
-## Authenticating Users
+## Using the CrossAuth Class (Recommended)
+
+The FastAPI `CrossAuth` class bundles session creation, cookie management, and
+cleanup into simple methods:
+
+### Authenticate and Login
+
+```python
+from cross_auth.fastapi import CrossAuth
+
+auth = CrossAuth(
+    providers=[],
+    storage=session_storage,
+    accounts_storage=accounts_storage,
+    create_token=lambda _: ("", 0),
+    trusted_origins=["https://myapp.com"],
+)
+
+# Verify credentials
+user = auth.authenticate(email, password)
+if user is None:
+    # Invalid credentials
+    ...
+
+# Create session + cookie in one step
+cookie = auth.login(str(user.id))
+```
+
+### Logout
+
+```python
+from fastapi import Request
+
+# Delete session + get clear cookie in one step
+cookie = auth.logout(request)
+```
+
+### Get Current User
+
+Use `get_current_user` or `require_current_user` as FastAPI dependencies:
+
+```python
+from typing import Annotated
+
+from fastapi import Depends
+
+
+@app.get("/me")
+def me(user: Annotated[User | None, Depends(auth.get_current_user)]): ...
+
+
+@app.get("/protected")
+def protected(
+    user: Annotated[User, Depends(auth.require_current_user)],
+): ...  # raises 401 if not logged in
+```
+
+## Lower-Level Session Functions
+
+For custom frameworks or advanced use cases, Cross-Auth also exposes plain
+functions for session management.
+
+### Authenticating Users
 
 The `authenticate` function verifies an email/password combination against your
 user storage:
 
 ```python
-from cross_auth import authenticate
+from cross_auth._password import authenticate
 
 user = authenticate(email, password, accounts_storage)
 
@@ -34,12 +97,12 @@ This function uses **constant-time verification** -- it always runs bcrypt even
 for non-existent users, preventing timing attacks that could enumerate valid
 email addresses.
 
-## Creating Sessions
+### Creating Sessions
 
 After authentication, create a session to persist the login:
 
 ```python
-from cross_auth import create_session
+from cross_auth._session import create_session
 
 session_id, session_data = create_session(str(user.id), session_storage)
 ```
@@ -48,17 +111,17 @@ The session ID is a cryptographically secure random token
 (`secrets.token_urlsafe(32)`, ~256 bits of entropy). Session data is stored in
 your `SecondaryStorage` under the key `session:{session_id}`.
 
-### Session Fixation Protection
+#### Session Fixation Protection
 
 Always create a **new** session after authentication. Never reuse an existing
 session ID from before login -- this prevents session fixation attacks.
 
-## Reading Sessions
+### Reading Sessions
 
 Retrieve a session by its ID:
 
 ```python
-from cross_auth import get_session
+from cross_auth._session import get_session
 
 session = get_session(session_id, session_storage)
 
@@ -70,26 +133,26 @@ print(session.user_id)
 print(session.created_at)
 ```
 
-## Deleting Sessions
+### Deleting Sessions
 
 Delete a session to log the user out:
 
 ```python
-from cross_auth import delete_session
+from cross_auth._session import delete_session
 
 delete_session(session_id, session_storage)
 ```
 
 This is a no-op if the session doesn't exist.
 
-## Cookie Helpers
+### Cookie Helpers
 
 Cross-Auth provides helpers to create properly configured session cookies:
 
-### Setting the Session Cookie
+#### Setting the Session Cookie
 
 ```python
-from cross_auth import make_session_cookie
+from cross_auth._session import make_session_cookie
 
 cookie = make_session_cookie(session_id)
 # cookie.name = "session_id"
@@ -99,22 +162,23 @@ cookie = make_session_cookie(session_id)
 # cookie.path = "/"
 ```
 
-### Clearing the Session Cookie
+#### Clearing the Session Cookie
 
 ```python
-from cross_auth import make_clear_cookie
+from cross_auth._session import make_clear_cookie
 
 cookie = make_clear_cookie()
 # cookie.value = ""
 # cookie.max_age = 0
 ```
 
-### Custom Configuration
+#### Custom Configuration
 
 Pass a `SessionConfig` to override defaults:
 
 ```python
-from cross_auth import SessionConfig, make_session_cookie
+from cross_auth import SessionConfig
+from cross_auth._session import make_session_cookie
 
 config: SessionConfig = {
     "cookie_name": "my_app_session",
