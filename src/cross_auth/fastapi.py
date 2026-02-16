@@ -7,6 +7,7 @@ from fastapi import HTTPException, Request
 
 from ._config import Config
 from ._context import AccountsStorage, SecondaryStorage, User
+from ._hooks import HookRegistry, HookSettings, HooksMapping
 from ._password import authenticate as _authenticate
 from ._session import (
     SessionConfig,
@@ -37,6 +38,8 @@ class CrossAuth:
         get_user_from_request: Callable[[AsyncHTTPRequest], User | None] | None = None,
         base_url: str | None = None,
         config: Config | None = None,
+        hooks: HookRegistry | HooksMapping | None = None,
+        hook_settings: HookSettings | None = None,
     ):
         self._storage = storage
         self._accounts_storage = accounts_storage
@@ -55,6 +58,8 @@ class CrossAuth:
             trusted_origins=trusted_origins,
             base_url=base_url,
             config=config,
+            hooks=hooks,
+            hook_settings=hook_settings,
         )
 
     @property

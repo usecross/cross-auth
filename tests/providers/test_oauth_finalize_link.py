@@ -9,6 +9,7 @@ from inline_snapshot import snapshot
 from respx import MockRouter
 
 from cross_auth._context import Context, SecondaryStorage
+from cross_auth._hooks import HookRegistry
 from cross_auth._storage import AccountsStorage, User
 from cross_auth.social_providers.oauth import OAuth2LinkCodeData, OAuth2Provider
 
@@ -735,3 +736,179 @@ async def test_link_with_pkce_sends_provider_code_and_verifier(
     )
 
     assert response.status_code == 200
+
+
+@time_machine.travel(datetime(2012, 10, 1, 1, 0, tzinfo=timezone.utc), tick=False)
+async def test_runs_finalize_link_lifecycle_hooks(
+    oauth_provider: OAuth2Provider,
+    context: Context,
+    valid_link_code: str,
+    respx_mock: MockRouter,
+) -> None:
+    hook_calls: list[str] = []
+    captured: dict[str, object] = {}
+
+    def before_token_exchange_hook(
+        *,
+        code,
+        proxy_redirect_uri,
+        provider_code_verifier,
+        provider,
+        flow,
+    ):
+        hook_calls.append("before_token_exchange")
+        captured["code"] = code
+        captured["proxy_redirect_uri"] = proxy_redirect_uri
+        captured["provider_code_verifier"] = provider_code_verifier
+        captured["provider"] = provider
+        captured["flow"] = flow
+
+    def after_token_exchange_hook(*, token_response, provider, flow):
+        hook_calls.append("after_token_exchange")
+        captured["token_response_access_token"] = token_response.access_token
+        captured["provider_after_token"] = provider
+        captured["flow_after_token"] = flow
+
+    def before_user_info_hook(*, access_token, provider, flow):
+        hook_calls.append("before_user_info")
+        captured["before_user_info_access_token"] = access_token
+        captured["provider_before_user_info"] = provider
+        captured["flow_before_user_info"] = flow
+
+    def after_user_info_hook(*, user_info, access_token, provider):
+        hook_calls.append("after_user_info")
+        captured["after_user_info_email"] = user_info["email"]
+        captured["after_user_info_access_token"] = access_token
+        captured["provider_after_user_info"] = provider
+
+    def before_account_link_hook(
+        *,
+        user,
+        provider,
+        provider_user_id,
+        provider_email,
+        flow,
+        action,
+        social_account_exists,
+        social_account_id,
+    ):
+        hook_calls.append("before_account_link")
+        captured["before_account_link_user_id"] = user.id
+        captured["before_account_link_provider"] = provider
+        captured["before_account_link_provider_user_id"] = provider_user_id
+        captured["before_account_link_provider_email"] = provider_email
+        captured["before_account_link_flow"] = flow
+        captured["before_account_link_action"] = action
+        captured["before_account_link_exists"] = social_account_exists
+        captured["before_account_link_social_account_id"] = social_account_id
+
+    def after_account_link_hook(
+        *,
+        user,
+        provider,
+        provider_user_id,
+        provider_email,
+        flow,
+        action,
+        social_account_exists,
+        social_account_id,
+    ):
+        hook_calls.append("after_account_link")
+        captured["after_account_link_user_id"] = user.id
+        captured["after_account_link_provider"] = provider
+        captured["after_account_link_provider_user_id"] = provider_user_id
+        captured["after_account_link_provider_email"] = provider_email
+        captured["after_account_link_flow"] = flow
+        captured["after_account_link_action"] = action
+        captured["after_account_link_exists"] = social_account_exists
+        captured["after_account_link_social_account_id"] = social_account_id
+
+    context.hooks = HookRegistry(
+        hooks={
+            "before_token_exchange": [before_token_exchange_hook],
+            "after_token_exchange": [after_token_exchange_hook],
+            "before_user_info": [before_user_info_hook],
+            "after_user_info": [after_user_info_hook],
+            "before_account_link": [before_account_link_hook],
+            "after_account_link": [after_account_link_hook],
+        }
+    )
+
+    respx_mock.post(oauth_provider.token_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={
+                "access_token": "test_token",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "scope": "openid email profile",
+            },
+        )
+    )
+
+    respx_mock.get(oauth_provider.user_info_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={"email": "test@example.com", "id": "provider_user_123"},
+        )
+    )
+
+    response = await oauth_provider.finalize_link(
+        AsyncHTTPRequest(
+            TestingRequestAdapter(
+                method="POST",
+                url="http://localhost:8000/test/finalize-link",
+                json={
+                    "link_code": valid_link_code,
+                    "code_verifier": "test",
+                },
+                headers={"Authorization": "Bearer test"},
+            )
+        ),
+        context,
+    )
+
+    assert response.status_code == 200
+    assert hook_calls == [
+        "before_token_exchange",
+        "after_token_exchange",
+        "before_user_info",
+        "after_user_info",
+        "before_account_link",
+        "after_account_link",
+    ]
+    social_account_id = captured.pop("after_account_link_social_account_id")
+    assert isinstance(social_account_id, str)
+    assert social_account_id != ""
+
+    assert captured == {
+        "code": "1234567890",
+        "proxy_redirect_uri": "http://localhost:8000/test/callback",
+        "provider_code_verifier": None,
+        "provider": oauth_provider,
+        "flow": "link",
+        "token_response_access_token": "test_token",
+        "provider_after_token": oauth_provider,
+        "flow_after_token": "link",
+        "before_user_info_access_token": "test_token",
+        "provider_before_user_info": oauth_provider,
+        "flow_before_user_info": "link",
+        "after_user_info_email": "test@example.com",
+        "after_user_info_access_token": "test_token",
+        "provider_after_user_info": oauth_provider,
+        "before_account_link_user_id": "test",
+        "before_account_link_provider": oauth_provider,
+        "before_account_link_provider_user_id": "provider_user_123",
+        "before_account_link_provider_email": "test@example.com",
+        "before_account_link_flow": "link",
+        "before_account_link_action": "create",
+        "before_account_link_exists": False,
+        "before_account_link_social_account_id": None,
+        "after_account_link_user_id": "test",
+        "after_account_link_provider": oauth_provider,
+        "after_account_link_provider_user_id": "provider_user_123",
+        "after_account_link_provider_email": "test@example.com",
+        "after_account_link_flow": "link",
+        "after_account_link_action": "create",
+        "after_account_link_exists": False,
+    }

@@ -377,11 +377,77 @@ class OAuth2Provider:
             str(request.url), "callback", context.base_url
         )
 
+        async def _run_hook(event: str, **kwargs: Any) -> Response | None:
+            try:
+                await context.run_hooks(event, **kwargs)
+            except OAuth2Exception as e:
+                return Response.error_redirect(
+                    redirect_uri,
+                    error=e.error,
+                    error_description=e.error_description,
+                    state=provider_data.client_state,
+                )
+            except Exception as e:
+                logger.error("Unexpected hook error during OAuth callback", exc_info=e)
+                return Response.error_redirect(
+                    redirect_uri,
+                    error="server_error",
+                    error_description="Unexpected error during OAuth callback",
+                    state=provider_data.client_state,
+                )
+
+            return None
+
+        hook_response = await _run_hook(
+            "before_token_exchange",
+            code=code,
+            proxy_redirect_uri=proxy_redirect_uri,
+            provider_code_verifier=provider_data.provider_code_verifier,
+            provider=self,
+            flow="login",
+        )
+        if hook_response is not None:
+            return hook_response
+
         try:
             token_response = self.exchange_code(
                 code, proxy_redirect_uri, provider_data.provider_code_verifier
             )
+        except OAuth2Exception as e:
+            return Response.error_redirect(
+                redirect_uri,
+                error=e.error,
+                error_description=e.error_description,
+                state=provider_data.client_state,
+            )
+        except Exception as e:
+            logger.error("Unexpected error during OAuth callback", exc_info=e)
+            return Response.error_redirect(
+                redirect_uri,
+                error="server_error",
+                error_description="Unexpected error during OAuth callback",
+                state=provider_data.client_state,
+            )
 
+        hook_response = await _run_hook(
+            "after_token_exchange",
+            token_response=token_response,
+            provider=self,
+            flow="login",
+        )
+        if hook_response is not None:
+            return hook_response
+
+        hook_response = await _run_hook(
+            "before_user_info",
+            access_token=token_response.access_token,
+            provider=self,
+            flow="login",
+        )
+        if hook_response is not None:
+            return hook_response
+
+        try:
             user_info = self.fetch_user_info(token_response.access_token)
             validated = self.validate_user_info(user_info)
         except OAuth2Exception as e:
@@ -391,6 +457,23 @@ class OAuth2Provider:
                 error_description=e.error_description,
                 state=provider_data.client_state,
             )
+        except Exception as e:
+            logger.error("Unexpected error during OAuth callback", exc_info=e)
+            return Response.error_redirect(
+                redirect_uri,
+                error="server_error",
+                error_description="Unexpected error during OAuth callback",
+                state=provider_data.client_state,
+            )
+
+        hook_response = await _run_hook(
+            "after_user_info",
+            user_info=user_info,
+            access_token=token_response.access_token,
+            provider=self,
+        )
+        if hook_response is not None:
+            return hook_response
 
         social_account = context.accounts_storage.find_social_account(
             provider=self.id,
@@ -398,6 +481,23 @@ class OAuth2Provider:
         )
 
         if social_account:
+            user = context.accounts_storage.find_user_by_id(social_account.user_id)
+            assert user is not None, "User not found for social account"
+
+            hook_response = await _run_hook(
+                "before_account_link",
+                user=user,
+                provider=self,
+                provider_user_id=validated.provider_user_id,
+                provider_email=validated.email,
+                flow="login",
+                action="update",
+                social_account_exists=True,
+                social_account_id=social_account.id,
+            )
+            if hook_response is not None:
+                return hook_response
+
             context.accounts_storage.update_social_account(
                 social_account.id,
                 access_token=token_response.access_token,
@@ -410,8 +510,19 @@ class OAuth2Provider:
                 provider_email_verified=validated.email_verified,
             )
 
-            user = context.accounts_storage.find_user_by_id(social_account.user_id)
-            assert user is not None, "User not found for social account"
+            hook_response = await _run_hook(
+                "after_account_link",
+                user=user,
+                provider=self,
+                provider_user_id=validated.provider_user_id,
+                provider_email=validated.email,
+                flow="login",
+                action="update",
+                social_account_exists=True,
+                social_account_id=social_account.id,
+            )
+            if hook_response is not None:
+                return hook_response
         else:
             user: User | None = None
 
@@ -457,7 +568,23 @@ class OAuth2Provider:
                         state=provider_data.client_state,
                     )
 
-            context.accounts_storage.create_social_account(
+            assert user is not None
+
+            hook_response = await _run_hook(
+                "before_account_link",
+                user=user,
+                provider=self,
+                provider_user_id=validated.provider_user_id,
+                provider_email=validated.email,
+                flow="login",
+                action="create",
+                social_account_exists=False,
+                social_account_id=None,
+            )
+            if hook_response is not None:
+                return hook_response
+
+            social_account = context.accounts_storage.create_social_account(
                 user_id=user.id,
                 provider=self.id,
                 provider_user_id=validated.provider_user_id,
@@ -471,6 +598,20 @@ class OAuth2Provider:
                 provider_email_verified=validated.email_verified,
                 is_login_method=True,
             )
+
+            hook_response = await _run_hook(
+                "after_account_link",
+                user=user,
+                provider=self,
+                provider_user_id=validated.provider_user_id,
+                provider_email=validated.email,
+                flow="login",
+                action="create",
+                social_account_exists=False,
+                social_account_id=social_account.id,
+            )
+            if hook_response is not None:
+                return hook_response
 
         code = self._generate_code()
 
@@ -487,6 +628,17 @@ class OAuth2Provider:
             f"oauth:code:{code}",
             data.model_dump_json(),
         )
+
+        hook_response = await _run_hook(
+            "after_login_code_issued",
+            code=code,
+            user=user,
+            provider=self,
+            client_id=provider_data.client_id,
+            redirect_uri=redirect_uri,
+        )
+        if hook_response is not None:
+            return hook_response
 
         # Include client_state in redirect for CSRF protection
         query_params = {"code": code}
@@ -816,13 +968,71 @@ class OAuth2Provider:
             str(request.url), "callback", context.base_url
         )
 
+        async def _run_hook(event: str, **kwargs: Any) -> Response | None:
+            try:
+                await context.run_hooks(event, **kwargs)
+            except OAuth2Exception as e:
+                return Response.error(
+                    e.error,
+                    error_description=e.error_description,
+                )
+            except Exception as e:
+                logger.error("Unexpected hook error during finalize link", exc_info=e)
+                return Response.error(
+                    "server_error",
+                    error_description="Unexpected error during finalize link",
+                )
+
+            return None
+
+        hook_response = await _run_hook(
+            "before_token_exchange",
+            code=link_data.provider_code,
+            proxy_redirect_uri=proxy_redirect_uri,
+            provider_code_verifier=link_data.provider_code_verifier,
+            provider=self,
+            flow="link",
+        )
+        if hook_response is not None:
+            return hook_response
+
         try:
             token_response = self.exchange_code(
                 link_data.provider_code,
                 proxy_redirect_uri,
                 link_data.provider_code_verifier,
             )
+        except OAuth2Exception as e:
+            return Response.error(
+                e.error,
+                error_description=e.error_description,
+            )
+        except Exception as e:
+            logger.error("Unexpected error during finalize link", exc_info=e)
+            return Response.error(
+                "server_error",
+                error_description="Unexpected error during finalize link",
+            )
 
+        hook_response = await _run_hook(
+            "after_token_exchange",
+            token_response=token_response,
+            provider=self,
+            flow="link",
+        )
+        if hook_response is not None:
+            return hook_response
+
+        hook_response = await _run_hook(
+            "before_user_info",
+            access_token=token_response.access_token,
+            provider=self,
+            flow="link",
+        )
+        if hook_response is not None:
+            return hook_response
+
+        try:
             user_info = self.fetch_user_info(token_response.access_token)
             validated = self.validate_user_info(user_info)
         except OAuth2Exception as e:
@@ -830,6 +1040,21 @@ class OAuth2Provider:
                 e.error,
                 error_description=e.error_description,
             )
+        except Exception as e:
+            logger.error("Unexpected error during finalize link", exc_info=e)
+            return Response.error(
+                "server_error",
+                error_description="Unexpected error during finalize link",
+            )
+
+        hook_response = await _run_hook(
+            "after_user_info",
+            user_info=user_info,
+            access_token=token_response.access_token,
+            provider=self,
+        )
+        if hook_response is not None:
+            return hook_response
 
         # Manual linking requires: enabled AND (trusted OR verified)
         account_linking = context.config.get("account_linking", {})
@@ -864,6 +1089,20 @@ class OAuth2Provider:
                     error_description="Social account already exists",
                 )
 
+            hook_response = await _run_hook(
+                "before_account_link",
+                user=user,
+                provider=self,
+                provider_user_id=validated.provider_user_id,
+                provider_email=validated.email,
+                flow="link",
+                action="update",
+                social_account_exists=True,
+                social_account_id=social_account.id,
+            )
+            if hook_response is not None:
+                return hook_response
+
             context.accounts_storage.update_social_account(
                 social_account.id,
                 access_token=token_response.access_token,
@@ -875,8 +1114,36 @@ class OAuth2Provider:
                 provider_email=validated.email,
                 provider_email_verified=validated.email_verified,
             )
+
+            hook_response = await _run_hook(
+                "after_account_link",
+                user=user,
+                provider=self,
+                provider_user_id=validated.provider_user_id,
+                provider_email=validated.email,
+                flow="link",
+                action="update",
+                social_account_exists=True,
+                social_account_id=social_account.id,
+            )
+            if hook_response is not None:
+                return hook_response
         else:
-            context.accounts_storage.create_social_account(
+            hook_response = await _run_hook(
+                "before_account_link",
+                user=user,
+                provider=self,
+                provider_user_id=validated.provider_user_id,
+                provider_email=validated.email,
+                flow="link",
+                action="create",
+                social_account_exists=False,
+                social_account_id=None,
+            )
+            if hook_response is not None:
+                return hook_response
+
+            social_account = context.accounts_storage.create_social_account(
                 user_id=user.id,
                 provider=self.id,
                 provider_user_id=validated.provider_user_id,
@@ -890,6 +1157,20 @@ class OAuth2Provider:
                 provider_email_verified=validated.email_verified,
                 is_login_method=allow_login,
             )
+
+            hook_response = await _run_hook(
+                "after_account_link",
+                user=user,
+                provider=self,
+                provider_user_id=validated.provider_user_id,
+                provider_email=validated.email,
+                flow="link",
+                action="create",
+                social_account_exists=False,
+                social_account_id=social_account.id,
+            )
+            if hook_response is not None:
+                return hook_response
 
         return Response(status_code=200, body='{"message": "Link finalized"}')
 

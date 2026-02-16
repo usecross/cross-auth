@@ -8,6 +8,7 @@ from cross_web import AsyncHTTPRequest
 
 from ._config import Config
 from ._context import AccountsStorage, Context, SecondaryStorage, User
+from ._hooks import HookRegistry, HookSettings, HooksMapping
 from ._issuer import Issuer
 from .social_providers.oauth import OAuth2Provider
 
@@ -27,6 +28,8 @@ class AuthRouter(APIRouter):
         trusted_origins: list[str],
         base_url: str | None = None,
         config: Config | None = None,
+        hooks: HookRegistry | HooksMapping | None = None,
+        hook_settings: HookSettings | None = None,
     ):
         super().__init__()
 
@@ -54,6 +57,8 @@ class AuthRouter(APIRouter):
             get_user_from_request=self._get_user_from_request,
             base_url=self._base_url,
             config=self._config,
+            hooks=hooks,
+            hook_settings=hook_settings,
         )
 
         for route in routes:

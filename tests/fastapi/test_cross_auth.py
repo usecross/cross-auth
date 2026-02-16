@@ -4,7 +4,13 @@ from cross_web import AsyncHTTPRequest
 from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 
-from cross_auth import AccountsStorage, SecondaryStorage, User
+from cross_auth import (
+    AccountsStorage,
+    HookRegistration,
+    HookRegistry,
+    SecondaryStorage,
+    User,
+)
 from cross_auth._session import create_session, get_session
 from cross_auth.fastapi import CrossAuth
 from cross_auth.router import AuthRouter
@@ -308,3 +314,45 @@ def test_logout_custom_cookie_name(
 
     # Session should be deleted
     assert get_session(session_id, secondary_storage) is None
+
+
+def test_accepts_hooks_mapping_configuration(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+):
+    def after_user_info_hook(*, user_info, access_token, provider):
+        return None
+
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        hooks={
+            "after_user_info": [
+                HookRegistration(callback=after_user_info_hook, priority=5),
+            ]
+        },
+        hook_settings={"mode_by_event": {"after_user_info": "robust"}},
+    )
+
+    assert isinstance(auth.router, AuthRouter)
+
+
+def test_accepts_hook_registry_configuration(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+):
+    def after_user_info_hook(*, user_info, access_token, provider):
+        return None
+
+    registry = HookRegistry(
+        hooks={"after_user_info": [after_user_info_hook]},
+        settings={"mode_by_event": {"after_user_info": "robust"}},
+    )
+
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        hooks=registry,
+    )
+
+    assert isinstance(auth.router, AuthRouter)

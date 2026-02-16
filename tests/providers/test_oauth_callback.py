@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import json
 
@@ -9,8 +10,9 @@ from inline_snapshot import snapshot
 from respx import MockRouter
 
 from cross_auth._context import Context, SecondaryStorage
+from cross_auth._hooks import HookRegistry
 from cross_auth._issuer import AuthorizationCodeGrantData
-from cross_auth.social_providers.oauth import OAuth2Provider
+from cross_auth.social_providers.oauth import OAuth2Exception, OAuth2Provider
 
 from ..conftest import MemoryAccountsStorage
 
@@ -707,3 +709,423 @@ async def test_callback_returns_client_state_for_csrf_protection(
     assert callback_redirect == snapshot(
         f"https://valid-frontend.com/callback?code=a-totally-valid-code&state={client_state}"
     )
+
+
+async def test_runs_after_user_info_hook(
+    oauth_provider: OAuth2Provider,
+    context: Context,
+    respx_mock: MockRouter,
+    valid_callback_request: AsyncHTTPRequest,
+):
+    access_token = "test_access_token"
+
+    data = {
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scope": "openid email profile",
+    }
+
+    captured: dict[str, object] = {}
+
+    def after_user_info_hook(*, user_info, access_token, provider):
+        captured["user_info"] = user_info
+        captured["access_token"] = access_token
+        captured["provider"] = provider
+
+    context.hooks = {"after_user_info": [after_user_info_hook]}
+
+    respx_mock.post(oauth_provider.token_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json=data,
+        )
+    )
+    respx_mock.get(oauth_provider.user_info_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={
+                "email": "user@example.com",
+                "id": "user_id",
+                "email_verified": True,
+            },
+        )
+    )
+
+    response = await oauth_provider.callback(valid_callback_request, context)
+
+    assert response.status_code == 302
+    assert captured == {
+        "user_info": {
+            "email": "user@example.com",
+            "id": "user_id",
+            "email_verified": True,
+        },
+        "access_token": access_token,
+        "provider": oauth_provider,
+    }
+
+
+async def test_awaits_async_after_user_info_hook(
+    oauth_provider: OAuth2Provider,
+    context: Context,
+    respx_mock: MockRouter,
+    valid_callback_request: AsyncHTTPRequest,
+):
+    access_token = "test_access_token"
+
+    data = {
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scope": "openid email profile",
+    }
+
+    hook_calls: list[str] = []
+
+    def sync_hook(*, user_info, access_token, provider):
+        hook_calls.append("sync")
+
+    async def async_hook(*, user_info, access_token, provider):
+        await asyncio.sleep(0)
+        hook_calls.append("async")
+
+    context.hooks = {"after_user_info": [sync_hook, async_hook]}
+
+    respx_mock.post(oauth_provider.token_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json=data,
+        )
+    )
+    respx_mock.get(oauth_provider.user_info_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={
+                "email": "user@example.com",
+                "id": "user_id",
+                "email_verified": True,
+            },
+        )
+    )
+
+    response = await oauth_provider.callback(valid_callback_request, context)
+
+    assert response.status_code == 302
+    assert hook_calls == ["sync", "async"]
+
+
+async def test_returns_oauth_error_if_after_user_info_hook_raises_oauth2_exception(
+    oauth_provider: OAuth2Provider,
+    context: Context,
+    respx_mock: MockRouter,
+    valid_callback_request: AsyncHTTPRequest,
+):
+    access_token = "test_access_token"
+
+    data = {
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scope": "openid email profile",
+    }
+
+    def failing_hook(*, user_info, access_token, provider):
+        raise OAuth2Exception("access_denied", "Blocked by hook")
+
+    context.hooks = {"after_user_info": [failing_hook]}
+
+    respx_mock.post(oauth_provider.token_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json=data,
+        )
+    )
+    respx_mock.get(oauth_provider.user_info_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={
+                "email": "user@example.com",
+                "id": "user_id",
+                "email_verified": True,
+            },
+        )
+    )
+
+    response = await oauth_provider.callback(valid_callback_request, context)
+
+    assert response.status_code == 302
+    assert response.headers is not None
+    assert response.headers["Location"] == snapshot(
+        "http://valid-frontend.com/callback?error=access_denied&error_description=Blocked+by+hook&state=test_client_state"
+    )
+
+
+async def test_returns_server_error_if_after_user_info_hook_raises_unexpected_exception(
+    oauth_provider: OAuth2Provider,
+    context: Context,
+    respx_mock: MockRouter,
+    valid_callback_request: AsyncHTTPRequest,
+):
+    access_token = "test_access_token"
+
+    data = {
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scope": "openid email profile",
+    }
+
+    def failing_hook(*, user_info, access_token, provider):
+        raise RuntimeError("unexpected failure")
+
+    context.hooks = {"after_user_info": [failing_hook]}
+
+    respx_mock.post(oauth_provider.token_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json=data,
+        )
+    )
+    respx_mock.get(oauth_provider.user_info_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={
+                "email": "user@example.com",
+                "id": "user_id",
+                "email_verified": True,
+            },
+        )
+    )
+
+    response = await oauth_provider.callback(valid_callback_request, context)
+
+    assert response.status_code == 302
+    assert response.headers is not None
+    assert response.headers["Location"] == snapshot(
+        "http://valid-frontend.com/callback?error=server_error&error_description=Unexpected+error+during+OAuth+callback&state=test_client_state"
+    )
+
+
+async def test_runs_callback_lifecycle_hooks_in_order(
+    oauth_provider: OAuth2Provider,
+    context: Context,
+    respx_mock: MockRouter,
+    valid_callback_request: AsyncHTTPRequest,
+):
+    access_token = "test_access_token"
+    hook_calls: list[str] = []
+    captured: dict[str, object] = {}
+
+    def before_token_exchange_hook(
+        *,
+        code,
+        proxy_redirect_uri,
+        provider_code_verifier,
+        provider,
+        flow,
+    ):
+        hook_calls.append("before_token_exchange")
+        captured["code"] = code
+        captured["proxy_redirect_uri"] = proxy_redirect_uri
+        captured["provider_code_verifier"] = provider_code_verifier
+        captured["flow"] = flow
+        captured["provider"] = provider
+
+    def after_token_exchange_hook(*, token_response, provider, flow):
+        hook_calls.append("after_token_exchange")
+        captured["token_response_access_token"] = token_response.access_token
+        captured["flow_after_token"] = flow
+        captured["provider_after_token"] = provider
+
+    def before_user_info_hook(*, access_token, provider, flow):
+        hook_calls.append("before_user_info")
+        captured["before_user_info_access_token"] = access_token
+        captured["flow_before_user_info"] = flow
+        captured["provider_before_user_info"] = provider
+
+    def after_user_info_hook(*, user_info, access_token, provider):
+        hook_calls.append("after_user_info")
+        captured["after_user_info_email"] = user_info["email"]
+        captured["after_user_info_access_token"] = access_token
+        captured["provider_after_user_info"] = provider
+
+    def before_account_link_hook(
+        *,
+        user,
+        provider,
+        provider_user_id,
+        provider_email,
+        flow,
+        action,
+        social_account_exists,
+        social_account_id,
+    ):
+        hook_calls.append("before_account_link")
+        captured["before_account_link_user_id"] = user.id
+        captured["before_account_link_provider_user_id"] = provider_user_id
+        captured["before_account_link_provider_email"] = provider_email
+        captured["before_account_link_flow"] = flow
+        captured["before_account_link_action"] = action
+        captured["before_account_link_exists"] = social_account_exists
+        captured["before_account_link_social_account_id"] = social_account_id
+        captured["before_account_link_provider"] = provider
+
+    def after_account_link_hook(
+        *,
+        user,
+        provider,
+        provider_user_id,
+        provider_email,
+        flow,
+        action,
+        social_account_exists,
+        social_account_id,
+    ):
+        hook_calls.append("after_account_link")
+        captured["after_account_link_user_id"] = user.id
+        captured["after_account_link_provider_user_id"] = provider_user_id
+        captured["after_account_link_provider_email"] = provider_email
+        captured["after_account_link_flow"] = flow
+        captured["after_account_link_action"] = action
+        captured["after_account_link_exists"] = social_account_exists
+        captured["after_account_link_social_account_id"] = social_account_id
+        captured["after_account_link_provider"] = provider
+
+    def after_login_code_issued_hook(*, code, user, provider, client_id, redirect_uri):
+        hook_calls.append("after_login_code_issued")
+        captured["after_login_code"] = code
+        captured["after_login_user_id"] = user.id
+        captured["after_login_provider"] = provider
+        captured["after_login_client_id"] = client_id
+        captured["after_login_redirect_uri"] = redirect_uri
+
+    context.hooks = {
+        "before_token_exchange": [before_token_exchange_hook],
+        "after_token_exchange": [after_token_exchange_hook],
+        "before_user_info": [before_user_info_hook],
+        "after_user_info": [after_user_info_hook],
+        "before_account_link": [before_account_link_hook],
+        "after_account_link": [after_account_link_hook],
+        "after_login_code_issued": [after_login_code_issued_hook],
+    }
+
+    respx_mock.post(oauth_provider.token_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={
+                "access_token": access_token,
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "scope": "openid email profile",
+            },
+        )
+    )
+    respx_mock.get(oauth_provider.user_info_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={"email": "user@example.com", "id": "user_id", "email_verified": True},
+        )
+    )
+
+    response = await oauth_provider.callback(valid_callback_request, context)
+
+    assert response.status_code == 302
+    assert hook_calls == [
+        "before_token_exchange",
+        "after_token_exchange",
+        "before_user_info",
+        "after_user_info",
+        "before_account_link",
+        "after_account_link",
+        "after_login_code_issued",
+    ]
+    social_account_id = captured.pop("after_account_link_social_account_id")
+    assert isinstance(social_account_id, str)
+    assert social_account_id != ""
+
+    assert captured == {
+        "code": "test_code",
+        "proxy_redirect_uri": "http://localhost:8000/test/callback",
+        "provider_code_verifier": "test_provider_verifier",
+        "flow": "login",
+        "provider": oauth_provider,
+        "token_response_access_token": access_token,
+        "flow_after_token": "login",
+        "provider_after_token": oauth_provider,
+        "before_user_info_access_token": access_token,
+        "flow_before_user_info": "login",
+        "provider_before_user_info": oauth_provider,
+        "after_user_info_email": "user@example.com",
+        "after_user_info_access_token": access_token,
+        "provider_after_user_info": oauth_provider,
+        "before_account_link_user_id": "user_id",
+        "before_account_link_provider_user_id": "user_id",
+        "before_account_link_provider_email": "user@example.com",
+        "before_account_link_flow": "login",
+        "before_account_link_action": "create",
+        "before_account_link_exists": False,
+        "before_account_link_social_account_id": None,
+        "before_account_link_provider": oauth_provider,
+        "after_account_link_user_id": "user_id",
+        "after_account_link_provider_user_id": "user_id",
+        "after_account_link_provider_email": "user@example.com",
+        "after_account_link_flow": "login",
+        "after_account_link_action": "create",
+        "after_account_link_exists": False,
+        "after_account_link_provider": oauth_provider,
+        "after_login_code": "a-totally-valid-code",
+        "after_login_user_id": "user_id",
+        "after_login_provider": oauth_provider,
+        "after_login_client_id": "my_app_client_id",
+        "after_login_redirect_uri": "http://valid-frontend.com/callback",
+    }
+
+
+async def test_robust_hook_mode_continues_callback_flow(
+    oauth_provider: OAuth2Provider,
+    context: Context,
+    respx_mock: MockRouter,
+    valid_callback_request: AsyncHTTPRequest,
+):
+    access_token = "test_access_token"
+    calls: list[str] = []
+
+    def failing_hook(*, user_info, access_token, provider):
+        calls.append("failing")
+        raise RuntimeError("ignore this in robust mode")
+
+    def succeeding_hook(*, user_info, access_token, provider):
+        calls.append("succeeding")
+
+    context.hooks = HookRegistry(
+        hooks={"after_user_info": [failing_hook, succeeding_hook]},
+        settings={"mode_by_event": {"after_user_info": "robust"}},
+    )
+
+    respx_mock.post(oauth_provider.token_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={
+                "access_token": access_token,
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "scope": "openid email profile",
+            },
+        )
+    )
+    respx_mock.get(oauth_provider.user_info_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={"email": "user@example.com", "id": "user_id", "email_verified": True},
+        )
+    )
+
+    response = await oauth_provider.callback(valid_callback_request, context)
+
+    assert response.status_code == 302
+    assert response.headers is not None
+    assert response.headers["Location"] == snapshot(
+        "http://valid-frontend.com/callback?code=a-totally-valid-code&state=test_client_state"
+    )
+    assert calls == ["failing", "succeeding"]

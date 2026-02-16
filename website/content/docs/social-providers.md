@@ -35,3 +35,103 @@ Each provider requires:
 - **Client ID** -- From the provider's developer console.
 - **Client Secret** -- From the provider's developer console.
 - **Redirect URI** -- The callback URL in your app.
+
+## Hooks
+
+Cross-Auth provides hook events around OAuth social login and account linking.
+Use hooks for auditing, telemetry, access checks, and side effects like async
+notifications.
+
+```python
+from cross_auth import HookRegistration
+from cross_auth.fastapi import CrossAuth
+
+
+def audit_user_info(*, user_info, access_token, provider):
+    print("provider", provider.id, "email", user_info.get("email"))
+
+
+async def notify_login_code(*, code, user, provider, client_id, redirect_uri):
+    # async hooks are supported and awaited
+    ...
+
+
+auth = CrossAuth(
+    providers=[...],
+    storage=secondary_storage,
+    accounts_storage=accounts_storage,
+    create_token=create_token,
+    trusted_origins=["example.com"],
+    hooks={
+        "after_user_info": [
+            HookRegistration(
+                callback=audit_user_info,
+                priority=50,
+                name="audit-user-info",
+            ),
+        ],
+        "after_login_code_issued": [
+            HookRegistration(
+                callback=notify_login_code,
+                timeout_seconds=0.5,
+                mode="robust",
+            ),
+        ],
+    },
+    hook_settings={
+        "mode_by_event": {
+            "after_user_info": "robust",
+        }
+    },
+)
+```
+
+### Available Events
+
+- `before_token_exchange`
+  - Runs before exchanging provider code for tokens.
+  - Args: `code`, `proxy_redirect_uri`, `provider_code_verifier`, `provider`,
+    `flow`.
+- `after_token_exchange`
+  - Runs after token exchange succeeds.
+  - Args: `token_response`, `provider`, `flow`.
+- `before_user_info`
+  - Runs before fetching provider user info.
+  - Args: `access_token`, `provider`, `flow`.
+- `after_user_info`
+  - Runs after provider user info is fetched and validated.
+  - Args: `user_info`, `access_token`, `provider`.
+- `before_account_link`
+  - Runs before creating/updating a social account link.
+  - Args: `user`, `provider`, `provider_user_id`, `provider_email`, `flow`,
+    `action`, `social_account_exists`, `social_account_id`.
+- `after_account_link`
+  - Runs after creating/updating a social account link.
+  - Args: `user`, `provider`, `provider_user_id`, `provider_email`, `flow`,
+    `action`, `social_account_exists`, `social_account_id`.
+- `after_login_code_issued`
+  - Runs after Cross-Auth creates the authorization code for the client app.
+  - Args: `code`, `user`, `provider`, `client_id`, `redirect_uri`.
+
+`flow` is `"login"` for regular callback login and `"link"` for manual account
+linking (`finalize_link`).
+
+### Error Policy
+
+- `strict` (default): hook exceptions fail the request.
+- `robust`: hook exceptions are logged and ignored.
+
+Set per-event defaults with `hook_settings.mode_by_event`, and override per hook
+with `HookRegistration(mode="strict" | "robust")`.
+
+### Ordering, Timeouts, and Metadata
+
+- Hooks are ordered by descending `priority` (higher runs first).
+- Ties keep declaration order.
+- `timeout_seconds` applies to async hooks.
+- `name` and `source` are optional metadata included in hook-error logs.
+
+### Payload Mutability
+
+Hook payload mappings/lists/sets are passed as read-only views by default.
+Mutating them in hook code raises an error.
