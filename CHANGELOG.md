@@ -1,6 +1,15 @@
 CHANGELOG
 =========
 
+0.7.0 - 2026-02-17
+------------------
+
+This release updates the FastAPI session API so `CrossAuth.login()` and
+`CrossAuth.logout()` set cookies directly on a provided `Response` rather than
+returning cookie objects. Tests and docs were updated to reflect the new usage.
+
+This release was contributed by [@patrick91](https://github.com/patrick91) in [#24](https://github.com/usecross/cross-auth/pull/24)
+
 0.6.0 - 2026-02-16
 ------------------
 
