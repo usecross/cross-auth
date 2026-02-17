@@ -74,9 +74,8 @@ def login(email: str, password: str):
     if user is None:
         return JSONResponse({"error": "Invalid credentials"}, status_code=401)
 
-    cookie = auth.login(str(user.id))
     response = JSONResponse({"user": user.id})
-    response.set_cookie(**cookie.to_dict())
+    auth.login(str(user.id), response=response)
     return response
 ```
 
@@ -85,9 +84,8 @@ def login(email: str, password: str):
 ```python
 @app.post("/logout")
 def logout(request: Request):
-    cookie = auth.logout(request)
     response = JSONResponse({"ok": True})
-    response.set_cookie(**cookie.to_dict())
+    auth.logout(request, response=response)
     return response
 ```
 

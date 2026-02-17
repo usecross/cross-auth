@@ -42,6 +42,8 @@ Cross-Auth separates concerns into three layers:
 
 ```python
 from cross_auth.fastapi import CrossAuth
+from fastapi import Request
+from fastapi.responses import JSONResponse
 
 auth = CrossAuth(
     providers=[],
@@ -51,14 +53,20 @@ auth = CrossAuth(
     trusted_origins=["https://myapp.com"],
 )
 
-# Authenticate a user
-user = auth.authenticate(email, password)
 
-# Login: creates session + returns cookie
-cookie = auth.login(str(user.id))
+# Authenticate + login: creates session + sets cookie on the response
+async def login_endpoint(email: str, password: str):
+    user = auth.authenticate(email, password)
+    response = JSONResponse({"user": user.id})
+    auth.login(str(user.id), response=response)
+    return response
 
-# Logout: deletes session + returns clear cookie
-cookie = auth.logout(request)
+
+# Logout: deletes session + clears cookie on the response
+async def logout_endpoint(request: Request):
+    response = JSONResponse({"message": "logged out"})
+    auth.logout(request, response=response)
+    return response
 ```
 
 ## Next Steps

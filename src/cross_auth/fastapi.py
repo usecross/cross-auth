@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from cross_web import AsyncHTTPRequest, Cookie
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 
 from ._config import Config
 from ._context import AccountsStorage, SecondaryStorage, User
@@ -85,16 +85,30 @@ class CrossAuth:
     def authenticate(self, email: str, password: str) -> User | None:
         return _authenticate(email, password, self._accounts_storage)
 
-    def login(self, user_id: str) -> Cookie:
+    def _set_cookie_on_response(self, response: Response, cookie: Cookie) -> None:
+        response.set_cookie(
+            key=cookie.name,
+            value=cookie.value,
+            max_age=cookie.max_age,
+            path=cookie.path or "/",
+            domain=cookie.domain,
+            secure=cookie.secure,
+            httponly=cookie.httponly,
+            samesite=cookie.samesite,
+        )
+
+    def login(self, user_id: str, *, response: Response) -> None:
         resolved = resolve_config(self._session_config)
         max_age = resolved["max_age"]
         session_id, _ = _create_session(user_id, self._storage, max_age=max_age)
-        return _make_session_cookie(session_id, self._session_config)
+        cookie = _make_session_cookie(session_id, self._session_config)
+        self._set_cookie_on_response(response, cookie)
 
-    def logout(self, request: Request) -> Cookie:
+    def logout(self, request: Request, *, response: Response) -> None:
         resolved = resolve_config(self._session_config)
         cookie_name = resolved["cookie_name"]
         session_id = request.cookies.get(cookie_name)
         if session_id is not None:
             _delete_session(session_id, self._storage)
-        return _make_clear_cookie(self._session_config)
+        cookie = _make_clear_cookie(self._session_config)
+        self._set_cookie_on_response(response, cookie)

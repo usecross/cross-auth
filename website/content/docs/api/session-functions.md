@@ -15,14 +15,15 @@ examples.
 
 Verifies email/password credentials. Returns the `User` or `None`.
 
-### `login(user_id)`
+### `login(user_id, response=...)`
 
-Creates a session and returns a `Cookie` with the session ID set.
+Creates a session and sets the session cookie directly on the provided FastAPI
+`Response`.
 
-### `logout(request)`
+### `logout(request, response=...)`
 
-Reads the session cookie from the request, deletes the session, and returns a
-clear `Cookie`.
+Reads the session cookie from the request, deletes the session, and sets a
+clear-cookie directive on the provided FastAPI `Response`.
 
 ### `get_current_user(request)`
 
