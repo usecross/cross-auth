@@ -2,6 +2,7 @@ from typing import Annotated
 
 from cross_web import AsyncHTTPRequest
 from fastapi import Depends, FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from cross_auth import AccountsStorage, SecondaryStorage, User
@@ -186,14 +187,23 @@ def test_login(
     accounts_storage: AccountsStorage,
 ):
     auth = _make_auth(secondary_storage, accounts_storage)
-    cookie = auth.login("test")
+    app = FastAPI()
 
-    assert cookie.name == "session_id"
-    assert cookie.value  # non-empty session id
-    assert cookie.httponly is True
-    assert cookie.secure is True
-    assert cookie.samesite == "lax"
-    assert cookie.path == "/"
+    @app.post("/do-login")
+    def do_login():
+        response = JSONResponse({"ok": True})
+        auth.login("test", response=response)
+        return response
+
+    with TestClient(app) as client:
+        resp = client.post("/do-login")
+        assert resp.status_code == 200
+        session_id = resp.cookies.get("session_id")
+        assert session_id
+        assert "HttpOnly" in resp.headers["set-cookie"]
+        assert "Secure" in resp.headers["set-cookie"]
+        assert "SameSite=lax" in resp.headers["set-cookie"]
+        assert "Path=/" in resp.headers["set-cookie"]
 
 
 def test_login_custom_session_config(
@@ -205,11 +215,19 @@ def test_login_custom_session_config(
         accounts_storage,
         session_config={"cookie_name": "my_sid", "max_age": 3600},
     )
-    cookie = auth.login("test")
+    app = FastAPI()
 
-    assert cookie.name == "my_sid"
-    assert cookie.value
-    assert cookie.max_age == 3600
+    @app.post("/do-login")
+    def do_login():
+        response = JSONResponse({"ok": True})
+        auth.login("test", response=response)
+        return response
+
+    with TestClient(app) as client:
+        resp = client.post("/do-login")
+        assert resp.status_code == 200
+        assert resp.cookies.get("my_sid")
+        assert "Max-Age=3600" in resp.headers["set-cookie"]
 
 
 def test_login_creates_valid_session(
@@ -217,10 +235,22 @@ def test_login_creates_valid_session(
     accounts_storage: AccountsStorage,
 ):
     auth = _make_auth(secondary_storage, accounts_storage)
-    cookie = auth.login("test")
+    app = FastAPI()
 
-    # The session should be retrievable
-    session = get_session(cookie.value, secondary_storage)
+    @app.post("/do-login")
+    def do_login():
+        response = JSONResponse({"ok": True})
+        result = auth.login("test", response=response)
+        assert result is None  # response-based API returns None
+        return response
+
+    with TestClient(app) as client:
+        resp = client.post("/do-login")
+        session_id = resp.cookies.get("session_id")
+        assert session_id
+
+    # The session should be retrievable.
+    session = get_session(session_id, secondary_storage)
     assert session is not None
     assert session.user_id == "test"
 
@@ -233,22 +263,23 @@ def test_logout(
     app = FastAPI()
     app.include_router(auth.router)
 
-    # Create a session first
-    login_cookie = auth.login("test")
-    session_id = login_cookie.value
+    # Create a session first.
+    session_id, _ = create_session("test", secondary_storage)
 
     @app.post("/do-logout")
     def do_logout(request: Request):
-        cookie = auth.logout(request)
-        return {"cookie_name": cookie.name, "cookie_value": cookie.value}
+        response = JSONResponse({"ok": True})
+        result = auth.logout(request, response=response)
+        assert result is None  # response-based API returns None
+        return response
 
     with TestClient(app) as client:
         client.cookies.set("session_id", session_id)
         resp = client.post("/do-logout")
         assert resp.status_code == 200
-        data = resp.json()
-        assert data["cookie_name"] == "session_id"
-        assert data["cookie_value"] == ""
+        assert resp.json() == {"ok": True}
+        assert "session_id=" in resp.headers["set-cookie"]
+        assert "Max-Age=0" in resp.headers["set-cookie"]
 
     # Session should be deleted
     assert get_session(session_id, secondary_storage) is None
@@ -263,15 +294,16 @@ def test_logout_no_session_cookie(
 
     @app.post("/logout")
     def do_logout(request: Request):
-        cookie = auth.logout(request)
-        return {"cookie_name": cookie.name, "cookie_value": cookie.value}
+        response = JSONResponse({"ok": True})
+        auth.logout(request, response=response)
+        return response
 
     with TestClient(app) as client:
         resp = client.post("/logout")
         assert resp.status_code == 200
-        data = resp.json()
-        assert data["cookie_name"] == "session_id"
-        assert data["cookie_value"] == ""
+        assert resp.json() == {"ok": True}
+        assert "session_id=" in resp.headers["set-cookie"]
+        assert "Max-Age=0" in resp.headers["set-cookie"]
 
 
 def test_logout_custom_cookie_name(
@@ -285,26 +317,21 @@ def test_logout_custom_cookie_name(
     )
     app = FastAPI()
 
-    login_cookie = auth.login("test")
-    session_id = login_cookie.value
+    session_id, _ = create_session("test", secondary_storage)
 
     @app.post("/logout")
     def do_logout(request: Request):
-        cookie = auth.logout(request)
-        return {
-            "cookie_name": cookie.name,
-            "cookie_value": cookie.value,
-            "max_age": cookie.max_age,
-        }
+        response = JSONResponse({"ok": True})
+        auth.logout(request, response=response)
+        return response
 
     with TestClient(app) as client:
         client.cookies.set("my_sid", session_id)
         resp = client.post("/logout")
         assert resp.status_code == 200
-        data = resp.json()
-        assert data["cookie_name"] == "my_sid"
-        assert data["cookie_value"] == ""
-        assert data["max_age"] == 0
+        assert resp.json() == {"ok": True}
+        assert "my_sid=" in resp.headers["set-cookie"]
+        assert "Max-Age=0" in resp.headers["set-cookie"]
 
     # Session should be deleted
     assert get_session(session_id, secondary_storage) is None

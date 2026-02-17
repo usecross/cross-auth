@@ -25,6 +25,7 @@ cleanup into simple methods:
 
 ```python
 from cross_auth.fastapi import CrossAuth
+from fastapi.responses import JSONResponse
 
 auth = CrossAuth(
     providers=[],
@@ -40,8 +41,9 @@ if user is None:
     # Invalid credentials
     ...
 
-# Create session + cookie in one step
-cookie = auth.login(str(user.id))
+# Create session + set cookie in one step
+response = JSONResponse({"user": user.id})
+auth.login(str(user.id), response=response)
 ```
 
 ### Logout
@@ -49,8 +51,9 @@ cookie = auth.login(str(user.id))
 ```python
 from fastapi import Request
 
-# Delete session + get clear cookie in one step
-cookie = auth.logout(request)
+# Delete session + clear cookie in one step
+response = JSONResponse({"ok": True})
+auth.logout(request, response=response)
 ```
 
 ### Get Current User

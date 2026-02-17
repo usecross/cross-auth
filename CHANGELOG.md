@@ -10,8 +10,8 @@ methods for session management.
 
 - `CrossAuth` class with `authenticate()`, `login()`, `logout()`,
   `get_current_user()`, and `require_current_user()` public methods
-- `login(user_id)` creates a session and returns a ready-to-use `Cookie`
-- `logout(request)` deletes the session and returns a clear `Cookie`
+- `login(user_id, response=...)` creates a session and sets the cookie on the response
+- `logout(request, response=...)` deletes the session and clears the cookie on the response
 - `get_current_user()` as a FastAPI dependency with optional `raise_on_missing`
 - Server-side session expiry via `expires_at`, enforced on read
 - Constant-time password comparison to prevent timing attacks
