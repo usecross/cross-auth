@@ -17,36 +17,6 @@ from ..conftest import MemoryAccountsStorage
 pytestmark = pytest.mark.asyncio
 
 
-@pytest.fixture
-def valid_callback_request(secondary_storage: SecondaryStorage) -> AsyncHTTPRequest:
-    secondary_storage.set(
-        "oauth:authorization_request:test_state",
-        json.dumps(
-            {
-                "client_id": "my_app_client_id",
-                "redirect_uri": "http://valid-frontend.com/callback",
-                "login_hint": "test_login_hint",
-                "state": "test_state",
-                "client_state": "test_client_state",
-                "code_challenge": "test",
-                "code_challenge_method": "S256",
-                "provider_code_verifier": "test_provider_verifier",
-            }
-        ),
-    )
-
-    return AsyncHTTPRequest(
-        TestingRequestAdapter(
-            method="GET",
-            url="http://localhost:8000/test/callback",
-            query_params={
-                "code": "test_code",
-                "state": "test_state",
-            },
-        )
-    )
-
-
 async def test_fails_if_there_were_no_provider_data_in_secondary_storage(
     oauth_provider: OAuth2Provider, context: Context
 ):

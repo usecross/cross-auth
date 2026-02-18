@@ -81,3 +81,21 @@ def mock_emails_unverified_primary() -> list[dict]:
 def mock_emails_empty() -> list[dict]:
     """GitHub emails response with no emails."""
     return []
+
+
+@pytest.fixture
+def mock_emails() -> list[dict]:
+    return [
+        {
+            "email": "octocat@github.com",
+            "verified": True,
+            "primary": True,
+            "visibility": "public",
+        },
+        {
+            "email": "octocat@example.com",
+            "verified": True,
+            "primary": False,
+            "visibility": "private",
+        },
+    ]
