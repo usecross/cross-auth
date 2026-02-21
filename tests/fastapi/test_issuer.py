@@ -207,6 +207,7 @@ def test_returns_token_if_code_is_valid(client: TestClient, valid_code: str) -> 
             "refresh_token": None,
             "refresh_token_expires_in": None,
             "scope": "",
+            "id_token": None,
         }
     )
 
@@ -262,6 +263,7 @@ def test_password_grant_success(client: TestClient) -> None:
             "refresh_token": None,
             "refresh_token_expires_in": None,
             "scope": "",
+            "id_token": None,
         }
     )
 
@@ -286,5 +288,6 @@ def test_password_grant_with_scope(client: TestClient) -> None:
             "refresh_token": None,
             "refresh_token_expires_in": None,
             "scope": "",
+            "id_token": None,
         }
     )

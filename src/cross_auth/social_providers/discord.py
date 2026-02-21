@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from pydantic import BaseModel, EmailStr, Field
 
-from .oauth import OAuth2Provider
+from .oauth import OAuth2Provider, UserInfo
 
 
 class DiscordUser(BaseModel):
+    """Discord user object.
+
+    See: https://discord.com/developers/docs/resources/user#user-object
+    """
+
     id: str = Field(examples=["123456789012345678"])
     username: str = Field(examples=["username"])
     discriminator: str | None = Field(default=None, examples=["0000"])
@@ -26,9 +31,19 @@ class DiscordUser(BaseModel):
 
 
 class DiscordProvider(OAuth2Provider):
+    # NOTE: Discord users without an email will fail authentication
+    # (email is required).
     id = "discord"
     authorization_endpoint = "https://discord.com/oauth2/authorize"
     token_endpoint = "https://discord.com/api/oauth2/token"
     user_info_endpoint = "https://discord.com/api/users/@me"
     scopes = ["identify", "email"]
     supports_pkce = True
+
+    def fetch_user_info(self, access_token: str) -> UserInfo:
+        info = super().fetch_user_info(access_token)
+
+        # Map Discord's 'verified' field to our standard 'email_verified'
+        info["email_verified"] = info.get("verified")
+
+        return info

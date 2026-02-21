@@ -1,24 +1,21 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-import path from "path";
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import path from 'path'
 
-export default defineConfig(({ isSsrBuild, command }) => ({
+export default defineConfig(({ command }) => ({
   plugins: [react()],
-  base: command === "serve" ? "/" : isSsrBuild ? "/" : "/static/build/",
+  base: command === 'build' ? '/static/build/' : '/',
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./frontend"),
+      '@': path.resolve(__dirname, './frontend'),
     },
+    dedupe: ['@inertiajs/react', 'react', 'react-dom'],
   },
   build: {
-    manifest: !isSsrBuild,
-    outDir: isSsrBuild ? "frontend/dist/ssr" : "frontend/dist",
+    manifest: true,
+    outDir: 'static/build',
     rollupOptions: {
-      input: isSsrBuild ? "frontend/ssr.tsx" : "frontend/app.tsx",
+      input: 'frontend/app.tsx',
     },
   },
-  ssr: {
-    // Bundle all dependencies into the SSR build so no node_modules needed at runtime
-    noExternal: isSsrBuild ? true : ["shiki", "@inertiajs/react", "@usecross/docs"],
-  },
-}));
+}))

@@ -3,8 +3,7 @@ import json
 import httpx
 import pytest
 import respx
-from lia import AsyncHTTPRequest
-from lia.request import TestingRequestAdapter
+from cross_web import AsyncHTTPRequest, TestingRequestAdapter
 
 from cross_auth._context import Context
 from cross_auth.social_providers.oauth import OAuth2Provider
@@ -87,6 +86,7 @@ async def test_pkce_flow_includes_code_verifier(
             method="GET",
             url="http://localhost:8000/example_pkce/authorize",
             query_params={
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "code_challenge": "client_code_challenge",
                 "code_challenge_method": "S256",
@@ -100,6 +100,7 @@ async def test_pkce_flow_includes_code_verifier(
     )
 
     assert authorize_response.status_code == 302
+    assert authorize_response.headers is not None
 
     location = authorize_response.headers["Location"]
     state = location.split("state=")[1].split("&")[0]

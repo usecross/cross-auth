@@ -4,9 +4,8 @@ import json
 import httpx
 import pytest
 import time_machine
+from cross_web import AsyncHTTPRequest, TestingRequestAdapter
 from inline_snapshot import snapshot
-from lia import AsyncHTTPRequest
-from lia.request import TestingRequestAdapter
 from respx import MockRouter
 
 from cross_auth._context import Context, SecondaryStorage
@@ -24,6 +23,7 @@ def valid_callback_request(secondary_storage: SecondaryStorage) -> AsyncHTTPRequ
         "oauth:authorization_request:test_state",
         json.dumps(
             {
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "login_hint": "test_login_hint",
                 "state": "test_state",
@@ -91,6 +91,7 @@ async def test_fails_if_there_was_no_code_in_request(
         "oauth:authorization_request:test_state",
         json.dumps(
             {
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "login_hint": "test_login_hint",
                 "state": "test_state",
@@ -390,7 +391,7 @@ async def test_stores_the_code_in_the_session(
         "expires_at": datetime.datetime(
             2012, 10, 1, 1, 10, tzinfo=datetime.timezone.utc
         ),
-        "client_id": "test_client_id",
+        "client_id": "my_app_client_id",
         "redirect_uri": "http://valid-frontend.com/callback",
         "code_challenge": "test",
         "code_challenge_method": "S256",
@@ -407,7 +408,9 @@ async def test_fails_if_there_is_user_with_the_same_email_but_different_provider
     access_token = "test_access_token"
 
     accounts_storage.create_user(
-        user_info={"email": "pollo@example.com", "id": "pollo"}
+        user_info={"email": "pollo@example.com", "id": "pollo"},
+        email="pollo@example.com",
+        email_verified=True,
     )
 
     accounts_storage.create_social_account(
@@ -420,6 +423,9 @@ async def test_fails_if_there_is_user_with_the_same_email_but_different_provider
         refresh_token_expires_at=None,
         scope=None,
         user_info={"email": "pollo@example.com", "id": "pollo"},
+        provider_email="pollo@example.com",
+        provider_email_verified=True,
+        is_login_method=True,
     )
 
     data = {
@@ -448,7 +454,7 @@ async def test_fails_if_there_is_user_with_the_same_email_but_different_provider
     assert response.status_code == 302
     assert response.headers is not None
     assert response.headers["Location"] == snapshot(
-        "http://valid-frontend.com/callback?error=account_exists&error_description=An+account+with+this+email+already+exists.&state=test_client_state"
+        "http://valid-frontend.com/callback?error=account_not_linked&error_description=An+account+with+this+email+exists+but+could+not+be+linked+automatically.&state=test_client_state"
     )
 
 
@@ -461,6 +467,8 @@ async def test_works_when_there_is_user_with_the_same_email_and_provider(
 ):
     accounts_storage.create_user(
         user_info={"email": "pollo@example.com", "id": "pollo"},
+        email="pollo@example.com",
+        email_verified=True,
     )
 
     accounts_storage.create_social_account(
@@ -473,6 +481,9 @@ async def test_works_when_there_is_user_with_the_same_email_and_provider(
         refresh_token_expires_at=None,
         scope=None,
         user_info={"email": "pollo@example.com", "id": "pollo"},
+        provider_email="pollo@example.com",
+        provider_email_verified=True,
+        is_login_method=True,
     )
 
     data = {
@@ -519,6 +530,8 @@ async def test_updates_the_social_account_if_it_already_exists(
 ):
     accounts_storage.create_user(
         user_info={"email": "pollo@example.com", "id": "pollo"},
+        email="pollo@example.com",
+        email_verified=True,
     )
 
     accounts_storage.create_social_account(
@@ -531,6 +544,9 @@ async def test_updates_the_social_account_if_it_already_exists(
         refresh_token_expires_at=None,
         scope="old_scope",
         user_info={"email": "pollo@example.com", "id": "pollo"},
+        provider_email="pollo@example.com",
+        provider_email_verified=True,
+        is_login_method=True,
     )
 
     data = {
@@ -631,6 +647,7 @@ async def test_callback_returns_client_state_for_csrf_protection(
         f"oauth:authorization_request:{provider_state}",
         json.dumps(
             {
+                "client_id": "my_app_client_id",
                 "redirect_uri": "https://valid-frontend.com/callback",
                 "login_hint": None,
                 "state": provider_state,
@@ -679,6 +696,7 @@ async def test_callback_returns_client_state_for_csrf_protection(
 
     # The callback should redirect with both code AND state
     assert callback_response.status_code == 302
+    assert callback_response.headers is not None
     callback_redirect = callback_response.headers["Location"]
 
     # The redirect should include the authorization code

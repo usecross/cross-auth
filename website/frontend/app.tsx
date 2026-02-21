@@ -1,10 +1,13 @@
-import { createDocsApp } from "@usecross/docs";
-import { DocsPage } from "./pages/DocsPage";
-import "./globals.css";
+import { createDocsApp, DocsPage } from '@usecross/docs'
+import './globals.css'
+
+// Import page components
+import Home from './pages/Home'
 
 createDocsApp({
   pages: {
-    "docs/DocsPage": DocsPage,
+    Home,
+    'docs/DocsPage': DocsPage,
   },
-  title: (title) => `${title} - Cross Auth`,
-});
+  title: (title) => (title ? `${title} - Cross-Auth` : 'Cross-Auth'),
+})

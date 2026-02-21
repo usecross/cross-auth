@@ -3,9 +3,8 @@ from datetime import datetime, timezone
 
 import pytest
 import time_machine
+from cross_web import AsyncHTTPRequest, TestingRequestAdapter
 from inline_snapshot import snapshot
-from lia import AsyncHTTPRequest
-from lia.request import TestingRequestAdapter
 
 from cross_auth._context import Context, SecondaryStorage
 from cross_auth.social_providers.oauth import OAuth2Provider
@@ -23,6 +22,7 @@ def valid_link_callback_request(
         "oauth:authorization_request:test_state",
         json.dumps(
             {
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/link",
                 "login_hint": "test_login_hint",
                 "state": "test_state",

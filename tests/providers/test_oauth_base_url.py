@@ -1,6 +1,5 @@
 import pytest
-from lia import AsyncHTTPRequest
-from lia.request import TestingRequestAdapter
+from cross_web import AsyncHTTPRequest, TestingRequestAdapter
 
 from cross_auth._context import Context
 from cross_auth._storage import SecondaryStorage
@@ -44,6 +43,7 @@ async def test_authorize_uses_base_url_for_redirect_uri(
             method="GET",
             url="http://backend:8000/auth/github/authorize",
             query_params={
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "state": "test_state",
                 "response_type": "code",
@@ -82,6 +82,7 @@ async def test_authorize_with_nested_path_and_base_url(
             method="GET",
             url="http://backend:8000/api/v1/auth/github/authorize",
             query_params={
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "state": "test_state",
                 "response_type": "code",
@@ -94,6 +95,7 @@ async def test_authorize_with_nested_path_and_base_url(
     response = await oauth_provider.authorize(request, context_with_base_url)
 
     assert response.status_code == 302
+    assert response.headers is not None
     location = response.headers["Location"]
 
     # Should preserve the full path structure
@@ -114,6 +116,7 @@ async def test_authorize_without_base_url_fallback(
             method="GET",
             url="http://backend:8000/test/authorize",
             query_params={
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "state": "test_state",
                 "response_type": "code",
@@ -126,6 +129,7 @@ async def test_authorize_without_base_url_fallback(
     response = await oauth_provider.authorize(request, context)
 
     assert response.status_code == 302
+    assert response.headers is not None
     location = response.headers["Location"]
 
     # Without base_url, should use the request URL
@@ -156,6 +160,7 @@ async def test_authorize_base_url_with_trailing_slash(
             method="GET",
             url="http://backend:8000/auth/authorize",
             query_params={
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "state": "test_state",
                 "response_type": "code",
@@ -168,6 +173,7 @@ async def test_authorize_base_url_with_trailing_slash(
     response = await oauth_provider.authorize(request, context)
 
     assert response.status_code == 302
+    assert response.headers is not None
     location = response.headers["Location"]
 
     # Should handle trailing slash correctly and not create double slashes
@@ -204,6 +210,7 @@ async def test_authorize_base_url_with_different_port(
             method="GET",
             url="http://internal-service:8080/auth/provider/authorize",
             query_params={
+                "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "state": "test_state",
                 "response_type": "code",
@@ -216,6 +223,7 @@ async def test_authorize_base_url_with_different_port(
     response = await oauth_provider.authorize(request, context)
 
     assert response.status_code == 302
+    assert response.headers is not None
     location = response.headers["Location"]
 
     # Should use the configured base_url with its port

@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from cross_web import AsyncHTTPRequest
 from inline_snapshot import snapshot
-from lia import AsyncHTTPRequest
 
 from cross_auth._context import Context
 from cross_auth._issuer import AuthorizationCodeGrantData, Issuer
@@ -257,6 +257,7 @@ async def test_returns_token_if_code_is_valid(
             "refresh_token": None,
             "refresh_token_expires_in": None,
             "scope": "",
+            "id_token": None,
         }
     )
 
@@ -396,6 +397,7 @@ async def test_password_grant_success(issuer: Issuer, context: Context):
             "refresh_token": None,
             "refresh_token_expires_in": None,
             "scope": "",
+            "id_token": None,
         }
     )
 
@@ -422,6 +424,7 @@ async def test_password_grant_with_scope(issuer: Issuer, context: Context):
             "refresh_token": None,
             "refresh_token_expires_in": None,
             "scope": "",
+            "id_token": None,
         }
     )
 

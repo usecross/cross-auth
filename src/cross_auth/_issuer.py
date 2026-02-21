@@ -1,8 +1,7 @@
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
-from lia import AsyncHTTPRequest, Response
-from passlib.context import CryptContext
+from cross_web import AsyncHTTPRequest, Response
 from pydantic import AwareDatetime, BaseModel, Discriminator, Field, ValidationError
 from pydantic.type_adapter import TypeAdapter
 
@@ -10,14 +9,8 @@ from cross_auth.models.oauth_token_response import TokenResponse
 from cross_auth.utils._pkce import validate_pkce
 
 from ._context import Context
+from ._password import DUMMY_PASSWORD_HASH, pwd_context, validate_password
 from ._route import Form, Route
-from ._storage import User
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# Pre-computed dummy hash for constant-time password verification
-# This prevents timing attacks that could enumerate valid users
-DUMMY_PASSWORD_HASH = "$2b$12$K6qGJzUzL5H0yQKqVZKZFuJ9aZqZ5qH0yQKqVZKZFuJ9aZqZ5qH0y"
 
 
 class AuthorizationCodeGrantRequest(BaseModel):
@@ -152,9 +145,9 @@ class Issuer:
         # TODO: validate client_id exists in client registry
         # TODO: support confidential clients (client_secret)
 
-        if token_request.grant_type == "authorization_code":
+        if isinstance(token_request, AuthorizationCodeGrantRequest):
             return self._authorization_code_grant(token_request, context)
-        elif token_request.grant_type == "password":
+        elif isinstance(token_request, PasswordGrantRequest):
             return self._password_grant(token_request, context)
 
     def _authorization_code_grant(
@@ -241,12 +234,6 @@ class Issuer:
             cookies=[],
         )
 
-    def validate_password(self, user: User, password: str) -> bool:
-        if user.hashed_password is None:
-            return False
-
-        return pwd_context.verify(password, user.hashed_password)
-
     def _password_grant(
         self, request: PasswordGrantRequest, context: Context
     ) -> Response:
@@ -255,14 +242,14 @@ class Issuer:
         # Always perform password verification to prevent timing attacks
         # that could be used to enumerate valid user accounts
         if user:
-            valid = self.validate_password(user, request.password)
+            valid = validate_password(user, request.password)
         else:
             # Perform dummy hash verification for non-existent users
             # to maintain constant time and prevent user enumeration
             pwd_context.verify(request.password, DUMMY_PASSWORD_HASH)
             valid = False
 
-        if not valid:
+        if not valid or user is None:
             return self._error_response("invalid_grant", "Invalid username or password")
 
         token, expires_in = context.create_token(str(user.id))

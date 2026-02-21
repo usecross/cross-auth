@@ -1,141 +1,88 @@
 ---
-title: Storage Implementation
-description: Learn about implementing storage for Cross Auth
-section: Core Concepts
-order: 2
+title: Storage
+description:
+  Implement the storage protocols to connect Cross-Auth to your database.
+order: 1
+section: Guides
 ---
 
-# Storage Implementation
+## Overview
 
-Cross Auth requires two storage implementations: one for temporary data and one for persistent data.
+Cross-Auth uses Python protocol classes (structural subtyping) for storage. You
+don't need to inherit from a base class -- just implement the required methods
+and Cross-Auth will accept your objects.
 
-## Secondary Storage
+## AccountsStorage
 
-Used for temporary data like OAuth state, authorization codes, and link codes. Typically implemented with Redis or similar cache.
-
-```python
-from cross_auth._storage import SecondaryStorage
-
-class RedisSecondaryStorage(SecondaryStorage):
-    def __init__(self, redis_client):
-        self.redis = redis_client
-
-    def set(self, key: str, value: str):
-        # Set with TTL (e.g., 10 minutes)
-        self.redis.setex(key, 600, value)
-
-    def get(self, key: str) -> str | None:
-        value = self.redis.get(key)
-        return value.decode() if value else None
-
-    def delete(self, key: str):
-        self.redis.delete(key)
-
-    def pop(self, key: str) -> str | None:
-        # Atomically get and delete
-        value = self.get(key)
-        if value:
-            self.delete(key)
-        return value
-```
-
-## Accounts Storage
-
-Used for persistent user and social account data. Implement with your database ORM (SQLAlchemy, Django ORM, etc.).
+The `AccountsStorage` protocol defines how Cross-Auth looks up and creates
+users.
 
 ```python
-from cross_auth._storage import AccountsStorage, User, SocialAccount
-from datetime import datetime
-from typing import Any
-
-class DatabaseAccountsStorage(AccountsStorage):
-    def find_user_by_email(self, email: str) -> User | None:
-        # Query your database
-        return db.query(UserModel).filter_by(email=email).first()
-
-    def find_user_by_id(self, id: Any) -> User | None:
-        return db.query(UserModel).filter_by(id=id).first()
-
+class AccountsStorage(Protocol):
+    def find_user_by_email(self, email: str) -> User | None: ...
+    def find_user_by_id(self, id: Any) -> User | None: ...
     def find_social_account(
-        self,
-        *,
-        provider: str,
-        provider_user_id: str,
-    ) -> SocialAccount | None:
-        return db.query(SocialAccountModel).filter_by(
-            provider=provider,
-            provider_user_id=provider_user_id
-        ).first()
-
-    def create_user(self, *, user_info: dict[str, Any]) -> User:
-        user = UserModel(
-            email=user_info["email"],
-            # ... other fields
-        )
-        db.add(user)
-        db.commit()
-        return user
-
-    def create_social_account(
-        self,
-        *,
-        user_id: Any,
-        provider: str,
-        provider_user_id: str,
-        access_token: str | None,
-        refresh_token: str | None,
-        access_token_expires_at: datetime | None,
-        refresh_token_expires_at: datetime | None,
-        scope: str | None,
-        user_info: dict[str, Any],
-    ) -> SocialAccount:
-        account = SocialAccountModel(
-            user_id=user_id,
-            provider=provider,
-            provider_user_id=provider_user_id,
-            access_token=access_token,
-            # ... other fields
-        )
-        db.add(account)
-        db.commit()
-        return account
-
-    def update_social_account(
-        self,
-        social_account_id: Any,
-        *,
-        access_token: str | None,
-        refresh_token: str | None,
-        access_token_expires_at: datetime | None,
-        refresh_token_expires_at: datetime | None,
-        scope: str | None,
-        user_info: dict[str, Any],
-    ) -> SocialAccount:
-        account = db.query(SocialAccountModel).get(social_account_id)
-        account.access_token = access_token
-        # ... update other fields
-        db.commit()
-        return account
+        self, *, provider: str, provider_user_id: str
+    ) -> SocialAccount | None: ...
+    def create_user(
+        self, *, user_info: dict[str, Any], email: str, email_verified: bool
+    ) -> User: ...
+    def create_social_account(self, **kwargs) -> SocialAccount: ...
+    def update_social_account(self, social_account_id, **kwargs) -> SocialAccount: ...
 ```
 
-## User and SocialAccount Protocols
+### User Protocol
 
-Your models must satisfy these protocols:
+Your user model must expose these attributes:
 
 ```python
-# User Protocol
 class User(Protocol):
     id: Any
     email: str
+    email_verified: bool
     hashed_password: str | None
 
     @property
     def social_accounts(self) -> Iterable[SocialAccount]: ...
+```
 
-# SocialAccount Protocol
-class SocialAccount(Protocol):
-    id: Any
-    user_id: Any
-    provider_user_id: str
-    provider: str
+## SecondaryStorage
+
+The `SecondaryStorage` protocol is used for ephemeral data: sessions, OAuth
+authorization codes, and PKCE challenges.
+
+```python
+class SecondaryStorage(Protocol):
+    def set(self, key: str, value: str): ...
+    def get(self, key: str) -> str | None: ...
+    def delete(self, key: str): ...
+    def pop(self, key: str) -> str | None: ...
+```
+
+A Redis-backed implementation is a good fit for production:
+
+```python
+import redis
+
+
+class RedisStorage:
+    def __init__(self, url: str = "redis://localhost:6379"):
+        self.client = redis.from_url(url)
+
+    def set(self, key: str, value: str):
+        self.client.set(key, value)
+
+    def get(self, key: str) -> str | None:
+        result = self.client.get(key)
+        return result.decode() if result else None
+
+    def delete(self, key: str):
+        self.client.delete(key)
+
+    def pop(self, key: str) -> str | None:
+        pipe = self.client.pipeline()
+        pipe.get(key)
+        pipe.delete(key)
+        result, _ = pipe.execute()
+        return result.decode() if result else None
 ```

@@ -1,12 +1,12 @@
 [project]
 name = "cross-auth"
-version = "0.1.1"
+version = "0.7.0"
 description = "A modern Authentication Framework for Python"
 readme = "README.md"
 authors = [{ name = "Patrick Arminio", email = "patrick.arminio@gmail.com" }]
 requires-python = ">=3.11"
 dependencies = [
-    "lia-web>=0.1.2",
+    "cross-web>=0.4.0",
     "passlib[bcrypt]>=1.7.4",
     "pydantic[email]>=2.11.3",
     "bcrypt>=4.0.0,<5.0.0",
@@ -22,6 +22,7 @@ build-backend = "hatchling.build"
 dev = [
     "fastapi>=0.115.12",
     "httpx>=0.28.1",
+    "nox>=2024.10.9",
     "pytest>=9.0",
     "pytest-asyncio>=0.23.8",
     "python-multipart>=0.0.20",
@@ -45,4 +46,19 @@ strict = true
 addopts = ["-ra", "-q"]
 testpaths = [
     "tests",
+]
+
+[tool.coverage.run]
+parallel = true
+branch = true
+source = ["cross_auth"]
+
+[tool.coverage.paths]
+source = ["src"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "@overload",
 ]
