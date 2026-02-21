@@ -41,7 +41,7 @@ class UserInfo(TypedDict, total=True):
 
 @dataclass
 class ValidatedUserInfo:
-    email: str
+    email: str | None
     provider_user_id: str
     email_verified: bool | None
 
@@ -84,6 +84,7 @@ class OAuth2LinkCodeData(BaseModel):
     provider_code: str
     provider_code_verifier: str | None = None
     client_state: str | None = None
+    provider_callback_extra: dict[str, Any] | None = None
 
 
 class InitiateLinkRequest(BaseModel):
@@ -422,7 +423,9 @@ class OAuth2Provider:
             )
 
         if provider_data.link:
-            return self._link_flow(request, context, provider_data, callback_data.code)
+            return self._link_flow(
+                request, context, provider_data, callback_data.code, callback_data.extra
+            )
 
         redirect_uri = provider_data.redirect_uri
 
@@ -469,8 +472,22 @@ class OAuth2Provider:
             )
 
             user = context.accounts_storage.find_user_by_id(social_account.user_id)
-            assert user is not None, "User not found for social account"
+            if user is None:
+                return Response.error_redirect(
+                    redirect_uri,
+                    error="server_error",
+                    error_description="User not found for social account",
+                    state=provider_data.client_state,
+                )
         else:
+            if validated.email is None:
+                return Response.error_redirect(
+                    redirect_uri,
+                    error="server_error",
+                    error_description="No email provided by the identity provider",
+                    state=provider_data.client_state,
+                )
+
             user: User | None = None
 
             if self.can_auto_link(context, validated.email_verified):
@@ -562,6 +579,7 @@ class OAuth2Provider:
         context: Context,
         provider_data: OAuth2AuthorizationRequestData,
         provider_code: str,
+        extra: dict[str, Any] | None = None,
     ) -> Response:
         # user_id should always be present for link flows (validated in authorize)
         if not provider_data.user_id:
@@ -583,6 +601,7 @@ class OAuth2Provider:
             provider_code=provider_code,
             provider_code_verifier=provider_data.provider_code_verifier,
             client_state=provider_data.client_state,
+            provider_callback_extra=extra,
         )
 
         code = self._generate_code()
@@ -704,7 +723,11 @@ class OAuth2Provider:
             token_response = self.parse_token_response(response)
 
             if token_response.is_error():
-                assert isinstance(token_response.root, TokenErrorResponse)
+                if not isinstance(token_response.root, TokenErrorResponse):
+                    raise OAuth2Exception(
+                        error="server_error",
+                        error_description="Unexpected token response format",
+                    )
 
                 logger.error(f"Token exchange failed: {token_response.root.error}")
 
@@ -713,7 +736,11 @@ class OAuth2Provider:
                     error_description=f"Token exchange failed: {token_response.root.error}",
                 )
 
-            assert isinstance(token_response.root, TokenResponse)
+            if not isinstance(token_response.root, TokenResponse):
+                raise OAuth2Exception(
+                    error="server_error",
+                    error_description="Unexpected token response format",
+                )
             return token_response.root
 
         except httpx.HTTPStatusError as e:
@@ -732,6 +759,12 @@ class OAuth2Provider:
             ) from e
 
     def fetch_user_info(self, access_token: str) -> UserInfo:
+        if not self.user_info_endpoint:
+            raise NotImplementedError(
+                f"{self.__class__.__name__} does not have a user_info_endpoint. "
+                "Override get_user_info_from_token_response() instead."
+            )
+
         try:
             response = httpx.get(
                 self.user_info_endpoint,
@@ -879,7 +912,9 @@ class OAuth2Provider:
                 link_data.provider_code_verifier,
             )
 
-            user_info = self.fetch_user_info(token_response.access_token)
+            user_info = self.get_user_info_from_token_response(
+                token_response, context, link_data.provider_callback_extra
+            )
             validated = self.validate_user_info(user_info)
         except OAuth2Exception as e:
             return Response.error(

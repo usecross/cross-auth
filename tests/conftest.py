@@ -50,7 +50,7 @@ class MemoryStorage(SecondaryStorage):
     def __init__(self):
         self.data = {}
 
-    def set(self, key: str, value: str):
+    def set(self, key: str, value: str, ttl: int | None = None):
         self.data[key] = value
 
     def get(self, key: str) -> str | None:

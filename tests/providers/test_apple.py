@@ -1,5 +1,6 @@
 import json
 import time
+from typing import Any
 
 import jwt
 import pytest
@@ -14,7 +15,7 @@ from cross_auth.social_providers.apple import (
     AppleProvider,
     AppleUserName,
 )
-from cross_auth.social_providers.oauth import OAuth2Exception
+from cross_auth.social_providers.oauth import OAuth2Exception, ValidatedUserInfo
 
 # --- Fixtures ---
 
@@ -206,7 +207,7 @@ def mock_secondary_storage(mock_apple_jwks: dict):
                 return json.dumps({"keys": mock_apple_jwks["keys"]})
             return None
 
-        def set(self, key: str, value: str) -> None:
+        def set(self, key: str, value: str, ttl: int | None = None) -> None:
             pass
 
         def delete(self, key: str) -> None:
@@ -385,15 +386,17 @@ def test_extract_user_info_no_email(apple_provider: AppleProvider):
 
 def test_payload_parses_string_booleans():
     """Test that string booleans from Apple are parsed correctly."""
-    payload = AppleIdTokenPayload.model_validate({
-        "iss": "https://appleid.apple.com",
-        "sub": "user123",
-        "aud": "com.example.app",
-        "iat": 1234567890,
-        "exp": 1234571490,
-        "email_verified": "true",  # String, not bool
-        "is_private_email": "false",  # String, not bool
-    })
+    payload = AppleIdTokenPayload.model_validate(
+        {
+            "iss": "https://appleid.apple.com",
+            "sub": "user123",
+            "aud": "com.example.app",
+            "iat": 1234567890,
+            "exp": 1234571490,
+            "email_verified": "true",  # String, not bool
+            "is_private_email": "false",  # String, not bool
+        }
+    )
 
     assert payload.email_verified is True
     assert payload.is_private_email is False
@@ -401,15 +404,17 @@ def test_payload_parses_string_booleans():
 
 def test_payload_handles_actual_booleans():
     """Test that actual booleans also work (for flexibility)."""
-    payload = AppleIdTokenPayload.model_validate({
-        "iss": "https://appleid.apple.com",
-        "sub": "user123",
-        "aud": "com.example.app",
-        "iat": 1234567890,
-        "exp": 1234571490,
-        "email_verified": True,
-        "is_private_email": False,
-    })
+    payload = AppleIdTokenPayload.model_validate(
+        {
+            "iss": "https://appleid.apple.com",
+            "sub": "user123",
+            "aud": "com.example.app",
+            "iat": 1234567890,
+            "exp": 1234571490,
+            "email_verified": True,
+            "is_private_email": False,
+        }
+    )
 
     assert payload.email_verified is True
     assert payload.is_private_email is False
@@ -417,13 +422,33 @@ def test_payload_handles_actual_booleans():
 
 def test_payload_defaults_missing_booleans_to_false():
     """Test that missing boolean fields default to False."""
-    payload = AppleIdTokenPayload.model_validate({
-        "iss": "https://appleid.apple.com",
-        "sub": "user123",
-        "aud": "com.example.app",
-        "iat": 1234567890,
-        "exp": 1234571490,
-    })
+    payload = AppleIdTokenPayload.model_validate(
+        {
+            "iss": "https://appleid.apple.com",
+            "sub": "user123",
+            "aud": "com.example.app",
+            "iat": 1234567890,
+            "exp": 1234571490,
+        }
+    )
+
+    assert payload.email_verified is False
+    assert payload.is_private_email is False
+
+
+def test_payload_numeric_booleans_return_false():
+    """Test that numeric values (non-bool, non-string) return False."""
+    payload = AppleIdTokenPayload.model_validate(
+        {
+            "iss": "https://appleid.apple.com",
+            "sub": "user123",
+            "aud": "com.example.app",
+            "iat": 1234567890,
+            "exp": 1234571490,
+            "email_verified": 1,
+            "is_private_email": 0,
+        }
+    )
 
     assert payload.email_verified is False
     assert payload.is_private_email is False
@@ -432,48 +457,56 @@ def test_payload_defaults_missing_booleans_to_false():
 def test_payload_parses_real_user_status_integers():
     """Test that integer real_user_status is parsed to descriptive string."""
     # 0 = unsupported
-    payload = AppleIdTokenPayload.model_validate({
-        "iss": "https://appleid.apple.com",
-        "sub": "user123",
-        "aud": "com.example.app",
-        "iat": 1234567890,
-        "exp": 1234571490,
-        "real_user_status": 0,
-    })
+    payload = AppleIdTokenPayload.model_validate(
+        {
+            "iss": "https://appleid.apple.com",
+            "sub": "user123",
+            "aud": "com.example.app",
+            "iat": 1234567890,
+            "exp": 1234571490,
+            "real_user_status": 0,
+        }
+    )
     assert payload.real_user_status == "unsupported"
 
     # 1 = unknown
-    payload = AppleIdTokenPayload.model_validate({
-        "iss": "https://appleid.apple.com",
-        "sub": "user123",
-        "aud": "com.example.app",
-        "iat": 1234567890,
-        "exp": 1234571490,
-        "real_user_status": 1,
-    })
+    payload = AppleIdTokenPayload.model_validate(
+        {
+            "iss": "https://appleid.apple.com",
+            "sub": "user123",
+            "aud": "com.example.app",
+            "iat": 1234567890,
+            "exp": 1234571490,
+            "real_user_status": 1,
+        }
+    )
     assert payload.real_user_status == "unknown"
 
     # 2 = likely_real
-    payload = AppleIdTokenPayload.model_validate({
-        "iss": "https://appleid.apple.com",
-        "sub": "user123",
-        "aud": "com.example.app",
-        "iat": 1234567890,
-        "exp": 1234571490,
-        "real_user_status": 2,
-    })
+    payload = AppleIdTokenPayload.model_validate(
+        {
+            "iss": "https://appleid.apple.com",
+            "sub": "user123",
+            "aud": "com.example.app",
+            "iat": 1234567890,
+            "exp": 1234571490,
+            "real_user_status": 2,
+        }
+    )
     assert payload.real_user_status == "likely_real"
 
 
 def test_payload_real_user_status_defaults_to_none():
     """Test that missing real_user_status defaults to None."""
-    payload = AppleIdTokenPayload.model_validate({
-        "iss": "https://appleid.apple.com",
-        "sub": "user123",
-        "aud": "com.example.app",
-        "iat": 1234567890,
-        "exp": 1234571490,
-    })
+    payload = AppleIdTokenPayload.model_validate(
+        {
+            "iss": "https://appleid.apple.com",
+            "sub": "user123",
+            "aud": "com.example.app",
+            "iat": 1234567890,
+            "exp": 1234571490,
+        }
+    )
 
     assert payload.real_user_status is None
 
@@ -486,12 +519,15 @@ def test_validate_user_info_with_email(apple_provider: AppleProvider):
     user_info = {
         "id": "001234.abcd5678.7890",
         "email": "user@example.com",
+        "email_verified": True,
     }
 
-    email, provider_user_id = apple_provider.validate_user_info(user_info)
+    result = apple_provider.validate_user_info(user_info)
 
-    assert email == "user@example.com"
-    assert provider_user_id == "001234.abcd5678.7890"
+    assert isinstance(result, ValidatedUserInfo)
+    assert result.email == "user@example.com"
+    assert result.provider_user_id == "001234.abcd5678.7890"
+    assert result.email_verified is True
 
 
 def test_validate_user_info_without_email(apple_provider: AppleProvider):
@@ -499,18 +535,21 @@ def test_validate_user_info_without_email(apple_provider: AppleProvider):
     user_info = {
         "id": "001234.abcd5678.7890",
         "email": None,
+        "email_verified": None,
     }
 
-    email, provider_user_id = apple_provider.validate_user_info(user_info)
+    result = apple_provider.validate_user_info(user_info)
 
-    assert email is None
-    assert provider_user_id == "001234.abcd5678.7890"
+    assert isinstance(result, ValidatedUserInfo)
+    assert result.email is None
+    assert result.provider_user_id == "001234.abcd5678.7890"
 
 
 def test_validate_user_info_missing_id(apple_provider: AppleProvider):
     """Test that missing user ID raises error."""
-    user_info = {
+    user_info: dict[str, Any] = {
         "email": "user@example.com",
+        "email_verified": None,
         # Missing id
     }
 
@@ -537,11 +576,12 @@ def test_routes_count(apple_provider: AppleProvider):
     """Test that all expected routes are registered."""
     routes = apple_provider.routes
 
-    assert len(routes) == 3
+    assert len(routes) == 4
     paths = [r.path for r in routes]
     assert "/apple/authorize" in paths
     assert "/apple/callback" in paths
     assert "/apple/finalize-link" in paths
+    assert "/apple/link" in paths
 
 
 # --- First-time user data parsing tests ---
@@ -556,6 +596,7 @@ def test_parse_full_user_data():
         }
     )
 
+    assert data.name is not None
     assert data.name.first_name == "John"
     assert data.name.last_name == "Doe"
     assert data.email == "john.doe@example.com"
@@ -565,6 +606,7 @@ def test_parse_partial_user_data():
     """Test parsing user data with only name."""
     data = AppleFirstTimeUserData.model_validate({"name": {"firstName": "John"}})
 
+    assert data.name is not None
     assert data.name.first_name == "John"
     assert data.name.last_name is None
     assert data.email is None

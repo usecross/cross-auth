@@ -1,17 +1,3 @@
-"""Apple Sign In OAuth2 Provider.
-
-Apple's OAuth implementation differs from standard providers:
-- Client secret is a JWT signed with ES256 (regenerated per request)
-- No userinfo endpoint - user data comes from id_token JWT
-- Email/name only sent on FIRST authorization (must cache)
-- Callback uses POST with form data (response_mode=form_post)
-- Authorization code valid only 5 minutes
-
-References:
-- https://developer.apple.com/documentation/signinwithapplerestapi
-- https://developer.apple.com/documentation/sign_in_with_apple/generate_and_validate_tokens
-"""
-
 import json
 import logging
 import time
@@ -19,17 +5,21 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import httpx
 import jwt
-from lia import AsyncHTTPRequest
+from cross_web import AsyncHTTPRequest
 from pydantic import BaseModel, EmailStr, Field, ValidationError, field_validator
 
 from cross_auth._context import Context
-from cross_auth.models.oauth_token_response import OAuth2TokenEndpointResponse, TokenResponse
+from cross_auth.models.oauth_token_response import (
+    OAuth2TokenEndpointResponse,
+    TokenResponse,
+)
 
 from .oauth import (
     CallbackData,
     OAuth2Exception,
     TokenExchangeParams,
     UserInfo,
+    ValidatedUserInfo,
 )
 from .oidc import OIDCProvider
 
@@ -37,6 +27,12 @@ if TYPE_CHECKING:
     from cross_auth._storage import SecondaryStorage
 
 logger = logging.getLogger(__name__)
+
+_REAL_USER_STATUS_MAP: dict[int, Literal["unsupported", "unknown", "likely_real"]] = {
+    0: "unsupported",
+    1: "unknown",
+    2: "likely_real",
+}
 
 
 class AppleAuthConfig(BaseModel):
@@ -48,13 +44,13 @@ class AppleAuthConfig(BaseModel):
 
 class AppleIdTokenPayload(BaseModel):
     iss: Literal["https://appleid.apple.com"]
-    sub: str  # Unique user identifier (stable)
-    aud: str  # Your client_id
+    sub: str
+    aud: str
     iat: int
     exp: int
     email: EmailStr | None = None
-    email_verified: bool = False  # Apple sends "true"/"false" as strings in JSON
-    is_private_email: bool = False  # Apple sends "true"/"false" as strings in JSON
+    email_verified: bool = False
+    is_private_email: bool = False
     auth_time: int | None = None
     nonce: str | None = None
     nonce_supported: bool | None = None
@@ -80,7 +76,10 @@ class AppleIdTokenPayload(BaseModel):
         if isinstance(v, bool):
             return v
 
-        return str(v).lower() == "true"
+        if isinstance(v, str):
+            return v.lower() == "true"
+
+        return False
 
     @field_validator("real_user_status", mode="before")
     @classmethod
@@ -97,11 +96,10 @@ class AppleIdTokenPayload(BaseModel):
         if isinstance(v, str):
             return v  # type: ignore  # Already a string, assume valid
 
-        result = dict[int, Literal["unsupported", "unknown", "likely_real"]](
-            {0: "unsupported", 1: "unknown", 2: "likely_real"}
-        ).get(v)
+        result = _REAL_USER_STATUS_MAP.get(v)
 
-        assert result is not None, f"Invalid real_user_status value: {v}"
+        if result is None:
+            raise ValueError(f"Invalid real_user_status value: {v}")
 
         return result
 
@@ -111,8 +109,8 @@ class AppleUserName(BaseModel):
 
     model_config = {"populate_by_name": True}
 
-    first_name: str | None = Field(default=None, alias="firstName")
-    last_name: str | None = Field(default=None, alias="lastName")
+    first_name: Annotated[str | None, Field(default=None, alias="firstName")]
+    last_name: Annotated[str | None, Field(default=None, alias="lastName")]
 
 
 class AppleFirstTimeUserData(BaseModel):
@@ -271,7 +269,7 @@ class AppleProvider(OIDCProvider):
             "User info is extracted from the id_token."
         )
 
-    def validate_user_info(self, user_info: UserInfo) -> tuple[str, str]:
+    def validate_user_info(self, user_info: UserInfo) -> ValidatedUserInfo:
         """Validate and extract email and provider user ID.
 
         Note: Email may be None on subsequent logins (Apple only sends on first auth).
@@ -288,7 +286,11 @@ class AppleProvider(OIDCProvider):
         # Email may be None on subsequent logins - that's expected
         email = user_info.get("email")
 
-        return email, provider_user_id
+        return ValidatedUserInfo(
+            email=email,
+            provider_user_id=str(provider_user_id),
+            email_verified=user_info.get("email_verified"),
+        )
 
     async def extract_callback_data(self, request: AsyncHTTPRequest) -> CallbackData:
         """Extract callback data from Apple's POST form data.
@@ -342,7 +344,9 @@ class AppleProvider(OIDCProvider):
 
         return self.extract_user_info(id_token_payload, first_time_user_data)
 
-    def parse_token_response(self, response: httpx.Response) -> OAuth2TokenEndpointResponse:
+    def parse_token_response(
+        self, response: httpx.Response
+    ) -> OAuth2TokenEndpointResponse:
         """Parse Apple's token response which includes id_token.
 
         Raises:
@@ -356,4 +360,3 @@ class AppleProvider(OIDCProvider):
                 error="server_error",
                 error_description="Failed to parse token response",
             )
-
