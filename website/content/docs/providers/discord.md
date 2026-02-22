@@ -32,6 +32,7 @@ discord = DiscordProvider(
 ### Configure OAuth2
 
 1. In **OAuth2** → **General**:
+
    - Copy the **Client ID**
    - Click **Reset Secret** and copy the **Client Secret**
 
@@ -44,32 +45,32 @@ discord = DiscordProvider(
 
 The Discord provider requests these scopes by default:
 
-| Scope | Description |
-|-------|-------------|
+| Scope      | Description                        |
+| ---------- | ---------------------------------- |
 | `identify` | Access user's ID, username, avatar |
-| `email` | Access user's email address |
+| `email`    | Access user's email address        |
 
 ### Additional Scopes
 
-| Scope | Description |
-|-------|-------------|
-| `guilds` | Access user's guild (server) list |
-| `guilds.join` | Join users to a guild |
-| `connections` | Access user's linked accounts |
+| Scope         | Description                       |
+| ------------- | --------------------------------- |
+| `guilds`      | Access user's guild (server) list |
+| `guilds.join` | Join users to a guild             |
+| `connections` | Access user's linked accounts     |
 
 ## User Info
 
 Discord returns the following user information:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | string | Discord user ID (snowflake) |
-| `email` | string | User's email address |
-| `username` | string | Discord username |
-| `discriminator` | string | 4-digit tag (legacy, may be "0") |
-| `global_name` | string | Display name |
-| `avatar` | string | Avatar hash |
-| `verified` | boolean | Whether email is verified |
+| Field           | Type    | Description                      |
+| --------------- | ------- | -------------------------------- |
+| `id`            | string  | Discord user ID (snowflake)      |
+| `email`         | string  | User's email address             |
+| `username`      | string  | Discord username                 |
+| `discriminator` | string  | 4-digit tag (legacy, may be "0") |
+| `global_name`   | string  | Display name                     |
+| `avatar`        | string  | Avatar hash                      |
+| `verified`      | boolean | Whether email is verified        |
 
 ### Avatar URL
 
@@ -106,6 +107,7 @@ app.include_router(auth_router, prefix="/auth")
 ```
 
 Users can then authenticate via:
+
 - `GET /auth/discord/authorize` - Start OAuth flow
 - `GET /auth/discord/callback` - OAuth callback (handled automatically)
 
@@ -125,5 +127,6 @@ Users can then authenticate via:
 ### Rate Limiting
 
 Discord has strict rate limits. If you're getting 429 errors:
+
 - Implement exponential backoff
 - Cache user data where possible

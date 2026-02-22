@@ -1,6 +1,6 @@
 import json
 import time
-from typing import Any
+from typing import Any, cast
 
 import jwt
 import pytest
@@ -15,7 +15,11 @@ from cross_auth.social_providers.apple import (
     AppleProvider,
     AppleUserName,
 )
-from cross_auth.social_providers.oauth import OAuth2Exception, ValidatedUserInfo
+from cross_auth.social_providers.oauth import (
+    OAuth2Exception,
+    UserInfo,
+    ValidatedUserInfo,
+)
 
 # --- Fixtures ---
 
@@ -240,7 +244,7 @@ def test_validate_id_token_success(
         headers={"kid": "test_kid"},
     )
 
-    result = apple_provider.validate_id_token(id_token, mock_secondary_storage)
+    result = apple_provider._validate_apple_id_token(id_token, mock_secondary_storage)
 
     assert result.sub == "001234.abcd5678.7890"
     assert result.email == "user@example.com"
@@ -270,7 +274,7 @@ def test_validate_id_token_expired(
     )
 
     with pytest.raises(OAuth2Exception) as exc_info:
-        apple_provider.validate_id_token(id_token, mock_secondary_storage)
+        apple_provider._validate_apple_id_token(id_token, mock_secondary_storage)
 
     assert "expired" in exc_info.value.error_description.lower()
 
@@ -298,7 +302,7 @@ def test_validate_id_token_wrong_audience(
     )
 
     with pytest.raises(OAuth2Exception) as exc_info:
-        apple_provider.validate_id_token(id_token, mock_secondary_storage)
+        apple_provider._validate_apple_id_token(id_token, mock_secondary_storage)
 
     assert "audience" in exc_info.value.error_description.lower()
 
@@ -326,7 +330,7 @@ def test_extract_user_info_basic(apple_provider: AppleProvider):
         is_private_email="false",  # Apple sends as string
     )
 
-    user_info = apple_provider.extract_user_info(payload)
+    user_info = cast(dict[str, Any], apple_provider.extract_user_info(payload))
 
     assert user_info["id"] == "001234.abcd5678.7890"
     assert user_info["email"] == "user@example.com"
@@ -343,7 +347,7 @@ def test_extract_user_info_private_relay(apple_provider: AppleProvider):
         is_private_email="true",
     )
 
-    user_info = apple_provider.extract_user_info(payload)
+    user_info = cast(dict[str, Any], apple_provider.extract_user_info(payload))
 
     assert user_info["email"] == "abc123@privaterelay.appleid.com"
     assert user_info["is_private_email"] is True
@@ -362,7 +366,9 @@ def test_extract_user_info_with_first_time_data(apple_provider: AppleProvider):
         email="user@example.com",
     )
 
-    user_info = apple_provider.extract_user_info(payload, first_time_data)
+    user_info = cast(
+        dict[str, Any], apple_provider.extract_user_info(payload, first_time_data)
+    )
 
     assert user_info["first_name"] == "John"
     assert user_info["last_name"] == "Doe"
@@ -516,7 +522,7 @@ def test_payload_real_user_status_defaults_to_none():
 
 def test_validate_user_info_with_email(apple_provider: AppleProvider):
     """Test validation with email present."""
-    user_info = {
+    user_info: UserInfo = {
         "id": "001234.abcd5678.7890",
         "email": "user@example.com",
         "email_verified": True,
@@ -532,7 +538,7 @@ def test_validate_user_info_with_email(apple_provider: AppleProvider):
 
 def test_validate_user_info_without_email(apple_provider: AppleProvider):
     """Test validation without email (subsequent login)."""
-    user_info = {
+    user_info: UserInfo = {
         "id": "001234.abcd5678.7890",
         "email": None,
         "email_verified": None,
@@ -547,11 +553,14 @@ def test_validate_user_info_without_email(apple_provider: AppleProvider):
 
 def test_validate_user_info_missing_id(apple_provider: AppleProvider):
     """Test that missing user ID raises error."""
-    user_info: dict[str, Any] = {
-        "email": "user@example.com",
-        "email_verified": None,
-        # Missing id
-    }
+    user_info = cast(
+        UserInfo,
+        {
+            "email": "user@example.com",
+            "email_verified": None,
+            # Missing id
+        },
+    )
 
     with pytest.raises(OAuth2Exception) as exc_info:
         apple_provider.validate_user_info(user_info)

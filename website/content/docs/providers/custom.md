@@ -59,6 +59,7 @@ class CustomProvider(OAuth2Provider):
         return {
             "id": str(data["user_id"]),
             "email": data.get("email"),
+            "email_verified": data.get("email_verified"),
             # Add any other fields your app needs
         }
 ```
@@ -117,6 +118,7 @@ class GoogleProvider(OIDCProvider):
         return {
             "id": claims["sub"],
             "email": claims.get("email"),
+            "email_verified": claims.get("email_verified"),
             "name": claims.get("name"),
             "picture": claims.get("picture"),
         }

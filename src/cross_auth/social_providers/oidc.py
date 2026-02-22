@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 import jwt
+from jwt.algorithms import RSAAlgorithm
 
 from cross_auth._context import Context
 from cross_auth.models.oauth_token_response import TokenResponse
@@ -79,7 +80,7 @@ class OIDCProvider(OAuth2Provider):
         keys = self._fetch_jwks(secondary_storage)
         for key in keys.get("keys", []):
             if key.get("kid") == kid:
-                return jwt.algorithms.RSAAlgorithm.from_jwk(key)
+                return RSAAlgorithm.from_jwk(key)  # type: ignore[return-value]
 
         # Key not found - clear cache and try again (handle key rotation)
         # Rate-limit refetches to prevent abuse
@@ -94,7 +95,7 @@ class OIDCProvider(OAuth2Provider):
         keys = self._fetch_jwks(secondary_storage)
         for key in keys.get("keys", []):
             if key.get("kid") == kid:
-                return jwt.algorithms.RSAAlgorithm.from_jwk(key)
+                return RSAAlgorithm.from_jwk(key)  # type: ignore[return-value]
 
         raise ValueError(f"Key {kid} not found in provider's JWKS")
 
@@ -173,6 +174,7 @@ class OIDCProvider(OAuth2Provider):
         return {
             "id": claims["sub"],
             "email": claims.get("email"),
+            "email_verified": claims.get("email_verified"),
         }
 
     def get_user_info(

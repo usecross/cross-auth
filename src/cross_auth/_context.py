@@ -26,7 +26,7 @@ class Context:
         self.trusted_origins = trusted_origins
         self.get_user_from_request = get_user_from_request
         self.base_url = base_url
-        self.config: Config = config or {}
+        self.config: Config = config if config is not None else {}
 
     def is_valid_redirect_uri(self, redirect_uri: str) -> bool:
         host = urlparse(redirect_uri).netloc

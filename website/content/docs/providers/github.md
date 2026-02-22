@@ -24,7 +24,8 @@ github = GitHubProvider(
 
 ### Create an OAuth App
 
-1. Go to [GitHub Settings](https://github.com/settings/developers) → **Developer settings** → **OAuth Apps**
+1. Go to [GitHub Settings](https://github.com/settings/developers) → **Developer
+   settings** → **OAuth Apps**
 2. Click **New OAuth App**
 3. Fill in the application details:
    - **Application name**: Your app name
@@ -38,14 +39,15 @@ github = GitHubProvider(
 
 GitHub offers two types of apps:
 
-| Feature | OAuth App | GitHub App |
-|---------|-----------|------------|
-| User authentication | Yes | Yes |
-| Repository access | Via user token | Via installation token |
-| Granular permissions | No | Yes |
-| Webhooks | No | Yes |
+| Feature              | OAuth App      | GitHub App             |
+| -------------------- | -------------- | ---------------------- |
+| User authentication  | Yes            | Yes                    |
+| Repository access    | Via user token | Via installation token |
+| Granular permissions | No             | Yes                    |
+| Webhooks             | No             | Yes                    |
 
-For simple authentication, **OAuth Apps** are sufficient and simpler to set up. Use GitHub Apps if you need repository access or webhooks.
+For simple authentication, **OAuth Apps** are sufficient and simpler to set up.
+Use GitHub Apps if you need repository access or webhooks.
 
 ## Scopes
 
@@ -56,23 +58,23 @@ The GitHub provider requests the `user:email` scope by default, which provides:
 
 ### Available Scopes
 
-| Scope | Description |
-|-------|-------------|
+| Scope        | Description                           |
+| ------------ | ------------------------------------- |
 | `user:email` | Read user's email addresses (default) |
-| `read:user` | Read all user profile data |
-| `user` | Read and write user profile data |
+| `read:user`  | Read all user profile data            |
+| `user`       | Read and write user profile data      |
 
 ## User Info
 
 GitHub returns the following user information:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | string | GitHub user ID |
-| `email` | string | Primary verified email |
-| `login` | string | GitHub username |
-| `name` | string | Display name |
-| `avatar_url` | string | Profile picture URL |
+| Field        | Type   | Description            |
+| ------------ | ------ | ---------------------- |
+| `id`         | string | GitHub user ID         |
+| `email`      | string | Primary verified email |
+| `login`      | string | GitHub username        |
+| `name`       | string | Display name           |
+| `avatar_url` | string | Profile picture URL    |
 
 ## Example
 
@@ -96,6 +98,7 @@ app.include_router(auth_router, prefix="/auth")
 ```
 
 Users can then authenticate via:
+
 - `GET /auth/github/authorize` - Start OAuth flow
 - `GET /auth/github/callback` - OAuth callback (handled automatically)
 

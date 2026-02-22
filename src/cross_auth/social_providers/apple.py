@@ -1,7 +1,7 @@
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 import httpx
 import jwt
@@ -218,7 +218,7 @@ class AppleProvider(OIDCProvider):
 
         return params
 
-    def validate_id_token(
+    def _validate_apple_id_token(
         self, id_token: str, secondary_storage: "SecondaryStorage"
     ) -> AppleIdTokenPayload:
         """Validate Apple's id_token and parse into AppleIdTokenPayload.
@@ -239,14 +239,12 @@ class AppleProvider(OIDCProvider):
             id_token_payload: Parsed id_token claims
             first_time_user_data: User data from first authorization (name, email)
         """
-        user_info: UserInfo = {
+        user_info: dict[str, Any] = {
             "id": id_token_payload.sub,
             "email": id_token_payload.email,
+            "email_verified": id_token_payload.email_verified,
+            "is_private_email": id_token_payload.is_private_email,
         }
-
-        # Add extra Apple-specific fields (already parsed as proper booleans)
-        user_info["email_verified"] = id_token_payload.email_verified
-        user_info["is_private_email"] = id_token_payload.is_private_email
 
         # Merge first-time user data if available (only on first auth)
         if first_time_user_data:
@@ -257,7 +255,7 @@ class AppleProvider(OIDCProvider):
             if first_time_user_data.email:
                 user_info["email"] = first_time_user_data.email
 
-        return user_info
+        return cast(UserInfo, user_info)
 
     def validate_user_info(self, user_info: UserInfo) -> ValidatedUserInfo:
         """Validate and extract email and provider user ID.
@@ -321,7 +319,9 @@ class AppleProvider(OIDCProvider):
             )
 
         # Validate id_token and extract claims
-        id_token_payload = self.validate_id_token(id_token, context.secondary_storage)
+        id_token_payload = self._validate_apple_id_token(
+            id_token, context.secondary_storage
+        )
 
         # Parse first-time user data if present
         first_time_user_data: AppleFirstTimeUserData | None = None

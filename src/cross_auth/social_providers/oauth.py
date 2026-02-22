@@ -645,7 +645,7 @@ class OAuth2Provider:
 
         return params
 
-    def send_token_request(self, data: dict[str, Any]) -> httpx.Response:
+    def send_token_request(self, data: TokenExchangeParams) -> httpx.Response:
         """Send token exchange request.
 
         Override this method to customize how the request is sent
