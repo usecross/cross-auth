@@ -63,13 +63,6 @@ def _parse_real_user_status(
     return result
 
 
-AppleBool = Annotated[bool, BeforeValidator(_parse_apple_bool_string)]
-RealUserStatus = Annotated[
-    Literal["unsupported", "unknown", "likely_real"] | None,
-    BeforeValidator(_parse_real_user_status),
-]
-
-
 class AppleAuthConfig(BaseModel):
     client_id: Annotated[str, Field(description="Service ID from Apple Developer")]
     team_id: Annotated[str, Field(description="10-character Team ID")]
@@ -84,12 +77,15 @@ class AppleIdTokenPayload(BaseModel):
     iat: int
     exp: int
     email: EmailStr | None = None
-    email_verified: AppleBool = False
-    is_private_email: AppleBool = False
+    email_verified: Annotated[bool, BeforeValidator(_parse_apple_bool_string)] = False
+    is_private_email: Annotated[bool, BeforeValidator(_parse_apple_bool_string)] = False
     auth_time: int | None = None
     nonce: str | None = None
     nonce_supported: bool | None = None
-    real_user_status: RealUserStatus = None
+    real_user_status: Annotated[
+        Literal["unsupported", "unknown", "likely_real"] | None,
+        BeforeValidator(_parse_real_user_status),
+    ] = None
     # transfer_sub is only present during the 60-day window after an app is
     # transferred between developer teams. It maps users from old to new team.
     # We parse it but don't handle migration - implement if you need app transfers.
