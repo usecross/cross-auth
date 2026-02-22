@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 import httpx
 import jwt
 from cross_web import AsyncHTTPRequest
-from pydantic import BaseModel, EmailStr, Field, ValidationError, field_validator
+from pydantic import BaseModel, BeforeValidator, EmailStr, Field, ValidationError
 
 from cross_auth._context import Context
 from cross_auth.models.oauth_token_response import (
@@ -35,6 +35,45 @@ _REAL_USER_STATUS_MAP: dict[int, Literal["unsupported", "unknown", "likely_real"
 }
 
 
+def _parse_apple_bool_string(v: str | bool | None) -> bool:
+    """Parse Apple's string booleans ("true"/"false") to actual booleans.
+
+    Apple's id_token JSON contains these as strings, e.g.:
+    {"email_verified": "true", "is_private_email": "false"}
+    """
+    if v is None:
+        return False
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.lower() == "true"
+    return False
+
+
+def _parse_real_user_status(
+    v: int | str | None,
+) -> Literal["unsupported", "unknown", "likely_real"] | None:
+    """Convert Apple's integer real_user_status to descriptive string.
+
+    Apple sends: 0=unsupported, 1=unknown, 2=likely_real
+    """
+    if v is None:
+        return None
+    if isinstance(v, str):
+        return v  # type: ignore  # Already a string, assume valid
+    result = _REAL_USER_STATUS_MAP.get(v)
+    if result is None:
+        raise ValueError(f"Invalid real_user_status value: {v}")
+    return result
+
+
+AppleBool = Annotated[bool, BeforeValidator(_parse_apple_bool_string)]
+RealUserStatus = Annotated[
+    Literal["unsupported", "unknown", "likely_real"] | None,
+    BeforeValidator(_parse_real_user_status),
+]
+
+
 class AppleAuthConfig(BaseModel):
     client_id: Annotated[str, Field(description="Service ID from Apple Developer")]
     team_id: Annotated[str, Field(description="10-character Team ID")]
@@ -49,59 +88,17 @@ class AppleIdTokenPayload(BaseModel):
     iat: int
     exp: int
     email: EmailStr | None = None
-    email_verified: bool = False
-    is_private_email: bool = False
+    email_verified: AppleBool = False
+    is_private_email: AppleBool = False
     auth_time: int | None = None
     nonce: str | None = None
     nonce_supported: bool | None = None
-    real_user_status: Literal["unsupported", "unknown", "likely_real"] | None = None
+    real_user_status: RealUserStatus = None
     # transfer_sub is only present during the 60-day window after an app is
     # transferred between developer teams. It maps users from old to new team.
     # We parse it but don't handle migration - implement if you need app transfers.
     # See: https://developer.apple.com/documentation/technotes/tn3159
     transfer_sub: str | None = None
-
-    @field_validator("email_verified", "is_private_email", mode="before")
-    @classmethod
-    def parse_apple_bool_string(cls, v: str | bool | None) -> bool:
-        """Parse Apple's string booleans ("true"/"false") to actual booleans.
-
-        Apple's id_token JSON contains these as strings, e.g.:
-        {"email_verified": "true", "is_private_email": "false"}
-        """
-
-        if v is None:
-            return False
-
-        if isinstance(v, bool):
-            return v
-
-        if isinstance(v, str):
-            return v.lower() == "true"
-
-        return False
-
-    @field_validator("real_user_status", mode="before")
-    @classmethod
-    def parse_real_user_status(
-        cls, v: int | str | None
-    ) -> Literal["unsupported", "unknown", "likely_real"] | None:
-        """Convert Apple's integer real_user_status to descriptive string.
-
-        Apple sends: 0=unsupported, 1=unknown, 2=likely_real
-        """
-        if v is None:
-            return None
-
-        if isinstance(v, str):
-            return v  # type: ignore  # Already a string, assume valid
-
-        result = _REAL_USER_STATUS_MAP.get(v)
-
-        if result is None:
-            raise ValueError(f"Invalid real_user_status value: {v}")
-
-        return result
 
 
 class AppleUserName(BaseModel):
