@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass
 from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone
-from typing import Any, ClassVar, Literal, TypedDict, cast
+from typing import Any, ClassVar, Literal, NotRequired, TypedDict, cast
 
 import httpx
 from cross_web import AsyncHTTPRequest
@@ -37,13 +37,23 @@ class UserInfo(TypedDict, total=True):
     email: str | None
     id: str | int
     email_verified: bool | None
+    name: NotRequired[str | None]
 
 
 @dataclass
 class ValidatedUserInfo:
-    email: str
+    email: str | None
     provider_user_id: str
     email_verified: bool | None
+
+
+class TokenExchangeParams(TypedDict, total=False):
+    grant_type: str
+    code: str
+    redirect_uri: str
+    client_id: str
+    client_secret: str
+    code_verifier: str
 
 
 class OAuth2Exception(Exception):
@@ -75,6 +85,7 @@ class OAuth2LinkCodeData(BaseModel):
     provider_code: str
     provider_code_verifier: str | None = None
     client_state: str | None = None
+    provider_callback_extra: dict[str, Any] | None = None
 
 
 class InitiateLinkRequest(BaseModel):
@@ -89,21 +100,36 @@ class InitiateLinkResponse(BaseModel):
     authorization_url: str
 
 
+class CallbackData(BaseModel):
+    """Data extracted from an OAuth callback request."""
+
+    code: str | None
+    state: str | None
+    error: str | None
+    extra: dict[str, Any] | None = None  # Provider-specific data
+
+
 class OAuth2Provider:
     id: ClassVar[str]
     authorization_endpoint: ClassVar[str]
     token_endpoint: ClassVar[str]
-    user_info_endpoint: ClassVar[str]
+    user_info_endpoint: ClassVar[str | None]
     scopes: ClassVar[list[str]]
     supports_pkce: ClassVar[bool]
 
-    def __init__(self, client_id: str, client_secret: str, trust_email: bool = True):
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str | None = None,
+        trust_email: bool = True,
+    ):
         """
         Initialize the OAuth2 provider.
 
         Args:
             client_id: OAuth2 client ID.
-            client_secret: OAuth2 client secret.
+            client_secret: OAuth2 client secret. None for providers that generate
+                secrets dynamically (e.g., Apple).
             trust_email: If True, emails from this provider are trusted for account
                 linking even without explicit email_verified=True. Set to False for
                 providers that don't verify email ownership.
@@ -157,7 +183,7 @@ class OAuth2Provider:
             "client_id": self.client_id,
             "scope": " ".join(self.scopes),
             "redirect_uri": redirect_uri,
-            "response_type": "code",
+            "response_type": response_type,
             "state": state,
             **kwargs,
         }
@@ -244,6 +270,8 @@ class OAuth2Provider:
                 state=client_state,
             )
 
+        validated_code_challenge_method = cast(Literal["S256"], code_challenge_method)
+
         client_id = request.query_params.get("client_id")
 
         if not client_id:
@@ -278,19 +306,17 @@ class OAuth2Provider:
             provider_code_challenge = calculate_s256_challenge(provider_code_verifier)
             provider_code_challenge_method = "S256"
 
-        data = OAuth2AuthorizationRequestData.model_validate(
-            {
-                "client_id": client_id,
-                "redirect_uri": redirect_uri,
-                "login_hint": login_hint,
-                "client_state": client_state,
-                "state": state,
-                "code_challenge": code_challenge,
-                "code_challenge_method": code_challenge_method,
-                "link": False,
-                "user_id": None,
-                "provider_code_verifier": provider_code_verifier,
-            }
+        data = OAuth2AuthorizationRequestData(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            login_hint=login_hint,
+            client_state=client_state,
+            state=state,
+            code_challenge=code_challenge,
+            code_challenge_method=validated_code_challenge_method,
+            link=False,
+            user_id=None,
+            provider_code_verifier=provider_code_verifier,
         )
 
         context.secondary_storage.set(
@@ -317,13 +343,32 @@ class OAuth2Provider:
             query_params=query_params,
         )
 
+    async def extract_callback_data(self, request: AsyncHTTPRequest) -> CallbackData:
+        """Extract code, state, and error from callback request.
+
+        Override for providers that use POST (e.g., Apple with response_mode=form_post).
+        """
+        return CallbackData(
+            code=request.query_params.get("code"),
+            state=request.query_params.get("state"),
+            error=request.query_params.get("error"),
+        )
+
     async def callback(self, request: AsyncHTTPRequest, context: Context) -> Response:
         """
         This callback endpoint is used to exchange the Identity Provider's code
         for a token and then login the user on our side.
         """
+        callback_data = await self.extract_callback_data(request)
 
-        state = request.query_params.get("state")
+        if callback_data.error:
+            logger.error("OAuth error: %s", callback_data.error)
+            return Response.error(
+                "access_denied",
+                error_description=f"Authorization failed: {callback_data.error}",
+            )
+
+        state = callback_data.state
 
         if not state:
             logger.error("No state found in request")
@@ -356,9 +401,7 @@ class OAuth2Provider:
                 error_description="Invalid provider data",
             )
 
-        code = request.query_params.get("code")
-
-        if not code:
+        if not callback_data.code:
             logger.error("No authorization code received in callback")
 
             return Response.error_redirect(
@@ -369,7 +412,9 @@ class OAuth2Provider:
             )
 
         if provider_data.link:
-            return self._link_flow(request, context, provider_data, code)
+            return self._link_flow(
+                request, context, provider_data, callback_data.code, callback_data.extra
+            )
 
         redirect_uri = provider_data.redirect_uri
 
@@ -379,10 +424,13 @@ class OAuth2Provider:
 
         try:
             token_response = self.exchange_code(
-                code, proxy_redirect_uri, provider_data.provider_code_verifier
+                callback_data.code,
+                proxy_redirect_uri,
+                provider_data.provider_code_verifier,
             )
 
-            user_info = self.fetch_user_info(token_response.access_token)
+            user_info = self.get_user_info(token_response, context, callback_data.extra)
+
             validated = self.validate_user_info(user_info)
         except OAuth2Exception as e:
             return Response.error_redirect(
@@ -411,8 +459,22 @@ class OAuth2Provider:
             )
 
             user = context.accounts_storage.find_user_by_id(social_account.user_id)
-            assert user is not None, "User not found for social account"
+            if user is None:
+                return Response.error_redirect(
+                    redirect_uri,
+                    error="server_error",
+                    error_description="User not found for social account",
+                    state=provider_data.client_state,
+                )
         else:
+            if validated.email is None:
+                return Response.error_redirect(
+                    redirect_uri,
+                    error="server_error",
+                    error_description="No email provided by the identity provider",
+                    state=provider_data.client_state,
+                )
+
             user: User | None = None
 
             if self.can_auto_link(context, validated.email_verified):
@@ -504,6 +566,7 @@ class OAuth2Provider:
         context: Context,
         provider_data: OAuth2AuthorizationRequestData,
         provider_code: str,
+        extra: dict[str, Any] | None = None,
     ) -> Response:
         # user_id should always be present for link flows (validated in authorize)
         if not provider_data.user_id:
@@ -525,6 +588,7 @@ class OAuth2Provider:
             provider_code=provider_code,
             provider_code_verifier=provider_data.provider_code_verifier,
             client_state=provider_data.client_state,
+            provider_callback_extra=extra,
         )
 
         code = self._generate_code()
@@ -570,25 +634,27 @@ class OAuth2Provider:
 
     def build_token_exchange_params(
         self, code: str, redirect_uri: str, code_verifier: str | None = None
-    ) -> dict:
+    ) -> TokenExchangeParams:
         """Build token exchange request parameters.
 
         Override this method to customize token exchange parameters.
         """
-        params = {
+        params: TokenExchangeParams = {
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": redirect_uri,
             "client_id": self.client_id,
-            "client_secret": self.client_secret,
         }
+
+        if self.client_secret:
+            params["client_secret"] = self.client_secret
 
         if code_verifier:
             params["code_verifier"] = code_verifier
 
         return params
 
-    def send_token_request(self, data: dict[str, Any]) -> httpx.Response:
+    def send_token_request(self, data: TokenExchangeParams) -> httpx.Response:
         """Send token exchange request.
 
         Override this method to customize how the request is sent
@@ -604,17 +670,22 @@ class OAuth2Provider:
 
     def parse_token_response(
         self, response: httpx.Response
-    ) -> OAuth2TokenEndpointResponse | None:
+    ) -> OAuth2TokenEndpointResponse:
         """Parse token exchange response.
 
-        Override this method to handle different response formats
-        (e.g., JSON instead of query string).
+        Override this method to handle different response formats.
+
+        Raises:
+            OAuth2Exception: If the response cannot be parsed.
         """
         try:
             return OAuth2TokenEndpointResponse.model_validate_json(response.text)
         except ValidationError as e:
-            logger.error(f"Failed to parse token response: {str(e)}")
-            return None
+            logger.error("Failed to parse token response: %s", e)
+            raise OAuth2Exception(
+                error="server_error",
+                error_description="Failed to parse token response",
+            ) from e
 
     def exchange_code(
         self,
@@ -640,55 +711,79 @@ class OAuth2Provider:
 
             token_response = self.parse_token_response(response)
 
-            if token_response is None:
-                logger.error("Failed to parse token response")
-                raise OAuth2Exception(
-                    error="server_error",
-                    error_description="Failed to parse token response",
-                )
-
             if token_response.is_error():
-                assert isinstance(token_response.root, TokenErrorResponse)
+                if not isinstance(token_response.root, TokenErrorResponse):
+                    raise OAuth2Exception(
+                        error="server_error",
+                        error_description="Unexpected token response format",
+                    )
 
-                logger.error(f"Token exchange failed: {token_response.root.error}")
+                logger.error("Token exchange failed: %s", token_response.root.error)
 
                 raise OAuth2Exception(
                     error="server_error",
                     error_description=f"Token exchange failed: {token_response.root.error}",
                 )
 
-            assert isinstance(token_response.root, TokenResponse)
+            if not isinstance(token_response.root, TokenResponse):
+                raise OAuth2Exception(
+                    error="server_error",
+                    error_description="Unexpected token response format",
+                )
             return token_response.root
 
         except httpx.HTTPStatusError as e:
             logger.warning(
-                f"HTTP error during token exchange: {e.response.status_code} - {e.response.text}"
+                "HTTP error during token exchange: %s - %s",
+                e.response.status_code,
+                e.response.text,
             )
             raise OAuth2Exception(
                 error="server_error",
                 error_description="Token exchange failed",
             ) from e
         except (httpx.RequestError, ValidationError) as e:
-            logger.error(f"Failed to exchange code for token: {str(e)}")
+            logger.error("Failed to exchange code for token: %s", e)
             raise OAuth2Exception(
                 error="server_error",
                 error_description="Failed to exchange code for token",
             ) from e
 
-    def fetch_user_info(self, access_token: str) -> UserInfo:
+    def get_user_info(
+        self,
+        token_response: TokenResponse,
+        context: Context,
+        extra: dict[str, Any] | None = None,
+    ) -> UserInfo:
+        """Get user info after token exchange.
+
+        Default implementation fetches from the userinfo endpoint using the access token.
+        Override for providers that include user info in the token response (e.g., OIDC providers).
+
+        Args:
+            token_response: The token response from the provider.
+            context: The request context.
+            extra: Optional provider-specific data from extract_callback_data.
+        """
+        if not self.user_info_endpoint:
+            raise NotImplementedError(
+                f"{self.__class__.__name__} does not have a user_info_endpoint. "
+                "Override get_user_info() instead."
+            )
+
         try:
             response = httpx.get(
                 self.user_info_endpoint,
-                headers={"Authorization": f"Bearer {access_token}"},
+                headers={"Authorization": f"Bearer {token_response.access_token}"},
             )
             response.raise_for_status()
             user_info = response.json()
         except Exception as e:
-            logger.error(f"Failed to fetch user info: {str(e)}")
+            logger.error("Failed to fetch user info: %s", e)
             raise OAuth2Exception(
                 error="server_error",
                 error_description="Failed to fetch user info",
-            )
+            ) from e
 
         return user_info
 
@@ -779,7 +874,9 @@ class OAuth2Provider:
         # into using the attacker's link code
         if str(user.id) != link_data.user_id:
             logger.error(
-                f"User ID mismatch: current user {user.id}, link code for {link_data.user_id}"
+                "User ID mismatch: current user %s, link code for %s",
+                user.id,
+                link_data.user_id,
             )
 
             return Response.error(
@@ -823,7 +920,9 @@ class OAuth2Provider:
                 link_data.provider_code_verifier,
             )
 
-            user_info = self.fetch_user_info(token_response.access_token)
+            user_info = self.get_user_info(
+                token_response, context, link_data.provider_callback_extra
+            )
             validated = self.validate_user_info(user_info)
         except OAuth2Exception as e:
             return Response.error(
@@ -961,19 +1060,17 @@ class OAuth2Provider:
             provider_code_challenge = calculate_s256_challenge(provider_code_verifier)
             provider_code_challenge_method = "S256"
 
-        data = OAuth2AuthorizationRequestData.model_validate(
-            {
-                "client_id": link_request.client_id,
-                "redirect_uri": link_request.redirect_uri,
-                "login_hint": None,
-                "client_state": link_request.state,
-                "state": state,
-                "code_challenge": link_request.code_challenge,
-                "code_challenge_method": link_request.code_challenge_method,
-                "link": True,
-                "user_id": str(user.id),
-                "provider_code_verifier": provider_code_verifier,
-            }
+        data = OAuth2AuthorizationRequestData(
+            client_id=link_request.client_id,
+            redirect_uri=link_request.redirect_uri,
+            login_hint=None,
+            client_state=link_request.state,
+            state=state,
+            code_challenge=link_request.code_challenge,
+            code_challenge_method=link_request.code_challenge_method,
+            link=True,
+            user_id=str(user.id),
+            provider_code_verifier=provider_code_verifier,
         )
 
         context.secondary_storage.set(
@@ -1016,7 +1113,10 @@ class OAuth2Provider:
             ),
             Route(
                 path=f"/{self.id}/callback",
-                methods=["GET"],
+                methods=[
+                    "GET",
+                    "POST",
+                ],  # POST needed for Apple (response_mode=form_post)
                 function=self.callback,
                 operation_id=f"{self.id}_callback",
             ),

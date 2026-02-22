@@ -208,7 +208,7 @@ def test_router(test_app: FastAPI):
                                 "anyOf": [{"type": "string"}, {"type": "null"}],
                                 "default": None,
                                 "title": "Id Token",
-                                "description": "OpenID Connect ID token returned alongside access token",
+                                "description": "OIDC ID token (used by Apple, Google, etc.)",
                             },
                         },
                         "type": "object",

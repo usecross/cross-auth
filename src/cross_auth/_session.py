@@ -43,7 +43,7 @@ _SESSION_CONFIG_DEFAULTS: SessionConfig = {
 def resolve_config(config: SessionConfig | None) -> SessionConfig:
     if config is None:
         return _SESSION_CONFIG_DEFAULTS
-    return {**_SESSION_CONFIG_DEFAULTS, **config}  # type: ignore[typeddict-item]
+    return {**_SESSION_CONFIG_DEFAULTS, **config}
 
 
 def create_session(

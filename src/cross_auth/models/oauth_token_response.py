@@ -21,8 +21,7 @@ class TokenResponse(BaseModel):
         description="Space-delimited list of scopes associated with the access token",
     )
     id_token: str | None = Field(
-        None,
-        description="OpenID Connect ID token returned alongside access token",
+        None, description="OIDC ID token (used by Apple, Google, etc.)"
     )
 
     @property
