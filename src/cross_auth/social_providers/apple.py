@@ -1,11 +1,10 @@
-import json
 import logging
 import time
-from typing import Annotated, Any, Literal, cast
+from typing import Annotated, Any, Literal
 
 import jwt
 from cross_web import AsyncHTTPRequest
-from pydantic import BaseModel, BeforeValidator, EmailStr, Field, ValidationError
+from pydantic import BaseModel, BeforeValidator, EmailStr, Field
 
 from .oauth import (
     CallbackData,
@@ -93,29 +92,12 @@ class AppleIdTokenPayload(BaseModel):
     transfer_sub: str | None = None
 
 
-class AppleUserName(BaseModel):
-    """User name from first-time authorization."""
-
-    model_config = {"populate_by_name": True}
-
-    first_name: Annotated[str | None, Field(default=None, alias="firstName")]
-    last_name: Annotated[str | None, Field(default=None, alias="lastName")]
-
-
-class AppleFirstTimeUserData(BaseModel):
-    """User data sent only on first authorization (in POST form field)."""
-
-    name: AppleUserName | None = None
-    email: EmailStr | None = None
-
-
 class AppleProvider(OIDCProvider):
     """Apple Sign In OAuth2 Provider.
 
     Key differences from standard OAuth:
     - client_secret is a JWT signed with your private key (ES256)
     - No userinfo endpoint - all data in id_token
-    - User's name (firstName/lastName) only sent on first authorization
     - Email is always in the id_token (when email scope is requested)
     - Uses POST callback (response_mode=form_post)
     """
@@ -212,36 +194,19 @@ class AppleProvider(OIDCProvider):
         """Extract user info from Apple's id_token claims.
 
         Email is always present in the id_token (when email scope is requested).
-        The user's name is only sent on first authorization via the POST `user` field.
         """
         id_token_payload = AppleIdTokenPayload.model_validate(claims)
 
-        user_info: dict[str, Any] = {
+        return {
             "id": id_token_payload.sub,
             "email": id_token_payload.email,
             "email_verified": id_token_payload.email_verified,
-            "is_private_email": id_token_payload.is_private_email,
         }
-
-        # Name is only sent on first authorization via the POST `user` field
-        if extra and (user_json := extra.get("user_json")):
-            try:
-                user_dict = json.loads(user_json)
-                first_time_data = AppleFirstTimeUserData.model_validate(user_dict)
-            except (json.JSONDecodeError, ValidationError) as e:
-                logger.warning("Failed to parse Apple user data: %s", e)
-            else:
-                if first_time_data.name:
-                    user_info["first_name"] = first_time_data.name.first_name
-                    user_info["last_name"] = first_time_data.name.last_name
-
-        return cast(UserInfo, user_info)
 
     async def extract_callback_data(self, request: AsyncHTTPRequest) -> CallbackData:
         """Extract callback data from Apple's POST form data.
 
         Apple uses response_mode=form_post, so callback data comes via POST.
-        Also extracts the `user` field (first-time user data) into extra.
         """
         if request.method != "POST":
             raise OAuth2Exception(
@@ -254,5 +219,4 @@ class AppleProvider(OIDCProvider):
             code=form_data.form.get("code"),
             state=form_data.form.get("state"),
             error=form_data.form.get("error"),
-            extra={"user_json": form_data.form.get("user")},
         )

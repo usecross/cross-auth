@@ -1,6 +1,6 @@
 import json
 import time
-from typing import Any, cast
+from typing import cast
 
 import jwt
 import pytest
@@ -10,7 +10,6 @@ from jwt.algorithms import RSAAlgorithm
 
 from cross_auth.social_providers.apple import (
     AppleAuthConfig,
-    AppleFirstTimeUserData,
     AppleIdTokenPayload,
     AppleProvider,
 )
@@ -326,17 +325,13 @@ def test_extract_user_info_basic(apple_provider: AppleProvider):
         sub="001234.abcd5678.7890",
         email="user@example.com",
         email_verified="true",  # Apple sends as string
-        is_private_email="false",  # Apple sends as string
     ).model_dump()
 
-    user_info = cast(
-        dict[str, Any], apple_provider.extract_user_info_from_claims(claims)
-    )
+    user_info = apple_provider.extract_user_info_from_claims(claims)
 
     assert user_info["id"] == "001234.abcd5678.7890"
     assert user_info["email"] == "user@example.com"
     assert user_info["email_verified"] is True
-    assert user_info["is_private_email"] is False
 
 
 def test_extract_user_info_private_relay(apple_provider: AppleProvider):
@@ -345,90 +340,25 @@ def test_extract_user_info_private_relay(apple_provider: AppleProvider):
         sub="001234.abcd5678.7890",
         email="abc123@privaterelay.appleid.com",
         email_verified="true",
-        is_private_email="true",
     ).model_dump()
 
-    user_info = cast(
-        dict[str, Any], apple_provider.extract_user_info_from_claims(claims)
-    )
+    user_info = apple_provider.extract_user_info_from_claims(claims)
 
     assert user_info["email"] == "abc123@privaterelay.appleid.com"
-    assert user_info["is_private_email"] is True
 
 
-def test_extract_user_info_with_first_time_data(apple_provider: AppleProvider):
-    """Test that name is extracted from first-time user data."""
+def test_extract_user_info_without_extra(apple_provider: AppleProvider):
+    """Test user info extraction with no extra data (typical login)."""
     claims = _make_payload(
         sub="001234.abcd5678.7890",
         email="user@example.com",
         email_verified="true",
     ).model_dump()
 
-    extra = {
-        "user_json": json.dumps(
-            {
-                "name": {"firstName": "John", "lastName": "Doe"},
-                "email": "user@example.com",
-            }
-        )
-    }
-
-    user_info = cast(
-        dict[str, Any],
-        apple_provider.extract_user_info_from_claims(claims, extra),
-    )
-
-    assert user_info["first_name"] == "John"
-    assert user_info["last_name"] == "Doe"
-    # Email always comes from the id_token, not the first-time user data
-    assert user_info["email"] == "user@example.com"
-
-
-def test_extract_user_info_email_from_id_token_not_first_time_data(
-    apple_provider: AppleProvider,
-):
-    """Test that email comes from id_token, not the first-time user data POST body."""
-    claims = _make_payload(
-        sub="001234.abcd5678.7890",
-        email="relay@privaterelay.appleid.com",
-        email_verified="true",
-    ).model_dump()
-
-    extra = {
-        "user_json": json.dumps(
-            {
-                "name": {"firstName": "John", "lastName": "Doe"},
-                "email": "real@example.com",
-            }
-        )
-    }
-
-    user_info = cast(
-        dict[str, Any],
-        apple_provider.extract_user_info_from_claims(claims, extra),
-    )
-
-    # id_token email takes precedence (it's cryptographically signed)
-    assert user_info["email"] == "relay@privaterelay.appleid.com"
-
-
-def test_extract_user_info_without_name(apple_provider: AppleProvider):
-    """Test user info extraction on subsequent login (no name, email still present)."""
-    claims = _make_payload(
-        sub="001234.abcd5678.7890",
-        email="user@example.com",
-        email_verified="true",
-    ).model_dump()
-
-    user_info = cast(
-        dict[str, Any],
-        apple_provider.extract_user_info_from_claims(claims),
-    )
+    user_info = apple_provider.extract_user_info_from_claims(claims)
 
     assert user_info["id"] == "001234.abcd5678.7890"
     assert user_info["email"] == "user@example.com"
-    assert "first_name" not in user_info
-    assert "last_name" not in user_info
 
 
 # --- AppleIdTokenPayload parsing tests ---
@@ -599,39 +529,3 @@ def test_routes_count(apple_provider: AppleProvider):
     assert "/apple/callback" in paths
     assert "/apple/finalize-link" in paths
     assert "/apple/link" in paths
-
-
-# --- First-time user data parsing tests ---
-
-
-def test_parse_full_user_data():
-    """Test parsing complete first-time user data."""
-    data = AppleFirstTimeUserData.model_validate(
-        {
-            "name": {"firstName": "John", "lastName": "Doe"},
-            "email": "john.doe@example.com",
-        }
-    )
-
-    assert data.name is not None
-    assert data.name.first_name == "John"
-    assert data.name.last_name == "Doe"
-    assert data.email == "john.doe@example.com"
-
-
-def test_parse_partial_user_data():
-    """Test parsing user data with only name."""
-    data = AppleFirstTimeUserData.model_validate({"name": {"firstName": "John"}})
-
-    assert data.name is not None
-    assert data.name.first_name == "John"
-    assert data.name.last_name is None
-    assert data.email is None
-
-
-def test_parse_empty_user_data():
-    """Test parsing empty user data."""
-    data = AppleFirstTimeUserData.model_validate({})
-
-    assert data.name is None
-    assert data.email is None

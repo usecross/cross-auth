@@ -10,20 +10,13 @@ node_modules/
 dist/
 
 # Build artifacts
-frontend/dist/
 static/build/
-.vite/
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
-
-# Logs
-npm-debug.log*
-yarn-debug.log*
-pnpm-debug.log*
 
 # macOS
 .DS_Store
