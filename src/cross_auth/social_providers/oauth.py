@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass
 from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone
-from typing import Any, ClassVar, Literal, TypedDict, cast
+from typing import Any, ClassVar, Literal, NotRequired, TypedDict, cast
 
 import httpx
 from cross_web import AsyncHTTPRequest
@@ -37,6 +37,7 @@ class UserInfo(TypedDict, total=True):
     email: str | None
     id: str | int
     email_verified: bool | None
+    name: NotRequired[str | None]
 
 
 @dataclass
@@ -684,7 +685,7 @@ class OAuth2Provider:
             raise OAuth2Exception(
                 error="server_error",
                 error_description="Failed to parse token response",
-            )
+            ) from e
 
     def exchange_code(
         self,
@@ -782,7 +783,7 @@ class OAuth2Provider:
             raise OAuth2Exception(
                 error="server_error",
                 error_description="Failed to fetch user info",
-            )
+            ) from e
 
         return user_info
 

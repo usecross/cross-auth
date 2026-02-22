@@ -20,9 +20,7 @@ requires fetching user info from a separate endpoint.
 ```python
 from typing import Any
 
-from cross_auth._context import Context
-from cross_auth.models.oauth_token_response import TokenResponse
-from cross_auth.social_providers.oauth import OAuth2Provider, UserInfo
+from cross_auth import Context, OAuth2Provider, TokenResponse, UserInfo
 
 
 class CustomProvider(OAuth2Provider):
@@ -86,9 +84,9 @@ Use `OIDCProvider` for providers that return an `id_token` JWT containing user
 claims. This is more efficient as it doesn't require an extra HTTP request.
 
 ```python
-from cross_auth.social_providers.oidc import OIDCProvider
-from cross_auth.social_providers.oauth import UserInfo
 from typing import Any
+
+from cross_auth import OIDCProvider, UserInfo
 
 
 class GoogleProvider(OIDCProvider):
@@ -178,6 +176,9 @@ Override `build_token_exchange_params` for providers with non-standard token
 exchange:
 
 ```python
+from cross_auth import TokenExchangeParams
+
+
 def build_token_exchange_params(
     self, code: str, redirect_uri: str, code_verifier: str | None = None
 ) -> TokenExchangeParams:
@@ -192,7 +193,7 @@ Override `extract_callback_data` for providers that send callback data
 differently (e.g., POST instead of GET):
 
 ```python
-from cross_auth.social_providers.oauth import CallbackData
+from cross_auth import CallbackData
 
 
 async def extract_callback_data(self, request: AsyncHTTPRequest) -> CallbackData:

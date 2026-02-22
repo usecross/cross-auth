@@ -82,7 +82,7 @@ def get_avatar_url(user_id: str, avatar_hash: str) -> str:
         ext = "gif" if avatar_hash.startswith("a_") else "png"
         return f"https://cdn.discordapp.com/avatars/{user_id}/{avatar_hash}.{ext}"
     # Default avatar
-    return f"https://cdn.discordapp.com/embed/avatars/{int(user_id) % 5}.png"
+    return f"https://cdn.discordapp.com/embed/avatars/{(int(user_id) >> 22) % 6}.png"
 ```
 
 ## Example

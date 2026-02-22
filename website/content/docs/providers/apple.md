@@ -86,11 +86,12 @@ each token exchange.
 
 Apple returns the following user information:
 
-| Field            | Type    | Description                               |
-| ---------------- | ------- | ----------------------------------------- |
-| `id`             | string  | Stable user identifier (from `sub` claim) |
-| `email`          | string  | User's email (may be private relay)       |
-| `email_verified` | boolean | Whether email is verified                 |
+| Field            | Type    | Description                                         |
+| ---------------- | ------- | --------------------------------------------------- |
+| `id`             | string  | Stable user identifier (from `sub` claim)           |
+| `email`          | string  | User's email (may be private relay)                 |
+| `email_verified` | boolean | Whether email is verified                           |
+| `name`           | string  | User's full name (only sent on first authorization) |
 
 ## Troubleshooting
 
@@ -103,7 +104,10 @@ Apple returns the following user information:
 ### No Email Received
 
 - User may have chosen not to share their email
-- On subsequent logins, email may not be included - use the stored value
+- Email is included in the `id_token` on every login when the `email` scope is
+  requested
+- The user's **name** is only sent on the first authorization — store it
+  immediately
 
 ### Callback Returns 405 Method Not Allowed
 

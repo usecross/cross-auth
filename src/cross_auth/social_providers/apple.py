@@ -1,3 +1,4 @@
+import json
 import logging
 import time
 from typing import Annotated, Any, Literal
@@ -197,14 +198,25 @@ class AppleProvider(OIDCProvider):
         """Extract user info from Apple's id_token claims.
 
         Email is always present in the id_token (when email scope is requested).
+        The user's name is only available via the `extra` dict on first authorization.
         """
         id_token_payload = AppleIdTokenPayload.model_validate(claims)
 
-        return {
+        info: UserInfo = {
             "id": id_token_payload.sub,
             "email": id_token_payload.email,
             "email_verified": id_token_payload.email_verified,
         }
+
+        if extra and (user := extra.get("user")):
+            name = user.get("name", {})
+            full_name = (
+                f"{name.get('firstName', '')} {name.get('lastName', '')}".strip()
+            )
+            if full_name:
+                info["name"] = full_name
+
+        return info
 
     async def extract_callback_data(self, request: AsyncHTTPRequest) -> CallbackData:
         """Extract callback data from Apple's POST form data.
@@ -218,8 +230,17 @@ class AppleProvider(OIDCProvider):
             )
 
         form_data = await request.get_form_data()
+
+        extra: dict[str, Any] = {}
+        if user_json := form_data.form.get("user"):
+            try:
+                extra["user"] = json.loads(user_json)
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse Apple user JSON: %s", user_json)
+
         return CallbackData(
             code=form_data.form.get("code"),
             state=form_data.form.get("state"),
             error=form_data.form.get("error"),
+            extra=extra if extra else None,
         )
