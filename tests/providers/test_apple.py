@@ -13,7 +13,6 @@ from cross_auth.social_providers.apple import (
     AppleFirstTimeUserData,
     AppleIdTokenPayload,
     AppleProvider,
-    AppleUserName,
 )
 from cross_auth.social_providers.oauth import (
     OAuth2Exception,
@@ -244,11 +243,11 @@ def test_validate_id_token_success(
         headers={"kid": "test_kid"},
     )
 
-    result = apple_provider._validate_apple_id_token(id_token, mock_secondary_storage)
+    claims = apple_provider.validate_id_token(id_token, mock_secondary_storage)
 
-    assert result.sub == "001234.abcd5678.7890"
-    assert result.email == "user@example.com"
-    assert result.email_verified is True  # Parsed from string
+    assert claims["sub"] == "001234.abcd5678.7890"
+    assert claims["email"] == "user@example.com"
+    assert claims["email_verified"] == "true"
 
 
 def test_validate_id_token_expired(
@@ -274,7 +273,7 @@ def test_validate_id_token_expired(
     )
 
     with pytest.raises(OAuth2Exception) as exc_info:
-        apple_provider._validate_apple_id_token(id_token, mock_secondary_storage)
+        apple_provider.validate_id_token(id_token, mock_secondary_storage)
 
     assert "expired" in exc_info.value.error_description.lower()
 
@@ -302,7 +301,7 @@ def test_validate_id_token_wrong_audience(
     )
 
     with pytest.raises(OAuth2Exception) as exc_info:
-        apple_provider._validate_apple_id_token(id_token, mock_secondary_storage)
+        apple_provider.validate_id_token(id_token, mock_secondary_storage)
 
     assert "audience" in exc_info.value.error_description.lower()
 
@@ -322,15 +321,17 @@ def _make_payload(**kwargs) -> AppleIdTokenPayload:
 
 
 def test_extract_user_info_basic(apple_provider: AppleProvider):
-    """Test basic user info extraction."""
-    payload = _make_payload(
+    """Test basic user info extraction from claims."""
+    claims = _make_payload(
         sub="001234.abcd5678.7890",
         email="user@example.com",
         email_verified="true",  # Apple sends as string
         is_private_email="false",  # Apple sends as string
-    )
+    ).model_dump()
 
-    user_info = cast(dict[str, Any], apple_provider.extract_user_info(payload))
+    user_info = cast(
+        dict[str, Any], apple_provider.extract_user_info_from_claims(claims)
+    )
 
     assert user_info["id"] == "001234.abcd5678.7890"
     assert user_info["email"] == "user@example.com"
@@ -340,14 +341,16 @@ def test_extract_user_info_basic(apple_provider: AppleProvider):
 
 def test_extract_user_info_private_relay(apple_provider: AppleProvider):
     """Test user info extraction with private relay email."""
-    payload = _make_payload(
+    claims = _make_payload(
         sub="001234.abcd5678.7890",
         email="abc123@privaterelay.appleid.com",
         email_verified="true",
         is_private_email="true",
-    )
+    ).model_dump()
 
-    user_info = cast(dict[str, Any], apple_provider.extract_user_info(payload))
+    user_info = cast(
+        dict[str, Any], apple_provider.extract_user_info_from_claims(claims)
+    )
 
     assert user_info["email"] == "abc123@privaterelay.appleid.com"
     assert user_info["is_private_email"] is True
@@ -355,19 +358,24 @@ def test_extract_user_info_private_relay(apple_provider: AppleProvider):
 
 def test_extract_user_info_with_first_time_data(apple_provider: AppleProvider):
     """Test user info extraction with first-time user data (name)."""
-    payload = _make_payload(
+    claims = _make_payload(
         sub="001234.abcd5678.7890",
         email="user@example.com",
         email_verified="true",
-    )
+    ).model_dump()
 
-    first_time_data = AppleFirstTimeUserData(
-        name=AppleUserName(first_name="John", last_name="Doe"),
-        email="user@example.com",
-    )
+    extra = {
+        "user_json": json.dumps(
+            {
+                "name": {"firstName": "John", "lastName": "Doe"},
+                "email": "user@example.com",
+            }
+        )
+    }
 
     user_info = cast(
-        dict[str, Any], apple_provider.extract_user_info(payload, first_time_data)
+        dict[str, Any],
+        apple_provider.extract_user_info_from_claims(claims, extra),
     )
 
     assert user_info["first_name"] == "John"
@@ -376,12 +384,12 @@ def test_extract_user_info_with_first_time_data(apple_provider: AppleProvider):
 
 def test_extract_user_info_no_email(apple_provider: AppleProvider):
     """Test user info extraction when email is not present (subsequent login)."""
-    payload = _make_payload(
+    claims = _make_payload(
         sub="001234.abcd5678.7890",
         # No email - this is expected on subsequent logins
-    )
+    ).model_dump()
 
-    user_info = apple_provider.extract_user_info(payload)
+    user_info = apple_provider.extract_user_info_from_claims(claims)
 
     assert user_info["id"] == "001234.abcd5678.7890"
     assert user_info["email"] is None
@@ -460,9 +468,12 @@ def test_payload_numeric_booleans_return_false():
     assert payload.is_private_email is False
 
 
-def test_payload_parses_real_user_status_integers():
+@pytest.mark.parametrize(
+    ("status_int", "expected"),
+    [(0, "unsupported"), (1, "unknown"), (2, "likely_real")],
+)
+def test_payload_parses_real_user_status_integers(status_int: int, expected: str):
     """Test that integer real_user_status is parsed to descriptive string."""
-    # 0 = unsupported
     payload = AppleIdTokenPayload.model_validate(
         {
             "iss": "https://appleid.apple.com",
@@ -470,36 +481,10 @@ def test_payload_parses_real_user_status_integers():
             "aud": "com.example.app",
             "iat": 1234567890,
             "exp": 1234571490,
-            "real_user_status": 0,
+            "real_user_status": status_int,
         }
     )
-    assert payload.real_user_status == "unsupported"
-
-    # 1 = unknown
-    payload = AppleIdTokenPayload.model_validate(
-        {
-            "iss": "https://appleid.apple.com",
-            "sub": "user123",
-            "aud": "com.example.app",
-            "iat": 1234567890,
-            "exp": 1234571490,
-            "real_user_status": 1,
-        }
-    )
-    assert payload.real_user_status == "unknown"
-
-    # 2 = likely_real
-    payload = AppleIdTokenPayload.model_validate(
-        {
-            "iss": "https://appleid.apple.com",
-            "sub": "user123",
-            "aud": "com.example.app",
-            "iat": 1234567890,
-            "exp": 1234571490,
-            "real_user_status": 2,
-        }
-    )
-    assert payload.real_user_status == "likely_real"
+    assert payload.real_user_status == expected
 
 
 def test_payload_real_user_status_defaults_to_none():

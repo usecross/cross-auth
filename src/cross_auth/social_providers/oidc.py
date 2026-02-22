@@ -73,14 +73,21 @@ class OIDCProvider(OAuth2Provider):
         self._jwks_last_fetch_time = time.monotonic()
         return jwks
 
+    @staticmethod
+    def _find_key_by_kid(keys: dict[str, Any], kid: str) -> "RSAPublicKey | None":
+        """Find a public key by key ID in a JWKS dict."""
+        for key in keys.get("keys", []):
+            if key.get("kid") == kid:
+                return RSAAlgorithm.from_jwk(key)  # type: ignore[return-value]
+        return None
+
     def _get_public_key(
         self, kid: str, secondary_storage: "SecondaryStorage"
     ) -> "RSAPublicKey":
         """Get a specific public key by key ID from provider's JWKS."""
         keys = self._fetch_jwks(secondary_storage)
-        for key in keys.get("keys", []):
-            if key.get("kid") == kid:
-                return RSAAlgorithm.from_jwk(key)  # type: ignore[return-value]
+        if found := self._find_key_by_kid(keys, kid):
+            return found
 
         # Key not found - clear cache and try again (handle key rotation)
         # Rate-limit refetches to prevent abuse
@@ -93,9 +100,8 @@ class OIDCProvider(OAuth2Provider):
 
         secondary_storage.delete(self.jwks_cache_key)
         keys = self._fetch_jwks(secondary_storage)
-        for key in keys.get("keys", []):
-            if key.get("kid") == kid:
-                return RSAAlgorithm.from_jwk(key)  # type: ignore[return-value]
+        if found := self._find_key_by_kid(keys, kid):
+            return found
 
         raise ValueError(f"Key {kid} not found in provider's JWKS")
 
@@ -126,7 +132,7 @@ class OIDCProvider(OAuth2Provider):
             raise OAuth2Exception(
                 error="invalid_token",
                 error_description=str(e),
-            )
+            ) from e
 
         try:
             return jwt.decode(
@@ -136,26 +142,26 @@ class OIDCProvider(OAuth2Provider):
                 audience=self.client_id,
                 issuer=self.issuer,
             )
-        except jwt.ExpiredSignatureError:
+        except jwt.ExpiredSignatureError as e:
             raise OAuth2Exception(
                 error="invalid_token",
                 error_description="id_token has expired",
-            )
-        except jwt.InvalidAudienceError:
+            ) from e
+        except jwt.InvalidAudienceError as e:
             raise OAuth2Exception(
                 error="invalid_token",
                 error_description="id_token audience mismatch",
-            )
-        except jwt.InvalidIssuerError:
+            ) from e
+        except jwt.InvalidIssuerError as e:
             raise OAuth2Exception(
                 error="invalid_token",
                 error_description="id_token issuer mismatch",
-            )
+            ) from e
         except jwt.PyJWTError as e:
             raise OAuth2Exception(
                 error="invalid_token",
                 error_description=f"id_token validation failed: {e}",
-            )
+            ) from e
 
     def extract_user_info_from_claims(
         self,

@@ -1,18 +1,11 @@
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
-import httpx
 import jwt
 from cross_web import AsyncHTTPRequest
 from pydantic import BaseModel, BeforeValidator, EmailStr, Field, ValidationError
-
-from cross_auth._context import Context
-from cross_auth.models.oauth_token_response import (
-    OAuth2TokenEndpointResponse,
-    TokenResponse,
-)
 
 from .oauth import (
     CallbackData,
@@ -22,9 +15,6 @@ from .oauth import (
     ValidatedUserInfo,
 )
 from .oidc import OIDCProvider
-
-if TYPE_CHECKING:
-    from cross_auth._storage import SecondaryStorage
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +31,16 @@ def _parse_apple_bool_string(v: str | bool | None) -> bool:
     Apple's id_token JSON contains these as strings, e.g.:
     {"email_verified": "true", "is_private_email": "false"}
     """
+
     if v is None:
         return False
+
     if isinstance(v, bool):
         return v
+
     if isinstance(v, str):
         return v.lower() == "true"
+
     return False
 
 
@@ -57,13 +51,16 @@ def _parse_real_user_status(
 
     Apple sends: 0=unsupported, 1=unknown, 2=likely_real
     """
+
     if v is None:
         return None
+
     if isinstance(v, str):
         return v  # type: ignore  # Already a string, assume valid
-    result = _REAL_USER_STATUS_MAP.get(v)
-    if result is None:
+
+    if (result := _REAL_USER_STATUS_MAP.get(v)) is None:
         raise ValueError(f"Invalid real_user_status value: {v}")
+
     return result
 
 
@@ -211,27 +208,18 @@ class AppleProvider(OIDCProvider):
 
         return params
 
-    def _validate_apple_id_token(
-        self, id_token: str, secondary_storage: "SecondaryStorage"
-    ) -> AppleIdTokenPayload:
-        """Validate Apple's id_token and parse into AppleIdTokenPayload.
-
-        Uses parent's JWT validation, then parses claims into typed model.
-        """
-        claims = super().validate_id_token(id_token, secondary_storage)
-        return AppleIdTokenPayload.model_validate(claims)
-
-    def extract_user_info(
+    def extract_user_info_from_claims(
         self,
-        id_token_payload: AppleIdTokenPayload,
-        first_time_user_data: AppleFirstTimeUserData | None = None,
+        claims: dict[str, Any],
+        extra: dict[str, Any] | None = None,
     ) -> UserInfo:
-        """Extract standardized user info from Apple's id_token.
+        """Extract user info from Apple's id_token claims.
 
-        Args:
-            id_token_payload: Parsed id_token claims
-            first_time_user_data: User data from first authorization (name, email)
+        Parses claims into AppleIdTokenPayload and merges first-time user data
+        (name, email) from the callback's `user` field in extra.
         """
+        id_token_payload = AppleIdTokenPayload.model_validate(claims)
+
         user_info: dict[str, Any] = {
             "id": id_token_payload.sub,
             "email": id_token_payload.email,
@@ -239,14 +227,19 @@ class AppleProvider(OIDCProvider):
             "is_private_email": id_token_payload.is_private_email,
         }
 
-        # Merge first-time user data if available (only on first auth)
-        if first_time_user_data:
-            if first_time_user_data.name:
-                user_info["first_name"] = first_time_user_data.name.first_name
-                user_info["last_name"] = first_time_user_data.name.last_name
-            # Email from user data takes precedence if present
-            if first_time_user_data.email:
-                user_info["email"] = first_time_user_data.email
+        # Parse and merge first-time user data if available (only on first auth)
+        if extra and (user_json := extra.get("user_json")):
+            try:
+                user_dict = json.loads(user_json)
+                first_time_data = AppleFirstTimeUserData.model_validate(user_dict)
+            except (json.JSONDecodeError, ValidationError) as e:
+                logger.warning("Failed to parse Apple user data: %s", e)
+            else:
+                if first_time_data.name:
+                    user_info["first_name"] = first_time_data.name.first_name
+                    user_info["last_name"] = first_time_data.name.last_name
+                if first_time_data.email:
+                    user_info["email"] = first_time_data.email
 
         return cast(UserInfo, user_info)
 
@@ -292,54 +285,3 @@ class AppleProvider(OIDCProvider):
             error=form_data.form.get("error"),
             extra={"user_json": form_data.form.get("user")},
         )
-
-    def get_user_info(
-        self,
-        token_response: TokenResponse,
-        context: "Context",
-        extra: dict[str, Any] | None = None,
-    ) -> UserInfo:
-        """Extract user info from Apple's id_token.
-
-        Apple doesn't have a userinfo endpoint - all data is in the id_token.
-        First-time user data (name) comes from the callback's `user` field.
-        """
-        id_token = getattr(token_response, "id_token", None)
-        if not id_token:
-            raise OAuth2Exception(
-                error="server_error",
-                error_description="No id_token in Apple token response",
-            )
-
-        # Validate id_token and extract claims
-        id_token_payload = self._validate_apple_id_token(
-            id_token, context.secondary_storage
-        )
-
-        # Parse first-time user data if present
-        first_time_user_data: AppleFirstTimeUserData | None = None
-        if extra and (user_json := extra.get("user_json")):
-            try:
-                user_dict = json.loads(user_json)
-                first_time_user_data = AppleFirstTimeUserData.model_validate(user_dict)
-            except (json.JSONDecodeError, ValidationError) as e:
-                logger.warning(f"Failed to parse Apple user data: {e}")
-
-        return self.extract_user_info(id_token_payload, first_time_user_data)
-
-    def parse_token_response(
-        self, response: httpx.Response
-    ) -> OAuth2TokenEndpointResponse:
-        """Parse Apple's token response which includes id_token.
-
-        Raises:
-            OAuth2Exception: If the response cannot be parsed.
-        """
-        try:
-            return OAuth2TokenEndpointResponse.model_validate_json(response.text)
-        except (ValidationError, json.JSONDecodeError) as e:
-            logger.error(f"Failed to parse Apple token response: {e}")
-            raise OAuth2Exception(
-                error="server_error",
-                error_description="Failed to parse token response",
-            )

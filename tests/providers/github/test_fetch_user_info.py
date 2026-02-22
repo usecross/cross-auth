@@ -13,14 +13,6 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
-def token_response() -> TokenResponse:
-    return TokenResponse(
-        token_type="Bearer",
-        access_token="test_token",
-    )
-
-
-@pytest.fixture
 def context() -> MagicMock:
     return MagicMock()
 

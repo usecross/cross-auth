@@ -182,7 +182,7 @@ class OAuth2Provider:
             "client_id": self.client_id,
             "scope": " ".join(self.scopes),
             "redirect_uri": redirect_uri,
-            "response_type": "code",
+            "response_type": response_type,
             "state": state,
             **kwargs,
         }
@@ -269,6 +269,8 @@ class OAuth2Provider:
                 state=client_state,
             )
 
+        validated_code_challenge_method = cast(Literal["S256"], code_challenge_method)
+
         client_id = request.query_params.get("client_id")
 
         if not client_id:
@@ -303,19 +305,17 @@ class OAuth2Provider:
             provider_code_challenge = calculate_s256_challenge(provider_code_verifier)
             provider_code_challenge_method = "S256"
 
-        data = OAuth2AuthorizationRequestData.model_validate(
-            {
-                "client_id": client_id,
-                "redirect_uri": redirect_uri,
-                "login_hint": login_hint,
-                "client_state": client_state,
-                "state": state,
-                "code_challenge": code_challenge,
-                "code_challenge_method": code_challenge_method,
-                "link": False,
-                "user_id": None,
-                "provider_code_verifier": provider_code_verifier,
-            }
+        data = OAuth2AuthorizationRequestData(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            login_hint=login_hint,
+            client_state=client_state,
+            state=state,
+            code_challenge=code_challenge,
+            code_challenge_method=validated_code_challenge_method,
+            link=False,
+            user_id=None,
+            provider_code_verifier=provider_code_verifier,
         )
 
         context.secondary_storage.set(
@@ -361,7 +361,7 @@ class OAuth2Provider:
         callback_data = await self.extract_callback_data(request)
 
         if callback_data.error:
-            logger.error(f"OAuth error: {callback_data.error}")
+            logger.error("OAuth error: %s", callback_data.error)
             return Response.error(
                 "access_denied",
                 error_description=f"Authorization failed: {callback_data.error}",
@@ -680,7 +680,7 @@ class OAuth2Provider:
         try:
             return OAuth2TokenEndpointResponse.model_validate_json(response.text)
         except ValidationError as e:
-            logger.error(f"Failed to parse token response: {e}")
+            logger.error("Failed to parse token response: %s", e)
             raise OAuth2Exception(
                 error="server_error",
                 error_description="Failed to parse token response",
@@ -717,7 +717,7 @@ class OAuth2Provider:
                         error_description="Unexpected token response format",
                     )
 
-                logger.error(f"Token exchange failed: {token_response.root.error}")
+                logger.error("Token exchange failed: %s", token_response.root.error)
 
                 raise OAuth2Exception(
                     error="server_error",
@@ -733,14 +733,16 @@ class OAuth2Provider:
 
         except httpx.HTTPStatusError as e:
             logger.warning(
-                f"HTTP error during token exchange: {e.response.status_code} - {e.response.text}"
+                "HTTP error during token exchange: %s - %s",
+                e.response.status_code,
+                e.response.text,
             )
             raise OAuth2Exception(
                 error="server_error",
                 error_description="Token exchange failed",
             ) from e
         except (httpx.RequestError, ValidationError) as e:
-            logger.error(f"Failed to exchange code for token: {str(e)}")
+            logger.error("Failed to exchange code for token: %s", e)
             raise OAuth2Exception(
                 error="server_error",
                 error_description="Failed to exchange code for token",
@@ -776,7 +778,7 @@ class OAuth2Provider:
             response.raise_for_status()
             user_info = response.json()
         except Exception as e:
-            logger.error(f"Failed to fetch user info: {str(e)}")
+            logger.error("Failed to fetch user info: %s", e)
             raise OAuth2Exception(
                 error="server_error",
                 error_description="Failed to fetch user info",
@@ -871,7 +873,9 @@ class OAuth2Provider:
         # into using the attacker's link code
         if str(user.id) != link_data.user_id:
             logger.error(
-                f"User ID mismatch: current user {user.id}, link code for {link_data.user_id}"
+                "User ID mismatch: current user %s, link code for %s",
+                user.id,
+                link_data.user_id,
             )
 
             return Response.error(
@@ -1055,19 +1059,17 @@ class OAuth2Provider:
             provider_code_challenge = calculate_s256_challenge(provider_code_verifier)
             provider_code_challenge_method = "S256"
 
-        data = OAuth2AuthorizationRequestData.model_validate(
-            {
-                "client_id": link_request.client_id,
-                "redirect_uri": link_request.redirect_uri,
-                "login_hint": None,
-                "client_state": link_request.state,
-                "state": state,
-                "code_challenge": link_request.code_challenge,
-                "code_challenge_method": link_request.code_challenge_method,
-                "link": True,
-                "user_id": str(user.id),
-                "provider_code_verifier": provider_code_verifier,
-            }
+        data = OAuth2AuthorizationRequestData(
+            client_id=link_request.client_id,
+            redirect_uri=link_request.redirect_uri,
+            login_hint=None,
+            client_state=link_request.state,
+            state=state,
+            code_challenge=link_request.code_challenge,
+            code_challenge_method=link_request.code_challenge_method,
+            link=True,
+            user_id=str(user.id),
+            provider_code_verifier=provider_code_verifier,
         )
 
         context.secondary_storage.set(

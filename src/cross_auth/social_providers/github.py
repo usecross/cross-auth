@@ -161,7 +161,7 @@ class GitHubProvider(OAuth2Provider):
                 info["email_verified"] = None
 
         except Exception as e:
-            logger.error(f"Failed to fetch user emails: {e}")
+            logger.error("Failed to fetch user emails: %s", e)
             info["email"] = None
             info["email_verified"] = None
 
