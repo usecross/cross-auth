@@ -9,7 +9,6 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from jwt.algorithms import RSAAlgorithm
 
 from cross_auth.social_providers.apple import (
-    AppleAuthConfig,
     AppleIdTokenPayload,
     AppleProvider,
 )
@@ -34,20 +33,14 @@ def apple_private_key() -> str:
 
 
 @pytest.fixture
-def apple_config(apple_private_key: str) -> AppleAuthConfig:
-    """Create test Apple configuration."""
-    return AppleAuthConfig(
+def apple_provider(apple_private_key: str) -> AppleProvider:
+    """Create test Apple provider."""
+    return AppleProvider(
         client_id="com.example.test",
         team_id="TEAM123456",
         key_id="KEY123ABC",
         private_key=apple_private_key,
     )
-
-
-@pytest.fixture
-def apple_provider(apple_config: AppleAuthConfig) -> AppleProvider:
-    """Create test Apple provider."""
-    return AppleProvider(config=apple_config)
 
 
 @pytest.fixture
@@ -68,21 +61,6 @@ def mock_apple_jwks():
         "keys": [jwk],
         "private_key": private_key,
     }
-
-
-# --- AppleAuthConfig tests ---
-
-
-def test_apple_auth_config_valid(apple_private_key: str):
-    config = AppleAuthConfig(
-        client_id="com.example.app",
-        team_id="ABCD123456",
-        key_id="XYZ789",
-        private_key=apple_private_key,
-    )
-    assert config.client_id == "com.example.app"
-    assert config.team_id == "ABCD123456"
-    assert config.key_id == "XYZ789"
 
 
 # --- Client secret generation tests ---

@@ -4,7 +4,7 @@ from typing import Annotated, Any, Literal
 
 import jwt
 from cross_web import AsyncHTTPRequest
-from pydantic import BaseModel, BeforeValidator, EmailStr, Field
+from pydantic import BaseModel, BeforeValidator, EmailStr
 
 from .oauth import (
     CallbackData,
@@ -62,13 +62,6 @@ def _parse_real_user_status(
     return result
 
 
-class AppleAuthConfig(BaseModel):
-    client_id: Annotated[str, Field(description="Service ID from Apple Developer")]
-    team_id: Annotated[str, Field(description="10-character Team ID")]
-    key_id: Annotated[str, Field(description="Key ID for the private key")]
-    private_key: Annotated[str, Field(description="PEM-encoded ES256 private key")]
-
-
 class AppleIdTokenPayload(BaseModel):
     iss: Literal["https://appleid.apple.com"]
     sub: str
@@ -115,9 +108,18 @@ class AppleProvider(OIDCProvider):
     scopes = ["name", "email"]
     supports_pkce = True
 
-    def __init__(self, config: AppleAuthConfig):
-        self.config = config
-        super().__init__(client_id=config.client_id)
+    def __init__(
+        self,
+        client_id: str,
+        *,
+        team_id: str,
+        key_id: str,
+        private_key: str,
+    ):
+        self.team_id = team_id
+        self.key_id = key_id
+        self.private_key = private_key
+        super().__init__(client_id=client_id)
 
     def generate_client_secret(self) -> str:
         """Generate a JWT client secret for Apple.
@@ -127,19 +129,17 @@ class AppleProvider(OIDCProvider):
         """
         now = int(time.time())
 
-        headers = {"kid": self.config.key_id, "alg": "ES256"}
+        headers = {"kid": self.key_id, "alg": "ES256"}
 
         payload = {
-            "iss": self.config.team_id,
+            "iss": self.team_id,
             "iat": now,
             "exp": now + (86400 * 180),  # 180 days max
             "aud": "https://appleid.apple.com",
-            "sub": self.config.client_id,
+            "sub": self.client_id,
         }
 
-        return jwt.encode(
-            payload, self.config.private_key, algorithm="ES256", headers=headers
-        )
+        return jwt.encode(payload, self.private_key, algorithm="ES256", headers=headers)
 
     def build_authorization_params(
         self,
@@ -155,7 +155,7 @@ class AppleProvider(OIDCProvider):
         IMPORTANT: scope must be space-separated ("name email"), NOT plus-encoded.
         """
         params = {
-            "client_id": self.config.client_id,
+            "client_id": self.client_id,
             "redirect_uri": proxy_redirect_uri,
             "response_type": "code",
             "scope": "name email",  # Space-separated, NOT "name+email"
@@ -177,7 +177,7 @@ class AppleProvider(OIDCProvider):
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": redirect_uri,
-            "client_id": self.config.client_id,
+            "client_id": self.client_id,
             "client_secret": self.generate_client_secret(),
         }
 

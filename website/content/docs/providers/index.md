@@ -33,7 +33,7 @@ You can use multiple providers simultaneously:
 
 ```python
 from cross_auth.router import AuthRouter
-from cross_auth.social_providers.apple import AppleProvider, AppleAuthConfig
+from cross_auth.social_providers.apple import AppleProvider
 from cross_auth.social_providers.github import GitHubProvider
 
 auth_router = AuthRouter(
