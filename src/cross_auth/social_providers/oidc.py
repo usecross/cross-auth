@@ -175,7 +175,7 @@ class OIDCProvider(OAuth2Provider):
             "email": claims.get("email"),
         }
 
-    def get_user_info_from_token_response(
+    def get_user_info(
         self,
         token_response: TokenResponse,
         context: Context,

@@ -259,16 +259,6 @@ class AppleProvider(OIDCProvider):
 
         return user_info
 
-    def fetch_user_info(self, access_token: str) -> UserInfo:
-        """Apple has NO userinfo endpoint - this should not be called.
-
-        User info comes from id_token, not a separate endpoint.
-        """
-        raise NotImplementedError(
-            "Apple does not have a userinfo endpoint. "
-            "User info is extracted from the id_token."
-        )
-
     def validate_user_info(self, user_info: UserInfo) -> ValidatedUserInfo:
         """Validate and extract email and provider user ID.
 
@@ -312,7 +302,7 @@ class AppleProvider(OIDCProvider):
             extra={"user_json": form_data.form.get("user")},
         )
 
-    def get_user_info_from_token_response(
+    def get_user_info(
         self,
         token_response: TokenResponse,
         context: "Context",

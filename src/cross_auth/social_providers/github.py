@@ -7,6 +7,9 @@ from typing import Any, cast
 import httpx
 from pydantic import AnyUrl, BaseModel, EmailStr, Field
 
+from cross_auth._context import Context
+from cross_auth.models.oauth_token_response import TokenResponse
+
 from .oauth import OAuth2Provider, UserInfo
 
 logger = logging.getLogger(__name__)
@@ -126,14 +129,21 @@ class GitHubProvider(OAuth2Provider):
             self.user_info_endpoint = f"{api_base_url}/user"
             self.emails_endpoint = f"{api_base_url}/user/emails"
 
-    def fetch_user_info(self, access_token: str) -> UserInfo:
+    def get_user_info(
+        self,
+        token_response: TokenResponse,
+        context: Context,
+        extra: dict[str, Any] | None = None,
+    ) -> UserInfo:
         # Cast to dict[str, Any] since GitHub API returns more fields than UserInfo
-        info = cast(dict[str, Any], super().fetch_user_info(access_token))
+        info = cast(
+            dict[str, Any], super().get_user_info(token_response, context, extra)
+        )
 
         try:
             response = httpx.get(
                 self.emails_endpoint,
-                headers={"Authorization": f"Bearer {access_token}"},
+                headers={"Authorization": f"Bearer {token_response.access_token}"},
             )
 
             response.raise_for_status()

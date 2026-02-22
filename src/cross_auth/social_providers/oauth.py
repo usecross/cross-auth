@@ -347,24 +347,6 @@ class OAuth2Provider:
             error=request.query_params.get("error"),
         )
 
-    def get_user_info_from_token_response(
-        self,
-        token_response: TokenResponse,
-        context: Context,
-        extra: dict[str, Any] | None = None,
-    ) -> UserInfo:
-        """Get user info after token exchange.
-
-        Default implementation fetches from userinfo endpoint.
-        Override for providers that include user info in the token response (e.g., Apple).
-
-        Args:
-            token_response: The token response from the provider.
-            context: The request context.
-            extra: Optional provider-specific data from extract_callback_data.
-        """
-        return self.fetch_user_info(token_response.access_token)
-
     async def callback(self, request: AsyncHTTPRequest, context: Context) -> Response:
         """
         This callback endpoint is used to exchange the Identity Provider's code
@@ -440,9 +422,7 @@ class OAuth2Provider:
                 provider_data.provider_code_verifier,
             )
 
-            user_info = self.get_user_info_from_token_response(
-                token_response, context, callback_data.extra
-            )
+            user_info = self.get_user_info(token_response, context, callback_data.extra)
 
             validated = self.validate_user_info(user_info)
         except OAuth2Exception as e:
@@ -758,17 +738,32 @@ class OAuth2Provider:
                 error_description="Failed to exchange code for token",
             ) from e
 
-    def fetch_user_info(self, access_token: str) -> UserInfo:
+    def get_user_info(
+        self,
+        token_response: TokenResponse,
+        context: Context,
+        extra: dict[str, Any] | None = None,
+    ) -> UserInfo:
+        """Get user info after token exchange.
+
+        Default implementation fetches from the userinfo endpoint using the access token.
+        Override for providers that include user info in the token response (e.g., OIDC providers).
+
+        Args:
+            token_response: The token response from the provider.
+            context: The request context.
+            extra: Optional provider-specific data from extract_callback_data.
+        """
         if not self.user_info_endpoint:
             raise NotImplementedError(
                 f"{self.__class__.__name__} does not have a user_info_endpoint. "
-                "Override get_user_info_from_token_response() instead."
+                "Override get_user_info() instead."
             )
 
         try:
             response = httpx.get(
                 self.user_info_endpoint,
-                headers={"Authorization": f"Bearer {access_token}"},
+                headers={"Authorization": f"Bearer {token_response.access_token}"},
             )
             response.raise_for_status()
             user_info = response.json()
@@ -912,7 +907,7 @@ class OAuth2Provider:
                 link_data.provider_code_verifier,
             )
 
-            user_info = self.get_user_info_from_token_response(
+            user_info = self.get_user_info(
                 token_response, context, link_data.provider_callback_extra
             )
             validated = self.validate_user_info(user_info)

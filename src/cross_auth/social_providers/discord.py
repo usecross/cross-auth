@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, EmailStr, Field
+
+from cross_auth._context import Context
+from cross_auth.models.oauth_token_response import TokenResponse
 
 from .oauth import OAuth2Provider, UserInfo
 
@@ -40,8 +45,13 @@ class DiscordProvider(OAuth2Provider):
     scopes = ["identify", "email"]
     supports_pkce = True
 
-    def fetch_user_info(self, access_token: str) -> UserInfo:
-        info = super().fetch_user_info(access_token)
+    def get_user_info(
+        self,
+        token_response: TokenResponse,
+        context: Context,
+        extra: dict[str, Any] | None = None,
+    ) -> UserInfo:
+        info = super().get_user_info(token_response, context, extra)
 
         # Map Discord's 'verified' field to our standard 'email_verified'
         info["email_verified"] = info.get("verified")
