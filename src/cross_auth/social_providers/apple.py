@@ -142,11 +142,7 @@ class AppleProvider(OIDCProvider):
 
     def __init__(self, config: AppleAuthConfig):
         self.config = config
-        # client_secret is generated dynamically as JWT
-        super().__init__(
-            client_id=config.client_id,
-            client_secret="",  # Will be overridden per-request
-        )
+        super().__init__(client_id=config.client_id)
 
     def generate_client_secret(self) -> str:
         """Generate a JWT client secret for Apple.

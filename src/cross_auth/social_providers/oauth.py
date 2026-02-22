@@ -116,13 +116,19 @@ class OAuth2Provider:
     scopes: ClassVar[list[str]]
     supports_pkce: ClassVar[bool]
 
-    def __init__(self, client_id: str, client_secret: str, trust_email: bool = True):
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str | None = None,
+        trust_email: bool = True,
+    ):
         """
         Initialize the OAuth2 provider.
 
         Args:
             client_id: OAuth2 client ID.
-            client_secret: OAuth2 client secret.
+            client_secret: OAuth2 client secret. None for providers that generate
+                secrets dynamically (e.g., Apple).
             trust_email: If True, emails from this provider are trusted for account
                 linking even without explicit email_verified=True. Set to False for
                 providers that don't verify email ownership.
@@ -637,8 +643,10 @@ class OAuth2Provider:
             "code": code,
             "redirect_uri": redirect_uri,
             "client_id": self.client_id,
-            "client_secret": self.client_secret,
         }
+
+        if self.client_secret:
+            params["client_secret"] = self.client_secret
 
         if code_verifier:
             params["code_verifier"] = code_verifier
