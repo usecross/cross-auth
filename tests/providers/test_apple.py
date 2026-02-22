@@ -357,7 +357,7 @@ def test_extract_user_info_private_relay(apple_provider: AppleProvider):
 
 
 def test_extract_user_info_with_first_time_data(apple_provider: AppleProvider):
-    """Test user info extraction with first-time user data (name)."""
+    """Test that name is extracted from first-time user data."""
     claims = _make_payload(
         sub="001234.abcd5678.7890",
         email="user@example.com",
@@ -380,19 +380,55 @@ def test_extract_user_info_with_first_time_data(apple_provider: AppleProvider):
 
     assert user_info["first_name"] == "John"
     assert user_info["last_name"] == "Doe"
+    # Email always comes from the id_token, not the first-time user data
+    assert user_info["email"] == "user@example.com"
 
 
-def test_extract_user_info_no_email(apple_provider: AppleProvider):
-    """Test user info extraction when email is not present (subsequent login)."""
+def test_extract_user_info_email_from_id_token_not_first_time_data(
+    apple_provider: AppleProvider,
+):
+    """Test that email comes from id_token, not the first-time user data POST body."""
     claims = _make_payload(
         sub="001234.abcd5678.7890",
-        # No email - this is expected on subsequent logins
+        email="relay@privaterelay.appleid.com",
+        email_verified="true",
     ).model_dump()
 
-    user_info = apple_provider.extract_user_info_from_claims(claims)
+    extra = {
+        "user_json": json.dumps(
+            {
+                "name": {"firstName": "John", "lastName": "Doe"},
+                "email": "real@example.com",
+            }
+        )
+    }
+
+    user_info = cast(
+        dict[str, Any],
+        apple_provider.extract_user_info_from_claims(claims, extra),
+    )
+
+    # id_token email takes precedence (it's cryptographically signed)
+    assert user_info["email"] == "relay@privaterelay.appleid.com"
+
+
+def test_extract_user_info_without_name(apple_provider: AppleProvider):
+    """Test user info extraction on subsequent login (no name, email still present)."""
+    claims = _make_payload(
+        sub="001234.abcd5678.7890",
+        email="user@example.com",
+        email_verified="true",
+    ).model_dump()
+
+    user_info = cast(
+        dict[str, Any],
+        apple_provider.extract_user_info_from_claims(claims),
+    )
 
     assert user_info["id"] == "001234.abcd5678.7890"
-    assert user_info["email"] is None
+    assert user_info["email"] == "user@example.com"
+    assert "first_name" not in user_info
+    assert "last_name" not in user_info
 
 
 # --- AppleIdTokenPayload parsing tests ---
@@ -503,6 +539,8 @@ def test_payload_real_user_status_defaults_to_none():
 
 
 # --- Validate user info tests ---
+# Apple uses the base class validate_user_info which requires both email and id.
+# Email is always present in Apple's id_token when the email scope is requested.
 
 
 def test_validate_user_info_with_email(apple_provider: AppleProvider):
@@ -521,21 +559,6 @@ def test_validate_user_info_with_email(apple_provider: AppleProvider):
     assert result.email_verified is True
 
 
-def test_validate_user_info_without_email(apple_provider: AppleProvider):
-    """Test validation without email (subsequent login)."""
-    user_info: UserInfo = {
-        "id": "001234.abcd5678.7890",
-        "email": None,
-        "email_verified": None,
-    }
-
-    result = apple_provider.validate_user_info(user_info)
-
-    assert isinstance(result, ValidatedUserInfo)
-    assert result.email is None
-    assert result.provider_user_id == "001234.abcd5678.7890"
-
-
 def test_validate_user_info_missing_id(apple_provider: AppleProvider):
     """Test that missing user ID raises error."""
     user_info = cast(
@@ -550,7 +573,7 @@ def test_validate_user_info_missing_id(apple_provider: AppleProvider):
     with pytest.raises(OAuth2Exception) as exc_info:
         apple_provider.validate_user_info(user_info)
 
-    assert "sub" in exc_info.value.error_description.lower()
+    assert exc_info.value.error == "server_error"
 
 
 # --- Routes tests ---

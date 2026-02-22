@@ -12,7 +12,6 @@ from .oauth import (
     OAuth2Exception,
     TokenExchangeParams,
     UserInfo,
-    ValidatedUserInfo,
 )
 from .oidc import OIDCProvider
 
@@ -120,7 +119,8 @@ class AppleProvider(OIDCProvider):
     Key differences from standard OAuth:
     - client_secret is a JWT signed with your private key (ES256)
     - No userinfo endpoint - all data in id_token
-    - Email/name only on first authorization
+    - User's name (firstName/lastName) only sent on first authorization
+    - Email is always in the id_token (when email scope is requested)
     - Uses POST callback (response_mode=form_post)
     """
 
@@ -215,8 +215,8 @@ class AppleProvider(OIDCProvider):
     ) -> UserInfo:
         """Extract user info from Apple's id_token claims.
 
-        Parses claims into AppleIdTokenPayload and merges first-time user data
-        (name, email) from the callback's `user` field in extra.
+        Email is always present in the id_token (when email scope is requested).
+        The user's name is only sent on first authorization via the POST `user` field.
         """
         id_token_payload = AppleIdTokenPayload.model_validate(claims)
 
@@ -227,7 +227,7 @@ class AppleProvider(OIDCProvider):
             "is_private_email": id_token_payload.is_private_email,
         }
 
-        # Parse and merge first-time user data if available (only on first auth)
+        # Name is only sent on first authorization via the POST `user` field
         if extra and (user_json := extra.get("user_json")):
             try:
                 user_dict = json.loads(user_json)
@@ -238,33 +238,8 @@ class AppleProvider(OIDCProvider):
                 if first_time_data.name:
                     user_info["first_name"] = first_time_data.name.first_name
                     user_info["last_name"] = first_time_data.name.last_name
-                if first_time_data.email:
-                    user_info["email"] = first_time_data.email
 
         return cast(UserInfo, user_info)
-
-    def validate_user_info(self, user_info: UserInfo) -> ValidatedUserInfo:
-        """Validate and extract email and provider user ID.
-
-        Note: Email may be None on subsequent logins (Apple only sends on first auth).
-        The provider_user_id (sub) is always available.
-        """
-        provider_user_id = user_info.get("id")
-
-        if not provider_user_id:
-            raise OAuth2Exception(
-                error="server_error",
-                error_description="No user ID (sub) found in id_token",
-            )
-
-        # Email may be None on subsequent logins - that's expected
-        email = user_info.get("email")
-
-        return ValidatedUserInfo(
-            email=email,
-            provider_user_id=str(provider_user_id),
-            email_verified=user_info.get("email_verified"),
-        )
 
     async def extract_callback_data(self, request: AsyncHTTPRequest) -> CallbackData:
         """Extract callback data from Apple's POST form data.
