@@ -118,7 +118,6 @@ class GoogleProvider(OIDCProvider):
             "email": claims.get("email"),
             "email_verified": claims.get("email_verified"),
             "name": claims.get("name"),
-            "picture": claims.get("picture"),
         }
 ```
 
@@ -194,6 +193,7 @@ differently (e.g., POST instead of GET):
 
 ```python
 from cross_auth import CallbackData
+from cross_web import AsyncHTTPRequest
 
 
 async def extract_callback_data(self, request: AsyncHTTPRequest) -> CallbackData:
