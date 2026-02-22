@@ -125,21 +125,24 @@ class AppleProvider(OIDCProvider):
         """Generate a JWT client secret for Apple.
 
         Apple requires client_secret to be a JWT signed with ES256.
-        Max validity is 6 months (180 days).
+        Generated fresh on each token exchange, so we use a short expiry.
         """
         now = int(time.time())
-
-        headers = {"kid": self.key_id, "alg": "ES256"}
 
         payload = {
             "iss": self.team_id,
             "iat": now,
-            "exp": now + (86400 * 180),  # 180 days max
+            "exp": now + 300,  # 5 minutes
             "aud": "https://appleid.apple.com",
             "sub": self.client_id,
         }
 
-        return jwt.encode(payload, self.private_key, algorithm="ES256", headers=headers)
+        return jwt.encode(
+            payload,
+            self.private_key,
+            algorithm="ES256",
+            headers={"kid": self.key_id, "alg": "ES256"},
+        )
 
     def build_authorization_params(
         self,

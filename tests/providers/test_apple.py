@@ -87,12 +87,12 @@ def test_generate_client_secret_structure(apple_provider: AppleProvider):
 
 
 def test_client_secret_expiration(apple_provider: AppleProvider):
-    """Test that client secret has correct expiration (180 days)."""
+    """Test that client secret has short expiration (5 minutes)."""
     secret = apple_provider.generate_client_secret()
     payload = jwt.decode(secret, options={"verify_signature": False})
 
     now = int(time.time())
-    expected_exp = now + (86400 * 180)  # 180 days
+    expected_exp = now + 300  # 5 minutes
 
     # Allow 5 second tolerance
     assert abs(payload["exp"] - expected_exp) < 5

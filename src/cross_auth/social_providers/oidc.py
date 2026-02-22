@@ -1,14 +1,3 @@
-"""OpenID Connect (OIDC) Provider base class.
-
-OIDC extends OAuth2 with:
-- id_token: A JWT containing user claims, signed by the provider
-- JWKS endpoint: Public keys to verify the id_token signature
-- Standard claims: sub, iss, aud, exp, iat, email, email_verified, etc.
-
-Providers that use OIDC: Apple, Google, Microsoft, Auth0, Okta, Keycloak
-Providers that don't: GitHub, Discord, Twitter (use userinfo endpoint only)
-"""
-
 import json
 import logging
 import time
