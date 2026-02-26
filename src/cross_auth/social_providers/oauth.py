@@ -456,13 +456,49 @@ class OAuth2Provider:
         )
 
         if social_account:
+            # Preserve broader-scoped token during login to avoid downgrading
+            # scopes that were granted via a separate link flow.
+            existing_scopes = (
+                set(social_account.scope.replace(",", " ").split())
+                if social_account.scope
+                else set()
+            )
+            new_scopes = (
+                set(token_response.scope.replace(",", " ").split())
+                if token_response.scope
+                else set()
+            )
+            has_broader_existing_scope = (
+                new_scopes.issubset(existing_scopes) and existing_scopes != new_scopes
+            )
+
             context.accounts_storage.update_social_account(
                 social_account.id,
-                access_token=token_response.access_token,
-                refresh_token=token_response.refresh_token,
-                access_token_expires_at=token_response.access_token_expires_at,
-                refresh_token_expires_at=token_response.refresh_token_expires_at,
-                scope=token_response.scope,
+                access_token=(
+                    social_account.access_token
+                    if has_broader_existing_scope
+                    else token_response.access_token
+                ),
+                refresh_token=(
+                    social_account.refresh_token
+                    if has_broader_existing_scope
+                    else token_response.refresh_token
+                ),
+                access_token_expires_at=(
+                    social_account.access_token_expires_at
+                    if has_broader_existing_scope
+                    else token_response.access_token_expires_at
+                ),
+                refresh_token_expires_at=(
+                    social_account.refresh_token_expires_at
+                    if has_broader_existing_scope
+                    else token_response.refresh_token_expires_at
+                ),
+                scope=(
+                    social_account.scope
+                    if has_broader_existing_scope
+                    else token_response.scope
+                ),
                 user_info=cast(dict[str, Any], user_info),
                 provider_email=validated.email,
                 provider_email_verified=validated.email_verified,

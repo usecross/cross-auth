@@ -13,6 +13,11 @@ class SocialAccount(Protocol):
     provider_email_verified: bool | None
     # TODO: Add endpoint to toggle is_login_method for existing social accounts
     is_login_method: bool
+    scope: str | None
+    access_token: str | None
+    refresh_token: str | None
+    access_token_expires_at: datetime | None
+    refresh_token_expires_at: datetime | None
 
 
 class User(Protocol):

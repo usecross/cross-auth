@@ -587,6 +587,69 @@ async def test_updates_the_social_account_if_it_already_exists(
     assert account.social_accounts[0].refresh_token is None
 
 
+async def test_login_preserves_broader_scope(
+    oauth_provider: OAuth2Provider,
+    context: Context,
+    respx_mock: MockRouter,
+    valid_callback_request: AsyncHTTPRequest,
+    accounts_storage: MemoryAccountsStorage,
+):
+    """When an existing social account has broader scopes (e.g. from a link flow),
+    logging in with narrower scopes should preserve the existing token and scope."""
+    accounts_storage.create_user(
+        user_info={"email": "pollo@example.com", "id": "pollo"},
+        email="pollo@example.com",
+        email_verified=True,
+    )
+
+    # Social account with broader scope from a previous link flow
+    accounts_storage.create_social_account(
+        user_id="pollo",
+        provider="test",
+        provider_user_id="pollo",
+        access_token="broad_scope_token",
+        refresh_token="broad_scope_refresh",
+        access_token_expires_at=None,
+        refresh_token_expires_at=None,
+        scope="openid email profile repo",
+        user_info={"email": "pollo@example.com", "id": "pollo"},
+        provider_email="pollo@example.com",
+        provider_email_verified=True,
+        is_login_method=True,
+    )
+
+    # Login flow returns narrower scope (subset of existing)
+    data = {
+        "access_token": "narrow_scope_token",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scope": "openid email profile",
+    }
+
+    respx_mock.post(oauth_provider.token_endpoint).mock(
+        return_value=httpx.Response(status_code=200, json=data)
+    )
+    respx_mock.get(oauth_provider.user_info_endpoint).mock(
+        return_value=httpx.Response(
+            status_code=200,
+            json={"email": "pollo@example.com", "id": "pollo"},
+        )
+    )
+
+    response = await oauth_provider.callback(valid_callback_request, context)
+
+    assert response.status_code == 302
+
+    account = accounts_storage.data.get("pollo")
+    assert account is not None
+
+    social = account.social_accounts[0]
+    # Should preserve the broader-scoped token
+    assert social.access_token == "broad_scope_token"
+    assert social.refresh_token == "broad_scope_refresh"
+    assert social.scope == "openid email profile repo"
+
+
 async def test_fails_if_the_user_is_not_allowed_to_signup(
     oauth_provider: OAuth2Provider,
     context: Context,
