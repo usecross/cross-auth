@@ -936,6 +936,11 @@ class OAuth2Provider:
                 link_data.provider_code_verifier,
             )
 
+            logger.info(
+                "finalize_link: token_response.scope=%s",
+                token_response.scope,
+            )
+
             user_info = self.get_user_info(
                 token_response, context, link_data.provider_callback_extra
             )
@@ -1109,6 +1114,12 @@ class OAuth2Provider:
         )
 
         authorization_url = f"{self.authorization_endpoint}?{urlencode(query_params)}"
+
+        logger.info(
+            "initiate_link: scope_override=%s, authorization_url=%s",
+            link_request.scope,
+            authorization_url,
+        )
 
         return Response(
             status_code=200,
