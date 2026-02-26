@@ -102,6 +102,79 @@ async def test_initiate_link_stores_correct_request_data(
     )
 
 
+async def test_initiate_link_with_scope_override(
+    oauth_provider: OAuth2Provider,
+    context: Context,
+    secondary_storage: MemoryStorage,
+):
+    """When scope is provided in the link request, it overrides the provider's default scopes."""
+    request = AsyncHTTPRequest(
+        TestingRequestAdapter(
+            method="POST",
+            url="http://localhost:8000/test/link",
+            headers={
+                "Authorization": "Bearer test",
+            },
+            json={
+                "client_id": "my_app_client_id",
+                "redirect_uri": "http://valid-frontend.com/callback",
+                "code_challenge": "test",
+                "code_challenge_method": "S256",
+                "scope": "user:email repo",
+            },
+        )
+    )
+
+    response = await oauth_provider.initiate_link(request, context)
+
+    assert response.status_code == 200
+    assert response.body
+
+    response_data = json.loads(response.body)
+    authorization_url = response_data["authorization_url"]
+
+    query_params = parse_qs(urlparse(authorization_url).query)
+
+    # Scope should be the overridden value, not the provider's default
+    assert query_params["scope"] == ["user:email repo"]
+
+
+async def test_initiate_link_without_scope_uses_provider_default(
+    oauth_provider: OAuth2Provider,
+    context: Context,
+    secondary_storage: MemoryStorage,
+):
+    """When scope is not provided, the provider's default scopes are used."""
+    request = AsyncHTTPRequest(
+        TestingRequestAdapter(
+            method="POST",
+            url="http://localhost:8000/test/link",
+            headers={
+                "Authorization": "Bearer test",
+            },
+            json={
+                "client_id": "my_app_client_id",
+                "redirect_uri": "http://valid-frontend.com/callback",
+                "code_challenge": "test",
+                "code_challenge_method": "S256",
+            },
+        )
+    )
+
+    response = await oauth_provider.initiate_link(request, context)
+
+    assert response.status_code == 200
+    assert response.body
+
+    response_data = json.loads(response.body)
+    authorization_url = response_data["authorization_url"]
+
+    query_params = parse_qs(urlparse(authorization_url).query)
+
+    # Scope should be the provider's default
+    assert query_params["scope"] == ["openid email profile"]
+
+
 async def test_initiate_link_requires_authentication(
     oauth_provider: OAuth2Provider,
     context: Context,

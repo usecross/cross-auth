@@ -153,6 +153,7 @@ class AppleProvider(OIDCProvider):
         code_challenge: str | None = None,
         code_challenge_method: str | None = None,
         login_hint: str | None = None,
+        scope_override: str | None = None,
     ) -> dict:
         """Build authorization request parameters for Apple.
 
@@ -162,7 +163,7 @@ class AppleProvider(OIDCProvider):
             "client_id": self.client_id,
             "redirect_uri": proxy_redirect_uri,
             "response_type": "code",
-            "scope": "name email",  # Space-separated, NOT "name+email"
+            "scope": scope_override if scope_override is not None else "name email",
             "state": state,
             "response_mode": "form_post",  # Required for scope to work
         }

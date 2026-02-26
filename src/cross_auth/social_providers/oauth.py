@@ -94,6 +94,7 @@ class InitiateLinkRequest(BaseModel):
     code_challenge_method: Literal["S256"]
     client_id: str
     state: str | None = None
+    scope: str | None = None
 
 
 class InitiateLinkResponse(BaseModel):
@@ -174,14 +175,23 @@ class OAuth2Provider:
         return account_linking.get("allow_different_emails", False)
 
     def get_redirect_params(
-        self, state: str, redirect_uri: str, response_type: str = "code", **kwargs: str
+        self,
+        state: str,
+        redirect_uri: str,
+        response_type: str = "code",
+        scope_override: str | None = None,
+        **kwargs: str,
     ) -> dict[str, str]:
         """
         Generate the query parameters for the redirect to the authorization endpoint.
+
+        If scope_override is provided, it is used instead of the provider's default scopes.
         """
         return {
             "client_id": self.client_id,
-            "scope": " ".join(self.scopes),
+            "scope": scope_override
+            if scope_override is not None
+            else " ".join(self.scopes),
             "redirect_uri": redirect_uri,
             "response_type": response_type,
             "state": state,
@@ -611,14 +621,20 @@ class OAuth2Provider:
         code_challenge: str | None = None,
         code_challenge_method: str | None = None,
         login_hint: str | None = None,
+        scope_override: str | None = None,
     ) -> dict:
         """Build authorization request parameters.
 
         Override this method to customize authorization parameters.
         For example, to force a specific response_type or add extra params.
+
+        If scope_override is provided, it is used instead of the provider's default scopes.
         """
         params = self.get_redirect_params(
-            state=state, redirect_uri=proxy_redirect_uri, response_type=response_type
+            state=state,
+            redirect_uri=proxy_redirect_uri,
+            response_type=response_type,
+            scope_override=scope_override,
         )
 
         if code_challenge:
@@ -1089,6 +1105,7 @@ class OAuth2Provider:
             code_challenge=provider_code_challenge,
             code_challenge_method=provider_code_challenge_method,
             login_hint=None,
+            scope_override=link_request.scope,
         )
 
         authorization_url = f"{self.authorization_endpoint}?{urlencode(query_params)}"
