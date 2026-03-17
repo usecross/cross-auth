@@ -100,6 +100,12 @@ class InitiateLinkResponse(BaseModel):
     authorization_url: str
 
 
+@dataclass
+class PreparedLink:
+    state: str
+    authorization_url: str
+
+
 class CallbackData(BaseModel):
     """Data extracted from an OAuth callback request."""
 
@@ -992,21 +998,20 @@ class OAuth2Provider:
 
         return Response(status_code=200, body='{"message": "Link finalized"}')
 
-    async def initiate_link(
+    async def prepare_link(
         self, request: AsyncHTTPRequest, context: Context
-    ) -> Response:
-        """
-        Initiate a link flow. This endpoint accepts a POST request with
-        Authorization header and returns the provider's authorization URL.
+    ) -> PreparedLink:
+        """Validate the link request and prepare the authorization URL.
 
-        This is the preferred way to start a link flow since it doesn't
-        require passing tokens in URL parameters.
+        Returns a PreparedLink with the state and authorization URL.
+        Raises CrossAuthException on validation errors. Subclasses can call
+        this to get the state without parsing the authorization URL.
         """
         user = context.get_user_from_request(request)
 
         if not user:
             logger.error("User must be authenticated to initiate link flow")
-            return Response.error(
+            raise CrossAuthException(
                 "unauthorized",
                 error_description="User must be authenticated to initiate link flow",
                 status_code=401,
@@ -1016,7 +1021,7 @@ class OAuth2Provider:
 
         if not account_linking.get("enabled", False):
             logger.error("Account linking is not enabled")
-            return Response.error(
+            raise CrossAuthException(
                 "linking_disabled",
                 error_description="Account linking is not enabled",
             )
@@ -1028,15 +1033,15 @@ class OAuth2Provider:
         except (json.JSONDecodeError, ValidationError) as e:
             logger.error("Invalid request body: %s", e)
 
-            return Response.error(
+            raise CrossAuthException(
                 "invalid_request",
                 error_description="Invalid request body",
-            )
+            ) from e
 
         if not context.is_valid_redirect_uri(link_request.redirect_uri):
             logger.error("Invalid redirect_uri: %s", link_request.redirect_uri)
 
-            return Response.error(
+            raise CrossAuthException(
                 "invalid_redirect_uri",
                 error_description="Invalid redirect_uri",
             )
@@ -1044,7 +1049,7 @@ class OAuth2Provider:
         if not context.is_valid_client_id(link_request.client_id):
             logger.error("Invalid client_id: %s", link_request.client_id)
 
-            return Response.error(
+            raise CrossAuthException(
                 "invalid_client",
                 error_description="Invalid client_id",
             )
@@ -1093,10 +1098,31 @@ class OAuth2Provider:
 
         authorization_url = f"{self.authorization_endpoint}?{urlencode(query_params)}"
 
+        return PreparedLink(state=state, authorization_url=authorization_url)
+
+    async def initiate_link(
+        self, request: AsyncHTTPRequest, context: Context
+    ) -> Response:
+        """
+        Initiate a link flow. This endpoint accepts a POST request with
+        Authorization header and returns the provider's authorization URL.
+
+        This is the preferred way to start a link flow since it doesn't
+        require passing tokens in URL parameters.
+        """
+        try:
+            result = await self.prepare_link(request, context)
+        except CrossAuthException as e:
+            return Response.error(
+                e.error,
+                error_description=e.error_description,
+                status_code=e.status_code,
+            )
+
         return Response(
             status_code=200,
             body=InitiateLinkResponse(
-                authorization_url=authorization_url
+                authorization_url=result.authorization_url
             ).model_dump_json(),
             headers={"Content-Type": "application/json"},
         )
