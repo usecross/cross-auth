@@ -1,6 +1,14 @@
 CHANGELOG
 =========
 
+0.9.0 - 2026-03-17
+------------------
+
+This release exposes a `prepare_link` method on `OAuth2Provider` which allows to
+create custom versions of `initiate_link`
+
+This release was contributed by [@patrick91](https://github.com/patrick91) in [#26](https://github.com/usecross/cross-auth/pull/26)
+
 0.8.0 - 2026-02-22
 ------------------
 
