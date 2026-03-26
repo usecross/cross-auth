@@ -11,11 +11,11 @@ class Form:
     pass
 
 
-def _get_fastapi_request_type(route: "Route") -> type[Any]:
+def _get_fastapi_request_type(route: "Route") -> Any:
     from fastapi import Request as FastAPIRequest
     from fastapi.params import Form as FastAPIForm
 
-    RequestType: type[Any] = FastAPIRequest
+    RequestType: Any = FastAPIRequest
 
     if route.request_type is not None:
         RequestType = route.request_type
@@ -23,7 +23,7 @@ def _get_fastapi_request_type(route: "Route") -> type[Any]:
         args = get_args(RequestType)
 
         if any(isinstance(arg, Form) for arg in args):
-            RequestType = Annotated[RequestType, FastAPIForm()]  # type: ignore[assignment]
+            RequestType = Annotated[RequestType, FastAPIForm()]
 
     return RequestType
 
