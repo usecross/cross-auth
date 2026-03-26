@@ -736,6 +736,14 @@ class OAuth2Provider:
                     error="server_error",
                     error_description="Unexpected token response format",
                 )
+
+            logger.debug(
+                "Token exchange succeeded (token_type=%s, scope=%s, expires_in=%s)",
+                token_response.root.token_type,
+                token_response.root.scope,
+                token_response.root.expires_in,
+            )
+
             return token_response.root
 
         except httpx.HTTPStatusError as e:
@@ -784,8 +792,26 @@ class OAuth2Provider:
             )
             response.raise_for_status()
             user_info = response.json()
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "Failed to fetch user info from %s: %s (status=%d, body=%s, scope=%s)",
+                self.user_info_endpoint,
+                e,
+                e.response.status_code,
+                e.response.text,
+                token_response.scope,
+            )
+            raise OAuth2Exception(
+                error="server_error",
+                error_description="Failed to fetch user info",
+            ) from e
         except Exception as e:
-            logger.error("Failed to fetch user info: %s", e)
+            logger.error(
+                "Failed to fetch user info from %s: %s (scope=%s)",
+                self.user_info_endpoint,
+                e,
+                token_response.scope,
+            )
             raise OAuth2Exception(
                 error="server_error",
                 error_description="Failed to fetch user info",

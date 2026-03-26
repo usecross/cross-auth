@@ -1,7 +1,7 @@
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import httpx
 import jwt
@@ -67,7 +67,7 @@ class OIDCProvider(OAuth2Provider):
         """Find a public key by key ID in a JWKS dict."""
         for key in keys.get("keys", []):
             if key.get("kid") == kid:
-                return RSAAlgorithm.from_jwk(key)  # type: ignore[return-value]
+                return cast("RSAPublicKey", RSAAlgorithm.from_jwk(key))
         return None
 
     def _get_public_key(

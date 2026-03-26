@@ -160,8 +160,24 @@ class GitHubProvider(OAuth2Provider):
                 info["email"] = None
                 info["email_verified"] = None
 
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "Failed to fetch user emails from %s: %s (status=%d, body=%s, scope=%s)",
+                self.emails_endpoint,
+                e,
+                e.response.status_code,
+                e.response.text,
+                token_response.scope,
+            )
+            info["email"] = None
+            info["email_verified"] = None
         except Exception as e:
-            logger.error("Failed to fetch user emails: %s", e)
+            logger.error(
+                "Failed to fetch user emails from %s: %s (scope=%s)",
+                self.emails_endpoint,
+                e,
+                token_response.scope,
+            )
             info["email"] = None
             info["email_verified"] = None
 
