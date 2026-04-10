@@ -1,14 +1,13 @@
 from typing import Annotated
 
-from cross_web import AsyncHTTPRequest
-from fastapi import Depends, FastAPI, Request
-from fastapi.responses import JSONResponse
-from fastapi.testclient import TestClient
-
 from cross_auth import AccountsStorage, SecondaryStorage, User
 from cross_auth._session import create_session, get_session
 from cross_auth.fastapi import CrossAuth
 from cross_auth.router import AuthRouter
+from cross_web import AsyncHTTPRequest
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
 
 TEST_PASSWORD = "password123"  # noqa: S105
 
@@ -129,6 +128,61 @@ def test_router_property(
 
     app = FastAPI()
     app.include_router(auth.router)
+
+
+def test_router_accepts_social_account_unlinked_hook(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+):
+    async def hook(
+        request: AsyncHTTPRequest,
+        context,
+        user: User,
+        social_account,
+    ) -> None:
+        return None
+
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        on_social_account_unlinked=hook,
+    )
+
+    assert auth.router._on_social_account_unlinked is hook
+
+
+def test_social_account_unlink_route_uses_path_param(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+):
+    auth = _make_auth(secondary_storage, accounts_storage)
+    app = FastAPI()
+    app.include_router(auth.router)
+
+    user = accounts_storage.find_user_by_id("test")
+    assert user is not None
+    social_account = accounts_storage.create_social_account(
+        user_id=user.id,
+        provider="test",
+        provider_user_id="provider-user-id",
+        access_token=None,
+        refresh_token=None,
+        access_token_expires_at=None,
+        refresh_token_expires_at=None,
+        scope=None,
+        user_info={"id": "provider-user-id"},
+        provider_email=user.email,
+        provider_email_verified=True,
+        is_login_method=True,
+    )
+    session_id, _ = create_session("test", secondary_storage)
+
+    with TestClient(app) as client:
+        client.cookies.set("session_id", session_id)
+        resp = client.delete(f"/social-accounts/{social_account.id}")
+        assert resp.status_code == 200
+        assert resp.json() == {"message": "Account unlinked"}
+        assert not list(user.social_accounts)
 
 
 def test_auto_wired_get_user_from_request(

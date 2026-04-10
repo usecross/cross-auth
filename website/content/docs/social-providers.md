@@ -28,6 +28,23 @@ linked to the same user record via the `SocialAccount` model.
 The `POST /{provider}/link` endpoint handles account linking for authenticated
 users.
 
+## Unlinking Accounts
+
+Authenticated users can unlink an existing social account with
+`DELETE /social-accounts/{social_account_id}`.
+
+Cross-Auth blocks unlinking when that social account is the user's only
+remaining login method. A user can still unlink if they have a password set or
+another linked social account with `is_login_method=True`.
+
+Your application needs to know which `social_account_id` to unlink. Cross-Auth
+uses the IDs from your `User.social_accounts` records for this route.
+
+If you need product-specific cleanup after a successful unlink, pass
+`on_social_account_unlinked` to `CrossAuth(...)` or `AuthRouter(...)`. This hook
+runs after the social account has been deleted, and is a good place to clear
+provider-specific caches or revoke app-local state.
+
 ## Configuration
 
 Each provider requires:

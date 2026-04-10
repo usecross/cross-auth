@@ -4,14 +4,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 import pytest
-from cross_web import AsyncHTTPRequest
-from passlib.context import CryptContext
-
 from cross_auth._context import Context
 from cross_auth._issuer import AuthorizationCodeGrantData, Issuer
-from cross_auth._storage import AccountsStorage, SecondaryStorage, User as UserProtocol
+from cross_auth._storage import AccountsStorage, SecondaryStorage
+from cross_auth._storage import User as UserProtocol
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.social_providers.oauth import OAuth2LinkCodeData
+from cross_web import AsyncHTTPRequest
+from passlib.context import CryptContext
 
 pytestmark = pytest.mark.asyncio
 
@@ -42,7 +42,7 @@ class User:
     id: str
     email: str
     email_verified: bool
-    hashed_password: str
+    hashed_password: str | None
     social_accounts: list[SocialAccount]
 
 
@@ -202,6 +202,15 @@ class MemoryAccountsStorage:
         social_account.provider_email_verified = provider_email_verified
 
         return social_account
+
+    def delete_social_account(self, social_account_id: str) -> None:
+        for user in self.data.values():
+            for social_account in user.social_accounts:
+                if social_account.id == social_account_id:
+                    user.social_accounts.remove(social_account)
+                    return
+
+        raise ValueError("Social account does not exist")
 
 
 @pytest.fixture(scope="session")

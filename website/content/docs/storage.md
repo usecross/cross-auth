@@ -14,8 +14,8 @@ and Cross-Auth will accept your objects.
 
 ## AccountsStorage
 
-The `AccountsStorage` protocol defines how Cross-Auth looks up and creates
-users.
+The `AccountsStorage` protocol defines how Cross-Auth looks up users and manages
+linked social accounts.
 
 ```python
 class AccountsStorage(Protocol):
@@ -29,6 +29,7 @@ class AccountsStorage(Protocol):
     ) -> User: ...
     def create_social_account(self, **kwargs) -> SocialAccount: ...
     def update_social_account(self, social_account_id, **kwargs) -> SocialAccount: ...
+    def delete_social_account(self, social_account_id) -> None: ...
 ```
 
 ### User Protocol

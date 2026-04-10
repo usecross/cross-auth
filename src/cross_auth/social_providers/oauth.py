@@ -3,9 +3,9 @@ import logging
 import secrets
 import uuid
 from dataclasses import dataclass
-from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone
 from typing import Any, ClassVar, Literal, NotRequired, TypedDict, cast
+from urllib.parse import urlencode
 
 import httpx
 from cross_web import AsyncHTTPRequest

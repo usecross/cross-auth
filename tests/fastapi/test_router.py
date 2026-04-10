@@ -8,6 +8,27 @@ def test_router(test_app: FastAPI):
             "openapi": "3.1.0",
             "info": {"title": "FastAPI", "version": "1.0.0"},
             "paths": {
+                "/social-accounts/{social_account_id}": {
+                    "delete": {
+                        "summary": "Unlink social account",
+                        "operationId": "unlink_social_account",
+                        "parameters": [
+                            {
+                                "name": "social_account_id",
+                                "in": "path",
+                                "required": True,
+                                "schema": {"type": "string"},
+                                "description": "The linked social account id to unlink",
+                            }
+                        ],
+                        "responses": {
+                            "200": {
+                                "description": "Successful Response",
+                                "content": {"application/json": {"schema": {}}},
+                            }
+                        },
+                    }
+                },
                 "/token": {
                     "post": {
                         "summary": "OAuth 2.0 token endpoint",
@@ -60,7 +81,7 @@ def test_router(test_app: FastAPI):
                             },
                         },
                     }
-                }
+                },
             },
             "components": {
                 "schemas": {

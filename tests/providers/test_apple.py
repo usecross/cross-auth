@@ -4,10 +4,6 @@ from typing import cast
 
 import jwt
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
-from jwt.algorithms import RSAAlgorithm
-
 from cross_auth.social_providers.apple import (
     AppleIdTokenPayload,
     AppleProvider,
@@ -17,6 +13,9 @@ from cross_auth.social_providers.oauth import (
     UserInfo,
     ValidatedUserInfo,
 )
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from jwt.algorithms import RSAAlgorithm
 
 # --- Fixtures ---
 

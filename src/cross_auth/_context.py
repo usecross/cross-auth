@@ -1,11 +1,19 @@
-from collections.abc import Callable
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
 from urllib.parse import urlparse
 
 from cross_web import AsyncHTTPRequest
 
 from ._config import Config
-from ._storage import AccountsStorage, SecondaryStorage, User
+from ._storage import AccountsStorage, SecondaryStorage, SocialAccount, User
 from .utils._is_same_host import is_same_host
+
+
+SocialAccountUnlinkedHook = Callable[
+    [AsyncHTTPRequest, "Context", User, SocialAccount],
+    Awaitable[None] | None,
+]
 
 
 class Context:
@@ -19,6 +27,7 @@ class Context:
         get_user_from_request: Callable[[AsyncHTTPRequest], User | None],
         base_url: str | None = None,
         config: Config | None = None,
+        on_social_account_unlinked: SocialAccountUnlinkedHook | None = None,
     ):
         self.secondary_storage = secondary_storage
         self.accounts_storage = accounts_storage
@@ -27,6 +36,7 @@ class Context:
         self.get_user_from_request = get_user_from_request
         self.base_url = base_url
         self.config: Config = config if config is not None else {}
+        self.on_social_account_unlinked = on_social_account_unlinked
 
     def is_valid_redirect_uri(self, redirect_uri: str) -> bool:
         host = urlparse(redirect_uri).netloc

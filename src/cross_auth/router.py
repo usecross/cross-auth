@@ -3,12 +3,19 @@ from collections.abc import Callable
 from itertools import chain
 from typing import Any
 
-from fastapi import APIRouter
 from cross_web import AsyncHTTPRequest
+from fastapi import APIRouter
 
 from ._config import Config
-from ._context import AccountsStorage, Context, SecondaryStorage, User
+from ._context import (
+    AccountsStorage,
+    Context,
+    SecondaryStorage,
+    SocialAccountUnlinkedHook,
+    User,
+)
 from ._issuer import Issuer
+from ._social_accounts import routes as social_account_routes
 from .social_providers.oauth import OAuth2Provider
 
 logger = logging.getLogger(__name__)
@@ -27,6 +34,7 @@ class AuthRouter(APIRouter):
         trusted_origins: list[str],
         base_url: str | None = None,
         config: Config | None = None,
+        on_social_account_unlinked: SocialAccountUnlinkedHook | None = None,
     ):
         super().__init__()
 
@@ -40,10 +48,11 @@ class AuthRouter(APIRouter):
         self._get_user_from_request = get_user_from_request
         self._base_url = base_url
         self._config = config
+        self._on_social_account_unlinked = on_social_account_unlinked
 
         provider_routes = list(chain.from_iterable(p.routes for p in providers))
 
-        routes = provider_routes + self.issuer.routes
+        routes = provider_routes + social_account_routes() + self.issuer.routes
 
         # TODO: maybe this should be a dependency (or at least instantiated in the endpoint code)
         context = Context(
@@ -54,6 +63,7 @@ class AuthRouter(APIRouter):
             get_user_from_request=self._get_user_from_request,
             base_url=self._base_url,
             config=self._config,
+            on_social_account_unlinked=self._on_social_account_unlinked,
         )
 
         for route in routes:

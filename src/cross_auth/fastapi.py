@@ -6,7 +6,7 @@ from cross_web import AsyncHTTPRequest, Cookie
 from fastapi import HTTPException, Request, Response
 
 from ._config import Config
-from ._context import AccountsStorage, SecondaryStorage, User
+from ._context import AccountsStorage, SecondaryStorage, SocialAccountUnlinkedHook, User
 from ._password import authenticate as _authenticate
 from ._session import (
     SessionConfig,
@@ -37,6 +37,7 @@ class CrossAuth:
         get_user_from_request: Callable[[AsyncHTTPRequest], User | None] | None = None,
         base_url: str | None = None,
         config: Config | None = None,
+        on_social_account_unlinked: SocialAccountUnlinkedHook | None = None,
     ):
         self._storage = storage
         self._accounts_storage = accounts_storage
@@ -55,6 +56,7 @@ class CrossAuth:
             trusted_origins=trusted_origins,
             base_url=base_url,
             config=config,
+            on_social_account_unlinked=on_social_account_unlinked,
         )
 
     @property
