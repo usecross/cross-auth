@@ -11,6 +11,8 @@ def tests(session: nox.Session) -> None:
         "uv",
         "sync",
         "--frozen",
+        "--package",
+        "cross-auth",
         "--group",
         "dev",
         env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},

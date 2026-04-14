@@ -37,9 +37,13 @@ jobs:
         working-directory: website
         run: bun run build
 
+      - name: Sync website Python environment
+        working-directory: website
+        run: uv sync --frozen --package cross-auth-website
+
       - name: Deploy to production
         working-directory: website
-        run: uv run fastapi deploy
+        run: uv run --frozen --package cross-auth-website fastapi deploy
         env:
           FASTAPI_CLOUD_TOKEN: ${{ secrets.FASTAPI_CLOUD_TOKEN }}
           FASTAPI_CLOUD_APP_ID: ${{ secrets.FASTAPI_CLOUD_APP_ID }}

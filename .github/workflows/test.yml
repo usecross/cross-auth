@@ -25,16 +25,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
-      - run: uv venv
-
-      - run: uv pip install nox
-
       - id: set-matrix
         shell: bash
         run: |
-          . .venv/bin/activate
           echo sessions=$(
-            nox --json -t tests -l |
+            uv run --quiet --frozen --group dev --package cross-auth nox --json -t tests -l |
             jq 'map(
               {
                 session,
@@ -66,9 +61,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
-      - run: uv pip install --system nox
-
-      - run: nox -s "${{ matrix.session.session }}"
+      - run: uv run --frozen --group dev --package cross-auth nox -s "${{ matrix.session.session }}"
 
       - name: Upload coverage data
         uses: actions/upload-artifact@v4
@@ -98,7 +91,7 @@ jobs:
 
       - name: Combine coverage
         run: |
-          uv run coverage combine
-          uv run coverage html --skip-covered --skip-empty
-          uv run coverage report --format=markdown >> $GITHUB_STEP_SUMMARY
-          uv run coverage report --fail-under=80
+          uv run --frozen --group dev --package cross-auth coverage combine
+          uv run --frozen --group dev --package cross-auth coverage html --skip-covered --skip-empty
+          uv run --frozen --group dev --package cross-auth coverage report --format=markdown >> $GITHUB_STEP_SUMMARY
+          uv run --frozen --group dev --package cross-auth coverage report --fail-under=80

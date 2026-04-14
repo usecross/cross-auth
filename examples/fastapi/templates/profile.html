@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}Profile · Cross-Auth FastAPI Session Example{% endblock %}
+
+{% block content %}
+  <div class="hero">
+    <div class="eyebrow">Signed In</div>
+    <h1>{{ user.email }}</h1>
+    <p class="lead">
+      This page is protected by the session cookie written by
+      <code>CrossAuth.login(...)</code>.
+    </p>
+  </div>
+
+  <div class="grid">
+    <div class="stack">
+      <h2>Local User</h2>
+      <p><strong>User ID</strong> &nbsp;<code>{{ user.id }}</code></p>
+      <p>
+        <strong>Email verified</strong> &nbsp;
+        {% if user.email_verified %}
+          <span class="pill ok">yes</span>
+        {% else %}
+          <span class="pill warn">no</span>
+        {% endif %}
+      </p>
+      <p>
+        <strong>Social accounts</strong> &nbsp;<span class="pill">not used here</span>
+      </p>
+      <div class="actions">
+        <a class="button" href="/">Home</a>
+        <a class="button" href="/api/me">/api/me</a>
+        <form action="/logout" method="post">
+          <button type="submit">Log out</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="stack">
+      <h2>What This Example Covers</h2>
+      <ul>
+        <li>In-memory user storage implementing the Cross-Auth account protocols</li>
+        <li>Session-based login and logout for a normal FastAPI app</li>
+        <li>Protected page rendering and authenticated JSON responses</li>
+      </ul>
+    </div>
+  </div>
+{% endblock %}
