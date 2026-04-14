@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}Hooks · Cross-Auth FastAPI Hybrid Example{% endblock %}
+
+{% block content %}
+  <div class="hero">
+    <div class="eyebrow">Lifecycle Hooks</div>
+    <h1>Hook registrations in this example</h1>
+    <p class="lead">
+      The FastAPI example uses hooks to normalize local password login, audit
+      successful lifecycle steps, add a response header after session creation,
+      require verified provider email on OAuth callback, and record SPA token
+      exchanges.
+    </p>
+  </div>
+
+  <div class="grid">
+    <div class="stack">
+      <h2>Registered Hooks</h2>
+      <ul>
+        <li><code>before:authenticate</code> trims and lowercases the email before password verification.</li>
+        <li><code>after:authenticate</code> records whether password authentication succeeded.</li>
+        <li><code>after:login</code> records session creation and adds <code>X-Cross-Auth-Hook: login</code>.</li>
+        <li><code>after:logout</code> records the cleared session ID.</li>
+        <li><code>before:oauth.callback</code> blocks OAuth users with unverified provider email.</li>
+        <li><code>after:oauth.callback</code> records social session and SPA authorization callbacks.</li>
+        <li><code>after:token.authorization_code</code> records SPA token exchanges.</li>
+      </ul>
+    </div>
+
+    <div class="stack">
+      <h2>Try It</h2>
+      <ul>
+        <li>Submit the local password form from <a href="/">Home</a>.</li>
+        <li>Use Continue with GitHub to run the social session flow.</li>
+        <li>Open the SPA demo and complete its auth-code flow.</li>
+        <li>Return here to inspect the latest hook events.</li>
+      </ul>
+      <div class="actions">
+        <a class="button primary" href="/">Home</a>
+        <a class="button" href="/profile">Profile</a>
+      </div>
+    </div>
+
+    <div class="full stack">
+      <h2>Recent Events</h2>
+      {% if hook_events %}
+        <ul>
+          {% for event in hook_events %}
+            <li>
+              <code>{{ event.time }}</code>
+              <strong>{{ event.name }}</strong>
+              {% for key, value in event.items() %}
+                {% if key not in ["time", "name"] and value %}
+                  · {{ key }}=<code>{{ value }}</code>
+                {% endif %}
+              {% endfor %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <span class="pill">no hook events yet</span>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}

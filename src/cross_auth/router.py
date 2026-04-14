@@ -19,6 +19,7 @@ from ._context import AccountsStorage, Context, SecondaryStorage, User
 from ._issuer import Issuer
 from ._route import Route
 from ._session import SessionConfig
+from .hooks import HookRegistry
 from .social_providers.oauth import OAuth2Provider
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,7 @@ class AuthRouter(APIRouter):
         session_enabled: bool = False,
         session_config: SessionConfig | None = None,
         default_next_url: str = "/",
+        hooks: HookRegistry | None = None,
     ):
         super().__init__()
 
@@ -108,6 +110,7 @@ class AuthRouter(APIRouter):
             session_enabled=session_enabled,
             session_config=session_config,
             default_next_url=default_next_url,
+            hooks=hooks,
         )
 
         provider_routes: list[Route] = []

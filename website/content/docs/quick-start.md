@@ -113,5 +113,6 @@ def protected(user: Annotated[User, Depends(auth.require_current_user)]):
 
 - [Session Authentication](/docs/session-authentication) -- Full guide on
   session management.
+- [Hooks](/docs/hooks) -- Add typed lifecycle hooks around auth flows.
 - [Storage](/docs/storage) -- How to implement the storage protocols.
 - [OAuth 2.0](/docs/oauth) -- Add OAuth authorization flows.

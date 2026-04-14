@@ -11,6 +11,13 @@ from cross_auth.utils._pkce import validate_pkce
 from ._context import Context
 from ._password import DUMMY_PASSWORD_HASH, pwd_context, validate_password
 from ._route import Form, Route
+from .exceptions import CrossAuthException
+from .hooks import (
+    AfterTokenAuthorizationCodeEvent,
+    AfterTokenPasswordEvent,
+    BeforeTokenAuthorizationCodeEvent,
+    BeforeTokenPasswordEvent,
+)
 
 
 class AuthorizationCodeGrantRequest(BaseModel):
@@ -50,7 +57,7 @@ TokenRequest = Annotated[
 TokenRequestAdapter: TypeAdapter[TokenRequest] = TypeAdapter(TokenRequest)
 
 
-TokenErrorType = Literal[
+KnownTokenErrorType = Literal[
     "invalid_request",
     "invalid_client",
     "invalid_grant",
@@ -58,6 +65,7 @@ TokenErrorType = Literal[
     "unsupported_grant_type",
     "invalid_scope",
 ]
+TokenErrorType = KnownTokenErrorType | str
 
 
 class TokenErrorResponse(BaseModel):
@@ -146,11 +154,11 @@ class Issuer:
         # TODO: support confidential clients (client_secret)
 
         if isinstance(token_request, AuthorizationCodeGrantRequest):
-            return self._authorization_code_grant(token_request, context)
+            return await self._authorization_code_grant(token_request, context)
         elif isinstance(token_request, PasswordGrantRequest):
-            return self._password_grant(token_request, context)
+            return await self._password_grant(token_request, context)
 
-    def _authorization_code_grant(
+    async def _authorization_code_grant(
         self, request: AuthorizationCodeGrantRequest, context: Context
     ) -> Response:
         code = request.code
@@ -209,6 +217,18 @@ class Issuer:
                 "Invalid code challenge",
             )
 
+        try:
+            await context.hooks.run_before_async(
+                "token.authorization_code",
+                BeforeTokenAuthorizationCodeEvent(
+                    client_id=authorization_data.client_id,
+                    user_id=authorization_data.user_id,
+                    scope=request.scope,
+                ),
+            )
+        except CrossAuthException as e:
+            return self._error_response(e.error, e.error_description)
+
         token, expires_in = context.create_token(authorization_data.user_id)
 
         token_data = TokenResponse(
@@ -219,6 +239,16 @@ class Issuer:
             refresh_token_expires_in=None,
             # TODO: figure out scopes
             scope="",
+        )
+
+        await context.hooks.run_after_async(
+            "token.authorization_code",
+            AfterTokenAuthorizationCodeEvent(
+                request=request,
+                code=code,
+                authorization_data=authorization_data,
+                token_response=token_data,
+            ),
         )
 
         headers = {
@@ -234,10 +264,23 @@ class Issuer:
             cookies=[],
         )
 
-    def _password_grant(
+    async def _password_grant(
         self, request: PasswordGrantRequest, context: Context
     ) -> Response:
         user = context.accounts_storage.find_user_by_email(request.username)
+
+        try:
+            await context.hooks.run_before_async(
+                "token.password",
+                BeforeTokenPasswordEvent(
+                    client_id=request.client_id,
+                    username=request.username,
+                    user=user,
+                    scope=request.scope,
+                ),
+            )
+        except CrossAuthException as e:
+            return self._error_response(e.error, e.error_description)
 
         # Always perform password verification to prevent timing attacks
         # that could be used to enumerate valid user accounts
@@ -262,6 +305,17 @@ class Issuer:
             refresh_token_expires_in=None,
             # TODO: figure out scopes
             scope="",
+        )
+
+        await context.hooks.run_after_async(
+            "token.password",
+            AfterTokenPasswordEvent(
+                request=request,
+                client_id=request.client_id,
+                username=request.username,
+                user=user,
+                token_response=token_data,
+            ),
         )
 
         headers = {

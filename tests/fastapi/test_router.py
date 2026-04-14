@@ -218,16 +218,21 @@ def test_router(test_app: FastAPI):
                     "TokenErrorResponse": {
                         "properties": {
                             "error": {
-                                "description": "Error code as per OAuth 2.0 specification",
-                                "type": "string",
-                                "enum": [
-                                    "invalid_request",
-                                    "invalid_client",
-                                    "invalid_grant",
-                                    "unauthorized_client",
-                                    "unsupported_grant_type",
-                                    "invalid_scope",
+                                "anyOf": [
+                                    {
+                                        "enum": [
+                                            "invalid_request",
+                                            "invalid_client",
+                                            "invalid_grant",
+                                            "unauthorized_client",
+                                            "unsupported_grant_type",
+                                            "invalid_scope",
+                                        ],
+                                        "type": "string",
+                                    },
+                                    {"type": "string"},
                                 ],
+                                "description": "Error code as per OAuth 2.0 specification",
                                 "title": "Error",
                             },
                             "error_description": {

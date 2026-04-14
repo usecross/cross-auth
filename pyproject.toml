@@ -34,6 +34,7 @@ dev = [
     "respx>=0.22.0",
     "coverage>=7.8.0",
     "time-machine>=2.16.0",
+    "ty>=0.0.29",
 ]
 
 

@@ -4,15 +4,28 @@ import json
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal, cast
+from typing import Any, Literal, NamedTuple, cast
 
 from cross_web import AsyncHTTPRequest
 from pydantic import BaseModel, HttpUrl, TypeAdapter, ValidationError
 
 from ._context import Context
 from ._issuer import AuthorizationCodeGrantData
-from ._storage import User
+from ._session import create_session, make_session_cookie, resolve_config
+from ._storage import SocialAccount, User
 from .exceptions import CrossAuthException
+from .hooks import (
+    AfterLoginEvent,
+    AfterOAuthAuthorizeEvent,
+    AfterOAuthCallbackEvent,
+    AfterOAuthFinalizeLinkEvent,
+    AfterOAuthLinkEvent,
+    BeforeLoginEvent,
+    BeforeOAuthAuthorizeEvent,
+    BeforeOAuthCallbackEvent,
+    BeforeOAuthFinalizeLinkEvent,
+    BeforeOAuthLinkEvent,
+)
 from .social_providers.oauth import (
     OAuth2Exception,
     OAuth2Provider,
@@ -84,6 +97,16 @@ class InitiateLinkRequest(BaseModel):
 
 class InitiateLinkResponse(BaseModel):
     authorization_url: str
+
+
+class ResolvedUser(NamedTuple):
+    user: User
+    created: bool
+
+
+class ResolvedSocialAccount(NamedTuple):
+    account: SocialAccount
+    created: bool
 
 
 _AUTH_REQUEST_KEY = "oauth:authorization_request:{state}"
@@ -305,9 +328,29 @@ async def start_token_flow(
             state=client_state,
         )
 
+    login_hint = request.query_params.get("login_hint")
+
+    authorize_event = BeforeOAuthAuthorizeEvent(
+        provider=provider,
+        request=request,
+        login_hint=login_hint,
+    )
+
+    try:
+        authorize_event = await context.hooks.run_before_async(
+            "oauth.authorize",
+            authorize_event,
+        )
+    except CrossAuthException as e:
+        return Response.error_redirect(
+            redirect_uri,
+            error=e.error,
+            error_description=e.error_description,
+            state=client_state,
+        )
+
     state = secrets.token_hex(16)
     verifier, challenge, challenge_method = _generate_provider_pkce(provider)
-    login_hint = request.query_params.get("login_hint")
 
     _store_auth_request(
         context,
@@ -330,7 +373,23 @@ async def start_token_flow(
         request=request,
         code_challenge=challenge,
         code_challenge_method=challenge_method,
-        login_hint=login_hint,
+        login_hint=authorize_event.login_hint,
+    )
+
+    await context.hooks.run_after_async(
+        "oauth.authorize",
+        AfterOAuthAuthorizeEvent(
+            provider=provider,
+            request=request,
+            redirect_uri=redirect_uri,
+            client_id=client_id,
+            client_state=client_state,
+            login_hint=authorize_event.login_hint,
+            code_challenge=code_challenge,
+            code_challenge_method=validated_code_challenge_method,
+            state=state,
+            authorization_url=authorization_url,
+        ),
     )
 
     return Response.redirect(authorization_url)
@@ -438,6 +497,29 @@ async def _handle_oauth_callback(
             auth_request, error=e.error, error_description=e.error_description
         )
 
+    if auth_request.flow in {"session", "token"}:
+        callback_event = BeforeOAuthCallbackEvent(
+            provider=provider,
+            request=request,
+            user_info=user_info,
+            validated_user_info=validated,
+        )
+        try:
+            callback_event = await context.hooks.run_before_async(
+                "oauth.callback",
+                callback_event,
+            )
+        except CrossAuthException as e:
+            return _flow_error(
+                auth_request,
+                error=e.error,
+                error_description=e.error_description,
+                status_code=e.status_code,
+            )
+
+        user_info = callback_event.user_info
+        validated = callback_event.validated_user_info
+
     if auth_request.flow == "connect":
         try:
             return _complete_connect(
@@ -454,7 +536,7 @@ async def _handle_oauth_callback(
             )
 
     try:
-        user = resolve_or_create_user(
+        resolved_user, resolved_social_account = resolve_or_create_user(
             provider=provider,
             context=context,
             validated=validated,
@@ -467,10 +549,68 @@ async def _handle_oauth_callback(
         )
 
     if auth_request.flow == "session":
-        return _complete_session(auth_request, user, context)
+        try:
+            response = _complete_session(auth_request, resolved_user.user, context)
+        except CrossAuthException as e:
+            return _flow_error(
+                auth_request,
+                error=e.error,
+                error_description=e.error_description,
+                status_code=e.status_code,
+            )
+
+        await context.hooks.run_after_async(
+            "oauth.callback",
+            AfterOAuthCallbackEvent(
+                provider=provider,
+                request=request,
+                auth_request=auth_request,
+                callback_data=callback_data,
+                token_response=token_response,
+                user_info=user_info,
+                validated_user_info=validated,
+                user=resolved_user.user,
+                social_account=resolved_social_account.account,
+                created_user=resolved_user.user if resolved_user.created else None,
+                created_social_account=(
+                    resolved_social_account.account
+                    if resolved_social_account.created
+                    else None
+                ),
+                authorization_code=None,
+                redirect_uri=None,
+                client_state=None,
+            ),
+        )
+        return response
 
     if auth_request.flow == "token":
-        return _complete_token(auth_request, user, context)
+        code, response = _complete_token(auth_request, resolved_user.user, context)
+        assert auth_request.client_redirect_uri is not None
+        await context.hooks.run_after_async(
+            "oauth.callback",
+            AfterOAuthCallbackEvent(
+                provider=provider,
+                request=request,
+                auth_request=auth_request,
+                callback_data=callback_data,
+                token_response=token_response,
+                user_info=user_info,
+                validated_user_info=validated,
+                user=resolved_user.user,
+                social_account=resolved_social_account.account,
+                created_user=resolved_user.user if resolved_user.created else None,
+                created_social_account=(
+                    resolved_social_account.account
+                    if resolved_social_account.created
+                    else None
+                ),
+                authorization_code=code,
+                redirect_uri=auth_request.client_redirect_uri,
+                client_state=auth_request.client_state,
+            ),
+        )
+        return response
 
     return Response.error("server_error", error_description="Unknown flow")
 
@@ -480,6 +620,7 @@ def _flow_error(
     *,
     error: str,
     error_description: str | None,
+    status_code: int = 400,
 ) -> Response:
     """Render an error in a way appropriate to the flow.
 
@@ -494,7 +635,11 @@ def _flow_error(
             state=auth_request.client_state,
         )
 
-    return Response.error(error, error_description=error_description)
+    return Response.error(
+        error,
+        error_description=error_description,
+        status_code=status_code,
+    )
 
 
 def resolve_or_create_user(
@@ -504,19 +649,15 @@ def resolve_or_create_user(
     validated: ValidatedUserInfo,
     user_info: dict[str, Any],
     token_response: Any,
-) -> User:
-    """Find the user for this social login, creating the user + account if needed.
-
-    Raises CrossAuthException on unrecoverable conditions (e.g., email missing,
-    email-not-verified when required, account-not-linked).
-    """
+) -> tuple[ResolvedUser, ResolvedSocialAccount]:
+    """Find/create a user and social account for this login."""
     social_account = context.accounts_storage.find_social_account(
         provider=provider.id,
         provider_user_id=validated.provider_user_id,
     )
 
     if social_account:
-        context.accounts_storage.update_social_account(
+        social_account = context.accounts_storage.update_social_account(
             social_account.id,
             access_token=token_response.access_token,
             refresh_token=token_response.refresh_token,
@@ -527,13 +668,19 @@ def resolve_or_create_user(
             provider_email=validated.email,
             provider_email_verified=validated.email_verified,
         )
+
         user = context.accounts_storage.find_user_by_id(social_account.user_id)
+
         if user is None:
             raise CrossAuthException(
                 "server_error",
                 error_description="User not found for social account",
             )
-        return user
+
+        return (
+            ResolvedUser(user=user, created=False),
+            ResolvedSocialAccount(account=social_account, created=False),
+        )
 
     if validated.email is None:
         raise CrossAuthException(
@@ -542,6 +689,7 @@ def resolve_or_create_user(
         )
 
     user: User | None = None
+    created_user = False
 
     if provider.can_auto_link(context, validated.email_verified):
         user = context.accounts_storage.find_user_by_email(validated.email)
@@ -573,8 +721,9 @@ def resolve_or_create_user(
             email=validated.email,
             email_verified=validated.email_verified or False,
         )
+        created_user = True
 
-    context.accounts_storage.create_social_account(
+    created_social_account = context.accounts_storage.create_social_account(
         user_id=user.id,
         provider=provider.id,
         provider_user_id=validated.provider_user_id,
@@ -589,7 +738,10 @@ def resolve_or_create_user(
         is_login_method=True,
     )
 
-    return user
+    return (
+        ResolvedUser(user=user, created=created_user),
+        ResolvedSocialAccount(account=created_social_account, created=True),
+    )
 
 
 def _complete_connect(
@@ -665,15 +817,43 @@ def _complete_session(
             error_description="Session flow not configured for this deployment",
         )
 
-    cookie = context.create_session_cookie(str(user.id))
     next_url = auth_request.next_url or context.default_next_url
+    response = Response.redirect(next_url)
 
-    return Response.redirect(next_url, cookies=[cookie])
+    event = context.hooks.run_before(
+        "login",
+        BeforeLoginEvent(user_id=str(user.id), response=response),
+    )
+
+    resolved = resolve_config(context.session_config)
+    session_id, session_data = create_session(
+        event.user_id,
+        context.secondary_storage,
+        max_age=resolved["max_age"],
+    )
+    cookie = make_session_cookie(session_id, context.session_config)
+
+    if event.response.cookies is None:
+        event.response.cookies = []
+    event.response.cookies.append(cookie)
+
+    context.hooks.run_after(
+        "login",
+        AfterLoginEvent(
+            user_id=event.user_id,
+            response=event.response,
+            session_id=session_id,
+            session_data=session_data,
+            cookie=cookie,
+        ),
+    )
+
+    return cast(Response, event.response)
 
 
 def _complete_token(
     auth_request: AuthRequest, user: User, context: Context
-) -> Response:
+) -> tuple[str, Response]:
     # All the token-flow client params must be present at this point — they were
     # validated when we stored the AuthRequest.
     assert auth_request.client_id is not None
@@ -701,8 +881,9 @@ def _complete_token(
     if auth_request.client_state:
         query_params["state"] = auth_request.client_state
 
-    return Response.redirect(
-        auth_request.client_redirect_uri, query_params=query_params
+    return code, Response.redirect(
+        auth_request.client_redirect_uri,
+        query_params=query_params,
     )
 
 
@@ -784,6 +965,22 @@ async def start_link_flow(
     if not context.is_valid_client_id(link_request.client_id):
         return Response.error("invalid_client", error_description="Invalid client_id")
 
+    try:
+        await context.hooks.run_before_async(
+            "oauth.link",
+            BeforeOAuthLinkEvent(
+                provider=provider,
+                request=request,
+                user=user,
+            ),
+        )
+    except CrossAuthException as e:
+        return Response.error(
+            e.error,
+            error_description=e.error_description,
+            status_code=e.status_code,
+        )
+
     state = secrets.token_hex(16)
     verifier, challenge, challenge_method = _generate_provider_pkce(provider)
 
@@ -809,6 +1006,18 @@ async def start_link_flow(
         request=request,
         code_challenge=challenge,
         code_challenge_method=challenge_method,
+    )
+
+    await context.hooks.run_after_async(
+        "oauth.link",
+        AfterOAuthLinkEvent(
+            provider=provider,
+            request=request,
+            user=user,
+            link_request=link_request,
+            state=state,
+            authorization_url=authorization_url,
+        ),
     )
 
     return Response(
@@ -903,6 +1112,30 @@ async def finalize_link(
     except OAuth2Exception as e:
         return Response.error(e.error, error_description=e.error_description)
 
+    finalize_event = BeforeOAuthFinalizeLinkEvent(
+        provider=provider,
+        request=request,
+        user=user,
+        allow_login=allow_login,
+        user_info=user_info,
+        validated_user_info=validated,
+    )
+    try:
+        finalize_event = await context.hooks.run_before_async(
+            "oauth.finalize_link",
+            finalize_event,
+        )
+    except CrossAuthException as e:
+        return Response.error(
+            e.error,
+            error_description=e.error_description,
+            status_code=e.status_code,
+        )
+
+    allow_login = finalize_event.allow_login
+    user_info = finalize_event.user_info
+    validated = finalize_event.validated_user_info
+
     account_linking = context.config.get("account_linking", {})
     if not account_linking.get("enabled", False):
         return Response.error(
@@ -926,13 +1159,15 @@ async def finalize_link(
         provider_user_id=validated.provider_user_id,
     )
 
+    created_social_account: SocialAccount | None = None
+
     if social_account:
         if social_account.user_id != user.id:
             return Response.error(
                 "server_error", error_description="Social account already exists"
             )
 
-        context.accounts_storage.update_social_account(
+        social_account = context.accounts_storage.update_social_account(
             social_account.id,
             access_token=token_response.access_token,
             refresh_token=token_response.refresh_token,
@@ -944,7 +1179,7 @@ async def finalize_link(
             provider_email_verified=validated.email_verified,
         )
     else:
-        context.accounts_storage.create_social_account(
+        social_account = context.accounts_storage.create_social_account(
             user_id=user.id,
             provider=provider.id,
             provider_user_id=validated.provider_user_id,
@@ -958,5 +1193,22 @@ async def finalize_link(
             provider_email_verified=validated.email_verified,
             is_login_method=allow_login,
         )
+        created_social_account = social_account
+
+    await context.hooks.run_after_async(
+        "oauth.finalize_link",
+        AfterOAuthFinalizeLinkEvent(
+            provider=provider,
+            request=request,
+            user=user,
+            link_data=link_data,
+            allow_login=allow_login,
+            token_response=token_response,
+            user_info=user_info,
+            validated_user_info=validated,
+            social_account=social_account,
+            created_social_account=created_social_account,
+        ),
+    )
 
     return Response(status_code=200, body='{"message": "Link finalized"}')

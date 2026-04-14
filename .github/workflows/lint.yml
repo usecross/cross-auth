@@ -14,3 +14,11 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uv sync --frozen --group dev --package cross-auth
       - uses: j178/prek-action@v1
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --group dev --package cross-auth
+      - run: uv run --frozen --group dev --package cross-auth nox -s typecheck

@@ -101,17 +101,45 @@
     <div class="stack">
       <h2>How The Flow Is Chosen</h2>
       <ul>
-        <li><code>/auth/github/session/authorize</code> starts the session-social flow and ends with a browser cookie.</li>
+        <li><code>/auth/github/login</code> starts the session-social flow and ends with a browser cookie.</li>
         <li><code>/auth/github/authorize</code> starts the generic auth-code flow and ends with a local auth code for the SPA.</li>
         <li>The same backend supports both without changing provider configuration.</li>
       </ul>
+    </div>
+
+    <div class="stack">
+      <h2>Hook Activity</h2>
+      <p>
+        This example registers hooks for password authentication, session login/logout,
+        OAuth callbacks, and token exchange.
+      </p>
+      {% if hook_events %}
+        <ul>
+          {% for event in hook_events %}
+            <li>
+              <code>{{ event.time }}</code>
+              <strong>{{ event.name }}</strong>
+              {% for key, value in event.items() %}
+                {% if key not in ["time", "name"] and value %}
+                  · {{ key }}=<code>{{ value }}</code>
+                {% endif %}
+              {% endfor %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <span class="pill">no hook events yet</span>
+      {% endif %}
+      <div class="actions">
+        <a class="button" href="/hooks">View hook example</a>
+      </div>
     </div>
 
     <div class="full stack">
       <h2>Flow Summary</h2>
       <ul>
         <li><strong>Session app:</strong> <code>POST /login</code> calls <code>CrossAuth.authenticate(...)</code> and <code>CrossAuth.login(...)</code>.</li>
-        <li><strong>Social session login:</strong> <code>/auth/github/session/authorize</code> redirects to GitHub, then <code>/auth/github/session/callback</code> resolves the local user and sets the session cookie.</li>
+        <li><strong>Social session login:</strong> <code>/auth/github/login</code> redirects to GitHub, then <code>/auth/github/callback</code> resolves the local user and sets the session cookie.</li>
         <li><strong>Auth-server login:</strong> the SPA calls <code>/auth/github/authorize</code>, receives a local auth code at its own callback URL, then exchanges it at <code>/auth/token</code>.</li>
       </ul>
     </div>

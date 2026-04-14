@@ -73,3 +73,4 @@ async def logout_endpoint(request: Request):
 
 - [Installation](/docs/installation) -- Add Cross-Auth to your project.
 - [Quick Start](/docs/quick-start) -- Build a login flow in minutes.
+- [Hooks](/docs/hooks) -- Extend auth flows with typed lifecycle callbacks.
