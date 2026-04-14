@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block title %}Cross-Auth FastAPI Session Example{% endblock %}
+
+{% block content %}
+  <div class="hero">
+    <div class="eyebrow">FastAPI Demo</div>
+    <h1>Session login with Cross-Auth</h1>
+    <p class="lead">
+      This example keeps things intentionally small: a local login form calls
+      <code>CrossAuth.authenticate(...)</code>, successful sign-in writes the session
+      cookie with <code>CrossAuth.login(...)</code>, and protected routes read it back.
+    </p>
+    {% if error_message %}
+      <div class="notice">{{ error_message }}</div>
+    {% endif %}
+  </div>
+
+  <div class="grid">
+    <div class="stack">
+      <h2>Session</h2>
+      {% if user %}
+        <p>
+          Signed in as <strong>{{ user.email }}</strong>
+        </p>
+        <p>User ID <code>{{ user.id }}</code></p>
+        <div class="meta">
+          <span class="pill ok">session active</span>
+          <span class="pill">local user</span>
+        </div>
+        <div class="actions">
+          <a class="button primary" href="/profile">Profile</a>
+          <a class="button" href="/api/me">/api/me</a>
+          <form action="/logout" method="post">
+            <button type="submit">Log out</button>
+          </form>
+        </div>
+      {% else %}
+        <p>No active session. Sign in with the demo account below.</p>
+        <form action="/login" method="post" class="stack">
+          <label class="field">
+            <span class="label">Email</span>
+            <input type="email" name="email" value="{{ demo_email }}" required />
+          </label>
+          <label class="field">
+            <span class="label">Password</span>
+            <input type="password" name="password" value="{{ demo_password }}" required />
+          </label>
+          <div class="actions">
+            <button class="primary" type="submit">Sign in</button>
+          </div>
+        </form>
+      {% endif %}
+    </div>
+
+    <div class="stack">
+      <h2>Demo Account</h2>
+      <p>The example seeds one in-memory user at startup.</p>
+      <ul>
+        <li>Email: <code>{{ demo_email }}</code></li>
+        <li>Password: <code>{{ demo_password }}</code></li>
+        <li>Restarting the app resets the user store and all sessions.</li>
+      </ul>
+    </div>
+
+    <div class="full stack">
+      <h2>Flow</h2>
+      <ul>
+        <li><code>POST /login</code> authenticates the demo user with <code>CrossAuth.authenticate(...)</code></li>
+        <li><code>CrossAuth.login(...)</code> writes the session cookie on the redirect response</li>
+        <li><code>/profile</code> and <code>/api/me</code> resolve the current user from that cookie</li>
+        <li><code>POST /logout</code> clears the session again</li>
+      </ul>
+    </div>
+  </div>
+{% endblock %}
