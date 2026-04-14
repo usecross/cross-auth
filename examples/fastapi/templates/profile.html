@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}Profile · Cross-Auth FastAPI Session Example{% endblock %}
+{% block title %}Profile · Cross-Auth FastAPI Session + Social Login Example{% endblock %}
 
 {% block content %}
   <div class="hero">
     <div class="eyebrow">Signed In</div>
     <h1>{{ user.email }}</h1>
     <p class="lead">
-      This page is protected by the session cookie written by
-      <code>CrossAuth.login(...)</code>.
+      This page is protected by the session cookie written either by
+      <code>CrossAuth.login(...)</code> or by the GitHub session-social callback flow.
     </p>
   </div>
 
@@ -24,9 +24,29 @@
           <span class="pill warn">no</span>
         {% endif %}
       </p>
-      <p>
-        <strong>Social accounts</strong> &nbsp;<span class="pill">not used here</span>
-      </p>
+      <div class="stack">
+        <p><strong>Social accounts</strong></p>
+        {% if user.social_accounts %}
+          <ul>
+            {% for account in user.social_accounts %}
+              <li>
+                <code>{{ account.provider }}</code>
+                · provider user <code>{{ account.provider_user_id }}</code>
+                {% if account.provider_email %}
+                  · {{ account.provider_email }}
+                {% endif %}
+                {% if account.provider_email_verified %}
+                  <span class="pill ok">verified</span>
+                {% else %}
+                  <span class="pill warn">unverified or unknown</span>
+                {% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <span class="pill">none linked</span>
+        {% endif %}
+      </div>
       <div class="actions">
         <a class="button" href="/">Home</a>
         <a class="button" href="/api/me">/api/me</a>
@@ -40,7 +60,8 @@
       <h2>What This Example Covers</h2>
       <ul>
         <li>In-memory user storage implementing the Cross-Auth account protocols</li>
-        <li>Session-based login and logout for a normal FastAPI app</li>
+        <li>Session-based password login and logout for a normal FastAPI app</li>
+        <li>Social login to browser session using the mock GitHub OAuth server</li>
         <li>Protected page rendering and authenticated JSON responses</li>
       </ul>
     </div>

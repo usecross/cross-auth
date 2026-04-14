@@ -136,6 +136,47 @@ async def test_fails_if_there_was_no_state_in_request(
     }
 
 
+async def test_redirects_provider_errors_back_to_the_client_redirect_uri(
+    oauth_provider: OAuth2Provider,
+    context: Context,
+    secondary_storage: SecondaryStorage,
+):
+    secondary_storage.set(
+        "oauth:authorization_request:test_state",
+        json.dumps(
+            {
+                "client_id": "my_app_client_id",
+                "redirect_uri": "http://valid-frontend.com/callback",
+                "login_hint": "test_login_hint",
+                "state": "test_state",
+                "client_state": "test_client_state",
+                "code_challenge": "test",
+                "code_challenge_method": "S256",
+                "provider_code_verifier": "test_provider_verifier",
+            }
+        ),
+    )
+
+    request = AsyncHTTPRequest(
+        TestingRequestAdapter(
+            method="GET",
+            url="http://localhost:8000/test/callback",
+            query_params={
+                "error": "access_denied",
+                "state": "test_state",
+            },
+        )
+    )
+
+    response = await oauth_provider.callback(request, context)
+
+    assert response.status_code == 302
+    assert response.headers is not None
+    assert response.headers["Location"] == snapshot(
+        "http://valid-frontend.com/callback?error=access_denied&error_description=Authorization+failed%3A+access_denied&state=test_client_state"
+    )
+
+
 async def test_fails_if_the_token_exchange_fails(
     oauth_provider: OAuth2Provider,
     context: Context,

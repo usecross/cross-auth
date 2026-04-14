@@ -1,15 +1,16 @@
 {% extends "base.html" %}
 
-{% block title %}Cross-Auth FastAPI Session Example{% endblock %}
+{% block title %}Cross-Auth FastAPI Session + Social Login Example{% endblock %}
 
 {% block content %}
   <div class="hero">
     <div class="eyebrow">FastAPI Demo</div>
-    <h1>Session login with Cross-Auth</h1>
+    <h1>Session and social login with Cross-Auth</h1>
     <p class="lead">
-      This example keeps things intentionally small: a local login form calls
-      <code>CrossAuth.authenticate(...)</code>, successful sign-in writes the session
-      cookie with <code>CrossAuth.login(...)</code>, and protected routes read it back.
+      This example shows both local password login and first-party social login.
+      The local form calls <code>CrossAuth.authenticate(...)</code> and
+      <code>CrossAuth.login(...)</code>. The GitHub button uses the new session-social
+      flow, so the provider callback comes back already signed in with a browser cookie.
     </p>
     {% if error_message %}
       <div class="notice">{{ error_message }}</div>
@@ -36,7 +37,7 @@
           </form>
         </div>
       {% else %}
-        <p>No active session. Sign in with the demo account below.</p>
+        <p>No active session. Sign in locally or use the mock GitHub flow below.</p>
         <form action="/login" method="post" class="stack">
           <label class="field">
             <span class="label">Email</span>
@@ -47,27 +48,41 @@
             <input type="password" name="password" value="{{ demo_password }}" required />
           </label>
           <div class="actions">
-            <button class="primary" type="submit">Sign in</button>
+            <button class="primary" type="submit">Sign in with password</button>
           </div>
         </form>
+        <div class="actions">
+          <a class="button" href="{{ github_login_url }}">Continue with GitHub</a>
+        </div>
       {% endif %}
     </div>
 
     <div class="stack">
-      <h2>Demo Account</h2>
-      <p>The example seeds one in-memory user at startup.</p>
+      <h2>Demo Accounts</h2>
+      <p>The example seeds one in-memory password user at startup.</p>
       <ul>
-        <li>Email: <code>{{ demo_email }}</code></li>
-        <li>Password: <code>{{ demo_password }}</code></li>
+        <li>Password login email: <code>{{ demo_email }}</code></li>
+        <li>Password login password: <code>{{ demo_password }}</code></li>
         <li>Restarting the app resets the user store and all sessions.</li>
       </ul>
+      <p>
+        The GitHub button uses
+        <a href="{{ github_mock_base_url }}" target="_blank" rel="noreferrer">a public mock GitHub OAuth server</a>.
+        Enter <code>{{ demo_email }}</code> there to link the seeded demo user, or any other email to create a new in-memory local user.
+      </p>
+      <p>
+        Emails starting with <code>unverified</code> are treated as unverified by the mock.
+      </p>
     </div>
 
     <div class="full stack">
       <h2>Flow</h2>
       <ul>
         <li><code>POST /login</code> authenticates the demo user with <code>CrossAuth.authenticate(...)</code></li>
-        <li><code>CrossAuth.login(...)</code> writes the session cookie on the redirect response</li>
+        <li><code>CrossAuth.login(...)</code> writes the session cookie on the redirect response for password login</li>
+        <li><code>GET /auth/github/session/authorize</code> starts the session-social login flow</li>
+        <li><code>/auth/github/callback</code> handles the provider callback and resolves or creates the local user</li>
+        <li><code>/auth/github/session/callback</code> consumes the internal auth code, creates the session cookie, and redirects back signed in</li>
         <li><code>/profile</code> and <code>/api/me</code> resolve the current user from that cookie</li>
         <li><code>POST /logout</code> clears the session again</li>
       </ul>

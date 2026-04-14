@@ -28,3 +28,12 @@ class Config(TypedDict, total=False):
     # is skipped (any client_id is accepted). When set, only these client_ids
     # are allowed to initiate OAuth flows.
     allowed_client_ids: list[str]
+
+    # Browser login page used by framework integrations when redirecting the
+    # user back after a failed social-login-to-session flow.
+    login_url: str
+
+    # Default browser redirect used by framework integrations after a
+    # successful social-login-to-session flow when no valid `next` parameter
+    # was provided.
+    default_post_login_redirect_url: str

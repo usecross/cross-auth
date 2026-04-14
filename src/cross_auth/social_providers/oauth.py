@@ -366,15 +366,42 @@ class OAuth2Provider:
         for a token and then login the user on our side.
         """
         callback_data = await self.extract_callback_data(request)
+        state = callback_data.state
 
         if callback_data.error:
             logger.error("OAuth error: %s", callback_data.error)
+
+            if not state:
+                return Response.error(
+                    "access_denied",
+                    error_description=f"Authorization failed: {callback_data.error}",
+                )
+
+            raw_provider_data = context.secondary_storage.get(
+                f"oauth:authorization_request:{state}"
+            )
+
+            if raw_provider_data:
+                try:
+                    provider_data = OAuth2AuthorizationRequestData.model_validate_json(
+                        raw_provider_data
+                    )
+                except ValidationError as e:
+                    logger.error("Invalid provider data", exc_info=e)
+                else:
+                    return Response.error_redirect(
+                        provider_data.redirect_uri,
+                        error=callback_data.error,
+                        error_description=(
+                            f"Authorization failed: {callback_data.error}"
+                        ),
+                        state=provider_data.client_state,
+                    )
+
             return Response.error(
                 "access_denied",
                 error_description=f"Authorization failed: {callback_data.error}",
             )
-
-        state = callback_data.state
 
         if not state:
             logger.error("No state found in request")

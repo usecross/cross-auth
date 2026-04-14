@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, cast
 
@@ -12,6 +13,7 @@ from passlib.context import CryptContext
 
 from cross_auth import AccountsStorage, SecondaryStorage, User as UserProtocol
 from cross_auth.fastapi import CrossAuth
+from cross_auth.social_providers.github import GitHubProvider
 
 APP_DIR = Path(__file__).parent
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
@@ -19,6 +21,7 @@ templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
 SESSION_COOKIE_NAME = "cross_auth_example_session"
 DEMO_EMAIL = "demo@example.com"
 DEMO_PASSWORD = "password123"  # noqa: S105
+GITHUB_MOCK_BASE_URL = "https://github-oauth-mock.fastapicloud.dev"
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
@@ -31,6 +34,12 @@ class DemoSocialAccount:
     provider_email: str | None
     provider_email_verified: bool | None
     is_login_method: bool
+    access_token: str | None = None
+    refresh_token: str | None = None
+    access_token_expires_at: datetime | None = None
+    refresh_token_expires_at: datetime | None = None
+    scope: str | None = None
+    user_info: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -94,7 +103,13 @@ class MemoryAccountsStorage(AccountsStorage):
         provider: str,
         provider_user_id: str,
     ) -> DemoSocialAccount | None:
-        del provider, provider_user_id
+        for user in self.users_by_id.values():
+            for account in user.social_accounts:
+                if (
+                    account.provider == provider
+                    and account.provider_user_id == provider_user_id
+                ):
+                    return account
         return None
 
     def create_user(
@@ -129,21 +144,27 @@ class MemoryAccountsStorage(AccountsStorage):
         provider_email_verified: bool | None,
         is_login_method: bool,
     ) -> DemoSocialAccount:
-        del (
-            user_id,
-            provider,
-            provider_user_id,
-            access_token,
-            refresh_token,
-            access_token_expires_at,
-            refresh_token_expires_at,
-            scope,
-            user_info,
-            provider_email,
-            provider_email_verified,
-            is_login_method,
+        user = self.find_user_by_id(user_id)
+        if user is None:
+            raise ValueError("User does not exist")
+
+        social_account = DemoSocialAccount(
+            id=str(uuid.uuid4()),
+            user_id=str(user.id),
+            provider=provider,
+            provider_user_id=provider_user_id,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            access_token_expires_at=access_token_expires_at,
+            refresh_token_expires_at=refresh_token_expires_at,
+            scope=scope,
+            user_info=user_info,
+            provider_email=provider_email,
+            provider_email_verified=provider_email_verified,
+            is_login_method=is_login_method,
         )
-        raise NotImplementedError("Social accounts are not used in this example.")
+        user.social_accounts.append(social_account)
+        return social_account
 
     def update_social_account(
         self,
@@ -158,18 +179,27 @@ class MemoryAccountsStorage(AccountsStorage):
         provider_email: str | None,
         provider_email_verified: bool | None,
     ) -> DemoSocialAccount:
-        del (
-            social_account_id,
-            access_token,
-            refresh_token,
-            access_token_expires_at,
-            refresh_token_expires_at,
-            scope,
-            user_info,
-            provider_email,
-            provider_email_verified,
+        social_account = next(
+            (
+                account
+                for user in self.users_by_id.values()
+                for account in user.social_accounts
+                if account.id == str(social_account_id)
+            ),
+            None,
         )
-        raise NotImplementedError("Social accounts are not used in this example.")
+        if social_account is None:
+            raise ValueError("Social account does not exist")
+
+        social_account.access_token = access_token
+        social_account.refresh_token = refresh_token
+        social_account.access_token_expires_at = access_token_expires_at
+        social_account.refresh_token_expires_at = refresh_token_expires_at
+        social_account.scope = scope
+        social_account.user_info = user_info
+        social_account.provider_email = provider_email
+        social_account.provider_email_verified = provider_email_verified
+        return social_account
 
 
 def serialize_user(user: DemoUser) -> dict[str, Any]:
@@ -177,28 +207,62 @@ def serialize_user(user: DemoUser) -> dict[str, Any]:
         "id": user.id,
         "email": user.email,
         "email_verified": user.email_verified,
-        "social_accounts": [],
+        "social_accounts": [
+            {
+                "id": account.id,
+                "provider": account.provider,
+                "provider_user_id": account.provider_user_id,
+                "provider_email": account.provider_email,
+                "provider_email_verified": account.provider_email_verified,
+                "is_login_method": account.is_login_method,
+            }
+            for account in user.social_accounts
+        ],
     }
 
 
 def get_error_message(error: str | None) -> str | None:
     if error == "invalid_credentials":
         return "The demo credentials were invalid."
+    if error == "access_denied":
+        return "GitHub login was cancelled."
+    if error == "invalid_state":
+        return "The GitHub login session expired. Please try again."
+    if error == "oauth_failed":
+        return "GitHub login failed. Please try again."
+    if error == "account_not_linked":
+        return "A local account with that email already exists but could not be linked automatically."
+    if error == "email_not_verified":
+        return "The provider reported an unverified email address."
     return None
 
+
+github = GitHubProvider(
+    client_id="demo-client",
+    client_secret="demo-secret",
+    authorization_endpoint=f"{GITHUB_MOCK_BASE_URL}/login/oauth/authorize",
+    token_endpoint=f"{GITHUB_MOCK_BASE_URL}/login/oauth/access_token",
+    api_base_url=f"{GITHUB_MOCK_BASE_URL}/api",
+)
 
 secondary_storage = MemorySecondaryStorage()
 accounts_storage = MemoryAccountsStorage()
 auth = CrossAuth(
-    providers=[],
+    providers=[github],
     storage=secondary_storage,
     accounts_storage=accounts_storage,
     create_token=lambda user_id: (f"unused-{user_id}", 0),
     trusted_origins=[],
     session_config={"cookie_name": SESSION_COOKIE_NAME, "secure": False},
+    config={
+        "login_url": "/",
+        "default_post_login_redirect_url": "/profile",
+        "account_linking": {"enabled": True},
+    },
 )
 
-app = FastAPI(title="Cross-Auth FastAPI Session Example")
+app = FastAPI(title="Cross-Auth FastAPI Session + Social Login Example")
+app.include_router(auth.router, prefix="/auth")
 
 
 @app.get("/")
@@ -214,6 +278,8 @@ def home(
             "demo_email": DEMO_EMAIL,
             "demo_password": DEMO_PASSWORD,
             "error_message": get_error_message(error),
+            "github_login_url": "/auth/github/session/authorize?next=/profile",
+            "github_mock_base_url": GITHUB_MOCK_BASE_URL,
             "user": user,
         },
     )
