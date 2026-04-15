@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import secrets
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -83,6 +83,10 @@ class CrossAuth:
             get_user_from_request or self._default_get_user_from_request
         )
 
+        self._providers = {provider.id: provider for provider in providers}
+        if len(self._providers) != len(providers):
+            raise ValueError("Provider ids must be unique")
+
         self._router = AuthRouter(
             providers=providers,
             secondary_storage=storage,
@@ -93,7 +97,7 @@ class CrossAuth:
             base_url=base_url,
             config=config,
         )
-        self._add_session_social_login_routes(providers)
+        self._add_session_social_login_routes()
 
     @property
     def router(self) -> AuthRouter:
@@ -194,78 +198,79 @@ class CrossAuth:
 
         return urlunparse((parsed.scheme, parsed.netloc, new_path, "", "", ""))
 
-    def _make_session_social_login_start_endpoint(
-        self, provider: OAuth2Provider
-    ) -> Callable[[Request], RedirectResponse]:
-        def session_social_login_start(request: Request) -> RedirectResponse:
-            provider_state = secrets.token_hex(16)
-            session_state = secrets.token_hex(16)
-            next_url = self._normalize_next_url(
-                request, request.query_params.get("next")
-            )
-            login_hint = request.query_params.get("login_hint")
-            session_callback_url = self._replace_request_path_suffix(
-                request,
-                old_suffix=f"/{provider.id}/session/authorize",
-                new_suffix=f"/{provider.id}/session/callback",
-            )
+    def _get_provider(self, provider_id: str) -> OAuth2Provider:
+        provider = self._providers.get(provider_id)
+        if provider is None:
+            raise HTTPException(status_code=404)
+        return provider
 
-            unused_code_challenge = calculate_s256_challenge(generate_code_verifier())
+    def _session_social_login_start(
+        self, provider_id: str, request: Request
+    ) -> RedirectResponse:
+        provider = self._get_provider(provider_id)
 
-            provider_code_verifier: str | None = None
-            provider_code_challenge: str | None = None
-            provider_code_challenge_method: str | None = None
+        provider_state = secrets.token_hex(16)
+        session_state = secrets.token_hex(16)
+        next_url = self._normalize_next_url(request, request.query_params.get("next"))
+        login_hint = request.query_params.get("login_hint")
+        session_callback_url = self._replace_request_path_suffix(
+            request,
+            old_suffix=f"/{provider_id}/session/authorize",
+            new_suffix=f"/{provider_id}/session/callback",
+        )
 
-            if provider.supports_pkce:
-                provider_code_verifier = generate_code_verifier()
-                provider_code_challenge = calculate_s256_challenge(
-                    provider_code_verifier
-                )
-                provider_code_challenge_method = "S256"
+        unused_code_challenge = calculate_s256_challenge(generate_code_verifier())
 
-            self._storage.set(
-                f"{_SESSION_SOCIAL_LOGIN_STATE_PREFIX}{session_state}",
-                SessionSocialLoginState(
-                    provider_name=provider.id,
-                    next_url=next_url,
-                    expires_at=datetime.now(tz=timezone.utc)
-                    + timedelta(seconds=_SESSION_SOCIAL_LOGIN_MAX_AGE),
-                ).model_dump_json(),
-                ttl=_SESSION_SOCIAL_LOGIN_MAX_AGE,
-            )
+        provider_code_verifier: str | None = None
+        provider_code_challenge: str | None = None
+        provider_code_challenge_method: str | None = None
 
-            self._storage.set(
-                f"oauth:authorization_request:{provider_state}",
-                OAuth2AuthorizationRequestData(
-                    client_id="__cross_auth_session__",
-                    redirect_uri=session_callback_url,
-                    login_hint=login_hint,
-                    client_state=session_state,
-                    state=provider_state,
-                    code_challenge=unused_code_challenge,
-                    code_challenge_method="S256",
-                    link=False,
-                    user_id=None,
-                    provider_code_verifier=provider_code_verifier,
-                ).model_dump_json(),
-                ttl=_SESSION_SOCIAL_LOGIN_MAX_AGE,
-            )
+        if provider.supports_pkce:
+            provider_code_verifier = generate_code_verifier()
+            provider_code_challenge = calculate_s256_challenge(provider_code_verifier)
+            provider_code_challenge_method = "S256"
 
-            query_params = provider.build_authorization_params(
-                state=provider_state,
-                proxy_redirect_uri=session_callback_url,
-                response_type="code",
-                code_challenge=provider_code_challenge,
-                code_challenge_method=provider_code_challenge_method,
+        self._storage.set(
+            f"{_SESSION_SOCIAL_LOGIN_STATE_PREFIX}{session_state}",
+            SessionSocialLoginState(
+                provider_name=provider.id,
+                next_url=next_url,
+                expires_at=datetime.now(tz=timezone.utc)
+                + timedelta(seconds=_SESSION_SOCIAL_LOGIN_MAX_AGE),
+            ).model_dump_json(),
+            ttl=_SESSION_SOCIAL_LOGIN_MAX_AGE,
+        )
+
+        self._storage.set(
+            f"oauth:authorization_request:{provider_state}",
+            OAuth2AuthorizationRequestData(
+                client_id="__cross_auth_session__",
+                redirect_uri=session_callback_url,
                 login_hint=login_hint,
-            )
-            authorization_url = (
-                f"{provider.authorization_endpoint}?{urlencode(query_params)}"
-            )
+                client_state=session_state,
+                state=provider_state,
+                code_challenge=unused_code_challenge,
+                code_challenge_method="S256",
+                link=False,
+                user_id=None,
+                provider_code_verifier=provider_code_verifier,
+            ).model_dump_json(),
+            ttl=_SESSION_SOCIAL_LOGIN_MAX_AGE,
+        )
 
-            return RedirectResponse(authorization_url, status_code=302)
+        query_params = provider.build_authorization_params(
+            state=provider_state,
+            proxy_redirect_uri=session_callback_url,
+            response_type="code",
+            code_challenge=provider_code_challenge,
+            code_challenge_method=provider_code_challenge_method,
+            login_hint=login_hint,
+        )
+        authorization_url = (
+            f"{provider.authorization_endpoint}?{urlencode(query_params)}"
+        )
 
-        return session_social_login_start
+        return RedirectResponse(authorization_url, status_code=302)
 
     def _restore_session_social_login_state(
         self,
@@ -295,57 +300,54 @@ class CrossAuth:
 
         return session_state
 
-    def _make_session_social_login_callback_endpoint(
-        self, provider: OAuth2Provider
-    ) -> Callable[[Request], Awaitable[RedirectResponse]]:
-        async def session_social_login_callback(request: Request) -> RedirectResponse:
-            async_request = AsyncHTTPRequest.from_fastapi(request)
-            context = self._make_context()
+    async def _session_social_login_callback(
+        self, provider_id: str, request: Request
+    ) -> RedirectResponse:
+        provider = self._get_provider(provider_id)
+        async_request = AsyncHTTPRequest.from_fastapi(request)
+        context = self._make_context()
 
-            try:
-                result = await provider._complete_provider_callback_to_user(
-                    async_request,
-                    context,
-                )
-            except OAuth2ProviderCallbackError as e:
-                error = (
-                    "invalid_state"
-                    if e.error == "invalid_state"
-                    else self._normalize_social_login_error(e.error)
-                )
-                return self._redirect_to_login(error)
-
-            session_state = self._restore_session_social_login_state(
-                result.provider_data,
-                provider_name=provider.id,
+        try:
+            result = await provider._complete_provider_callback_to_user(
+                async_request,
+                context,
             )
-            if session_state is None:
-                return self._redirect_to_login("invalid_state")
-
-            response = RedirectResponse(session_state.next_url, status_code=302)
-            self.login(str(result.user.id), response=response)
-            return response
-
-        return session_social_login_callback
-
-    def _add_session_social_login_routes(self, providers: list[OAuth2Provider]) -> None:
-        for provider in providers:
-            self._router.add_api_route(
-                f"/{provider.id}/session/authorize",
-                self._make_session_social_login_start_endpoint(provider),
-                methods=["GET"],
-                summary=f"Start {provider.id} social login with a browser session",
-                operation_id=f"{provider.id}_session_authorize",
-                name=f"{provider.id}_session_authorize",
+        except OAuth2ProviderCallbackError as e:
+            error = (
+                "invalid_state"
+                if e.error == "invalid_state"
+                else self._normalize_social_login_error(e.error)
             )
-            self._router.add_api_route(
-                f"/{provider.id}/session/callback",
-                self._make_session_social_login_callback_endpoint(provider),
-                methods=["GET", "POST"],
-                summary=f"Finish {provider.id} social login with a browser session",
-                operation_id=f"{provider.id}_session_callback",
-                name=f"{provider.id}_session_callback",
-            )
+            return self._redirect_to_login(error)
+
+        session_state = self._restore_session_social_login_state(
+            result.provider_data,
+            provider_name=provider.id,
+        )
+        if session_state is None:
+            return self._redirect_to_login("invalid_state")
+
+        response = RedirectResponse(session_state.next_url, status_code=302)
+        self.login(str(result.user.id), response=response)
+        return response
+
+    def _add_session_social_login_routes(self) -> None:
+        self._router.add_api_route(
+            "/{provider_id}/session/authorize",
+            self._session_social_login_start,
+            methods=["GET"],
+            summary="Start social login with a browser session",
+            operation_id="session_social_login_authorize",
+            name="session_social_login_authorize",
+        )
+        self._router.add_api_route(
+            "/{provider_id}/session/callback",
+            self._session_social_login_callback,
+            methods=["GET", "POST"],
+            summary="Finish social login with a browser session",
+            operation_id="session_social_login_callback",
+            name="session_social_login_callback",
+        )
 
     def get_current_user(self, request: Request) -> User | None:
         return self._resolve_user(request)

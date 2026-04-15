@@ -489,12 +489,20 @@ class OAuth2Provider:
                 provider_data,
             )
 
+        provider_code = callback_data.code
+        if provider_code is None:
+            raise OAuth2ProviderCallbackError(
+                "server_error",
+                "No authorization code received in callback",
+                provider_data,
+            )
+
         try:
             user = self._resolve_user_from_provider_auth(
                 request,
                 context,
                 provider_data,
-                callback_data.code,
+                provider_code,
                 callback_data.extra,
             )
         except (CrossAuthException, OAuth2Exception) as e:
@@ -518,9 +526,19 @@ class OAuth2Provider:
         except OAuth2ProviderCallbackError as e:
             return self._response_for_provider_callback_error(e)
 
+        provider_code = callback_data.code
+        if provider_code is None:
+            return self._response_for_provider_callback_error(
+                OAuth2ProviderCallbackError(
+                    "server_error",
+                    "No authorization code received in callback",
+                    provider_data,
+                )
+            )
+
         if provider_data.link:
             return self._link_flow(
-                request, context, provider_data, callback_data.code, callback_data.extra
+                request, context, provider_data, provider_code, callback_data.extra
             )
 
         try:
@@ -528,7 +546,7 @@ class OAuth2Provider:
                 request,
                 context,
                 provider_data,
-                callback_data.code,
+                provider_code,
                 callback_data.extra,
             )
         except (CrossAuthException, OAuth2Exception) as e:
