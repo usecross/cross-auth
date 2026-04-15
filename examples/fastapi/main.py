@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, cast
 
-from fastapi import Depends, FastAPI, Form, Request
+import jwt
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from passlib.context import CryptContext
@@ -22,7 +24,21 @@ SESSION_COOKIE_NAME = "cross_auth_example_session"
 DEMO_EMAIL = "demo@example.com"
 DEMO_PASSWORD = "password123"  # noqa: S105
 GITHUB_MOCK_BASE_URL = "https://github-oauth-mock.fastapicloud.dev"
+SPA_DEMO_URL = "http://localhost:5173"
+SPA_CLIENT_ID = "spa-example"
+TOKEN_ISSUER = "cross-auth-fastapi-example"
+TOKEN_SECRET = "cross-auth-fastapi-example-secret"  # noqa: S105
+TOKEN_EXPIRES_IN = 3600
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+SPA_CORS_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+SPA_TRUSTED_REDIRECT_HOSTS = [
+    "localhost:5173",
+    "127.0.0.1:5173",
+]
 
 
 @dataclass
@@ -119,7 +135,6 @@ class MemoryAccountsStorage(AccountsStorage):
         email: str,
         email_verified: bool,
     ) -> DemoUser:
-        del user_info
         user = DemoUser(
             id=str(uuid.uuid4()),
             email=email,
@@ -237,6 +252,45 @@ def get_error_message(error: str | None) -> str | None:
     return None
 
 
+def create_demo_token(user_id: str) -> tuple[str, int]:
+    now = datetime.now(tz=UTC)
+    payload = {
+        "sub": user_id,
+        "iss": TOKEN_ISSUER,
+        "iat": now,
+        "exp": now + timedelta(seconds=TOKEN_EXPIRES_IN),
+    }
+    return jwt.encode(payload, TOKEN_SECRET, algorithm="HS256"), TOKEN_EXPIRES_IN
+
+
+def resolve_bearer_user(request: Request) -> DemoUser:
+    authorization = request.headers.get("Authorization")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+
+    token = authorization.split(" ", 1)[1]
+
+    try:
+        payload = jwt.decode(
+            token,
+            TOKEN_SECRET,
+            algorithms=["HS256"],
+            issuer=TOKEN_ISSUER,
+        )
+    except jwt.PyJWTError as e:
+        raise HTTPException(status_code=401, detail="Invalid bearer token") from e
+
+    user_id = payload.get("sub")
+    if not isinstance(user_id, str):
+        raise HTTPException(status_code=401, detail="Invalid bearer token")
+
+    user = accounts_storage.find_user_by_id(user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    return user
+
+
 github = GitHubProvider(
     client_id="demo-client",
     client_secret="demo-secret",
@@ -251,17 +305,25 @@ auth = CrossAuth(
     providers=[github],
     storage=secondary_storage,
     accounts_storage=accounts_storage,
-    create_token=lambda user_id: (f"unused-{user_id}", 0),
-    trusted_origins=[],
+    create_token=create_demo_token,
+    trusted_origins=SPA_TRUSTED_REDIRECT_HOSTS,
     session_config={"cookie_name": SESSION_COOKIE_NAME, "secure": False},
     config={
         "login_url": "/",
         "default_post_login_redirect_url": "/profile",
         "account_linking": {"enabled": True},
+        "allowed_client_ids": [SPA_CLIENT_ID],
     },
 )
 
-app = FastAPI(title="Cross-Auth FastAPI Session + Social Login Example")
+app = FastAPI(title="Cross-Auth FastAPI Hybrid Example")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=SPA_CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+)
 app.include_router(auth.router, prefix="/auth")
 
 
@@ -280,6 +342,10 @@ def home(
             "error_message": get_error_message(error),
             "github_login_url": "/auth/github/session/authorize?next=/profile",
             "github_mock_base_url": GITHUB_MOCK_BASE_URL,
+            "session_me_url": "/api/me-session",
+            "token_me_url": "/api/me-token",
+            "spa_client_id": SPA_CLIENT_ID,
+            "spa_demo_url": SPA_DEMO_URL,
             "user": user,
         },
     )
@@ -317,8 +383,14 @@ def profile(
     return templates.TemplateResponse(request, "profile.html", {"user": user})
 
 
-@app.get("/api/me")
-def api_me(
+@app.get("/api/me-session")
+def api_me_session(
     user: Annotated[UserProtocol, Depends(auth.require_current_user)],
 ) -> JSONResponse:
     return JSONResponse(serialize_user(cast(DemoUser, user)))
+
+
+@app.get("/api/me-token")
+def api_me_token(request: Request) -> JSONResponse:
+    user = resolve_bearer_user(request)
+    return JSONResponse(serialize_user(user))
