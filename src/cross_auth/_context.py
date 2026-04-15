@@ -3,6 +3,8 @@ from urllib.parse import urlparse
 
 from cross_web import AsyncHTTPRequest
 
+from .utils._response import Response
+
 from ._config import Config
 from ._storage import AccountsStorage, SecondaryStorage, User
 from .utils._is_same_host import is_same_host
@@ -19,6 +21,7 @@ class Context:
         get_user_from_request: Callable[[AsyncHTTPRequest], User | None],
         base_url: str | None = None,
         config: Config | None = None,
+        build_session_login_response: Callable[[str, str], Response] | None = None,
     ):
         self.secondary_storage = secondary_storage
         self.accounts_storage = accounts_storage
@@ -27,6 +30,7 @@ class Context:
         self.get_user_from_request = get_user_from_request
         self.base_url = base_url
         self.config: Config = config if config is not None else {}
+        self.build_session_login_response = build_session_login_response
 
     def is_valid_redirect_uri(self, redirect_uri: str) -> bool:
         host = urlparse(redirect_uri).netloc

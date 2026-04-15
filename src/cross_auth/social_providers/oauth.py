@@ -63,13 +63,13 @@ class OAuth2Exception(Exception):
 
 
 class OAuth2AuthorizationRequestData(BaseModel):
-    client_id: str  # The app's client_id (not the provider's)
-    redirect_uri: str
+    client_id: str | None = None  # The app's client_id (not the provider's)
+    redirect_uri: str | None = None
     login_hint: str | None
     client_state: str | None
     state: str
-    code_challenge: str
-    code_challenge_method: Literal["S256"]
+    code_challenge: str | None = None
+    code_challenge_method: Literal["S256"] | None = None
     link: bool = False
     user_id: str | None = None  # User who initiated the link flow
     provider_code_verifier: str | None = None  # PKCE verifier for provider OAuth flow
@@ -367,6 +367,89 @@ class OAuth2Provider:
             query_params=query_params,
         )
 
+    def _default_post_login_redirect_url(self, context: Context) -> str:
+        return context.config.get("default_post_login_redirect_url") or "/"
+
+    def _login_url(self, context: Context) -> str:
+        return context.config.get("login_url") or "/login"
+
+    def _normalize_session_login_error(self, error: str) -> str:
+        if error == "server_error":
+            return "oauth_failed"
+        return error
+
+    def _session_login_not_supported_response(self) -> Response:
+        return Response.error(
+            "invalid_request",
+            error_description="Session login is not configured",
+        )
+
+    def _response_for_session_callback_error(
+        self, error: OAuth2ProviderCallbackError, context: Context
+    ) -> Response:
+        response_error = (
+            "invalid_state"
+            if error.error == "invalid_state"
+            else self._normalize_session_login_error(error.error)
+        )
+        return Response.redirect(
+            self._login_url(context),
+            query_params={"error": response_error},
+        )
+
+    async def session_authorize(
+        self,
+        request: AsyncHTTPRequest,
+        context: Context,
+    ) -> Response:
+        if context.build_session_login_response is None:
+            return self._session_login_not_supported_response()
+
+        login_hint = request.query_params.get("login_hint")
+        state = secrets.token_hex(16)
+
+        provider_code_verifier: str | None = None
+        provider_code_challenge: str | None = None
+        provider_code_challenge_method: str | None = None
+
+        if self.supports_pkce:
+            provider_code_verifier = generate_code_verifier()
+            provider_code_challenge = calculate_s256_challenge(provider_code_verifier)
+            provider_code_challenge_method = "S256"
+
+        data = OAuth2AuthorizationRequestData(
+            login_hint=login_hint,
+            client_state=None,
+            state=state,
+            link=False,
+            user_id=None,
+            provider_code_verifier=provider_code_verifier,
+        )
+
+        context.secondary_storage.set(
+            f"oauth:authorization_request:{state}",
+            data.model_dump_json(),
+            # TODO: ttl
+        )
+
+        proxy_redirect_uri = construct_relative_url(
+            str(request.url), "callback", context.base_url
+        )
+
+        query_params = self.build_authorization_params(
+            state=state,
+            proxy_redirect_uri=proxy_redirect_uri,
+            response_type="code",
+            code_challenge=provider_code_challenge,
+            code_challenge_method=provider_code_challenge_method,
+            login_hint=login_hint,
+        )
+
+        return Response.redirect(
+            self.authorization_endpoint,
+            query_params=query_params,
+        )
+
     async def extract_callback_data(self, request: AsyncHTTPRequest) -> CallbackData:
         """Extract code, state, and error from callback request.
 
@@ -462,7 +545,7 @@ class OAuth2Provider:
             "server_error" if error.error == "invalid_state" else error.error
         )
 
-        if error.provider_data is None:
+        if error.provider_data is None or error.provider_data.redirect_uri is None:
             return Response.error(
                 response_error,
                 error_description=error.error_description,
@@ -514,6 +597,22 @@ class OAuth2Provider:
 
         return CompletedProviderAuth(provider_data=provider_data, user=user)
 
+    async def session_callback(
+        self, request: AsyncHTTPRequest, context: Context
+    ) -> Response:
+        if context.build_session_login_response is None:
+            return self._session_login_not_supported_response()
+
+        try:
+            result = await self._complete_provider_callback_to_user(request, context)
+        except OAuth2ProviderCallbackError as e:
+            return self._response_for_session_callback_error(e, context)
+
+        return context.build_session_login_response(
+            str(result.user.id),
+            self._default_post_login_redirect_url(context),
+        )
+
     async def callback(self, request: AsyncHTTPRequest, context: Context) -> Response:
         """
         This callback endpoint is used to exchange the Identity Provider's code
@@ -536,6 +635,13 @@ class OAuth2Provider:
                 )
             )
 
+        redirect_uri = provider_data.redirect_uri
+        if redirect_uri is None:
+            return Response.error(
+                "server_error",
+                error_description="Invalid authorization request data",
+            )
+
         if provider_data.link:
             return self._link_flow(
                 request, context, provider_data, provider_code, callback_data.extra
@@ -551,7 +657,7 @@ class OAuth2Provider:
             )
         except (CrossAuthException, OAuth2Exception) as e:
             return Response.error_redirect(
-                provider_data.redirect_uri,
+                redirect_uri,
                 error=e.error,
                 error_description=e.error_description,
                 state=provider_data.client_state,
@@ -569,7 +675,7 @@ class OAuth2Provider:
             query_params["state"] = provider_data.client_state
 
         return Response.redirect(
-            provider_data.redirect_uri,
+            redirect_uri,
             query_params=query_params,
         )
 
@@ -677,6 +783,17 @@ class OAuth2Provider:
         provider_data: OAuth2AuthorizationRequestData,
         context: Context,
     ) -> str:
+        if (
+            provider_data.client_id is None
+            or provider_data.redirect_uri is None
+            or provider_data.code_challenge is None
+            or provider_data.code_challenge_method is None
+        ):
+            raise CrossAuthException(
+                "server_error",
+                "Invalid authorization request data",
+            )
+
         code = self._generate_code()
 
         data = AuthorizationCodeGrantData(
@@ -703,11 +820,24 @@ class OAuth2Provider:
         provider_code: str,
         extra: dict[str, Any] | None = None,
     ) -> Response:
-        # user_id should always be present for link flows (validated in authorize)
-        if not provider_data.user_id:
-            logger.error("No user_id in provider_data for link flow")
+        redirect_uri = provider_data.redirect_uri
+
+        # user_id and client flow fields should always be present for link flows
+        if (
+            not provider_data.user_id
+            or provider_data.client_id is None
+            or redirect_uri is None
+            or provider_data.code_challenge is None
+            or provider_data.code_challenge_method is None
+        ):
+            logger.error("Invalid link flow data")
+            if redirect_uri is None:
+                return Response.error(
+                    "server_error",
+                    error_description="Invalid link flow data",
+                )
             return Response.error_redirect(
-                provider_data.redirect_uri,
+                redirect_uri,
                 error="server_error",
                 error_description="Invalid link flow data",
                 state=provider_data.client_state,
@@ -716,7 +846,7 @@ class OAuth2Provider:
         data = OAuth2LinkCodeData(
             expires_at=datetime.now(tz=timezone.utc) + timedelta(minutes=10),
             client_id=provider_data.client_id,
-            redirect_uri=provider_data.redirect_uri,
+            redirect_uri=redirect_uri,
             code_challenge=provider_data.code_challenge,
             code_challenge_method=provider_data.code_challenge_method,
             user_id=provider_data.user_id,
@@ -734,7 +864,7 @@ class OAuth2Provider:
         )
 
         return Response.redirect(
-            provider_data.redirect_uri,
+            redirect_uri,
             query_params={"link_code": code},
         )
 
@@ -1293,6 +1423,12 @@ class OAuth2Provider:
                 operation_id=f"{self.id}_authorize",
             ),
             Route(
+                path=f"/{self.id}/session/authorize",
+                methods=["GET"],
+                function=self.session_authorize,
+                operation_id=f"{self.id}_session_authorize",
+            ),
+            Route(
                 path=f"/{self.id}/callback",
                 methods=[
                     "GET",
@@ -1300,6 +1436,15 @@ class OAuth2Provider:
                 ],  # POST needed for Apple (response_mode=form_post)
                 function=self.callback,
                 operation_id=f"{self.id}_callback",
+            ),
+            Route(
+                path=f"/{self.id}/session/callback",
+                methods=[
+                    "GET",
+                    "POST",
+                ],  # POST needed for Apple (response_mode=form_post)
+                function=self.session_callback,
+                operation_id=f"{self.id}_session_callback",
             ),
             Route(
                 path=f"/{self.id}/finalize-link",

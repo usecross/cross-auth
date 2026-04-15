@@ -370,12 +370,16 @@ def test_logout_custom_cookie_name(
     assert get_session(session_id, secondary_storage) is None
 
 
-def test_social_login_to_session_sets_cookie_and_redirects_to_next(
+def test_social_login_to_session_sets_cookie_and_redirects_to_default_url(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
     respx_mock: MockRouter,
 ):
-    auth = _make_social_auth(secondary_storage, accounts_storage)
+    auth = _make_social_auth(
+        secondary_storage,
+        accounts_storage,
+        config={"default_post_login_redirect_url": "/dashboard"},
+    )
     app = FastAPI()
     app.include_router(auth.router, prefix="/auth")
 
@@ -385,7 +389,7 @@ def test_social_login_to_session_sets_cookie_and_redirects_to_next(
 
     with TestClient(app) as client:
         start_response = client.get(
-            "/auth/test/session/authorize?next=/dashboard",
+            "/auth/test/session/authorize",
             follow_redirects=False,
         )
         assert start_response.status_code == 302
@@ -447,7 +451,7 @@ def test_social_login_to_session_redirects_back_to_login_on_provider_error(
 
     with TestClient(app) as client:
         start_response = client.get(
-            "/auth/test/session/authorize?next=/dashboard",
+            "/auth/test/session/authorize",
             follow_redirects=False,
         )
         assert start_response.status_code == 302
