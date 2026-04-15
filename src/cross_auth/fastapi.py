@@ -64,7 +64,7 @@ class CrossAuth:
             trusted_origins=trusted_origins,
             base_url=base_url,
             config=config,
-            build_session_login_response=self._build_session_login_response,
+            complete_session_login=self._complete_session_login,
         )
 
     @property
@@ -101,7 +101,7 @@ class CrossAuth:
         session_id, _ = _create_session(user_id, self._storage, max_age=max_age)
         return _make_session_cookie(session_id, self._session_config)
 
-    def _build_session_login_response(
+    def _complete_session_login(
         self, user_id: str, redirect_url: str
     ) -> CrossAuthResponse:
         cookie = self._create_session_cookie(user_id)

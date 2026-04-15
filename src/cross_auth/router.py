@@ -28,7 +28,7 @@ class AuthRouter(APIRouter):
         trusted_origins: list[str],
         base_url: str | None = None,
         config: Config | None = None,
-        build_session_login_response: Callable[[str, str], Response] | None = None,
+        complete_session_login: Callable[[str, str], Response] | None = None,
     ):
         super().__init__()
 
@@ -42,7 +42,7 @@ class AuthRouter(APIRouter):
         self._get_user_from_request = get_user_from_request
         self._base_url = base_url
         self._config = config
-        self._build_session_login_response = build_session_login_response
+        self._complete_session_login = complete_session_login
 
         provider_routes = list(chain.from_iterable(p.routes for p in providers))
 
@@ -57,7 +57,7 @@ class AuthRouter(APIRouter):
             get_user_from_request=self._get_user_from_request,
             base_url=self._base_url,
             config=self._config,
-            build_session_login_response=self._build_session_login_response,
+            complete_session_login=self._complete_session_login,
         )
 
         for route in routes:

@@ -378,13 +378,13 @@ class OAuth2Provider:
             return "oauth_failed"
         return error
 
-    def _session_login_not_supported_response(self) -> Response:
+    def _session_login_unavailable_response(self) -> Response:
         return Response.error(
             "invalid_request",
             error_description="Session login is not configured",
         )
 
-    def _response_for_session_callback_error(
+    def _response_for_session_login_error(
         self, error: OAuth2ProviderCallbackError, context: Context
     ) -> Response:
         response_error = (
@@ -397,13 +397,13 @@ class OAuth2Provider:
             query_params={"error": response_error},
         )
 
-    async def session_authorize(
+    async def start_session_login(
         self,
         request: AsyncHTTPRequest,
         context: Context,
     ) -> Response:
-        if context.build_session_login_response is None:
-            return self._session_login_not_supported_response()
+        if not context.supports_session_login():
+            return self._session_login_unavailable_response()
 
         login_hint = request.query_params.get("login_hint")
         state = secrets.token_hex(16)
@@ -597,18 +597,18 @@ class OAuth2Provider:
 
         return CompletedProviderAuth(provider_data=provider_data, user=user)
 
-    async def session_callback(
+    async def finish_session_login(
         self, request: AsyncHTTPRequest, context: Context
     ) -> Response:
-        if context.build_session_login_response is None:
-            return self._session_login_not_supported_response()
+        if not context.supports_session_login():
+            return self._session_login_unavailable_response()
 
         try:
             result = await self._complete_provider_callback_to_user(request, context)
         except OAuth2ProviderCallbackError as e:
-            return self._response_for_session_callback_error(e, context)
+            return self._response_for_session_login_error(e, context)
 
-        return context.build_session_login_response(
+        return context.complete_session_login(
             str(result.user.id),
             self._default_post_login_redirect_url(context),
         )
@@ -1425,7 +1425,7 @@ class OAuth2Provider:
             Route(
                 path=f"/{self.id}/session/authorize",
                 methods=["GET"],
-                function=self.session_authorize,
+                function=self.start_session_login,
                 operation_id=f"{self.id}_session_authorize",
             ),
             Route(
@@ -1443,7 +1443,7 @@ class OAuth2Provider:
                     "GET",
                     "POST",
                 ],  # POST needed for Apple (response_mode=form_post)
-                function=self.session_callback,
+                function=self.finish_session_login,
                 operation_id=f"{self.id}_session_callback",
             ),
             Route(
