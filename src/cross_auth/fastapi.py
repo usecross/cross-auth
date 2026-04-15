@@ -15,19 +15,28 @@ from ._context import AccountsStorage, Context, SecondaryStorage, User
 from ._password import authenticate as _authenticate
 from ._session import (
     SessionConfig,
-    create_session as _create_session,
-    delete_session as _delete_session,
-    get_current_user as _get_current_user_from_session,
-    make_clear_cookie as _make_clear_cookie,
-    make_session_cookie as _make_session_cookie,
     resolve_config,
 )
-from .exceptions import CrossAuthException
+from ._session import (
+    create_session as _create_session,
+)
+from ._session import (
+    delete_session as _delete_session,
+)
+from ._session import (
+    get_current_user as _get_current_user_from_session,
+)
+from ._session import (
+    make_clear_cookie as _make_clear_cookie,
+)
+from ._session import (
+    make_session_cookie as _make_session_cookie,
+)
 from .router import AuthRouter
 from .social_providers.oauth import (
     OAuth2AuthorizationRequestData,
-    OAuth2Exception,
     OAuth2Provider,
+    OAuth2ProviderCallbackError,
 )
 from .utils._pkce import calculate_s256_challenge, generate_code_verifier
 
@@ -185,31 +194,6 @@ class CrossAuth:
 
         return urlunparse((parsed.scheme, parsed.netloc, new_path, "", "", ""))
 
-    def _consume_session_social_login_state(
-        self,
-        state: str,
-        *,
-        provider_name: str,
-    ) -> SessionSocialLoginState | None:
-        raw_session_state = self._storage.pop(
-            f"{_SESSION_SOCIAL_LOGIN_STATE_PREFIX}{state}"
-        )
-
-        if raw_session_state is None:
-            return None
-
-        try:
-            session_state = SessionSocialLoginState.model_validate_json(
-                raw_session_state
-            )
-        except ValidationError:
-            return None
-
-        if session_state.is_expired or session_state.provider_name != provider_name:
-            return None
-
-        return session_state
-
     def _make_session_social_login_start_endpoint(
         self, provider: OAuth2Provider
     ) -> Callable[[Request], RedirectResponse]:
@@ -283,57 +267,63 @@ class CrossAuth:
 
         return session_social_login_start
 
+    def _restore_session_social_login_state(
+        self,
+        provider_data: OAuth2AuthorizationRequestData,
+        *,
+        provider_name: str,
+    ) -> SessionSocialLoginState | None:
+        if provider_data.client_state is None:
+            return None
+
+        raw_session_state = self._storage.pop(
+            f"{_SESSION_SOCIAL_LOGIN_STATE_PREFIX}{provider_data.client_state}"
+        )
+
+        if raw_session_state is None:
+            return None
+
+        try:
+            session_state = SessionSocialLoginState.model_validate_json(
+                raw_session_state
+            )
+        except ValidationError:
+            return None
+
+        if session_state.is_expired or session_state.provider_name != provider_name:
+            return None
+
+        return session_state
+
     def _make_session_social_login_callback_endpoint(
         self, provider: OAuth2Provider
     ) -> Callable[[Request], Awaitable[RedirectResponse]]:
         async def session_social_login_callback(request: Request) -> RedirectResponse:
             async_request = AsyncHTTPRequest.from_fastapi(request)
-            callback_data = await provider.extract_callback_data(async_request)
-            state = callback_data.state
-
-            if not state:
-                return self._redirect_to_login("invalid_state")
-
             context = self._make_context()
 
             try:
-                provider_data = provider.load_authorization_request(state, context)
-            except CrossAuthException:
-                return self._redirect_to_login("invalid_state")
+                result = await provider._complete_provider_callback_to_user(
+                    async_request,
+                    context,
+                )
+            except OAuth2ProviderCallbackError as e:
+                error = (
+                    "invalid_state"
+                    if e.error == "invalid_state"
+                    else self._normalize_social_login_error(e.error)
+                )
+                return self._redirect_to_login(error)
 
-            if provider_data.client_state is None:
-                return self._redirect_to_login("invalid_state")
-
-            session_state = self._consume_session_social_login_state(
-                provider_data.client_state,
+            session_state = self._restore_session_social_login_state(
+                result.provider_data,
                 provider_name=provider.id,
             )
             if session_state is None:
                 return self._redirect_to_login("invalid_state")
 
-            if callback_data.error:
-                return self._redirect_to_login(
-                    self._normalize_social_login_error(callback_data.error)
-                )
-
-            if not callback_data.code or provider_data.link:
-                return self._redirect_to_login("oauth_failed")
-
-            try:
-                user = provider.resolve_login(
-                    async_request,
-                    context,
-                    provider_data,
-                    callback_data.code,
-                    callback_data.extra,
-                )
-            except (CrossAuthException, OAuth2Exception) as e:
-                return self._redirect_to_login(
-                    self._normalize_social_login_error(e.error)
-                )
-
             response = RedirectResponse(session_state.next_url, status_code=302)
-            self.login(str(user.id), response=response)
+            self.login(str(result.user.id), response=response)
             return response
 
         return session_social_login_callback

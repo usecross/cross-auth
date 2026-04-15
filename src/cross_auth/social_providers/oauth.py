@@ -75,6 +75,24 @@ class OAuth2AuthorizationRequestData(BaseModel):
     provider_code_verifier: str | None = None  # PKCE verifier for provider OAuth flow
 
 
+class OAuth2ProviderCallbackError(Exception):
+    def __init__(
+        self,
+        error: str,
+        error_description: str | None = None,
+        provider_data: OAuth2AuthorizationRequestData | None = None,
+    ):
+        self.error = error
+        self.error_description = error_description
+        self.provider_data = provider_data
+
+
+@dataclass
+class CompletedProviderAuth:
+    provider_data: OAuth2AuthorizationRequestData
+    user: User
+
+
 class OAuth2LinkCodeData(BaseModel):
     expires_at: datetime
     client_id: str
@@ -383,11 +401,9 @@ class OAuth2Provider:
                 "Invalid provider data",
             ) from e
 
-    async def callback(self, request: AsyncHTTPRequest, context: Context) -> Response:
-        """
-        This callback endpoint is used to exchange the Identity Provider's code
-        for a token and then login the user on our side.
-        """
+    async def _prepare_provider_callback(
+        self, request: AsyncHTTPRequest, context: Context
+    ) -> tuple[CallbackData, OAuth2AuthorizationRequestData]:
         callback_data = await self.extract_callback_data(request)
         state = callback_data.state
 
@@ -395,50 +411,112 @@ class OAuth2Provider:
             logger.error("OAuth error: %s", callback_data.error)
 
             if not state:
-                return Response.error(
+                raise OAuth2ProviderCallbackError(
                     "access_denied",
-                    error_description=f"Authorization failed: {callback_data.error}",
+                    f"Authorization failed: {callback_data.error}",
                 )
 
             try:
                 provider_data = self.load_authorization_request(state, context)
             except CrossAuthException:
-                return Response.error(
+                raise OAuth2ProviderCallbackError(
                     "access_denied",
-                    error_description=f"Authorization failed: {callback_data.error}",
-                )
+                    f"Authorization failed: {callback_data.error}",
+                ) from None
 
-            return Response.error_redirect(
-                provider_data.redirect_uri,
-                error=callback_data.error,
-                error_description=f"Authorization failed: {callback_data.error}",
-                state=provider_data.client_state,
+            raise OAuth2ProviderCallbackError(
+                callback_data.error,
+                f"Authorization failed: {callback_data.error}",
+                provider_data,
             )
 
         if not state:
             logger.error("No state found in request")
-            return Response.error(
-                "server_error",
-                error_description="No state found in request",
+            raise OAuth2ProviderCallbackError(
+                "invalid_state",
+                "No state found in request",
             )
 
         try:
             provider_data = self.load_authorization_request(state, context)
         except CrossAuthException as e:
-            return Response.error(
-                e.error,
-                error_description=e.error_description,
-            )
+            raise OAuth2ProviderCallbackError(
+                "invalid_state",
+                e.error_description,
+            ) from e
 
         if not callback_data.code:
             logger.error("No authorization code received in callback")
-
-            return Response.error_redirect(
-                provider_data.redirect_uri,
-                error="server_error",
-                error_description="No authorization code received in callback",
-                state=provider_data.client_state,
+            raise OAuth2ProviderCallbackError(
+                "server_error",
+                "No authorization code received in callback",
+                provider_data,
             )
+
+        return callback_data, provider_data
+
+    def _response_for_provider_callback_error(
+        self, error: OAuth2ProviderCallbackError
+    ) -> Response:
+        response_error = (
+            "server_error" if error.error == "invalid_state" else error.error
+        )
+
+        if error.provider_data is None:
+            return Response.error(
+                response_error,
+                error_description=error.error_description,
+            )
+
+        return Response.error_redirect(
+            error.provider_data.redirect_uri,
+            error=response_error,
+            error_description=error.error_description,
+            state=error.provider_data.client_state,
+        )
+
+    async def _complete_provider_callback_to_user(
+        self, request: AsyncHTTPRequest, context: Context
+    ) -> CompletedProviderAuth:
+        callback_data, provider_data = await self._prepare_provider_callback(
+            request, context
+        )
+
+        if provider_data.link:
+            raise OAuth2ProviderCallbackError(
+                "server_error",
+                "Link flow is not supported in this callback",
+                provider_data,
+            )
+
+        try:
+            user = self._resolve_user_from_provider_auth(
+                request,
+                context,
+                provider_data,
+                callback_data.code,
+                callback_data.extra,
+            )
+        except (CrossAuthException, OAuth2Exception) as e:
+            raise OAuth2ProviderCallbackError(
+                e.error,
+                e.error_description,
+                provider_data,
+            ) from e
+
+        return CompletedProviderAuth(provider_data=provider_data, user=user)
+
+    async def callback(self, request: AsyncHTTPRequest, context: Context) -> Response:
+        """
+        This callback endpoint is used to exchange the Identity Provider's code
+        for a token and then login the user on our side.
+        """
+        try:
+            callback_data, provider_data = await self._prepare_provider_callback(
+                request, context
+            )
+        except OAuth2ProviderCallbackError as e:
+            return self._response_for_provider_callback_error(e)
 
         if provider_data.link:
             return self._link_flow(
@@ -446,7 +524,7 @@ class OAuth2Provider:
             )
 
         try:
-            user = self.resolve_login(
+            user = self._resolve_user_from_provider_auth(
                 request,
                 context,
                 provider_data,
@@ -477,7 +555,7 @@ class OAuth2Provider:
             query_params=query_params,
         )
 
-    def resolve_login(
+    def _resolve_user_from_provider_auth(
         self,
         request: AsyncHTTPRequest,
         context: Context,
