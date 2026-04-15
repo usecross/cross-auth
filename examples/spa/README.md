@@ -34,16 +34,13 @@ Open `http://localhost:5173`.
 
 ## End-to-End Test
 
-The SPA includes a Playwright end-to-end test that exercises both:
+The cross-app Playwright tests live in the top-level `e2e/` directory because
+they test the contract between this SPA and the FastAPI backend together.
 
-- session-social login on the FastAPI backend
-- auth-code + token login from the separate SPA
-
-Run it with both apps already running, or let Playwright start them
-automatically:
+Run them with:
 
 ```bash
-cd examples/spa
+cd e2e
 bun install
 bunx playwright install chromium
 bun run test:e2e

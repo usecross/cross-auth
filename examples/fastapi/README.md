@@ -37,6 +37,15 @@ bun run dev
 
 Then open `http://localhost:5173`.
 
+To run the cross-app end-to-end tests:
+
+```bash
+cd e2e
+bun install
+bunx playwright install chromium
+bun run test:e2e
+```
+
 ## Demo Notes
 
 - Demo email: `demo@example.com`
