@@ -43,9 +43,8 @@ Open `http://127.0.0.1:8000`.
 - `/login` - signs in the seeded demo user with email/password
 - `/auth/github/session/authorize` - starts GitHub social login into a browser
   session
-- `/auth/github/callback` - provider callback used internally by Cross-Auth
-- `/auth/github/session/callback` - completes browser session login and
-  redirects back signed in
+- `/auth/github/session/callback` - provider callback that resolves the local
+  user, creates the browser session, and redirects back signed in
 - `/profile` - browser-only signed-in view
 - `/api/me` - JSON view of the current signed-in user
 - `/logout` - clears the browser session

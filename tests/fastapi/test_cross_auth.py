@@ -394,7 +394,9 @@ def test_social_login_to_session_sets_cookie_and_redirects_to_next(
         parsed = urlparse(authorization_url)
         params = parse_qs(parsed.query)
         provider_state = params["state"][0]
-        assert params["redirect_uri"][0] == "http://testserver/auth/test/callback"
+        assert (
+            params["redirect_uri"][0] == "http://testserver/auth/test/session/callback"
+        )
 
         respx_mock.post("https://test.com/token").mock(
             return_value=httpx.Response(
@@ -415,24 +417,12 @@ def test_social_login_to_session_sets_cookie_and_redirects_to_next(
         )
 
         provider_callback = client.get(
-            f"/auth/test/callback?code=provider_code&state={provider_state}",
+            f"/auth/test/session/callback?code=provider_code&state={provider_state}",
             follow_redirects=False,
         )
         assert provider_callback.status_code == 302
-
-        session_callback_location = provider_callback.headers["location"]
-        parsed_session_callback = urlparse(session_callback_location)
-        session_callback_params = parse_qs(parsed_session_callback.query)
-        assert parsed_session_callback.path == "/auth/test/session/callback"
-        assert session_callback_params["code"][0] == "a-totally-valid-code"
-
-        session_callback = client.get(
-            parsed_session_callback.path + "?" + parsed_session_callback.query,
-            follow_redirects=False,
-        )
-        assert session_callback.status_code == 302
-        assert session_callback.headers["location"] == "/dashboard"
-        assert session_callback.cookies.get("session_id")
+        assert provider_callback.headers["location"] == "/dashboard"
+        assert provider_callback.cookies.get("session_id")
 
         dashboard_response = client.get("/dashboard")
         assert dashboard_response.status_code == 200
@@ -466,18 +456,8 @@ def test_social_login_to_session_redirects_back_to_login_on_provider_error(
         provider_state = parse_qs(urlparse(authorization_url).query)["state"][0]
 
         provider_callback = client.get(
-            f"/auth/test/callback?error=access_denied&state={provider_state}",
+            f"/auth/test/session/callback?error=access_denied&state={provider_state}",
             follow_redirects=False,
         )
         assert provider_callback.status_code == 302
-
-        session_callback_location = provider_callback.headers["location"]
-        parsed_session_callback = urlparse(session_callback_location)
-        assert parsed_session_callback.path == "/auth/test/session/callback"
-
-        session_callback = client.get(
-            parsed_session_callback.path + "?" + parsed_session_callback.query,
-            follow_redirects=False,
-        )
-        assert session_callback.status_code == 302
-        assert session_callback.headers["location"] == "/sign-in?error=access_denied"
+        assert provider_callback.headers["location"] == "/sign-in?error=access_denied"

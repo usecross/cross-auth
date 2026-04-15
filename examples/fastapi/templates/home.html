@@ -81,8 +81,7 @@
         <li><code>POST /login</code> authenticates the demo user with <code>CrossAuth.authenticate(...)</code></li>
         <li><code>CrossAuth.login(...)</code> writes the session cookie on the redirect response for password login</li>
         <li><code>GET /auth/github/session/authorize</code> starts the session-social login flow</li>
-        <li><code>/auth/github/callback</code> handles the provider callback and resolves or creates the local user</li>
-        <li><code>/auth/github/session/callback</code> consumes the internal auth code, creates the session cookie, and redirects back signed in</li>
+        <li><code>/auth/github/session/callback</code> handles the provider callback, resolves or creates the local user, creates the session cookie, and redirects back signed in</li>
         <li><code>/profile</code> and <code>/api/me</code> resolve the current user from that cookie</li>
         <li><code>POST /logout</code> clears the session again</li>
       </ul>
