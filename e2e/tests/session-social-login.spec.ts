@@ -1,8 +1,8 @@
 import { expect, test } from "@playwright/test"
 
-import { completeGitHubMockSignIn } from "./helpers/auth"
+import { completeGitHubMockSignIn } from "./helpers/auth.js"
 
-test.fixme("session social login succeeds on the FastAPI backend", async ({ page }) => {
+test("session social login succeeds", async ({ page }) => {
   await page.goto("http://127.0.0.1:8000/")
 
   await page.getByRole("link", { name: "Continue with GitHub" }).click()

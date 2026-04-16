@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test"
 
-import { completeGitHubMockSignIn } from "./helpers/auth"
+import { completeGitHubMockSignIn } from "./helpers/auth.js"
 
 test("GitHub account linking succeeds from the SPA UI", async ({ page }) => {
   await page.goto("http://127.0.0.1:5173/")

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test"
 
-import { completeGitHubMockSignIn } from "./helpers/auth"
+import { completeGitHubMockSignIn } from "./helpers/auth.js"
 
 test("separate SPA completes auth-code flow and calls bearer API", async ({
   page,

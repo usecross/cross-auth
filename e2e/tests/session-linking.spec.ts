@@ -1,8 +1,8 @@
 import { expect, test } from "@playwright/test"
 
-import { completeGitHubMockSignIn } from "./helpers/auth"
+import { completeGitHubMockSignIn } from "./helpers/auth.js"
 
-test("session account linking succeeds from the FastAPI UI", async ({ page }) => {
+test("session account linking succeeds", async ({ page }) => {
   await page.goto("http://127.0.0.1:8000/")
 
   await page.getByLabel("Email").fill("demo@example.com")
