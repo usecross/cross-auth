@@ -11,7 +11,6 @@ from cross_auth.utils._pkce import validate_pkce
 from ._context import Context
 from ._password import authenticate as authenticate_password
 from ._route import Form, Route
-from ._storage import SecondaryStorage
 from .exceptions import CrossAuthException
 
 
@@ -90,69 +89,6 @@ class AuthorizationCodeGrantData(BaseModel):
         return datetime.now(tz=timezone.utc) > self.expires_at
 
 
-def consume_authorization_code(
-    *,
-    code: str,
-    redirect_uri: str,
-    client_id: str,
-    code_verifier: str,
-    storage: SecondaryStorage,
-) -> AuthorizationCodeGrantData:
-    raw_authorization_data = storage.pop(f"oauth:code:{code}")
-
-    if raw_authorization_data is None:
-        raise CrossAuthException(
-            "invalid_grant",
-            "Authorization code not found",
-        )
-
-    try:
-        authorization_data = AuthorizationCodeGrantData.model_validate_json(
-            raw_authorization_data
-        )
-    except ValidationError as e:
-        raise CrossAuthException(
-            "invalid_grant",
-            "Invalid authorization code data",
-        ) from e
-
-    if authorization_data.is_expired:
-        raise CrossAuthException(
-            "invalid_grant",
-            "Authorization code has expired",
-        )
-
-    if authorization_data.redirect_uri != redirect_uri:
-        raise CrossAuthException(
-            "invalid_grant",
-            "Redirect URI does not match",
-        )
-
-    if authorization_data.client_id != client_id:
-        raise CrossAuthException(
-            "invalid_grant",
-            "Client ID does not match",
-        )
-
-    if authorization_data.code_challenge_method != "S256":
-        raise CrossAuthException(
-            "invalid_request",
-            "Unsupported code challenge method",
-        )
-
-    if not validate_pkce(
-        authorization_data.code_challenge,
-        authorization_data.code_challenge_method,
-        code_verifier,
-    ):
-        raise CrossAuthException(
-            "invalid_grant",
-            "Invalid code challenge",
-        )
-
-    return authorization_data
-
-
 class Issuer:
     def _error_response(
         self,
@@ -215,6 +151,71 @@ class Issuer:
         elif isinstance(token_request, PasswordGrantRequest):
             return self._password_grant(token_request, context)
 
+    def _authorization_code_grant(
+        self, request: AuthorizationCodeGrantRequest, context: Context
+    ) -> Response:
+        try:
+            raw_authorization_data = context.secondary_storage.pop(
+                f"oauth:code:{request.code}"
+            )
+
+            if raw_authorization_data is None:
+                raise CrossAuthException(
+                    "invalid_grant",
+                    "Authorization code not found",
+                )
+
+            try:
+                authorization_data = AuthorizationCodeGrantData.model_validate_json(
+                    raw_authorization_data
+                )
+            except ValidationError as e:
+                raise CrossAuthException(
+                    "invalid_grant",
+                    "Invalid authorization code data",
+                ) from e
+
+            if authorization_data.is_expired:
+                raise CrossAuthException(
+                    "invalid_grant",
+                    "Authorization code has expired",
+                )
+
+            if authorization_data.redirect_uri != request.redirect_uri:
+                raise CrossAuthException(
+                    "invalid_grant",
+                    "Redirect URI does not match",
+                )
+
+            if authorization_data.client_id != request.client_id:
+                raise CrossAuthException(
+                    "invalid_grant",
+                    "Client ID does not match",
+                )
+
+            if authorization_data.code_challenge_method != "S256":
+                raise CrossAuthException(
+                    "invalid_request",
+                    "Unsupported code challenge method",
+                )
+
+            if not validate_pkce(
+                authorization_data.code_challenge,
+                authorization_data.code_challenge_method,
+                request.code_verifier,
+            ):
+                raise CrossAuthException(
+                    "invalid_grant",
+                    "Invalid code challenge",
+                )
+
+        except CrossAuthException as e:
+            return self._error_response(
+                cast(TokenErrorType, e.error), e.error_description
+            )
+
+        return self._issue_access_token_response(authorization_data.user_id, context)
+
     def _issue_access_token_response(self, user_id: str, context: Context) -> Response:
         token, expires_in = context.create_token(user_id)
 
@@ -240,24 +241,6 @@ class Issuer:
             headers=headers,
             cookies=[],
         )
-
-    def _authorization_code_grant(
-        self, request: AuthorizationCodeGrantRequest, context: Context
-    ) -> Response:
-        try:
-            authorization_data = consume_authorization_code(
-                code=request.code,
-                redirect_uri=request.redirect_uri,
-                client_id=request.client_id,
-                code_verifier=request.code_verifier,
-                storage=context.secondary_storage,
-            )
-        except CrossAuthException as e:
-            return self._error_response(
-                cast(TokenErrorType, e.error), e.error_description
-            )
-
-        return self._issue_access_token_response(authorization_data.user_id, context)
 
     def _password_grant(
         self, request: PasswordGrantRequest, context: Context
