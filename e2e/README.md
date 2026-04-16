@@ -6,9 +6,10 @@ Right now it covers the FastAPI hybrid backend and the separate SPA demo.
 
 ## What It Tests
 
-- session-social login on the FastAPI backend
 - auth-code + token login from the separate SPA
 - bearer-authenticated API access from the SPA
+- GitHub account linking for a session-authenticated backend user
+- GitHub account linking for a bearer-authenticated client
 
 ## Run It
 

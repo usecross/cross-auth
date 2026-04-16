@@ -22,6 +22,7 @@ def valid_link_callback_request(
         "oauth:authorization_request:test_state",
         json.dumps(
             {
+                "kind": "link",
                 "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/link",
                 "login_hint": "test_login_hint",
@@ -29,7 +30,6 @@ def valid_link_callback_request(
                 "client_state": "test_client_state",
                 "code_challenge": "test",
                 "code_challenge_method": "S256",
-                "link": True,
                 "user_id": "test",
             }
         ),

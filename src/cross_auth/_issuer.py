@@ -9,7 +9,7 @@ from cross_auth.models.oauth_token_response import TokenResponse
 from cross_auth.utils._pkce import validate_pkce
 
 from ._context import Context
-from ._password import DUMMY_PASSWORD_HASH, pwd_context, validate_password
+from ._password import authenticate as authenticate_password
 from ._route import Form, Route
 from ._storage import SecondaryStorage
 from .exceptions import CrossAuthException
@@ -215,6 +215,32 @@ class Issuer:
         elif isinstance(token_request, PasswordGrantRequest):
             return self._password_grant(token_request, context)
 
+    def _issue_access_token_response(self, user_id: str, context: Context) -> Response:
+        token, expires_in = context.create_token(user_id)
+
+        token_data = TokenResponse(
+            access_token=token,
+            token_type="Bearer",
+            expires_in=expires_in,
+            refresh_token=None,
+            refresh_token_expires_in=None,
+            # TODO: figure out scopes
+            scope="",
+        )
+
+        headers = {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+        }
+
+        return Response(
+            status_code=200,
+            body=token_data.model_dump_json(),
+            headers=headers,
+            cookies=[],
+        )
+
     def _authorization_code_grant(
         self, request: AuthorizationCodeGrantRequest, context: Context
     ) -> Response:
@@ -231,73 +257,21 @@ class Issuer:
                 cast(TokenErrorType, e.error), e.error_description
             )
 
-        token, expires_in = context.create_token(authorization_data.user_id)
-
-        token_data = TokenResponse(
-            access_token=token,
-            token_type="Bearer",
-            expires_in=expires_in,
-            refresh_token=None,
-            refresh_token_expires_in=None,
-            # TODO: figure out scopes
-            scope="",
-        )
-
-        headers = {
-            "Content-Type": "application/json",
-            "Cache-Control": "no-store",
-            "Pragma": "no-cache",
-        }
-
-        return Response(
-            status_code=200,
-            body=token_data.model_dump_json(),
-            headers=headers,
-            cookies=[],
-        )
+        return self._issue_access_token_response(authorization_data.user_id, context)
 
     def _password_grant(
         self, request: PasswordGrantRequest, context: Context
     ) -> Response:
-        user = context.accounts_storage.find_user_by_email(request.username)
+        user = authenticate_password(
+            request.username,
+            request.password,
+            context.accounts_storage,
+        )
 
-        # Always perform password verification to prevent timing attacks
-        # that could be used to enumerate valid user accounts
-        if user:
-            valid = validate_password(user, request.password)
-        else:
-            # Perform dummy hash verification for non-existent users
-            # to maintain constant time and prevent user enumeration
-            pwd_context.verify(request.password, DUMMY_PASSWORD_HASH)
-            valid = False
-
-        if not valid or user is None:
+        if user is None:
             return self._error_response("invalid_grant", "Invalid username or password")
 
-        token, expires_in = context.create_token(str(user.id))
-
-        token_data = TokenResponse(
-            access_token=token,
-            token_type="Bearer",
-            expires_in=expires_in,
-            refresh_token=None,
-            refresh_token_expires_in=None,
-            # TODO: figure out scopes
-            scope="",
-        )
-
-        headers = {
-            "Content-Type": "application/json",
-            "Cache-Control": "no-store",
-            "Pragma": "no-cache",
-        }
-
-        return Response(
-            status_code=200,
-            body=token_data.model_dump_json(),
-            headers=headers,
-            cookies=[],
-        )
+        return self._issue_access_token_response(str(user.id), context)
 
     @property
     def routes(self) -> list[Route]:

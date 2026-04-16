@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Annotated, Any, cast
 
 import jwt
+from cross_web import AsyncHTTPRequest
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -14,6 +15,7 @@ from fastapi.templating import Jinja2Templates
 from passlib.context import CryptContext
 
 from cross_auth import AccountsStorage, SecondaryStorage, User as UserProtocol
+from cross_auth._session import get_current_user as get_session_user
 from cross_auth.fastapi import CrossAuth
 from cross_auth.social_providers.github import GitHubProvider
 
@@ -263,13 +265,7 @@ def create_demo_token(user_id: str) -> tuple[str, int]:
     return jwt.encode(payload, TOKEN_SECRET, algorithm="HS256"), TOKEN_EXPIRES_IN
 
 
-def resolve_bearer_user(request: Request) -> DemoUser:
-    authorization = request.headers.get("Authorization")
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-
-    token = authorization.split(" ", 1)[1]
-
+def resolve_bearer_token(token: str) -> DemoUser:
     try:
         payload = jwt.decode(
             token,
@@ -291,6 +287,35 @@ def resolve_bearer_user(request: Request) -> DemoUser:
     return user
 
 
+def resolve_bearer_user(request: Request) -> DemoUser:
+    authorization = request.headers.get("Authorization")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+
+    token = authorization.split(" ", 1)[1]
+    return resolve_bearer_token(token)
+
+
+def resolve_auth_user(request: AsyncHTTPRequest) -> DemoUser | None:
+    authorization = request.headers.get("Authorization")
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1]
+        try:
+            return resolve_bearer_token(token)
+        except HTTPException:
+            return None
+
+    return cast(
+        DemoUser | None,
+        get_session_user(
+            request,
+            secondary_storage,
+            accounts_storage,
+            {"cookie_name": SESSION_COOKIE_NAME, "secure": False},
+        ),
+    )
+
+
 github = GitHubProvider(
     client_id="demo-client",
     client_secret="demo-secret",
@@ -308,6 +333,7 @@ auth = CrossAuth(
     create_token=create_demo_token,
     trusted_origins=SPA_TRUSTED_REDIRECT_HOSTS,
     session_config={"cookie_name": SESSION_COOKIE_NAME, "secure": False},
+    get_user_from_request=resolve_auth_user,
     config={
         "login_url": "/",
         "default_post_login_redirect_url": "/profile",

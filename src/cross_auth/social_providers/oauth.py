@@ -62,7 +62,11 @@ class OAuth2Exception(Exception):
         self.error_description = error_description
 
 
+OAuth2FlowKind = Literal["auth_code", "session", "link"]
+
+
 class OAuth2AuthorizationRequestData(BaseModel):
+    kind: OAuth2FlowKind
     client_id: str | None = None  # The app's client_id (not the provider's)
     redirect_uri: str | None = None
     login_hint: str | None
@@ -70,9 +74,16 @@ class OAuth2AuthorizationRequestData(BaseModel):
     state: str
     code_challenge: str | None = None
     code_challenge_method: Literal["S256"] | None = None
-    link: bool = False
     user_id: str | None = None  # User who initiated the link flow
     provider_code_verifier: str | None = None  # PKCE verifier for provider OAuth flow
+
+    @property
+    def is_link_flow(self) -> bool:
+        return self.kind == "link"
+
+    @property
+    def is_session_flow(self) -> bool:
+        return self.kind == "session"
 
 
 class OAuth2ProviderCallbackError(Exception):
@@ -122,6 +133,20 @@ class InitiateLinkResponse(BaseModel):
 class PreparedLink:
     state: str
     authorization_url: str
+
+
+@dataclass
+class PreparedProviderAuthorization:
+    state: str
+    query_params: dict[str, str]
+    authorization_url: str
+
+
+@dataclass
+class PreparedProviderCallback:
+    callback_data: "CallbackData"
+    provider_data: OAuth2AuthorizationRequestData
+    provider_code: str
 
 
 class CallbackData(BaseModel):
@@ -211,6 +236,57 @@ class OAuth2Provider:
             "state": state,
             **kwargs,
         }
+
+    def _build_provider_pkce(self) -> tuple[str | None, str | None, str | None]:
+        if not self.supports_pkce:
+            return None, None, None
+
+        provider_code_verifier = generate_code_verifier()
+        provider_code_challenge = calculate_s256_challenge(provider_code_verifier)
+
+        return provider_code_verifier, provider_code_challenge, "S256"
+
+    def _prepare_provider_authorization(
+        self,
+        request: AsyncHTTPRequest,
+        context: Context,
+        data: OAuth2AuthorizationRequestData,
+        *,
+        callback_segment: str = "callback",
+    ) -> PreparedProviderAuthorization:
+        context.secondary_storage.set(
+            f"oauth:authorization_request:{data.state}",
+            data.model_dump_json(),
+            # TODO: ttl
+        )
+
+        provider_code_challenge: str | None = None
+        provider_code_challenge_method: str | None = None
+
+        if data.provider_code_verifier is not None:
+            provider_code_challenge = calculate_s256_challenge(
+                data.provider_code_verifier
+            )
+            provider_code_challenge_method = "S256"
+
+        proxy_redirect_uri = construct_relative_url(
+            str(request.url), callback_segment, context.base_url
+        )
+
+        query_params = self.build_authorization_params(
+            state=data.state,
+            proxy_redirect_uri=proxy_redirect_uri,
+            response_type="code",
+            code_challenge=provider_code_challenge,
+            code_challenge_method=provider_code_challenge_method,
+            login_hint=data.login_hint,
+        )
+
+        return PreparedProviderAuthorization(
+            state=data.state,
+            query_params=query_params,
+            authorization_url=f"{self.authorization_endpoint}?{urlencode(query_params)}",
+        )
 
     async def authorize(
         self,
@@ -320,17 +396,10 @@ class OAuth2Provider:
 
         login_hint = request.query_params.get("login_hint")
         state = secrets.token_hex(16)
-
-        provider_code_verifier: str | None = None
-        provider_code_challenge: str | None = None
-        provider_code_challenge_method: str | None = None
-
-        if self.supports_pkce:
-            provider_code_verifier = generate_code_verifier()
-            provider_code_challenge = calculate_s256_challenge(provider_code_verifier)
-            provider_code_challenge_method = "S256"
+        provider_code_verifier, _, _ = self._build_provider_pkce()
 
         data = OAuth2AuthorizationRequestData(
+            kind="auth_code",
             client_id=client_id,
             redirect_uri=redirect_uri,
             login_hint=login_hint,
@@ -338,33 +407,15 @@ class OAuth2Provider:
             state=state,
             code_challenge=code_challenge,
             code_challenge_method=validated_code_challenge_method,
-            link=False,
             user_id=None,
             provider_code_verifier=provider_code_verifier,
         )
 
-        context.secondary_storage.set(
-            f"oauth:authorization_request:{state}",
-            data.model_dump_json(),
-            # TODO: ttl
-        )
-
-        proxy_redirect_uri = construct_relative_url(
-            str(request.url), "callback", context.base_url
-        )
-
-        query_params = self.build_authorization_params(
-            state=state,
-            proxy_redirect_uri=proxy_redirect_uri,
-            response_type="code",
-            code_challenge=provider_code_challenge,
-            code_challenge_method=provider_code_challenge_method,
-            login_hint=login_hint,
-        )
+        prepared = self._prepare_provider_authorization(request, context, data)
 
         return Response.redirect(
             self.authorization_endpoint,
-            query_params=query_params,
+            query_params=prepared.query_params,
         )
 
     def _default_post_login_redirect_url(self, context: Context) -> str:
@@ -407,47 +458,22 @@ class OAuth2Provider:
 
         login_hint = request.query_params.get("login_hint")
         state = secrets.token_hex(16)
-
-        provider_code_verifier: str | None = None
-        provider_code_challenge: str | None = None
-        provider_code_challenge_method: str | None = None
-
-        if self.supports_pkce:
-            provider_code_verifier = generate_code_verifier()
-            provider_code_challenge = calculate_s256_challenge(provider_code_verifier)
-            provider_code_challenge_method = "S256"
+        provider_code_verifier, _, _ = self._build_provider_pkce()
 
         data = OAuth2AuthorizationRequestData(
+            kind="session",
             login_hint=login_hint,
             client_state=None,
             state=state,
-            link=False,
             user_id=None,
             provider_code_verifier=provider_code_verifier,
         )
 
-        context.secondary_storage.set(
-            f"oauth:authorization_request:{state}",
-            data.model_dump_json(),
-            # TODO: ttl
-        )
-
-        proxy_redirect_uri = construct_relative_url(
-            str(request.url), "callback", context.base_url
-        )
-
-        query_params = self.build_authorization_params(
-            state=state,
-            proxy_redirect_uri=proxy_redirect_uri,
-            response_type="code",
-            code_challenge=provider_code_challenge,
-            code_challenge_method=provider_code_challenge_method,
-            login_hint=login_hint,
-        )
+        prepared = self._prepare_provider_authorization(request, context, data)
 
         return Response.redirect(
             self.authorization_endpoint,
-            query_params=query_params,
+            query_params=prepared.query_params,
         )
 
     async def extract_callback_data(self, request: AsyncHTTPRequest) -> CallbackData:
@@ -484,9 +510,9 @@ class OAuth2Provider:
                 "Invalid provider data",
             ) from e
 
-    async def _prepare_provider_callback(
+    async def _prepare_provider_callback_request(
         self, request: AsyncHTTPRequest, context: Context
-    ) -> tuple[CallbackData, OAuth2AuthorizationRequestData]:
+    ) -> PreparedProviderCallback:
         callback_data = await self.extract_callback_data(request)
         state = callback_data.state
 
@@ -528,7 +554,8 @@ class OAuth2Provider:
                 e.error_description,
             ) from e
 
-        if not callback_data.code:
+        provider_code = callback_data.code
+        if not provider_code:
             logger.error("No authorization code received in callback")
             raise OAuth2ProviderCallbackError(
                 "server_error",
@@ -536,7 +563,11 @@ class OAuth2Provider:
                 provider_data,
             )
 
-        return callback_data, provider_data
+        return PreparedProviderCallback(
+            callback_data=callback_data,
+            provider_data=provider_data,
+            provider_code=provider_code,
+        )
 
     def _response_for_provider_callback_error(
         self, error: OAuth2ProviderCallbackError
@@ -558,44 +589,91 @@ class OAuth2Provider:
             state=error.provider_data.client_state,
         )
 
+    def _resolve_callback_user(
+        self,
+        prepared: PreparedProviderCallback,
+        request: AsyncHTTPRequest,
+        context: Context,
+    ) -> User:
+        return self._resolve_user_from_provider_auth(
+            request,
+            context,
+            prepared.provider_data,
+            prepared.provider_code,
+            prepared.callback_data.extra,
+        )
+
+    def _complete_session_login_response(
+        self, user: User, context: Context
+    ) -> Response:
+        return context.complete_session_login(
+            str(user.id),
+            self._default_post_login_redirect_url(context),
+        )
+
+    def _complete_authorization_code_callback_response(
+        self,
+        user: User,
+        provider_data: OAuth2AuthorizationRequestData,
+        context: Context,
+    ) -> Response:
+        if provider_data.redirect_uri is None:
+            return Response.error(
+                "server_error",
+                error_description="Invalid authorization request data",
+            )
+
+        code = self.issue_local_authorization_code(
+            user_id=str(user.id),
+            provider_data=provider_data,
+            context=context,
+        )
+
+        query_params = {"code": code}
+        if provider_data.client_state:
+            query_params["state"] = provider_data.client_state
+
+        return Response.redirect(
+            provider_data.redirect_uri,
+            query_params=query_params,
+        )
+
+    def _complete_link_callback_response(
+        self,
+        prepared: PreparedProviderCallback,
+        request: AsyncHTTPRequest,
+        context: Context,
+    ) -> Response:
+        return self._link_flow(
+            request,
+            context,
+            prepared.provider_data,
+            prepared.provider_code,
+            prepared.callback_data.extra,
+        )
+
     async def _complete_provider_callback_to_user(
         self, request: AsyncHTTPRequest, context: Context
     ) -> CompletedProviderAuth:
-        callback_data, provider_data = await self._prepare_provider_callback(
-            request, context
-        )
+        prepared = await self._prepare_provider_callback_request(request, context)
 
-        if provider_data.link:
+        if not prepared.provider_data.is_session_flow:
             raise OAuth2ProviderCallbackError(
                 "server_error",
-                "Link flow is not supported in this callback",
-                provider_data,
-            )
-
-        provider_code = callback_data.code
-        if provider_code is None:
-            raise OAuth2ProviderCallbackError(
-                "server_error",
-                "No authorization code received in callback",
-                provider_data,
+                "Session login is not supported in this callback",
+                prepared.provider_data,
             )
 
         try:
-            user = self._resolve_user_from_provider_auth(
-                request,
-                context,
-                provider_data,
-                provider_code,
-                callback_data.extra,
-            )
+            user = self._resolve_callback_user(prepared, request, context)
         except (CrossAuthException, OAuth2Exception) as e:
             raise OAuth2ProviderCallbackError(
                 e.error,
                 e.error_description,
-                provider_data,
+                prepared.provider_data,
             ) from e
 
-        return CompletedProviderAuth(provider_data=provider_data, user=user)
+        return CompletedProviderAuth(provider_data=prepared.provider_data, user=user)
 
     async def finish_session_login(
         self, request: AsyncHTTPRequest, context: Context
@@ -608,10 +686,7 @@ class OAuth2Provider:
         except OAuth2ProviderCallbackError as e:
             return self._response_for_session_login_error(e, context)
 
-        return context.complete_session_login(
-            str(result.user.id),
-            self._default_post_login_redirect_url(context),
-        )
+        return self._complete_session_login_response(result.user, context)
 
     async def callback(self, request: AsyncHTTPRequest, context: Context) -> Response:
         """
@@ -619,64 +694,39 @@ class OAuth2Provider:
         for a token and then login the user on our side.
         """
         try:
-            callback_data, provider_data = await self._prepare_provider_callback(
-                request, context
-            )
+            prepared = await self._prepare_provider_callback_request(request, context)
         except OAuth2ProviderCallbackError as e:
             return self._response_for_provider_callback_error(e)
 
-        provider_code = callback_data.code
-        if provider_code is None:
-            return self._response_for_provider_callback_error(
-                OAuth2ProviderCallbackError(
-                    "server_error",
-                    "No authorization code received in callback",
-                    provider_data,
-                )
-            )
+        redirect_uri = prepared.provider_data.redirect_uri
+        if prepared.provider_data.is_link_flow:
+            return self._complete_link_callback_response(prepared, request, context)
 
-        redirect_uri = provider_data.redirect_uri
-        if redirect_uri is None:
+        if prepared.provider_data.is_session_flow or redirect_uri is None:
             return Response.error(
                 "server_error",
                 error_description="Invalid authorization request data",
             )
 
-        if provider_data.link:
-            return self._link_flow(
-                request, context, provider_data, provider_code, callback_data.extra
-            )
-
         try:
-            user = self._resolve_user_from_provider_auth(
-                request,
-                context,
-                provider_data,
-                provider_code,
-                callback_data.extra,
-            )
+            user = self._resolve_callback_user(prepared, request, context)
         except (CrossAuthException, OAuth2Exception) as e:
+            if redirect_uri is None:
+                return Response.error(
+                    e.error,
+                    error_description=e.error_description,
+                )
             return Response.error_redirect(
                 redirect_uri,
                 error=e.error,
                 error_description=e.error_description,
-                state=provider_data.client_state,
+                state=prepared.provider_data.client_state,
             )
 
-        code = self.issue_local_authorization_code(
-            user_id=str(user.id),
-            provider_data=provider_data,
-            context=context,
-        )
-
-        # Include client_state in redirect for CSRF protection
-        query_params = {"code": code}
-        if provider_data.client_state:
-            query_params["state"] = provider_data.client_state
-
-        return Response.redirect(
-            redirect_uri,
-            query_params=query_params,
+        return self._complete_authorization_code_callback_response(
+            user,
+            prepared.provider_data,
+            context,
         )
 
     def _resolve_user_from_provider_auth(
@@ -822,7 +872,7 @@ class OAuth2Provider:
     ) -> Response:
         redirect_uri = provider_data.redirect_uri
 
-        # user_id and client flow fields should always be present for link flows
+        # user_id and client flow fields should always be present for explicit link flows
         if (
             not provider_data.user_id
             or provider_data.client_id is None
@@ -1340,17 +1390,10 @@ class OAuth2Provider:
             )
 
         state = secrets.token_hex(16)
-
-        provider_code_verifier: str | None = None
-        provider_code_challenge: str | None = None
-        provider_code_challenge_method: str | None = None
-
-        if self.supports_pkce:
-            provider_code_verifier = generate_code_verifier()
-            provider_code_challenge = calculate_s256_challenge(provider_code_verifier)
-            provider_code_challenge_method = "S256"
+        provider_code_verifier, _, _ = self._build_provider_pkce()
 
         data = OAuth2AuthorizationRequestData(
+            kind="link",
             client_id=link_request.client_id,
             redirect_uri=link_request.redirect_uri,
             login_hint=None,
@@ -1358,32 +1401,16 @@ class OAuth2Provider:
             state=state,
             code_challenge=link_request.code_challenge,
             code_challenge_method=link_request.code_challenge_method,
-            link=True,
             user_id=str(user.id),
             provider_code_verifier=provider_code_verifier,
         )
 
-        context.secondary_storage.set(
-            f"oauth:authorization_request:{state}",
-            data.model_dump_json(),
+        prepared = self._prepare_provider_authorization(request, context, data)
+
+        return PreparedLink(
+            state=prepared.state,
+            authorization_url=prepared.authorization_url,
         )
-
-        proxy_redirect_uri = construct_relative_url(
-            str(request.url), "callback", context.base_url
-        )
-
-        query_params = self.build_authorization_params(
-            state=state,
-            proxy_redirect_uri=proxy_redirect_uri,
-            response_type="code",
-            code_challenge=provider_code_challenge,
-            code_challenge_method=provider_code_challenge_method,
-            login_hint=None,
-        )
-
-        authorization_url = f"{self.authorization_endpoint}?{urlencode(query_params)}"
-
-        return PreparedLink(state=state, authorization_url=authorization_url)
 
     async def initiate_link(
         self, request: AsyncHTTPRequest, context: Context

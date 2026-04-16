@@ -89,6 +89,7 @@ async def test_initiate_link_stores_correct_request_data(
 
     assert data == snapshot(
         {
+            "kind": "link",
             "client_id": "my_app_client_id",
             "redirect_uri": "http://valid-frontend.com/callback",
             "login_hint": None,
@@ -96,7 +97,6 @@ async def test_initiate_link_stores_correct_request_data(
             "state": state,
             "code_challenge": "test",
             "code_challenge_method": "S256",
-            "link": True,
             "user_id": "test",
         }
     )
