@@ -52,10 +52,12 @@
         <a class="button" href="/">Home</a>
         <a class="button" href="/api/me-session">/api/me-session</a>
         <a class="button" href="http://localhost:5173" target="_blank" rel="noreferrer">Open SPA demo</a>
+        <button type="button" id="link-github-button">Link GitHub account</button>
         <form action="/logout" method="post">
           <button type="submit">Log out</button>
         </form>
       </div>
+      <p id="link-status" class="notice" hidden></p>
     </div>
 
     <div class="stack">
@@ -69,4 +71,68 @@
       </ul>
     </div>
   </div>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    const linkButton = document.getElementById("link-github-button")
+    const linkStatus = document.getElementById("link-status")
+    const clientId = {{ spa_client_id|tojson }}
+    const redirectUri = `${window.location.origin}/link-callback`
+    const linkVerifierKey = "cross_auth_fastapi_link_code_verifier"
+
+    function generateRandomString() {
+      const bytes = new Uint8Array(32)
+      window.crypto.getRandomValues(bytes)
+      return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")
+    }
+
+    async function generateCodeChallenge(verifier) {
+      const encoder = new TextEncoder()
+      const data = encoder.encode(verifier)
+      const digest = await window.crypto.subtle.digest("SHA-256", data)
+      const base64 = btoa(String.fromCharCode(...new Uint8Array(digest)))
+      return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+    }
+
+    function setLinkStatus(message) {
+      linkStatus.hidden = false
+      linkStatus.textContent = message
+    }
+
+    linkButton?.addEventListener("click", async () => {
+      try {
+        linkButton.disabled = true
+        setLinkStatus("Redirecting to GitHub to link your account...")
+
+        const codeVerifier = generateRandomString()
+        const codeChallenge = await generateCodeChallenge(codeVerifier)
+        window.sessionStorage.setItem(linkVerifierKey, codeVerifier)
+
+        const response = await fetch("/auth/github/link", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            client_id: clientId,
+            redirect_uri: redirectUri,
+            code_challenge: codeChallenge,
+            code_challenge_method: "S256",
+          }),
+        })
+
+        if (!response.ok) {
+          const body = await response.text()
+          throw new Error(body || "Failed to initiate account linking")
+        }
+
+        const data = await response.json()
+        window.location.href = data.authorization_url
+      } catch (error) {
+        linkButton.disabled = false
+        setLinkStatus(error instanceof Error ? error.message : "Failed to initiate account linking")
+      }
+    })
+  </script>
 {% endblock %}

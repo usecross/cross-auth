@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}Link GitHub Account · Cross-Auth FastAPI Hybrid Example{% endblock %}
+
+{% block content %}
+  <div class="hero">
+    <div class="eyebrow">Account Linking</div>
+    <h1>Finalizing GitHub account link</h1>
+    <p class="lead" id="link-message">
+      Completing the provider callback and linking your GitHub account...
+    </p>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    const message = document.getElementById("link-message")
+    const nextUrl = {{ next_url|tojson }}
+    const linkVerifierKey = "cross_auth_fastapi_link_code_verifier"
+
+    async function finalizeLink() {
+      const params = new URLSearchParams(window.location.search)
+      const linkCode = params.get("link_code")
+      const codeVerifier = window.sessionStorage.getItem(linkVerifierKey)
+      window.sessionStorage.removeItem(linkVerifierKey)
+
+      if (!linkCode || !codeVerifier) {
+        message.textContent = "Missing link code or PKCE verifier. Please restart the link flow."
+        return
+      }
+
+      try {
+        const response = await fetch("/auth/github/finalize-link", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            link_code: linkCode,
+            code_verifier: codeVerifier,
+            allow_login: true,
+          }),
+        })
+
+        if (!response.ok) {
+          const body = await response.text()
+          throw new Error(body || "Failed to finalize account link")
+        }
+
+        message.textContent = "GitHub account linked. Redirecting back to your profile..."
+        window.setTimeout(() => {
+          window.location.replace(nextUrl)
+        }, 400)
+      } catch (error) {
+        message.textContent = error instanceof Error ? error.message : "Failed to finalize account link"
+      }
+    }
+
+    void finalizeLink()
+  </script>
+{% endblock %}

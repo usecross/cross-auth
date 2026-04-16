@@ -28,6 +28,10 @@ DEMO_PASSWORD = "password123"  # noqa: S105
 GITHUB_MOCK_BASE_URL = "https://github-oauth-mock.fastapicloud.dev"
 SPA_DEMO_URL = "http://localhost:5173"
 SPA_CLIENT_ID = "spa-example"
+BACKEND_TRUSTED_REDIRECT_HOSTS = [
+    "localhost:8000",
+    "127.0.0.1:8000",
+]
 TOKEN_ISSUER = "cross-auth-fastapi-example"
 TOKEN_SECRET = "cross-auth-fastapi-example-secret"  # noqa: S105
 TOKEN_EXPIRES_IN = 3600
@@ -331,7 +335,7 @@ auth = CrossAuth(
     storage=secondary_storage,
     accounts_storage=accounts_storage,
     create_token=create_demo_token,
-    trusted_origins=SPA_TRUSTED_REDIRECT_HOSTS,
+    trusted_origins=[*SPA_TRUSTED_REDIRECT_HOSTS, *BACKEND_TRUSTED_REDIRECT_HOSTS],
     session_config={"cookie_name": SESSION_COOKIE_NAME, "secure": False},
     get_user_from_request=resolve_auth_user,
     config={
@@ -406,7 +410,20 @@ def profile(
     if user is None:
         return RedirectResponse(url="/", status_code=303)
 
-    return templates.TemplateResponse(request, "profile.html", {"user": user})
+    return templates.TemplateResponse(
+        request,
+        "profile.html",
+        {"user": user, "spa_client_id": SPA_CLIENT_ID},
+    )
+
+
+@app.get("/link-callback")
+def link_callback(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "link_callback.html",
+        {"next_url": "/profile"},
+    )
 
 
 @app.get("/api/me-session")

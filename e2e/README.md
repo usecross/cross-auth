@@ -2,7 +2,8 @@
 
 This directory contains cross-app Playwright tests for the example applications.
 
-Right now it covers the FastAPI hybrid backend and the separate SPA demo.
+Right now it covers the FastAPI hybrid backend and the separate SPA demo, with
+Playwright tests written in TypeScript.
 
 ## What It Tests
 
@@ -10,6 +11,13 @@ Right now it covers the FastAPI hybrid backend and the separate SPA demo.
 - bearer-authenticated API access from the SPA
 - GitHub account linking for a session-authenticated backend user
 - GitHub account linking for a bearer-authenticated client
+
+Current specs:
+
+- `tests/session-social-login.spec.ts`
+- `tests/session-linking.spec.ts`
+- `tests/spa-linking.spec.ts`
+- `tests/spa-auth.spec.ts`
 
 ## Run It
 
