@@ -1,18 +1,6 @@
 from urllib.parse import urlparse
 
 
-def _replace_last_path_segment(url: str, new_segment: str) -> str:
-    parsed_url = urlparse(url)
-    path_parts = parsed_url.path.rstrip("/").split("/")
-
-    if path_parts and path_parts[-1]:
-        path_parts.pop()
-
-    new_path = "/".join(path_parts + [new_segment])
-
-    return parsed_url._replace(path=new_path, query="", fragment="").geturl()
-
-
 def construct_relative_url(
     url: str, new_segment: str, base_url: str | None = None
 ) -> str:
@@ -49,4 +37,10 @@ def construct_relative_url(
 
         return f"{base}{dir_path}/{new_segment}"
     else:
-        return _replace_last_path_segment(url, new_segment)
+        # Simple case: just replace the last segment
+        # Handle trailing slashes by stripping them first
+        clean_url = url.rstrip("/")
+        parts = clean_url.split("/")
+        parts.pop()
+        parts.append(new_segment)
+        return "/".join(parts)

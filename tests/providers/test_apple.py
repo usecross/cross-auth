@@ -488,29 +488,22 @@ def test_validate_user_info_missing_id(apple_provider: AppleProvider):
 
 
 def test_routes_include_post_callback(apple_provider: AppleProvider):
-    """Test that callback routes accept POST method."""
+    """Test that callback route accepts POST method."""
     routes = apple_provider.routes
 
-    callback_route = next(r for r in routes if r.path == "/apple/callback")
-    session_callback_route = next(
-        r for r in routes if r.path == "/apple/session/callback"
-    )
+    callback_route = next(r for r in routes if "callback" in r.path)
 
     assert "POST" in callback_route.methods
     assert "GET" in callback_route.methods  # Fallback
-    assert "POST" in session_callback_route.methods
-    assert "GET" in session_callback_route.methods  # Fallback
 
 
 def test_routes_count(apple_provider: AppleProvider):
     """Test that all expected routes are registered."""
     routes = apple_provider.routes
 
-    assert len(routes) == 6
+    assert len(routes) == 4
     paths = [r.path for r in routes]
     assert "/apple/authorize" in paths
-    assert "/apple/session/authorize" in paths
     assert "/apple/callback" in paths
-    assert "/apple/session/callback" in paths
     assert "/apple/finalize-link" in paths
     assert "/apple/link" in paths

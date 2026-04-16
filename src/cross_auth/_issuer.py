@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal
 
 from cross_web import AsyncHTTPRequest, Response
 from pydantic import AwareDatetime, BaseModel, Discriminator, Field, ValidationError
@@ -9,9 +9,8 @@ from cross_auth.models.oauth_token_response import TokenResponse
 from cross_auth.utils._pkce import validate_pkce
 
 from ._context import Context
-from ._password import authenticate as authenticate_password
+from ._password import DUMMY_PASSWORD_HASH, pwd_context, validate_password
 from ._route import Form, Route
-from .exceptions import CrossAuthException
 
 
 class AuthorizationCodeGrantRequest(BaseModel):
@@ -154,70 +153,63 @@ class Issuer:
     def _authorization_code_grant(
         self, request: AuthorizationCodeGrantRequest, context: Context
     ) -> Response:
-        try:
-            raw_authorization_data = context.secondary_storage.pop(
-                f"oauth:code:{request.code}"
-            )
+        code = request.code
 
-            if raw_authorization_data is None:
-                raise CrossAuthException(
-                    "invalid_grant",
-                    "Authorization code not found",
-                )
+        # Use atomic pop() to prevent race condition where multiple concurrent
+        # requests could all retrieve the same code before any of them delete it
+        raw_authorization_data = context.secondary_storage.pop(f"oauth:code:{code}")
 
-            try:
-                authorization_data = AuthorizationCodeGrantData.model_validate_json(
-                    raw_authorization_data
-                )
-            except ValidationError as e:
-                raise CrossAuthException(
-                    "invalid_grant",
-                    "Invalid authorization code data",
-                ) from e
-
-            if authorization_data.is_expired:
-                raise CrossAuthException(
-                    "invalid_grant",
-                    "Authorization code has expired",
-                )
-
-            if authorization_data.redirect_uri != request.redirect_uri:
-                raise CrossAuthException(
-                    "invalid_grant",
-                    "Redirect URI does not match",
-                )
-
-            if authorization_data.client_id != request.client_id:
-                raise CrossAuthException(
-                    "invalid_grant",
-                    "Client ID does not match",
-                )
-
-            if authorization_data.code_challenge_method != "S256":
-                raise CrossAuthException(
-                    "invalid_request",
-                    "Unsupported code challenge method",
-                )
-
-            if not validate_pkce(
-                authorization_data.code_challenge,
-                authorization_data.code_challenge_method,
-                request.code_verifier,
-            ):
-                raise CrossAuthException(
-                    "invalid_grant",
-                    "Invalid code challenge",
-                )
-
-        except CrossAuthException as e:
+        if raw_authorization_data is None:
             return self._error_response(
-                cast(TokenErrorType, e.error), e.error_description
+                "invalid_grant",
+                "Authorization code not found",
             )
 
-        return self._issue_access_token_response(authorization_data.user_id, context)
+        try:
+            authorization_data = AuthorizationCodeGrantData.model_validate_json(
+                raw_authorization_data
+            )
+        except ValidationError:
+            return self._error_response(
+                "invalid_grant",
+                "Invalid authorization code data",
+            )
 
-    def _issue_access_token_response(self, user_id: str, context: Context) -> Response:
-        token, expires_in = context.create_token(user_id)
+        if authorization_data.is_expired:
+            return self._error_response(
+                "invalid_grant",
+                "Authorization code has expired",
+            )
+
+        if authorization_data.redirect_uri != request.redirect_uri:
+            return self._error_response(
+                "invalid_grant",
+                "Redirect URI does not match",
+            )
+
+        if authorization_data.client_id != request.client_id:
+            return self._error_response(
+                "invalid_grant",
+                "Client ID does not match",
+            )
+
+        if authorization_data.code_challenge_method != "S256":
+            return self._error_response(
+                "invalid_request",
+                "Unsupported code challenge method",
+            )
+
+        if not validate_pkce(
+            authorization_data.code_challenge,
+            authorization_data.code_challenge_method,
+            request.code_verifier,
+        ):
+            return self._error_response(
+                "invalid_grant",
+                "Invalid code challenge",
+            )
+
+        token, expires_in = context.create_token(authorization_data.user_id)
 
         token_data = TokenResponse(
             access_token=token,
@@ -245,16 +237,45 @@ class Issuer:
     def _password_grant(
         self, request: PasswordGrantRequest, context: Context
     ) -> Response:
-        user = authenticate_password(
-            request.username,
-            request.password,
-            context.accounts_storage,
-        )
+        user = context.accounts_storage.find_user_by_email(request.username)
 
-        if user is None:
+        # Always perform password verification to prevent timing attacks
+        # that could be used to enumerate valid user accounts
+        if user:
+            valid = validate_password(user, request.password)
+        else:
+            # Perform dummy hash verification for non-existent users
+            # to maintain constant time and prevent user enumeration
+            pwd_context.verify(request.password, DUMMY_PASSWORD_HASH)
+            valid = False
+
+        if not valid or user is None:
             return self._error_response("invalid_grant", "Invalid username or password")
 
-        return self._issue_access_token_response(str(user.id), context)
+        token, expires_in = context.create_token(str(user.id))
+
+        token_data = TokenResponse(
+            access_token=token,
+            token_type="Bearer",
+            expires_in=expires_in,
+            refresh_token=None,
+            refresh_token_expires_in=None,
+            # TODO: figure out scopes
+            scope="",
+        )
+
+        headers = {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+        }
+
+        return Response(
+            status_code=200,
+            body=token_data.model_dump_json(),
+            headers=headers,
+            cookies=[],
+        )
 
     @property
     def routes(self) -> list[Route]:

@@ -1,33 +1,16 @@
 from typing import Annotated
-from urllib.parse import parse_qs, urlparse
 
-import httpx
 from cross_web import AsyncHTTPRequest
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
-from respx import MockRouter
 
 from cross_auth import AccountsStorage, SecondaryStorage, User
 from cross_auth._session import create_session, get_session
 from cross_auth.fastapi import CrossAuth
 from cross_auth.router import AuthRouter
-from cross_auth.social_providers.oauth import OAuth2Provider
 
 TEST_PASSWORD = "password123"  # noqa: S105
-
-
-class TestSocialProvider(OAuth2Provider):
-    __test__ = False
-    id = "test"
-    authorization_endpoint = "https://test.com/authorize"
-    token_endpoint = "https://test.com/token"
-    user_info_endpoint = "https://test.com/userinfo"
-    scopes = ["openid", "email", "profile"]
-    supports_pkce = True
-
-    def _generate_code(self) -> str:
-        return "a-totally-valid-code"
 
 
 def _make_auth(
@@ -41,22 +24,6 @@ def _make_auth(
         accounts_storage=accounts_storage,
         create_token=lambda _: ("", 0),
         trusted_origins=[],
-        **kwargs,
-    )
-
-
-def _make_social_auth(
-    secondary_storage: SecondaryStorage,
-    accounts_storage: AccountsStorage,
-    **kwargs,
-) -> CrossAuth:
-    return CrossAuth(
-        providers=[TestSocialProvider("test_client_id", "test_client_secret")],
-        storage=secondary_storage,
-        accounts_storage=accounts_storage,
-        create_token=lambda _: ("", 0),
-        trusted_origins=[],
-        session_config={"secure": False},
         **kwargs,
     )
 
@@ -368,100 +335,3 @@ def test_logout_custom_cookie_name(
 
     # Session should be deleted
     assert get_session(session_id, secondary_storage) is None
-
-
-def test_social_login_to_session_sets_cookie_and_redirects_to_default_url(
-    secondary_storage: SecondaryStorage,
-    accounts_storage: AccountsStorage,
-    respx_mock: MockRouter,
-):
-    auth = _make_social_auth(
-        secondary_storage,
-        accounts_storage,
-        config={"default_post_login_redirect_url": "/dashboard"},
-    )
-    app = FastAPI()
-    app.include_router(auth.router, prefix="/auth")
-
-    @app.get("/dashboard")
-    def dashboard(user: Annotated[User, Depends(auth.require_current_user)]):
-        return {"user": user.id}
-
-    with TestClient(app) as client:
-        start_response = client.get(
-            "/auth/test/session/authorize",
-            follow_redirects=False,
-        )
-        assert start_response.status_code == 302
-
-        authorization_url = start_response.headers["location"]
-        parsed = urlparse(authorization_url)
-        params = parse_qs(parsed.query)
-        provider_state = params["state"][0]
-        assert (
-            params["redirect_uri"][0] == "http://testserver/auth/test/session/callback"
-        )
-
-        respx_mock.post("https://test.com/token").mock(
-            return_value=httpx.Response(
-                status_code=200,
-                json={
-                    "access_token": "test_access_token",
-                    "token_type": "Bearer",
-                    "expires_in": 3600,
-                    "scope": "openid email profile",
-                },
-            )
-        )
-        respx_mock.get("https://test.com/userinfo").mock(
-            return_value=httpx.Response(
-                status_code=200,
-                json={"email": "social@example.com", "id": "social-user"},
-            )
-        )
-
-        provider_callback = client.get(
-            f"/auth/test/session/callback?code=provider_code&state={provider_state}",
-            follow_redirects=False,
-        )
-        assert provider_callback.status_code == 302
-        assert provider_callback.headers["location"] == "/dashboard"
-        assert provider_callback.cookies.get("session_id")
-
-        dashboard_response = client.get("/dashboard")
-        assert dashboard_response.status_code == 200
-        assert dashboard_response.json() == {"user": "social-user"}
-
-
-def test_social_login_to_session_redirects_back_to_login_on_provider_error(
-    secondary_storage: SecondaryStorage,
-    accounts_storage: AccountsStorage,
-):
-    auth = _make_social_auth(
-        secondary_storage,
-        accounts_storage,
-        config={"login_url": "/sign-in"},
-    )
-    app = FastAPI()
-    app.include_router(auth.router, prefix="/auth")
-
-    @app.get("/sign-in")
-    def sign_in(error: str | None = None):
-        return {"error": error}
-
-    with TestClient(app) as client:
-        start_response = client.get(
-            "/auth/test/session/authorize",
-            follow_redirects=False,
-        )
-        assert start_response.status_code == 302
-
-        authorization_url = start_response.headers["location"]
-        provider_state = parse_qs(urlparse(authorization_url).query)["state"][0]
-
-        provider_callback = client.get(
-            f"/auth/test/session/callback?error=access_denied&state={provider_state}",
-            follow_redirects=False,
-        )
-        assert provider_callback.status_code == 302
-        assert provider_callback.headers["location"] == "/sign-in?error=access_denied"

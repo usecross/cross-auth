@@ -86,8 +86,6 @@ async def test_authorize_redirects_to_provider(
         raw_authorization_request_data
     )
 
-    assert authorization_request_data.kind == "auth_code"
-
     # The app's client_id is stored in the authorization request data
     assert authorization_request_data.client_id == "my_app_client_id"
     assert (

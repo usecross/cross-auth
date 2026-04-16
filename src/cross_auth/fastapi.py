@@ -19,7 +19,6 @@ from ._session import (
 )
 from .router import AuthRouter
 from .social_providers.oauth import OAuth2Provider
-from .utils._response import Response as CrossAuthResponse
 
 # TODO: if we add more framework integrations, extract shared storage/session
 # logic into a private _BaseCrossAuth class that framework classes inherit from.
@@ -42,18 +41,10 @@ class CrossAuth:
         self._storage = storage
         self._accounts_storage = accounts_storage
         self._session_config = session_config
-        self._create_token = create_token
-        self._trusted_origins = trusted_origins
-        self._base_url = base_url
-        self._config: Config = config if config is not None else {}
 
         self._get_user_from_request = (
             get_user_from_request or self._default_get_user_from_request
         )
-
-        provider_ids = {provider.id for provider in providers}
-        if len(provider_ids) != len(providers):
-            raise ValueError("Provider ids must be unique")
 
         self._router = AuthRouter(
             providers=providers,
@@ -64,7 +55,6 @@ class CrossAuth:
             trusted_origins=trusted_origins,
             base_url=base_url,
             config=config,
-            complete_session_login=self._complete_session_login,
         )
 
     @property
@@ -83,30 +73,6 @@ class CrossAuth:
         async_request = AsyncHTTPRequest.from_fastapi(request)
         return self._get_user_from_request(async_request)
 
-    def _set_cookie_on_response(self, response: Response, cookie: Cookie) -> None:
-        response.set_cookie(
-            key=cookie.name,
-            value=cookie.value,
-            max_age=cookie.max_age,
-            path=cookie.path or "/",
-            domain=cookie.domain,
-            secure=cookie.secure,
-            httponly=cookie.httponly,
-            samesite=cookie.samesite,
-        )
-
-    def _create_session_cookie(self, user_id: str) -> Cookie:
-        resolved = resolve_config(self._session_config)
-        max_age = resolved["max_age"]
-        session_id, _ = _create_session(user_id, self._storage, max_age=max_age)
-        return _make_session_cookie(session_id, self._session_config)
-
-    def _complete_session_login(
-        self, user_id: str, redirect_url: str
-    ) -> CrossAuthResponse:
-        cookie = self._create_session_cookie(user_id)
-        return CrossAuthResponse.redirect(redirect_url, cookies=[cookie])
-
     def get_current_user(self, request: Request) -> User | None:
         return self._resolve_user(request)
 
@@ -119,8 +85,23 @@ class CrossAuth:
     def authenticate(self, email: str, password: str) -> User | None:
         return _authenticate(email, password, self._accounts_storage)
 
+    def _set_cookie_on_response(self, response: Response, cookie: Cookie) -> None:
+        response.set_cookie(
+            key=cookie.name,
+            value=cookie.value,
+            max_age=cookie.max_age,
+            path=cookie.path or "/",
+            domain=cookie.domain,
+            secure=cookie.secure,
+            httponly=cookie.httponly,
+            samesite=cookie.samesite,
+        )
+
     def login(self, user_id: str, *, response: Response) -> None:
-        cookie = self._create_session_cookie(user_id)
+        resolved = resolve_config(self._session_config)
+        max_age = resolved["max_age"]
+        session_id, _ = _create_session(user_id, self._storage, max_age=max_age)
+        cookie = _make_session_cookie(session_id, self._session_config)
         self._set_cookie_on_response(response, cookie)
 
     def logout(self, request: Request, *, response: Response) -> None:

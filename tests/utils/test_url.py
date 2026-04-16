@@ -43,13 +43,6 @@ def test_url_with_query_params():
     assert result == "http://example.com/auth/callback"
 
 
-def test_url_with_query_params_containing_slash():
-    """Test query parameters containing slashes do not affect path replacement."""
-    url = "http://example.com/auth/session/authorize?next=/profile"
-    result = construct_relative_url(url, "callback")
-    assert result == "http://example.com/auth/session/callback"
-
-
 def test_root_path():
     """Test URL with root path."""
     url = "http://example.com/authorize"
