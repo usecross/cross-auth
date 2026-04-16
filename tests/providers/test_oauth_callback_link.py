@@ -7,9 +7,11 @@ from cross_web import AsyncHTTPRequest, TestingRequestAdapter
 from inline_snapshot import snapshot
 
 from cross_auth._context import Context, SecondaryStorage
+from cross_auth.completions import LinkCompletion
 from cross_auth.social_providers.oauth import OAuth2Provider
 
 from ..conftest import MemoryAccountsStorage
+from .conftest import dispatch_callback
 
 pytestmark = pytest.mark.asyncio
 
@@ -22,15 +24,18 @@ def valid_link_callback_request(
         "oauth:authorization_request:test_state",
         json.dumps(
             {
-                "client_id": "my_app_client_id",
-                "redirect_uri": "http://valid-frontend.com/link",
-                "login_hint": "test_login_hint",
+                "kind": "link",
+                "provider_id": "test",
                 "state": "test_state",
-                "client_state": "test_client_state",
-                "code_challenge": "test",
-                "code_challenge_method": "S256",
-                "link": True,
-                "user_id": "test",
+                "provider_code_verifier": None,
+                "completion_state": {
+                    "client_id": "my_app_client_id",
+                    "redirect_uri": "http://valid-frontend.com/link",
+                    "code_challenge": "test",
+                    "code_challenge_method": "S256",
+                    "client_state": "test_client_state",
+                    "user_id": "test",
+                },
             }
         ),
     )
@@ -57,7 +62,9 @@ async def test_stores_link_data(
 ) -> None:
     accounts_storage.data = {}
 
-    response = await oauth_provider.callback(valid_link_callback_request, context)
+    response = await dispatch_callback(
+        oauth_provider, valid_link_callback_request, context, LinkCompletion()
+    )
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -65,6 +72,9 @@ async def test_stores_link_data(
         "http://valid-frontend.com/link?link_code=a-totally-valid-code"
     )
 
+    # Link flow does NOT exchange provider tokens at callback time —
+    # it defers to /finalize-link. So no social account was created yet.
     assert accounts_storage.data == {}
 
+    # And there's no finalized grant; the grant lives under the link_code.
     assert secondary_storage.get("oauth:link_request:test_state") == snapshot(None)

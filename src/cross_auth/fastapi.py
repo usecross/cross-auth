@@ -5,6 +5,7 @@ from collections.abc import Callable
 from cross_web import AsyncHTTPRequest, Cookie
 from fastapi import HTTPException, Request, Response
 
+from ._completion import AuthCompletion
 from ._config import Config
 from ._context import AccountsStorage, SecondaryStorage, User
 from ._password import authenticate as _authenticate
@@ -33,6 +34,7 @@ class CrossAuth:
         accounts_storage: AccountsStorage,
         create_token: Callable[[str], tuple[str, int]],
         trusted_origins: list[str],
+        completions: list[AuthCompletion] | None = None,
         session_config: SessionConfig | None = None,
         get_user_from_request: Callable[[AsyncHTTPRequest], User | None] | None = None,
         base_url: str | None = None,
@@ -48,6 +50,7 @@ class CrossAuth:
 
         self._router = AuthRouter(
             providers=providers,
+            completions=completions,
             secondary_storage=storage,
             accounts_storage=accounts_storage,
             get_user_from_request=self._get_user_from_request,

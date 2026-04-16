@@ -7,17 +7,24 @@ from pathlib import Path
 from typing import Annotated, Any, cast
 
 import jwt
+from cross_auth import AccountsStorage, SecondaryStorage
+from cross_auth import SessionConfig
+from cross_auth import User as UserProtocol
+from cross_auth._session import get_current_user as get_session_user
+from cross_auth.completions import (
+    AuthCodeCompletion,
+    ConnectCompletion,
+    LinkCompletion,
+    SessionCompletion,
+)
+from cross_auth.fastapi import CrossAuth
+from cross_auth.social_providers.github import GitHubProvider
 from cross_web import AsyncHTTPRequest
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from passlib.context import CryptContext
-
-from cross_auth import AccountsStorage, SecondaryStorage, User as UserProtocol
-from cross_auth._session import get_current_user as get_session_user
-from cross_auth.fastapi import CrossAuth
-from cross_auth.social_providers.github import GitHubProvider
 
 APP_DIR = Path(__file__).parent
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
@@ -330,17 +337,33 @@ github = GitHubProvider(
 
 secondary_storage = MemorySecondaryStorage()
 accounts_storage = MemoryAccountsStorage()
+SESSION_CONFIG: SessionConfig = {
+    "cookie_name": SESSION_COOKIE_NAME,
+    "secure": False,
+}
+
 auth = CrossAuth(
     providers=[github],
+    completions=[
+        SessionCompletion(
+            session_config=SESSION_CONFIG,
+            login_url="/",
+            default_post_login_redirect_url="/profile",
+        ),
+        AuthCodeCompletion(),
+        LinkCompletion(),
+        ConnectCompletion(
+            login_url="/",
+            default_post_connect_redirect_url="/profile",
+        ),
+    ],
     storage=secondary_storage,
     accounts_storage=accounts_storage,
     create_token=create_demo_token,
     trusted_origins=[*SPA_TRUSTED_REDIRECT_HOSTS, *BACKEND_TRUSTED_REDIRECT_HOSTS],
-    session_config={"cookie_name": SESSION_COOKIE_NAME, "secure": False},
+    session_config=SESSION_CONFIG,
     get_user_from_request=resolve_auth_user,
     config={
-        "login_url": "/",
-        "default_post_login_redirect_url": "/profile",
         "account_linking": {"enabled": True},
         "allowed_client_ids": [SPA_CLIENT_ID],
     },
@@ -370,7 +393,7 @@ def home(
             "demo_email": DEMO_EMAIL,
             "demo_password": DEMO_PASSWORD,
             "error_message": get_error_message(error),
-            "github_login_url": "/auth/github/session/authorize?next=/profile",
+            "github_login_url": "/auth/github/login?next=/profile",
             "github_mock_base_url": GITHUB_MOCK_BASE_URL,
             "session_me_url": "/api/me-session",
             "token_me_url": "/api/me-token",

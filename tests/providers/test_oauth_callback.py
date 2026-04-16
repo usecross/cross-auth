@@ -10,29 +10,50 @@ from respx import MockRouter
 
 from cross_auth._context import Context, SecondaryStorage
 from cross_auth._issuer import AuthorizationCodeGrantData
+from cross_auth.completions import AuthCodeCompletion
 from cross_auth.social_providers.oauth import OAuth2Provider
 
 from ..conftest import MemoryAccountsStorage
+from .conftest import dispatch_callback
 
 pytestmark = pytest.mark.asyncio
+
+
+def _auth_flow_state_json(
+    *,
+    state: str = "test_state",
+    client_id: str = "my_app_client_id",
+    redirect_uri: str = "http://valid-frontend.com/callback",
+    client_state: str | None = "test_client_state",
+    code_challenge: str = "test",
+    login_hint: str | None = "test_login_hint",
+    provider_code_verifier: str = "test_provider_verifier",
+) -> str:
+    """Serialize an AuthFlowState for an authorize-mode flow in the shape the
+    router now persists. Used by tests that pre-populate storage directly."""
+    return json.dumps(
+        {
+            "kind": "authorize",
+            "provider_id": "test",
+            "state": state,
+            "provider_code_verifier": provider_code_verifier,
+            "completion_state": {
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "code_challenge": code_challenge,
+                "code_challenge_method": "S256",
+                "client_state": client_state,
+                "login_hint": login_hint,
+            },
+        }
+    )
 
 
 @pytest.fixture
 def valid_callback_request(secondary_storage: SecondaryStorage) -> AsyncHTTPRequest:
     secondary_storage.set(
         "oauth:authorization_request:test_state",
-        json.dumps(
-            {
-                "client_id": "my_app_client_id",
-                "redirect_uri": "http://valid-frontend.com/callback",
-                "login_hint": "test_login_hint",
-                "state": "test_state",
-                "client_state": "test_client_state",
-                "code_challenge": "test",
-                "code_challenge_method": "S256",
-                "provider_code_verifier": "test_provider_verifier",
-            }
-        ),
+        _auth_flow_state_json(),
     )
 
     return AsyncHTTPRequest(
@@ -61,7 +82,9 @@ async def test_fails_if_there_were_no_provider_data_in_secondary_storage(
         )
     )
 
-    response = await oauth_provider.callback(request, context)
+    response = await dispatch_callback(
+        oauth_provider, request, context, AuthCodeCompletion()
+    )
 
     assert response.status_code == 400
     assert response.headers is not None
@@ -89,21 +112,12 @@ async def test_fails_if_there_was_no_code_in_request(
 
     secondary_storage.set(
         "oauth:authorization_request:test_state",
-        json.dumps(
-            {
-                "client_id": "my_app_client_id",
-                "redirect_uri": "http://valid-frontend.com/callback",
-                "login_hint": "test_login_hint",
-                "state": "test_state",
-                "client_state": "test_client_state",
-                "code_challenge": "test",
-                "code_challenge_method": "S256",
-                "provider_code_verifier": "test_provider_verifier",
-            }
-        ),
+        _auth_flow_state_json(),
     )
 
-    response = await oauth_provider.callback(request, context)
+    response = await dispatch_callback(
+        oauth_provider, request, context, AuthCodeCompletion()
+    )
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -127,7 +141,9 @@ async def test_fails_if_there_was_no_state_in_request(
         )
     )
 
-    response = await oauth_provider.callback(request, context)
+    response = await dispatch_callback(
+        oauth_provider, request, context, AuthCodeCompletion()
+    )
 
     assert response.status_code == 400
     assert response.json() == {
@@ -152,7 +168,9 @@ async def test_fails_if_the_token_exchange_fails(
         )
     )
 
-    response = await oauth_provider.callback(valid_callback_request, context)
+    response = await dispatch_callback(
+        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+    )
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -171,7 +189,9 @@ async def test_fails_if_the_token_exchange_returns_an_error_response(
         return_value=httpx.Response(status_code=500)
     )
 
-    response = await oauth_provider.callback(valid_callback_request, context)
+    response = await dispatch_callback(
+        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+    )
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -205,7 +225,9 @@ async def test_fails_if_there_is_no_email_in_the_user_info_response(
         return_value=httpx.Response(status_code=200, json={"id": "test_id"})
     )
 
-    response = await oauth_provider.callback(valid_callback_request, context)
+    response = await dispatch_callback(
+        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+    )
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -240,7 +262,9 @@ async def test_fails_if_the_user_info_response_is_not_valid_json(
         return_value=httpx.Response(status_code=200, content="not-valid-json")
     )
 
-    response = await oauth_provider.callback(valid_callback_request, context)
+    response = await dispatch_callback(
+        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+    )
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -275,7 +299,9 @@ async def test_fails_if_the_user_info_response_does_not_have_an_id(
         return_value=httpx.Response(status_code=200, json={"email": "test@example.com"})
     )
 
-    response = await oauth_provider.callback(valid_callback_request, context)
+    response = await dispatch_callback(
+        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+    )
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -317,7 +343,9 @@ async def test_create_user_if_it_does_not_exist(
         )
     )
 
-    response = await oauth_provider.callback(valid_callback_request, context)
+    response = await dispatch_callback(
+        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+    )
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -372,7 +400,9 @@ async def test_stores_the_code_in_the_session(
         )
     )
 
-    response = await oauth_provider.callback(valid_callback_request, context)
+    response = await dispatch_callback(
+        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+    )
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -449,7 +479,9 @@ async def test_fails_if_there_is_user_with_the_same_email_but_different_provider
         )
     )
 
-    response = await oauth_provider.callback(valid_callback_request, context)
+    response = await dispatch_callback(
+        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+    )
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -507,7 +539,9 @@ async def test_works_when_there_is_user_with_the_same_email_and_provider(
         )
     )
 
-    response = await oauth_provider.callback(valid_callback_request, context)
+    response = await dispatch_callback(
+        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+    )
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -570,7 +604,9 @@ async def test_updates_the_social_account_if_it_already_exists(
         )
     )
 
-    response = await oauth_provider.callback(valid_callback_request, context)
+    response = await dispatch_callback(
+        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+    )
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -617,7 +653,9 @@ async def test_fails_if_the_user_is_not_allowed_to_signup(
         )
     )
 
-    response = await oauth_provider.callback(valid_callback_request, context)
+    response = await dispatch_callback(
+        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+    )
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -632,34 +670,22 @@ async def test_callback_returns_client_state_for_csrf_protection(
     secondary_storage: SecondaryStorage,
     respx_mock: MockRouter,
 ):
-    """
-    Test that the OAuth callback returns the client_state parameter
-    back to the client application. This enables CSRF protection by
-    allowing the client to validate that the OAuth response corresponds
-    to their own authorization request.
-    """
-    # Client's state parameter for CSRF protection
+    """The callback must echo client_state back so the client can validate that
+    the response corresponds to their own authorization request (CSRF)."""
     client_state = "client_csrf_token_abc123"
     provider_state = "provider_state_xyz"
 
-    # Setup: Store authorization request data
     secondary_storage.set(
         f"oauth:authorization_request:{provider_state}",
-        json.dumps(
-            {
-                "client_id": "my_app_client_id",
-                "redirect_uri": "https://valid-frontend.com/callback",
-                "login_hint": None,
-                "state": provider_state,
-                "client_state": client_state,  # This should be returned!
-                "code_challenge": "test_challenge",
-                "code_challenge_method": "S256",
-                "provider_code_verifier": "test_provider_verifier",
-            }
+        _auth_flow_state_json(
+            state=provider_state,
+            client_state=client_state,
+            redirect_uri="https://valid-frontend.com/callback",
+            login_hint=None,
+            code_challenge="test_challenge",
         ),
     )
 
-    # Mock the provider's token endpoint
     respx_mock.post(oauth_provider.token_endpoint).mock(
         return_value=httpx.Response(
             status_code=200,
@@ -671,7 +697,6 @@ async def test_callback_returns_client_state_for_csrf_protection(
         )
     )
 
-    # Mock the user info endpoint
     respx_mock.get(oauth_provider.user_info_endpoint).mock(
         return_value=httpx.Response(
             status_code=200,
@@ -679,8 +704,8 @@ async def test_callback_returns_client_state_for_csrf_protection(
         )
     )
 
-    # OAuth provider redirects back with code
-    callback_response = await oauth_provider.callback(
+    response = await dispatch_callback(
+        oauth_provider,
         AsyncHTTPRequest(
             TestingRequestAdapter(
                 method="GET",
@@ -692,17 +717,14 @@ async def test_callback_returns_client_state_for_csrf_protection(
             )
         ),
         context,
+        AuthCodeCompletion(),
     )
 
-    # The callback should redirect with both code AND state
-    assert callback_response.status_code == 302
-    assert callback_response.headers is not None
-    callback_redirect = callback_response.headers["Location"]
+    assert response.status_code == 302
+    assert response.headers is not None
+    callback_redirect = response.headers["Location"]
 
-    # The redirect should include the authorization code
     assert "code=" in callback_redirect
-
-    # The redirect should include the client_state for CSRF validation
     assert f"state={client_state}" in callback_redirect
     assert callback_redirect == snapshot(
         f"https://valid-frontend.com/callback?code=a-totally-valid-code&state={client_state}"
