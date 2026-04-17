@@ -10,7 +10,7 @@ from respx import MockRouter
 
 from cross_auth._context import Context, SecondaryStorage
 from cross_auth._issuer import AuthorizationCodeGrantData
-from cross_auth.completions import AuthCodeCompletion
+from cross_auth.completions import TokenCompletion
 from cross_auth.social_providers.oauth import OAuth2Provider
 
 from ..conftest import MemoryAccountsStorage
@@ -33,11 +33,12 @@ def _auth_flow_state_json(
     router now persists. Used by tests that pre-populate storage directly."""
     return json.dumps(
         {
-            "kind": "authorize",
+            "kind": "token",
             "provider_id": "test",
             "state": state,
             "provider_code_verifier": provider_code_verifier,
             "completion_state": {
+                "sub_flow": "auth_code",
                 "client_id": client_id,
                 "redirect_uri": redirect_uri,
                 "code_challenge": code_challenge,
@@ -83,7 +84,7 @@ async def test_fails_if_there_were_no_provider_data_in_secondary_storage(
     )
 
     response = await dispatch_callback(
-        oauth_provider, request, context, AuthCodeCompletion()
+        oauth_provider, request, context, TokenCompletion()
     )
 
     assert response.status_code == 400
@@ -116,7 +117,7 @@ async def test_fails_if_there_was_no_code_in_request(
     )
 
     response = await dispatch_callback(
-        oauth_provider, request, context, AuthCodeCompletion()
+        oauth_provider, request, context, TokenCompletion()
     )
 
     assert response.status_code == 302
@@ -142,7 +143,7 @@ async def test_fails_if_there_was_no_state_in_request(
     )
 
     response = await dispatch_callback(
-        oauth_provider, request, context, AuthCodeCompletion()
+        oauth_provider, request, context, TokenCompletion()
     )
 
     assert response.status_code == 400
@@ -169,7 +170,7 @@ async def test_fails_if_the_token_exchange_fails(
     )
 
     response = await dispatch_callback(
-        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+        oauth_provider, valid_callback_request, context, TokenCompletion()
     )
 
     assert response.status_code == 302
@@ -190,7 +191,7 @@ async def test_fails_if_the_token_exchange_returns_an_error_response(
     )
 
     response = await dispatch_callback(
-        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+        oauth_provider, valid_callback_request, context, TokenCompletion()
     )
 
     assert response.status_code == 302
@@ -226,7 +227,7 @@ async def test_fails_if_there_is_no_email_in_the_user_info_response(
     )
 
     response = await dispatch_callback(
-        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+        oauth_provider, valid_callback_request, context, TokenCompletion()
     )
 
     assert response.status_code == 302
@@ -263,7 +264,7 @@ async def test_fails_if_the_user_info_response_is_not_valid_json(
     )
 
     response = await dispatch_callback(
-        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+        oauth_provider, valid_callback_request, context, TokenCompletion()
     )
 
     assert response.status_code == 302
@@ -300,7 +301,7 @@ async def test_fails_if_the_user_info_response_does_not_have_an_id(
     )
 
     response = await dispatch_callback(
-        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+        oauth_provider, valid_callback_request, context, TokenCompletion()
     )
 
     assert response.status_code == 302
@@ -344,7 +345,7 @@ async def test_create_user_if_it_does_not_exist(
     )
 
     response = await dispatch_callback(
-        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+        oauth_provider, valid_callback_request, context, TokenCompletion()
     )
 
     assert response.status_code == 302
@@ -401,7 +402,7 @@ async def test_stores_the_code_in_the_session(
     )
 
     response = await dispatch_callback(
-        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+        oauth_provider, valid_callback_request, context, TokenCompletion()
     )
 
     assert response.status_code == 302
@@ -480,7 +481,7 @@ async def test_fails_if_there_is_user_with_the_same_email_but_different_provider
     )
 
     response = await dispatch_callback(
-        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+        oauth_provider, valid_callback_request, context, TokenCompletion()
     )
 
     assert response.status_code == 302
@@ -540,7 +541,7 @@ async def test_works_when_there_is_user_with_the_same_email_and_provider(
     )
 
     response = await dispatch_callback(
-        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+        oauth_provider, valid_callback_request, context, TokenCompletion()
     )
 
     assert response.status_code == 302
@@ -605,7 +606,7 @@ async def test_updates_the_social_account_if_it_already_exists(
     )
 
     response = await dispatch_callback(
-        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+        oauth_provider, valid_callback_request, context, TokenCompletion()
     )
 
     assert response.status_code == 302
@@ -654,7 +655,7 @@ async def test_fails_if_the_user_is_not_allowed_to_signup(
     )
 
     response = await dispatch_callback(
-        oauth_provider, valid_callback_request, context, AuthCodeCompletion()
+        oauth_provider, valid_callback_request, context, TokenCompletion()
     )
 
     assert response.status_code == 302
@@ -717,7 +718,7 @@ async def test_callback_returns_client_state_for_csrf_protection(
             )
         ),
         context,
-        AuthCodeCompletion(),
+        TokenCompletion(),
     )
 
     assert response.status_code == 302

@@ -7,7 +7,7 @@ from cross_web import AsyncHTTPRequest, TestingRequestAdapter
 from inline_snapshot import snapshot
 
 from cross_auth._context import Context, SecondaryStorage
-from cross_auth.completions import LinkCompletion
+from cross_auth.completions import TokenCompletion
 from cross_auth.social_providers.oauth import OAuth2Provider
 
 from ..conftest import MemoryAccountsStorage
@@ -24,11 +24,12 @@ def valid_link_callback_request(
         "oauth:authorization_request:test_state",
         json.dumps(
             {
-                "kind": "link",
+                "kind": "token",
                 "provider_id": "test",
                 "state": "test_state",
                 "provider_code_verifier": None,
                 "completion_state": {
+                    "sub_flow": "link",
                     "client_id": "my_app_client_id",
                     "redirect_uri": "http://valid-frontend.com/link",
                     "code_challenge": "test",
@@ -63,7 +64,7 @@ async def test_stores_link_data(
     accounts_storage.data = {}
 
     response = await dispatch_callback(
-        oauth_provider, valid_link_callback_request, context, LinkCompletion()
+        oauth_provider, valid_link_callback_request, context, TokenCompletion()
     )
 
     assert response.status_code == 302

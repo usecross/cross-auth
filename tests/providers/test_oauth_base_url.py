@@ -3,7 +3,7 @@ from cross_web import AsyncHTTPRequest, TestingRequestAdapter
 
 from cross_auth._context import Context
 from cross_auth._storage import SecondaryStorage
-from cross_auth.completions import AuthCodeCompletion
+from cross_auth.completions import TokenCompletion
 from cross_auth.social_providers.oauth import OAuth2Provider
 
 pytestmark = pytest.mark.asyncio
@@ -52,7 +52,7 @@ async def test_authorize_uses_base_url_for_redirect_uri(
         )
     )
 
-    response = await AuthCodeCompletion().start(
+    response = await TokenCompletion().start(
         request, context_with_base_url, oauth_provider
     )
 
@@ -93,7 +93,7 @@ async def test_authorize_with_nested_path_and_base_url(
         )
     )
 
-    response = await AuthCodeCompletion().start(
+    response = await TokenCompletion().start(
         request, context_with_base_url, oauth_provider
     )
 
@@ -129,7 +129,7 @@ async def test_authorize_without_base_url_fallback(
         )
     )
 
-    response = await AuthCodeCompletion().start(request, context, oauth_provider)
+    response = await TokenCompletion().start(request, context, oauth_provider)
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -173,7 +173,7 @@ async def test_authorize_base_url_with_trailing_slash(
         )
     )
 
-    response = await AuthCodeCompletion().start(request, context, oauth_provider)
+    response = await TokenCompletion().start(request, context, oauth_provider)
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -223,7 +223,7 @@ async def test_authorize_base_url_with_different_port(
         )
     )
 
-    response = await AuthCodeCompletion().start(request, context, oauth_provider)
+    response = await TokenCompletion().start(request, context, oauth_provider)
 
     assert response.status_code == 302
     assert response.headers is not None

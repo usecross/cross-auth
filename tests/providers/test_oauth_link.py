@@ -7,7 +7,7 @@ from inline_snapshot import snapshot
 
 from cross_auth._context import Context, SecondaryStorage
 from cross_auth._storage import AccountsStorage, User
-from cross_auth.completions import LinkCompletion
+from cross_auth.completions import TokenCompletion
 from cross_auth.social_providers.oauth import OAuth2Provider
 from tests.conftest import MemoryStorage
 
@@ -60,7 +60,7 @@ async def test_initiate_link_stores_correct_request_data(
         )
     )
 
-    response = await LinkCompletion().start(request, context, oauth_provider)
+    response = await TokenCompletion()._link_start(request, context, oauth_provider)
 
     assert response.status_code == 200
     assert response.body
@@ -90,10 +90,11 @@ async def test_initiate_link_stores_correct_request_data(
 
     assert data == snapshot(
         {
-            "kind": "link",
+            "kind": "token",
             "provider_id": "test",
             "state": state,
             "completion_state": {
+                "sub_flow": "link",
                 "client_id": "my_app_client_id",
                 "redirect_uri": "http://valid-frontend.com/callback",
                 "code_challenge": "test",
@@ -122,7 +123,7 @@ async def test_initiate_link_requires_authentication(
         )
     )
 
-    response = await LinkCompletion().start(request, context, oauth_provider)
+    response = await TokenCompletion()._link_start(request, context, oauth_provider)
 
     assert response.status_code == 401
     assert response.body
@@ -165,7 +166,7 @@ async def test_initiate_link_fails_when_linking_disabled(
         )
     )
 
-    response = await LinkCompletion().start(request, context, oauth_provider)
+    response = await TokenCompletion()._link_start(request, context, oauth_provider)
 
     assert response.status_code == 400
     assert response.body

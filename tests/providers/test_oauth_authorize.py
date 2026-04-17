@@ -4,7 +4,7 @@ from cross_web import AsyncHTTPRequest, TestingRequestAdapter
 from cross_auth._completion import AuthFlowState
 from cross_auth._context import Context
 from cross_auth._storage import SecondaryStorage
-from cross_auth.completions import AuthCodeCompletion
+from cross_auth.completions import TokenCompletion
 from cross_auth.social_providers.oauth import OAuth2Provider
 
 pytestmark = pytest.mark.asyncio
@@ -32,7 +32,7 @@ async def test_invalid_request_when_response_type_is_missing_or_invalid(
         )
     )
 
-    response = await AuthCodeCompletion().start(request, context, oauth_provider)
+    response = await TokenCompletion().start(request, context, oauth_provider)
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -60,7 +60,7 @@ async def test_authorize_redirects_to_provider(
         )
     )
 
-    response = await AuthCodeCompletion().start(request, context, oauth_provider)
+    response = await TokenCompletion().start(request, context, oauth_provider)
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -79,11 +79,12 @@ async def test_authorize_redirects_to_provider(
     assert raw is not None
 
     flow_state = AuthFlowState.model_validate_json(raw)
-    assert flow_state.kind == "authorize"
+    assert flow_state.kind == "token"
     assert flow_state.provider_id == oauth_provider.id
     assert flow_state.state == state
 
     cs = flow_state.completion_state
+    assert cs["sub_flow"] == "auth_code"
     assert cs["client_id"] == "my_app_client_id"
     assert cs["redirect_uri"] == "http://valid-frontend.com/callback"
     assert cs["code_challenge"] == "test"
@@ -99,7 +100,7 @@ async def test_authorize_requires_redirect_uri(
         )
     )
 
-    response = await AuthCodeCompletion().start(request, context, oauth_provider)
+    response = await TokenCompletion().start(request, context, oauth_provider)
 
     assert response.status_code == 400
     assert response.json() == {"error": "invalid_request"}
@@ -120,7 +121,7 @@ async def test_invalid_redirect_uri_error(
         )
     )
 
-    response = await AuthCodeCompletion().start(request, context, oauth_provider)
+    response = await TokenCompletion().start(request, context, oauth_provider)
 
     assert response.status_code == 400
     assert response.json() == {"error": "invalid_redirect_uri"}
@@ -149,7 +150,7 @@ async def test_link_code_response_type_not_supported(
         )
     )
 
-    response = await AuthCodeCompletion().start(request, context, oauth_provider)
+    response = await TokenCompletion().start(request, context, oauth_provider)
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -191,7 +192,7 @@ async def test_authorize_rejects_invalid_client_id(
         )
     )
 
-    response = await AuthCodeCompletion().start(
+    response = await TokenCompletion().start(
         request, context_with_client_validation, oauth_provider
     )
 
@@ -235,7 +236,7 @@ async def test_authorize_accepts_valid_client_id(
         )
     )
 
-    response = await AuthCodeCompletion().start(
+    response = await TokenCompletion().start(
         request, context_with_client_validation, oauth_provider
     )
 

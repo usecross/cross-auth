@@ -6,7 +6,7 @@ import respx
 from cross_web import AsyncHTTPRequest, TestingRequestAdapter
 
 from cross_auth._context import Context
-from cross_auth.completions import AuthCodeCompletion
+from cross_auth.completions import TokenCompletion
 from cross_auth.social_providers.oauth import OAuth2Provider
 
 
@@ -96,7 +96,7 @@ async def test_pkce_flow_includes_code_verifier(
         )
     )
 
-    authorize_response = await AuthCodeCompletion().start(
+    authorize_response = await TokenCompletion().start(
         authorize_request, context, example_provider_with_pkce
     )
 
@@ -147,7 +147,7 @@ async def test_pkce_flow_includes_code_verifier(
         example_provider_with_pkce,
         callback_request,
         context,
-        AuthCodeCompletion(),
+        TokenCompletion(),
     )
 
     request_data = token_route.calls[0].request.content.decode()

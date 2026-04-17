@@ -1,11 +1,7 @@
-from .auth_code import AuthCodeCompletion
-from .connect import ConnectCompletion
-from .link import LinkCompletion
 from .session import SessionCompletion
+from .token import TokenCompletion
 
 __all__ = [
-    "AuthCodeCompletion",
-    "ConnectCompletion",
-    "LinkCompletion",
     "SessionCompletion",
+    "TokenCompletion",
 ]
