@@ -10,7 +10,6 @@ from respx import MockRouter
 
 from cross_auth._context import Context, SecondaryStorage
 from cross_auth._storage import AccountsStorage, User
-from cross_auth.completions import TokenCompletion
 from cross_auth.social_providers.oauth import OAuth2LinkCodeData, OAuth2Provider
 
 pytestmark = pytest.mark.asyncio
@@ -43,7 +42,7 @@ async def test_fails_if_not_logged_in(
     oauth_provider: OAuth2Provider,
     context: Context,
 ) -> None:
-    response = await TokenCompletion()._finalize_link(
+    response = await oauth_provider.finalize_link(
         AsyncHTTPRequest(
             TestingRequestAdapter(
                 method="POST",
@@ -51,7 +50,6 @@ async def test_fails_if_not_logged_in(
             )
         ),
         context,
-        oauth_provider,
     )
 
     assert response.status_code == 401
@@ -64,7 +62,7 @@ async def test_fails_if_no_link_code_is_provided(
     oauth_provider: OAuth2Provider,
     context: Context,
 ) -> None:
-    response = await TokenCompletion()._finalize_link(
+    response = await oauth_provider.finalize_link(
         AsyncHTTPRequest(
             TestingRequestAdapter(
                 method="POST",
@@ -74,7 +72,6 @@ async def test_fails_if_no_link_code_is_provided(
             )
         ),
         context,
-        oauth_provider,
     )
 
     assert response.status_code == 400
@@ -87,7 +84,7 @@ async def test_fails_if_data_is_missing(
     oauth_provider: OAuth2Provider,
     context: Context,
 ) -> None:
-    response = await TokenCompletion()._finalize_link(
+    response = await oauth_provider.finalize_link(
         AsyncHTTPRequest(
             TestingRequestAdapter(
                 method="POST",
@@ -97,7 +94,6 @@ async def test_fails_if_data_is_missing(
             )
         ),
         context,
-        oauth_provider,
     )
 
     assert response.status_code == 400
@@ -119,7 +115,7 @@ async def test_fails_if_data_is_invalid(
         json.dumps({"invalid": "data"}),
     )
 
-    response = await TokenCompletion()._finalize_link(
+    response = await oauth_provider.finalize_link(
         AsyncHTTPRequest(
             TestingRequestAdapter(
                 method="POST",
@@ -129,7 +125,6 @@ async def test_fails_if_data_is_invalid(
             )
         ),
         context,
-        oauth_provider,
     )
 
     assert response.status_code == 400
@@ -162,7 +157,7 @@ async def test_fails_if_code_has_expired(
         ),
     )
 
-    response = await TokenCompletion()._finalize_link(
+    response = await oauth_provider.finalize_link(
         AsyncHTTPRequest(
             TestingRequestAdapter(
                 method="POST",
@@ -172,7 +167,6 @@ async def test_fails_if_code_has_expired(
             )
         ),
         context,
-        oauth_provider,
     )
 
     assert response.status_code == 400
@@ -205,7 +199,7 @@ async def test_fails_if_code_challenge_is_missing(
         ),
     )
 
-    response = await TokenCompletion()._finalize_link(
+    response = await oauth_provider.finalize_link(
         AsyncHTTPRequest(
             TestingRequestAdapter(
                 method="POST",
@@ -215,7 +209,6 @@ async def test_fails_if_code_challenge_is_missing(
             )
         ),
         context,
-        oauth_provider,
     )
 
     assert response.status_code == 400
@@ -248,7 +241,7 @@ async def test_fails_if_code_challenge_is_invalid(
         ),
     )
 
-    response = await TokenCompletion()._finalize_link(
+    response = await oauth_provider.finalize_link(
         AsyncHTTPRequest(
             TestingRequestAdapter(
                 method="POST",
@@ -261,7 +254,6 @@ async def test_fails_if_code_challenge_is_invalid(
             )
         ),
         context,
-        oauth_provider,
     )
 
     assert response.status_code == 400
@@ -311,7 +303,7 @@ async def test_fails_if_link_code_belongs_to_different_user(
     )
 
     # The logged-in user is "test", but they try to use "other"'s link code
-    response = await TokenCompletion()._finalize_link(
+    response = await oauth_provider.finalize_link(
         AsyncHTTPRequest(
             TestingRequestAdapter(
                 method="POST",
@@ -324,7 +316,6 @@ async def test_fails_if_link_code_belongs_to_different_user(
             )
         ),
         context,
-        oauth_provider,
     )
 
     # Should fail with 403 Forbidden
@@ -392,7 +383,7 @@ async def test_fails_if_account_already_exists_on_another_user(
         )
     )
 
-    response = await TokenCompletion()._finalize_link(
+    response = await oauth_provider.finalize_link(
         AsyncHTTPRequest(
             TestingRequestAdapter(
                 method="POST",
@@ -406,14 +397,13 @@ async def test_fails_if_account_already_exists_on_another_user(
             )
         ),
         context,
-        oauth_provider,
     )
 
     assert response.status_code == 400
     assert response.json() == snapshot(
         {
-            "error": "already_linked",
-            "error_description": "Social account is already linked to a different user.",
+            "error": "server_error",
+            "error_description": "Social account already exists",
         }
     )
 
@@ -461,7 +451,7 @@ async def test_fails_if_account_linking_disabled(
         )
     )
 
-    response = await TokenCompletion()._finalize_link(
+    response = await oauth_provider.finalize_link(
         AsyncHTTPRequest(
             TestingRequestAdapter(
                 method="POST",
@@ -474,7 +464,6 @@ async def test_fails_if_account_linking_disabled(
             )
         ),
         context_disabled,
-        oauth_provider,
     )
 
     assert response.status_code == 400
@@ -513,7 +502,7 @@ async def test_fails_if_provider_email_does_not_match(
         )
     )
 
-    response = await TokenCompletion()._finalize_link(
+    response = await oauth_provider.finalize_link(
         AsyncHTTPRequest(
             TestingRequestAdapter(
                 method="POST",
@@ -526,7 +515,6 @@ async def test_fails_if_provider_email_does_not_match(
             )
         ),
         context,
-        oauth_provider,
     )
 
     assert response.status_code == 400
@@ -582,7 +570,7 @@ async def test_allows_different_emails_when_configured(
         )
     )
 
-    response = await TokenCompletion()._finalize_link(
+    response = await oauth_provider.finalize_link(
         AsyncHTTPRequest(
             TestingRequestAdapter(
                 method="POST",
@@ -595,7 +583,6 @@ async def test_allows_different_emails_when_configured(
             )
         ),
         context_allow_different,
-        oauth_provider,
     )
 
     assert response.status_code == 200
@@ -643,7 +630,7 @@ async def test_links_to_correct_user(
         )
     )
 
-    response = await TokenCompletion()._finalize_link(
+    response = await oauth_provider.finalize_link(
         AsyncHTTPRequest(
             TestingRequestAdapter(
                 method="POST",
@@ -656,7 +643,6 @@ async def test_links_to_correct_user(
             )
         ),
         context,
-        oauth_provider,
     )
 
     assert response.status_code == 200
@@ -733,7 +719,7 @@ async def test_link_with_pkce_sends_provider_code_and_verifier(
         )
     )
 
-    response = await TokenCompletion()._finalize_link(
+    response = await oauth_provider.finalize_link(
         AsyncHTTPRequest(
             TestingRequestAdapter(
                 method="POST",
@@ -746,7 +732,6 @@ async def test_link_with_pkce_sends_provider_code_and_verifier(
             )
         ),
         context,
-        oauth_provider,
     )
 
     assert response.status_code == 200

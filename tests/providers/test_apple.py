@@ -484,7 +484,26 @@ def test_validate_user_info_missing_id(apple_provider: AppleProvider):
     assert exc_info.value.error == "server_error"
 
 
-# Apple-specific route tests were removed — routes no longer live on the
-# provider class. AuthRouter registers /{provider}/callback with GET+POST for
-# every provider, so Apple's form_post callback continues to work via the
-# provider's extract_callback_data override.
+# --- Routes tests ---
+
+
+def test_routes_include_post_callback(apple_provider: AppleProvider):
+    """Test that callback route accepts POST method."""
+    routes = apple_provider.routes
+
+    callback_route = next(r for r in routes if "callback" in r.path)
+
+    assert "POST" in callback_route.methods
+    assert "GET" in callback_route.methods  # Fallback
+
+
+def test_routes_count(apple_provider: AppleProvider):
+    """Test that all expected routes are registered."""
+    routes = apple_provider.routes
+
+    assert len(routes) == 4
+    paths = [r.path for r in routes]
+    assert "/apple/authorize" in paths
+    assert "/apple/callback" in paths
+    assert "/apple/finalize-link" in paths
+    assert "/apple/link" in paths

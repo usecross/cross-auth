@@ -7,7 +7,6 @@ from inline_snapshot import snapshot
 
 from cross_auth._context import Context, SecondaryStorage
 from cross_auth._storage import AccountsStorage, User
-from cross_auth.completions import TokenCompletion
 from cross_auth.social_providers.oauth import OAuth2Provider
 from tests.conftest import MemoryStorage
 
@@ -60,7 +59,7 @@ async def test_initiate_link_stores_correct_request_data(
         )
     )
 
-    response = await TokenCompletion()._link_start(request, context, oauth_provider)
+    response = await oauth_provider.initiate_link(request, context)
 
     assert response.status_code == 200
     assert response.body
@@ -90,18 +89,15 @@ async def test_initiate_link_stores_correct_request_data(
 
     assert data == snapshot(
         {
-            "kind": "token",
-            "provider_id": "test",
+            "client_id": "my_app_client_id",
+            "redirect_uri": "http://valid-frontend.com/callback",
+            "login_hint": None,
+            "client_state": None,
             "state": state,
-            "completion_state": {
-                "sub_flow": "link",
-                "client_id": "my_app_client_id",
-                "redirect_uri": "http://valid-frontend.com/callback",
-                "code_challenge": "test",
-                "code_challenge_method": "S256",
-                "client_state": None,
-                "user_id": "test",
-            },
+            "code_challenge": "test",
+            "code_challenge_method": "S256",
+            "link": True,
+            "user_id": "test",
         }
     )
 
@@ -123,7 +119,7 @@ async def test_initiate_link_requires_authentication(
         )
     )
 
-    response = await TokenCompletion()._link_start(request, context, oauth_provider)
+    response = await oauth_provider.initiate_link(request, context)
 
     assert response.status_code == 401
     assert response.body
@@ -166,7 +162,7 @@ async def test_initiate_link_fails_when_linking_disabled(
         )
     )
 
-    response = await TokenCompletion()._link_start(request, context, oauth_provider)
+    response = await oauth_provider.initiate_link(request, context)
 
     assert response.status_code == 400
     assert response.body

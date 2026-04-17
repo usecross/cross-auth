@@ -19,13 +19,28 @@ def construct_relative_url(
     Returns:
         The constructed URL with the new segment
     """
-    parsed = urlparse(url)
-    path_parts = parsed.path.rstrip("/").split("/")
-    if path_parts and path_parts[-1]:
-        path_parts.pop()
-    new_path = "/".join(path_parts) + "/" + new_segment
-
     if base_url:
-        return f"{base_url.rstrip('/')}{new_path}"
+        # Remove trailing slash if present
+        base = base_url.rstrip("/")
 
-    return f"{parsed.scheme}://{parsed.netloc}{new_path}"
+        # Parse the request URL to get the path
+        parsed_url = urlparse(url)
+        request_path = parsed_url.path
+
+        # Get the directory path (remove the last segment)
+        path_parts = request_path.rstrip("/").split("/")
+
+        if path_parts and path_parts[-1]:  # Check if there's a last segment to remove
+            path_parts.pop()  # Remove current endpoint (e.g., 'authorize')
+
+        dir_path = "/".join(path_parts)
+
+        return f"{base}{dir_path}/{new_segment}"
+    else:
+        # Simple case: just replace the last segment
+        # Handle trailing slashes by stripping them first
+        clean_url = url.rstrip("/")
+        parts = clean_url.split("/")
+        parts.pop()
+        parts.append(new_segment)
+        return "/".join(parts)
