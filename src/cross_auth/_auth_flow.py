@@ -9,10 +9,10 @@ from typing import Any, Literal, cast
 from cross_web import AsyncHTTPRequest
 from pydantic import BaseModel, HttpUrl, TypeAdapter, ValidationError
 
-from .exceptions import CrossAuthException
 from ._context import Context
 from ._issuer import AuthorizationCodeGrantData
 from ._storage import User
+from .exceptions import CrossAuthException
 from .social_providers.oauth import (
     OAuth2Exception,
     OAuth2Provider,
@@ -29,7 +29,8 @@ from .utils._url import construct_relative_url
 logger = logging.getLogger(__name__)
 
 
-FlowKind = Literal["session", "token", "link"]
+# TODO: explain these?
+FlowKind = Literal["session", "token", "link", "connect"]
 
 
 class AuthRequest(BaseModel):
@@ -44,7 +45,7 @@ class AuthRequest(BaseModel):
     state: str
     provider_code_verifier: str | None = None
 
-    # Session flow: where to redirect the user after login completes.
+    # Session + connect flows: where to redirect the user after completion.
     next_url: str | None = None
 
     # Token flow: the client app's OAuth parameters.
@@ -54,7 +55,7 @@ class AuthRequest(BaseModel):
     client_code_challenge: str | None = None
     client_code_challenge_method: Literal["S256"] | None = None
 
-    # Link flow: the user who initiated linking (+ client PKCE for finalize-link).
+    # Link + connect flows: the user who initiated attaching a social account.
     user_id: str | None = None
 
 
@@ -167,6 +168,55 @@ async def start_session_flow(
         code_challenge=challenge,
         code_challenge_method=challenge_method,
         login_hint=request.query_params.get("login_hint"),
+    )
+
+    return Response.redirect(authorization_url)
+
+
+async def start_connect_flow(
+    provider: OAuth2Provider,
+    request: AsyncHTTPRequest,
+    context: Context,
+) -> Response:
+    """GET /{provider}/connect — logged-in user attaches a social account.
+
+    Unlike the link flow, this is a single round-trip using the session cookie —
+    no PKCE round-trip with the client. Requires an authenticated user.
+
+    Supports ?next=/some/path to control post-connect redirect.
+    """
+    user = context.get_user_from_request(request)
+    if user is None:
+        return Response.error(
+            "unauthorized",
+            error_description="Must be logged in to connect a social account",
+            status_code=401,
+        )
+
+    next_url = request.query_params.get("next") or context.default_next_url
+    if not _is_safe_next_url(next_url):
+        next_url = context.default_next_url
+
+    state = secrets.token_hex(16)
+    verifier, challenge, challenge_method = _generate_provider_pkce(provider)
+
+    _store_auth_request(
+        context,
+        AuthRequest(
+            flow="connect",
+            provider_id=provider.id,
+            state=state,
+            provider_code_verifier=verifier,
+            next_url=next_url,
+            user_id=str(user.id),
+        ),
+    )
+
+    authorization_url = provider.build_authorization_url(
+        state=state,
+        redirect_uri=_proxy_redirect_uri(request, context),
+        code_challenge=challenge,
+        code_challenge_method=challenge_method,
     )
 
     return Response.redirect(authorization_url)
@@ -292,7 +342,8 @@ async def handle_callback(
 
     Looks up the stored AuthRequest by state, then dispatches to the flow-specific
     completion: session (cookie + redirect to next_url), token (authorization code
-    to client), or link (stash a link code).
+    to client), connect (attach account to current user + redirect), or link
+    (stash a link code).
     """
     callback_data = await provider.extract_callback_params(request)
 
@@ -350,6 +401,21 @@ async def handle_callback(
             auth_request, error=e.error, error_description=e.error_description
         )
 
+    if auth_request.flow == "connect":
+        try:
+            return _complete_connect(
+                auth_request=auth_request,
+                provider=provider,
+                context=context,
+                validated=validated,
+                user_info=cast(dict[str, Any], user_info),
+                token_response=token_response,
+            )
+        except CrossAuthException as e:
+            return _flow_error(
+                auth_request, error=e.error, error_description=e.error_description
+            )
+
     try:
         user = resolve_or_create_user(
             provider=provider,
@@ -376,7 +442,7 @@ def _flow_error(
     auth_request: AuthRequest,
     *,
     error: str,
-    error_description: str,
+    error_description: str | None,
 ) -> Response:
     """Render an error in a way appropriate to the flow.
 
@@ -487,6 +553,70 @@ def resolve_or_create_user(
     )
 
     return user
+
+
+def _complete_connect(
+    *,
+    auth_request: AuthRequest,
+    provider: OAuth2Provider,
+    context: Context,
+    validated: ValidatedUserInfo,
+    user_info: dict[str, Any],
+    token_response: Any,
+) -> Response:
+    """Attach the provider account to the user who started the connect flow."""
+    assert auth_request.user_id is not None
+
+    user = context.accounts_storage.find_user_by_id(auth_request.user_id)
+    if user is None:
+        raise CrossAuthException(
+            "server_error",
+            error_description="User from connect flow no longer exists",
+        )
+
+    social_account = context.accounts_storage.find_social_account(
+        provider=provider.id,
+        provider_user_id=validated.provider_user_id,
+    )
+
+    if social_account is not None:
+        if str(social_account.user_id) != str(user.id):
+            raise CrossAuthException(
+                "account_already_linked",
+                error_description=(
+                    "This provider account is already linked to a different user."
+                ),
+            )
+
+        context.accounts_storage.update_social_account(
+            social_account.id,
+            access_token=token_response.access_token,
+            refresh_token=token_response.refresh_token,
+            access_token_expires_at=token_response.access_token_expires_at,
+            refresh_token_expires_at=token_response.refresh_token_expires_at,
+            scope=token_response.scope,
+            user_info=user_info,
+            provider_email=validated.email,
+            provider_email_verified=validated.email_verified,
+        )
+    else:
+        context.accounts_storage.create_social_account(
+            user_id=user.id,
+            provider=provider.id,
+            provider_user_id=validated.provider_user_id,
+            access_token=token_response.access_token,
+            refresh_token=token_response.refresh_token,
+            access_token_expires_at=token_response.access_token_expires_at,
+            refresh_token_expires_at=token_response.refresh_token_expires_at,
+            scope=token_response.scope,
+            user_info=user_info,
+            provider_email=validated.email,
+            provider_email_verified=validated.email_verified,
+            is_login_method=False,
+        )
+
+    next_url = auth_request.next_url or context.default_next_url
+    return Response.redirect(next_url)
 
 
 def _complete_session(

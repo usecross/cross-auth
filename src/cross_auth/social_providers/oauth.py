@@ -1,13 +1,15 @@
 import logging
 from dataclasses import dataclass
+from typing import Any, ClassVar, NotRequired, TypedDict
 from urllib.parse import urlencode
-from typing import Any, ClassVar, TypedDict, NotRequired
 
 import httpx
 from cross_web import AsyncHTTPRequest
 from pydantic import BaseModel, ValidationError
 
-from cross_auth.utils._response import Response  # noqa: F401  (re-exported for subclasses)
+from cross_auth.utils._response import (
+    Response,  # noqa: F401  (re-exported for subclasses)
+)
 
 from .._context import Context
 from ..models.oauth_token_response import (
@@ -49,8 +51,6 @@ class OAuth2Exception(Exception):
 
 
 class CallbackData(BaseModel):
-    """Data extracted from an OAuth callback request."""
-
     code: str | None
     state: str | None
     error: str | None
@@ -58,12 +58,6 @@ class CallbackData(BaseModel):
 
 
 class OAuth2Provider:
-    """Pure OAuth2 authentication logic for a single identity provider.
-
-    Providers no longer own HTTP routes — the router (see `_auth_flow.py`)
-    orchestrates HTTP work and calls these primitives.
-    """
-
     id: ClassVar[str]
     authorization_endpoint: ClassVar[str]
     token_endpoint: ClassVar[str]
@@ -91,8 +85,6 @@ class OAuth2Provider:
         self.client_id = client_id
         self.client_secret = client_secret
         self.trust_email = trust_email
-
-    # ---- Account-linking policy ----------------------------------------
 
     def can_auto_link(self, context: Context, email_verified: bool | None) -> bool:
         """Check if auto-linking by email is allowed.
@@ -125,8 +117,6 @@ class OAuth2Provider:
 
         account_linking = context.config.get("account_linking", {})
         return account_linking.get("allow_different_emails", False)
-
-    # ---- Authorization URL construction --------------------------------
 
     def build_authorization_params(
         self,
@@ -180,8 +170,6 @@ class OAuth2Provider:
         )
         return f"{self.authorization_endpoint}?{urlencode(params)}"
 
-    # ---- Callback parsing ----------------------------------------------
-
     async def extract_callback_params(self, request: AsyncHTTPRequest) -> CallbackData:
         """Extract code, state, and error from callback request.
 
@@ -192,8 +180,6 @@ class OAuth2Provider:
             state=request.query_params.get("state"),
             error=request.query_params.get("error"),
         )
-
-    # ---- Token exchange -------------------------------------------------
 
     def build_token_exchange_params(
         self, code: str, redirect_uri: str, code_verifier: str | None = None
@@ -319,8 +305,6 @@ class OAuth2Provider:
                 error="server_error",
                 error_description="Failed to exchange code for token",
             ) from e
-
-    # ---- User info ------------------------------------------------------
 
     def fetch_user_info(
         self,

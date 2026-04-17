@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from ._auth_flow import (
     finalize_link,
     handle_callback,
+    start_connect_flow,
     start_link_flow,
     start_session_flow,
     start_token_flow,
@@ -40,6 +41,12 @@ def _provider_routes(provider: OAuth2Provider) -> list[Route]:
             methods=["GET"],
             function=bound(start_session_flow),
             operation_id=f"{provider.id}_login",
+        ),
+        Route(
+            path=f"{prefix}/connect",
+            methods=["GET"],
+            function=bound(start_connect_flow),
+            operation_id=f"{provider.id}_connect",
         ),
         Route(
             path=f"{prefix}/authorize",

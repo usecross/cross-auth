@@ -11,7 +11,6 @@ from cross_auth import AccountsStorage, SecondaryStorage
 from cross_auth import SessionConfig
 from cross_auth import User as UserProtocol
 from cross_auth._session import get_current_user as get_session_user
-from cross_auth.completions import SessionCompletion, TokenCompletion
 from cross_auth.fastapi import CrossAuth
 from cross_auth.social_providers.github import GitHubProvider
 from cross_web import AsyncHTTPRequest
@@ -339,20 +338,13 @@ SESSION_CONFIG: SessionConfig = {
 
 auth = CrossAuth(
     providers=[github],
-    completions=[
-        SessionCompletion(
-            session_config=SESSION_CONFIG,
-            login_url="/",
-            default_post_login_redirect_url="/profile",
-        ),
-        TokenCompletion(),
-    ],
     storage=secondary_storage,
     accounts_storage=accounts_storage,
     create_token=create_demo_token,
     trusted_origins=[*SPA_TRUSTED_REDIRECT_HOSTS, *BACKEND_TRUSTED_REDIRECT_HOSTS],
     session_config=SESSION_CONFIG,
     get_user_from_request=resolve_auth_user,
+    default_next_url="/profile",
     config={
         "account_linking": {"enabled": True},
         "allowed_client_ids": [SPA_CLIENT_ID],
