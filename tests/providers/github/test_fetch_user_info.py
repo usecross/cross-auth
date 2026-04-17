@@ -1,4 +1,4 @@
-"""Tests for GitHubProvider.get_user_info() method."""
+"""Tests for GitHubProvider.fetch_user_info() method."""
 
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -34,7 +34,7 @@ async def test_get_user_info_success(
     )
 
     user_info = cast(
-        dict[str, Any], github_provider.get_user_info(token_response, context)
+        dict[str, Any], github_provider.fetch_user_info(token_response, context)
     )
 
     assert user_info["id"] == 1
@@ -61,7 +61,7 @@ async def test_name_fallback_to_login(
     )
 
     user_info = cast(
-        dict[str, Any], github_provider.get_user_info(token_response, context)
+        dict[str, Any], github_provider.fetch_user_info(token_response, context)
     )
 
     assert user_info["name"] == "octocat"

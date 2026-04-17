@@ -1,6 +1,5 @@
 from typing import Annotated
 
-from cross_web import AsyncHTTPRequest
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -147,8 +146,7 @@ def test_auto_wired_get_user_from_request(
 
     @app.get("/check")
     async def check(request: Request):
-        async_request = AsyncHTTPRequest.from_fastapi(request)
-        user = auth.router._get_user_from_request(async_request)
+        user = auth.get_current_user(request)
         if user is None:
             return {"user": None}
         return {"user": user.id}

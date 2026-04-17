@@ -129,7 +129,7 @@ class GitHubProvider(OAuth2Provider):
             self.user_info_endpoint = f"{api_base_url}/user"
             self.emails_endpoint = f"{api_base_url}/user/emails"
 
-    def get_user_info(
+    def fetch_user_info(
         self,
         token_response: TokenResponse,
         context: Context,
@@ -137,7 +137,7 @@ class GitHubProvider(OAuth2Provider):
     ) -> UserInfo:
         # Cast to dict[str, Any] since GitHub API returns more fields than UserInfo
         info = cast(
-            dict[str, Any], super().get_user_info(token_response, context, extra)
+            dict[str, Any], super().fetch_user_info(token_response, context, extra)
         )
 
         try:

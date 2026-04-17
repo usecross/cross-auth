@@ -45,13 +45,13 @@ class DiscordProvider(OAuth2Provider):
     scopes = ["identify", "email"]
     supports_pkce = True
 
-    def get_user_info(
+    def fetch_user_info(
         self,
         token_response: TokenResponse,
         context: Context,
         extra: dict[str, Any] | None = None,
     ) -> UserInfo:
-        info = super().get_user_info(token_response, context, extra)
+        info = super().fetch_user_info(token_response, context, extra)
 
         # Map Discord's 'verified' field to our standard 'email_verified'
         info["email_verified"] = info.get("verified")

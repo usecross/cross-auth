@@ -1,12 +1,10 @@
 import pytest
 from cross_web import AsyncHTTPRequest, TestingRequestAdapter
 
+from cross_auth._auth_flow import AuthRequest, start_token_flow
 from cross_auth._context import Context
 from cross_auth._storage import SecondaryStorage
-from cross_auth.social_providers.oauth import (
-    OAuth2AuthorizationRequestData,
-    OAuth2Provider,
-)
+from cross_auth.social_providers.oauth import OAuth2Provider
 
 pytestmark = pytest.mark.asyncio
 
@@ -33,7 +31,7 @@ async def test_invalid_request_when_response_type_is_missing_or_invalid(
         )
     )
 
-    response = await oauth_provider.authorize(request, context)
+    response = await start_token_flow(oauth_provider, request, context)
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -61,7 +59,7 @@ async def test_authorize_redirects_to_provider(
         )
     )
 
-    response = await oauth_provider.authorize(request, context)
+    response = await start_token_flow(oauth_provider, request, context)
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -82,18 +80,20 @@ async def test_authorize_redirects_to_provider(
 
     assert raw_authorization_request_data is not None
 
-    authorization_request_data = OAuth2AuthorizationRequestData.model_validate_json(
+    authorization_request_data = AuthRequest.model_validate_json(
         raw_authorization_request_data
     )
 
     # The app's client_id is stored in the authorization request data
+    assert authorization_request_data.flow == "token"
     assert authorization_request_data.client_id == "my_app_client_id"
     assert (
-        authorization_request_data.redirect_uri == "http://valid-frontend.com/callback"
+        authorization_request_data.client_redirect_uri
+        == "http://valid-frontend.com/callback"
     )
     assert authorization_request_data.state == state
-    assert authorization_request_data.code_challenge == "test"
-    assert authorization_request_data.code_challenge_method == "S256"
+    assert authorization_request_data.client_code_challenge == "test"
+    assert authorization_request_data.client_code_challenge_method == "S256"
 
 
 async def test_authorize_requires_redirect_uri(
@@ -105,7 +105,7 @@ async def test_authorize_requires_redirect_uri(
         )
     )
 
-    response = await oauth_provider.authorize(request, context)
+    response = await start_token_flow(oauth_provider, request, context)
 
     assert response.status_code == 400
     assert response.json() == {"error": "invalid_request"}
@@ -126,7 +126,7 @@ async def test_invalid_redirect_uri_error(
         )
     )
 
-    response = await oauth_provider.authorize(request, context)
+    response = await start_token_flow(oauth_provider, request, context)
 
     assert response.status_code == 400
     assert response.json() == {"error": "invalid_redirect_uri"}
@@ -155,7 +155,7 @@ async def test_link_code_response_type_not_supported(
         )
     )
 
-    response = await oauth_provider.authorize(request, context)
+    response = await start_token_flow(oauth_provider, request, context)
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -197,7 +197,9 @@ async def test_authorize_rejects_invalid_client_id(
         )
     )
 
-    response = await oauth_provider.authorize(request, context_with_client_validation)
+    response = await start_token_flow(
+        oauth_provider, request, context_with_client_validation
+    )
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -239,7 +241,9 @@ async def test_authorize_accepts_valid_client_id(
         )
     )
 
-    response = await oauth_provider.authorize(request, context_with_client_validation)
+    response = await start_token_flow(
+        oauth_provider, request, context_with_client_validation
+    )
 
     assert response.status_code == 302
     assert response.headers is not None

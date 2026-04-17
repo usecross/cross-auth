@@ -11,7 +11,7 @@ from cross_auth._context import Context
 from cross_auth._issuer import AuthorizationCodeGrantData, Issuer
 from cross_auth._storage import AccountsStorage, SecondaryStorage, User as UserProtocol
 from cross_auth.exceptions import CrossAuthException
-from cross_auth.social_providers.oauth import OAuth2LinkCodeData
+from cross_auth._auth_flow import LinkCodeData
 
 pytestmark = pytest.mark.asyncio
 
@@ -293,7 +293,7 @@ def valid_link_code(secondary_storage: SecondaryStorage) -> str:
 
     secondary_storage.set(
         f"oauth:link_request:{code}",
-        OAuth2LinkCodeData(
+        LinkCodeData(
             expires_at=datetime.now(tz=timezone.utc) + timedelta(seconds=10),
             client_id="test",
             redirect_uri="test",

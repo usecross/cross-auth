@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from urllib.parse import urlparse
 
-from cross_web import AsyncHTTPRequest
+from cross_web import AsyncHTTPRequest, Cookie
 
 from ._config import Config
 from ._storage import AccountsStorage, SecondaryStorage, User
@@ -19,6 +19,8 @@ class Context:
         get_user_from_request: Callable[[AsyncHTTPRequest], User | None],
         base_url: str | None = None,
         config: Config | None = None,
+        create_session_cookie: Callable[[str], Cookie] | None = None,
+        default_next_url: str = "/",
     ):
         self.secondary_storage = secondary_storage
         self.accounts_storage = accounts_storage
@@ -27,6 +29,8 @@ class Context:
         self.get_user_from_request = get_user_from_request
         self.base_url = base_url
         self.config: Config = config if config is not None else {}
+        self.create_session_cookie = create_session_cookie
+        self.default_next_url = default_next_url
 
     def is_valid_redirect_uri(self, redirect_uri: str) -> bool:
         host = urlparse(redirect_uri).netloc

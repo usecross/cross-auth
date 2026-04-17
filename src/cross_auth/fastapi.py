@@ -37,6 +37,7 @@ class CrossAuth:
         get_user_from_request: Callable[[AsyncHTTPRequest], User | None] | None = None,
         base_url: str | None = None,
         config: Config | None = None,
+        default_next_url: str = "/",
     ):
         self._storage = storage
         self._accounts_storage = accounts_storage
@@ -55,7 +56,16 @@ class CrossAuth:
             trusted_origins=trusted_origins,
             base_url=base_url,
             config=config,
+            create_session_cookie=self._create_session_cookie,
+            default_next_url=default_next_url,
         )
+
+    def _create_session_cookie(self, user_id: str) -> Cookie:
+        resolved = resolve_config(self._session_config)
+        session_id, _ = _create_session(
+            user_id, self._storage, max_age=resolved["max_age"]
+        )
+        return _make_session_cookie(session_id, self._session_config)
 
     @property
     def router(self) -> AuthRouter:
