@@ -7,18 +7,18 @@ from pathlib import Path
 from typing import Annotated, Any, cast
 
 import jwt
-from cross_auth import AccountsStorage, SecondaryStorage
-from cross_auth import SessionConfig
-from cross_auth import User as UserProtocol
-from cross_auth._session import get_current_user as get_session_user
-from cross_auth.fastapi import CrossAuth
-from cross_auth.social_providers.github import GitHubProvider
 from cross_web import AsyncHTTPRequest
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from passlib.context import CryptContext
+
+from cross_auth import AccountsStorage, SecondaryStorage, SessionConfig
+from cross_auth import User as UserProtocol
+from cross_auth._session import get_current_user as get_session_user
+from cross_auth.fastapi import CrossAuth
+from cross_auth.social_providers.github import GitHubProvider
 
 APP_DIR = Path(__file__).parent
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
@@ -377,8 +377,6 @@ def home(
             "error_message": get_error_message(error),
             "github_login_url": "/auth/github/login?next=/profile",
             "github_mock_base_url": GITHUB_MOCK_BASE_URL,
-            "session_me_url": "/api/me-session",
-            "token_me_url": "/api/me-token",
             "spa_client_id": SPA_CLIENT_ID,
             "spa_demo_url": SPA_DEMO_URL,
             "user": user,
@@ -431,14 +429,8 @@ def link_callback(request: Request):
     )
 
 
-@app.get("/api/me-session")
+@app.get("/api/me")
 def api_me_session(
     user: Annotated[UserProtocol, Depends(auth.require_current_user)],
 ) -> JSONResponse:
     return JSONResponse(serialize_user(cast(DemoUser, user)))
-
-
-@app.get("/api/me-token")
-def api_me_token(request: Request) -> JSONResponse:
-    user = resolve_bearer_user(request)
-    return JSONResponse(serialize_user(user))

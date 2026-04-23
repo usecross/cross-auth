@@ -236,7 +236,7 @@ export default function App() {
     setError("")
 
     try {
-      const response = await fetch(`${authBaseUrl}/api/me-token`, {
+      const response = await fetch(`${authBaseUrl}/api/me`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -469,7 +469,7 @@ export default function App() {
           ) : null}
           <div className="actions">
             <button onClick={() => void fetchTokenUser()} disabled={!accessToken}>
-              Call /api/me-token
+              Call /api/me
             </button>
             <button onClick={clearToken} disabled={!accessToken}>
               Clear token
@@ -492,7 +492,7 @@ export default function App() {
           <ol>
             <li>Authenticate with password grant or with GitHub auth-code flow.</li>
             <li>Store the returned bearer token locally.</li>
-            <li>Call <code>/api/me-token</code> with <code>Authorization: Bearer ...</code>.</li>
+            <li>Call <code>/api/me</code> with <code>Authorization: Bearer ...</code>.</li>
             <li>Optionally click <code>Link GitHub account</code> to start linking.</li>
             <li>After the provider callback, POST the link code and verifier to <code>/auth/github/finalize-link</code>.</li>
           </ol>

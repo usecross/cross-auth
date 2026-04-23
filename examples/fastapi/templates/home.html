@@ -32,7 +32,7 @@
         </div>
         <div class="actions">
           <a class="button primary" href="/profile">Profile</a>
-          <a class="button" href="{{ session_me_url }}">{{ session_me_url }}</a>
+          <a class="button" href="/api/me">/api/me</a>
           <form action="/logout" method="post">
             <button type="submit">Log out</button>
           </form>
@@ -68,7 +68,6 @@
         <li>Default SPA URL: <code>{{ spa_demo_url }}</code></li>
         <li>Client ID: <code>{{ spa_client_id }}</code></li>
         <li>Token endpoint: <code>/auth/token</code></li>
-        <li>Bearer-protected API: <code>{{ token_me_url }}</code></li>
       </ul>
       <div class="actions">
         <a class="button" href="{{ spa_demo_url }}" target="_blank" rel="noreferrer">Open SPA demo</a>
@@ -77,7 +76,7 @@
         The SPA generates PKCE in the browser, redirects to
         <code>/auth/github/authorize</code>, receives a local auth code at its own
         callback URL, exchanges it at <code>/auth/token</code>, and then calls
-        <code>{{ token_me_url }}</code> with a bearer token.
+        <code>/api/me</code> with a bearer token.
       </p>
     </div>
 
@@ -114,7 +113,6 @@
         <li><strong>Session app:</strong> <code>POST /login</code> calls <code>CrossAuth.authenticate(...)</code> and <code>CrossAuth.login(...)</code>.</li>
         <li><strong>Social session login:</strong> <code>/auth/github/session/authorize</code> redirects to GitHub, then <code>/auth/github/session/callback</code> resolves the local user and sets the session cookie.</li>
         <li><strong>Auth-server login:</strong> the SPA calls <code>/auth/github/authorize</code>, receives a local auth code at its own callback URL, then exchanges it at <code>/auth/token</code>.</li>
-        <li><strong>Protected APIs:</strong> <code>{{ session_me_url }}</code> uses the session cookie, while <code>{{ token_me_url }}</code> expects <code>Authorization: Bearer ...</code>.</li>
       </ul>
     </div>
   </div>
