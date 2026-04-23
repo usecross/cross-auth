@@ -7,9 +7,7 @@ import httpx
 from cross_web import AsyncHTTPRequest
 from pydantic import BaseModel, ValidationError
 
-from cross_auth.utils._response import (
-    Response,  # noqa: F401  (re-exported for subclasses)
-)
+from cross_auth.utils._response import Response
 
 from .._context import Context
 from ..models.oauth_token_response import (
@@ -123,6 +121,7 @@ class OAuth2Provider:
         state: str,
         redirect_uri: str,
         *,
+        request: AsyncHTTPRequest | None = None,
         code_challenge: str | None = None,
         code_challenge_method: str | None = None,
         login_hint: str | None = None,
@@ -130,7 +129,8 @@ class OAuth2Provider:
         """Build the query-string params sent to the provider's authorization endpoint.
 
         Override for providers that need different params (e.g., Apple uses
-        response_mode=form_post and space-separated scopes).
+        response_mode=form_post and space-separated scopes). The incoming
+        `request` is forwarded so overrides can branch on its query params.
         """
         params: dict[str, str] = {
             "client_id": self.client_id,
@@ -156,19 +156,51 @@ class OAuth2Provider:
         state: str,
         redirect_uri: str,
         *,
+        request: AsyncHTTPRequest | None = None,
         code_challenge: str | None = None,
         code_challenge_method: str | None = None,
         login_hint: str | None = None,
     ) -> str:
-        """Return the full URL to redirect the user to at the provider."""
+        """Return the full URL to redirect the user to at the provider.
+
+        Providers can override to return a different URL based on the incoming
+        request.
+        """
         params = self.build_authorization_params(
             state=state,
             redirect_uri=redirect_uri,
+            request=request,
             code_challenge=code_challenge,
             code_challenge_method=code_challenge_method,
             login_hint=login_hint,
         )
         return f"{self.authorization_endpoint}?{urlencode(params)}"
+
+    async def intercept_callback(
+        self,
+        request: AsyncHTTPRequest,
+        context: Context,
+    ) -> Response | None:
+        """Inspect an incoming callback before the normal OAuth flow runs.
+
+        Return a Response to short-circuit the callback handler (e.g., the
+        provider sent a non-OAuth callback variant that should be routed
+        elsewhere), or None to continue with the standard flow.
+        """
+        return None
+
+    async def finalize_redirect(
+        self,
+        request: AsyncHTTPRequest,
+        response: Response,
+    ) -> Response:
+        """Post-process the Response a flow handler is about to return.
+
+        Providers can rewrite the Location header or otherwise adjust the
+        response (e.g., append a provider-specific query parameter to the
+        final redirect). The default is a no-op.
+        """
+        return response
 
     async def extract_callback_params(self, request: AsyncHTTPRequest) -> CallbackData:
         """Extract code, state, and error from callback request.

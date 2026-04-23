@@ -150,6 +150,7 @@ class AppleProvider(OIDCProvider):
         state: str,
         redirect_uri: str,
         *,
+        request: AsyncHTTPRequest | None = None,
         code_challenge: str | None = None,
         code_challenge_method: str | None = None,
         login_hint: str | None = None,
