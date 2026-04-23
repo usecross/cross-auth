@@ -1,4 +1,4 @@
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 
 def construct_relative_url(
@@ -19,28 +19,35 @@ def construct_relative_url(
     Returns:
         The constructed URL with the new segment
     """
+    parsed_url = urlparse(url)
+
+    path_parts = parsed_url.path.rstrip("/").split("/")
+    if path_parts and path_parts[-1]:
+        path_parts.pop()
+    new_path = "/".join(path_parts + [new_segment])
+
     if base_url:
-        # Remove trailing slash if present
-        base = base_url.rstrip("/")
+        parsed_base = urlparse(base_url.rstrip("/"))
+        base_path = parsed_base.path.rstrip("/")
+        combined_path = f"{base_path}{new_path}" if base_path else new_path
+        return urlunparse(
+            (
+                parsed_base.scheme,
+                parsed_base.netloc,
+                combined_path,
+                "",
+                "",
+                "",
+            )
+        )
 
-        # Parse the request URL to get the path
-        parsed_url = urlparse(url)
-        request_path = parsed_url.path
-
-        # Get the directory path (remove the last segment)
-        path_parts = request_path.rstrip("/").split("/")
-
-        if path_parts and path_parts[-1]:  # Check if there's a last segment to remove
-            path_parts.pop()  # Remove current endpoint (e.g., 'authorize')
-
-        dir_path = "/".join(path_parts)
-
-        return f"{base}{dir_path}/{new_segment}"
-    else:
-        # Simple case: just replace the last segment
-        # Handle trailing slashes by stripping them first
-        clean_url = url.rstrip("/")
-        parts = clean_url.split("/")
-        parts.pop()
-        parts.append(new_segment)
-        return "/".join(parts)
+    return urlunparse(
+        (
+            parsed_url.scheme,
+            parsed_url.netloc,
+            new_path,
+            "",
+            "",
+            "",
+        )
+    )
