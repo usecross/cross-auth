@@ -110,9 +110,16 @@ def test_token_callback_reports_provider_error_to_client(client: TestClient):
     resp = client.get(
         "/fake/callback", params={"error": "access_denied", "state": state}
     )
-    # access_denied happens before we look up auth_request, so it returns a plain error.
-    assert resp.status_code == 400
-    assert resp.json()["error"] == "access_denied"
+    assert resp.status_code == 302
+    location = urlparse(resp.headers["location"])
+    assert (
+        f"{location.scheme}://{location.netloc}{location.path}"
+        == "http://client.example/cb"
+    )
+    qs = parse_qs(location.query)
+    assert qs["error"] == ["access_denied"]
+    assert qs["error_description"] == ["Authorization failed: access_denied"]
+    assert qs["state"] == ["client-csrf-state"]
 
 
 @respx.mock

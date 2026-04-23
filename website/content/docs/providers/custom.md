@@ -38,7 +38,7 @@ class CustomProvider(OAuth2Provider):
     def __init__(self, client_id: str, client_secret: str):
         super().__init__(client_id=client_id, client_secret=client_secret)
 
-    def get_user_info(
+    def fetch_user_info(
         self,
         token_response: TokenResponse,
         context: Context,
@@ -149,19 +149,18 @@ Override `build_authorization_params` to add provider-specific parameters:
 def build_authorization_params(
     self,
     state: str,
-    proxy_redirect_uri: str,
-    response_type: str,
+    redirect_uri: str,
+    *,
     code_challenge: str | None = None,
     code_challenge_method: str | None = None,
     login_hint: str | None = None,
 ) -> dict:
     params = super().build_authorization_params(
-        state,
-        proxy_redirect_uri,
-        response_type,
-        code_challenge,
-        code_challenge_method,
-        login_hint,
+        state=state,
+        redirect_uri=redirect_uri,
+        code_challenge=code_challenge,
+        code_challenge_method=code_challenge_method,
+        login_hint=login_hint,
     )
     # Add custom parameters
     params["prompt"] = "consent"
@@ -188,7 +187,7 @@ def build_token_exchange_params(
 
 ### Custom Callback Handling
 
-Override `extract_callback_data` for providers that send callback data
+Override `extract_callback_params` for providers that send callback data
 differently (e.g., POST instead of GET):
 
 ```python
@@ -196,7 +195,7 @@ from cross_auth import CallbackData
 from cross_web import AsyncHTTPRequest
 
 
-async def extract_callback_data(self, request: AsyncHTTPRequest) -> CallbackData:
+async def extract_callback_params(self, request: AsyncHTTPRequest) -> CallbackData:
     # Example: Extract from POST form data
     form_data = await request.get_form_data()
     return CallbackData(

@@ -346,21 +346,38 @@ async def handle_callback(
     (stash a link code).
     """
     callback_data = await provider.extract_callback_params(request)
+    state = callback_data.state
+    auth_request = _load_auth_request(context, state) if state else None
 
     if callback_data.error:
         logger.error("OAuth error: %s", callback_data.error)
+        if auth_request is not None:
+            if auth_request.provider_id != provider.id:
+                logger.error(
+                    "Provider mismatch on callback: expected %s, got %s",
+                    auth_request.provider_id,
+                    provider.id,
+                )
+                return Response.error(
+                    "server_error", error_description="Provider mismatch"
+                )
+
+            return _flow_error(
+                auth_request,
+                error=callback_data.error,
+                error_description=f"Authorization failed: {callback_data.error}",
+            )
+
         return Response.error(
-            "access_denied",
+            callback_data.error,
             error_description=f"Authorization failed: {callback_data.error}",
         )
 
-    state = callback_data.state
     if not state:
         return Response.error(
             "server_error", error_description="No state found in request"
         )
 
-    auth_request = _load_auth_request(context, state)
     if auth_request is None:
         return Response.error(
             "server_error", error_description="Provider data not found"
@@ -794,7 +811,14 @@ async def finalize_link(
             "unauthorized", error_description="Not logged in", status_code=401
         )
 
-    request_data = json.loads(await request.get_body())
+    try:
+        request_data = json.loads(await request.get_body())
+    except json.JSONDecodeError as e:
+        logger.error("Invalid request body: %s", e)
+        return Response.error(
+            "invalid_request", error_description="Invalid request body"
+        )
+
     code = request_data.get("link_code")
     allow_login = request_data.get("allow_login", False) is True
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -16,6 +18,30 @@ from .conftest import load_auth_request, mock_token_and_userinfo
 
 _LINK_CODE_CHALLENGE = "n4bQgYhMfWWaL-qgxVrQFaO_TxsrC4Is0V1sFbDwCgg"
 _LINK_CODE_VERIFIER = "test"  # matches the challenge above
+
+
+def _store_link_code(
+    secondary_storage: SecondaryStorage,
+    *,
+    code: str = "link-code",
+    user_id: str = "test",
+    provider_code: str = "provider-code",
+    expires_at: datetime | None = None,
+) -> str:
+    secondary_storage.set(
+        f"oauth:link_request:{code}",
+        LinkCodeData(
+            expires_at=expires_at
+            or (datetime.now(tz=timezone.utc) + timedelta(minutes=10)),
+            client_id="app-client",
+            redirect_uri="http://client.example/cb",
+            code_challenge=_LINK_CODE_CHALLENGE,
+            code_challenge_method="S256",
+            user_id=user_id,
+            provider_code=provider_code,
+        ).model_dump_json(),
+    )
+    return code
 
 
 def _auth_enabled_client(build_auth) -> TestClient:
@@ -177,3 +203,169 @@ def test_finalize_link_requires_authentication(build_auth):
             json={"link_code": "anything", "code_verifier": _LINK_CODE_VERIFIER},
         )
     assert resp.status_code == 401
+
+
+def test_finalize_link_rejects_invalid_json(build_auth):
+    with _auth_enabled_client(build_auth) as c:
+        resp = c.post(
+            "/fake/finalize-link",
+            headers={"Authorization": "Bearer test"},
+            content="{not-json",
+        )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "invalid_request"
+
+
+def test_finalize_link_rejects_expired_link(
+    build_auth, secondary_storage: SecondaryStorage
+):
+    link_code = _store_link_code(
+        secondary_storage,
+        code="expired-link",
+        expires_at=datetime.now(tz=timezone.utc) - timedelta(seconds=1),
+    )
+
+    with _auth_enabled_client(build_auth) as c:
+        resp = c.post(
+            "/fake/finalize-link",
+            headers={"Authorization": "Bearer test"},
+            json={"link_code": link_code, "code_verifier": _LINK_CODE_VERIFIER},
+        )
+
+    assert resp.status_code == 400
+    assert resp.json()["error_description"] == "Link code has expired"
+
+
+def test_finalize_link_rejects_wrong_user(
+    build_auth, secondary_storage: SecondaryStorage
+):
+    link_code = _store_link_code(secondary_storage, code="other-user", user_id="other")
+
+    with _auth_enabled_client(build_auth) as c:
+        resp = c.post(
+            "/fake/finalize-link",
+            headers={"Authorization": "Bearer test"},
+            json={"link_code": link_code, "code_verifier": _LINK_CODE_VERIFIER},
+        )
+
+    assert resp.status_code == 403
+    assert resp.json()["error"] == "unauthorized"
+
+
+def test_finalize_link_requires_code_verifier(
+    build_auth, secondary_storage: SecondaryStorage
+):
+    link_code = _store_link_code(secondary_storage, code="missing-verifier")
+
+    with _auth_enabled_client(build_auth) as c:
+        resp = c.post(
+            "/fake/finalize-link",
+            headers={"Authorization": "Bearer test"},
+            json={"link_code": link_code},
+        )
+
+    assert resp.status_code == 400
+    assert resp.json()["error_description"] == "No code_verifier provided"
+
+
+def test_finalize_link_rejects_invalid_code_verifier(
+    build_auth, secondary_storage: SecondaryStorage
+):
+    link_code = _store_link_code(secondary_storage, code="bad-verifier")
+
+    with _auth_enabled_client(build_auth) as c:
+        resp = c.post(
+            "/fake/finalize-link",
+            headers={"Authorization": "Bearer test"},
+            json={"link_code": link_code, "code_verifier": "wrong-verifier"},
+        )
+
+    assert resp.status_code == 400
+    assert resp.json()["error_description"] == "Invalid code challenge"
+
+
+@respx.mock
+def test_finalize_link_reports_token_exchange_failure(
+    build_auth, secondary_storage: SecondaryStorage
+):
+    link_code = _store_link_code(secondary_storage, code="token-failure")
+    respx.post("https://fake.example/oauth/token").mock(
+        return_value=httpx.Response(400, json={"error": "invalid_grant"})
+    )
+
+    with _auth_enabled_client(build_auth) as c:
+        resp = c.post(
+            "/fake/finalize-link",
+            headers={"Authorization": "Bearer test"},
+            json={"link_code": link_code, "code_verifier": _LINK_CODE_VERIFIER},
+        )
+
+    assert resp.status_code == 400
+    assert resp.json()["error_description"] == "Token exchange failed"
+
+
+@respx.mock
+def test_finalize_link_reports_userinfo_failure(
+    build_auth, secondary_storage: SecondaryStorage
+):
+    link_code = _store_link_code(secondary_storage, code="userinfo-failure")
+    respx.post("https://fake.example/oauth/token").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "provider-access-token",
+                "token_type": "Bearer",
+                "scope": "email",
+            },
+        )
+    )
+    respx.get("https://fake.example/user").mock(return_value=httpx.Response(500))
+
+    with _auth_enabled_client(build_auth) as c:
+        resp = c.post(
+            "/fake/finalize-link",
+            headers={"Authorization": "Bearer test"},
+            json={"link_code": link_code, "code_verifier": _LINK_CODE_VERIFIER},
+        )
+
+    assert resp.status_code == 400
+    assert resp.json()["error_description"] == "Failed to fetch user info"
+
+
+@respx.mock
+def test_finalize_link_requires_verified_email_for_untrusted_provider(
+    build_auth,
+    secondary_storage: SecondaryStorage,
+    fake_provider,
+):
+    fake_provider.trust_email = False
+    link_code = _store_link_code(secondary_storage, code="unverified-email")
+    mock_token_and_userinfo(email="test@example.com", email_verified=False)
+
+    with _auth_enabled_client(build_auth) as c:
+        resp = c.post(
+            "/fake/finalize-link",
+            headers={"Authorization": "Bearer test"},
+            json={"link_code": link_code, "code_verifier": _LINK_CODE_VERIFIER},
+        )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "email_not_verified"
+
+
+@respx.mock
+def test_finalize_link_rejects_email_mismatch(
+    build_auth, secondary_storage: SecondaryStorage
+):
+    link_code = _store_link_code(secondary_storage, code="email-mismatch")
+    mock_token_and_userinfo(email="different@example.com", email_verified=True)
+
+    with _auth_enabled_client(build_auth) as c:
+        resp = c.post(
+            "/fake/finalize-link",
+            headers={"Authorization": "Bearer test"},
+            json={"link_code": link_code, "code_verifier": _LINK_CODE_VERIFIER},
+        )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "email_mismatch"
