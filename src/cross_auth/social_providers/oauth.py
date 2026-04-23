@@ -1,60 +1,40 @@
 import logging
-from dataclasses import dataclass
-from typing import Any, ClassVar, NotRequired, TypedDict
+from typing import Any, ClassVar
 from urllib.parse import urlencode
 
 import httpx
 from cross_web import AsyncHTTPRequest
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from cross_auth.utils._response import (
     Response,  # noqa: F401  (re-exported for subclasses)
 )
 
+from .._auth_flow import (
+    PreparedLink,
+    finalize_link,
+    handle_callback,
+    prepare_link,
+    start_connect_flow,
+    start_link_flow,
+    start_session_flow,
+    start_token_flow,
+)
 from .._context import Context
 from ..models.oauth_token_response import (
     OAuth2TokenEndpointResponse,
     TokenErrorResponse,
     TokenResponse,
 )
+from ._shared import (
+    CallbackData,
+    OAuth2Exception,
+    TokenExchangeParams,
+    UserInfo,
+    ValidatedUserInfo,
+)
 
 logger = logging.getLogger(__name__)
-
-
-class UserInfo(TypedDict, total=True):
-    email: str | None
-    id: str | int
-    email_verified: bool | None
-    name: NotRequired[str | None]
-
-
-@dataclass
-class ValidatedUserInfo:
-    email: str | None
-    provider_user_id: str
-    email_verified: bool | None
-
-
-class TokenExchangeParams(TypedDict, total=False):
-    grant_type: str
-    code: str
-    redirect_uri: str
-    client_id: str
-    client_secret: str
-    code_verifier: str
-
-
-class OAuth2Exception(Exception):
-    def __init__(self, error: str, error_description: str):
-        self.error = error
-        self.error_description = error_description
-
-
-class CallbackData(BaseModel):
-    code: str | None
-    state: str | None
-    error: str | None
-    extra: dict[str, Any] | None = None  # Provider-specific data
 
 
 class OAuth2Provider:
@@ -180,6 +160,40 @@ class OAuth2Provider:
             state=request.query_params.get("state"),
             error=request.query_params.get("error"),
         )
+
+    async def login(self, request: AsyncHTTPRequest, context: Context) -> Response:
+        """Start the session-based social login flow for this provider."""
+        return await start_session_flow(self, request, context)
+
+    async def connect(self, request: AsyncHTTPRequest, context: Context) -> Response:
+        """Start the connect flow for linking a provider to the current session."""
+        return await start_connect_flow(self, request, context)
+
+    async def authorize(self, request: AsyncHTTPRequest, context: Context) -> Response:
+        """Start the token-based OAuth authorization flow for this provider."""
+        return await start_token_flow(self, request, context)
+
+    async def callback(self, request: AsyncHTTPRequest, context: Context) -> Response:
+        """Handle the provider callback for any supported flow."""
+        return await handle_callback(self, request, context)
+
+    async def prepare_link(
+        self, request: AsyncHTTPRequest, context: Context
+    ) -> PreparedLink:
+        """Validate the link request and return the provider URL plus generated state."""
+        return await prepare_link(self, request, context)
+
+    async def initiate_link(
+        self, request: AsyncHTTPRequest, context: Context
+    ) -> Response:
+        """Start the account-linking flow for this provider."""
+        return await start_link_flow(self, request, context)
+
+    async def finalize_link(
+        self, request: AsyncHTTPRequest, context: Context
+    ) -> Response:
+        """Redeem a link code and persist the social account."""
+        return await finalize_link(self, request, context)
 
     def build_token_exchange_params(
         self, code: str, redirect_uri: str, code_verifier: str | None = None

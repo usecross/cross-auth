@@ -1,19 +1,10 @@
 import logging
-from collections.abc import Awaitable, Callable
-from functools import partial
+from collections.abc import Callable
 from typing import Any
 
-from cross_web import AsyncHTTPRequest, Response
+from cross_web import AsyncHTTPRequest
 from fastapi import APIRouter
 
-from ._auth_flow import (
-    finalize_link,
-    handle_callback,
-    start_connect_flow,
-    start_link_flow,
-    start_session_flow,
-    start_token_flow,
-)
 from ._config import Config
 from ._context import AccountsStorage, Context, SecondaryStorage, User
 from ._issuer import Issuer
@@ -24,52 +15,44 @@ from .social_providers.oauth import OAuth2Provider
 logger = logging.getLogger(__name__)
 
 
-FlowHandler = Callable[[OAuth2Provider, AsyncHTTPRequest, Context], Awaitable[Response]]
-
-
 def _provider_routes(provider: OAuth2Provider) -> list[Route]:
     prefix = f"/{provider.id}"
-
-    def bound(
-        handler: FlowHandler,
-    ) -> Callable[[AsyncHTTPRequest, Context], Awaitable[Response]]:
-        return partial(handler, provider)
 
     return [
         Route(
             path=f"{prefix}/login",
             methods=["GET"],
-            function=bound(start_session_flow),
+            function=provider.login,
             operation_id=f"{provider.id}_login",
         ),
         Route(
             path=f"{prefix}/connect",
             methods=["GET"],
-            function=bound(start_connect_flow),
+            function=provider.connect,
             operation_id=f"{provider.id}_connect",
         ),
         Route(
             path=f"{prefix}/authorize",
             methods=["GET"],
-            function=bound(start_token_flow),
+            function=provider.authorize,
             operation_id=f"{provider.id}_authorize",
         ),
         Route(
             path=f"{prefix}/callback",
             methods=["GET", "POST"],  # POST for Apple (response_mode=form_post)
-            function=bound(handle_callback),
+            function=provider.callback,
             operation_id=f"{provider.id}_callback",
         ),
         Route(
             path=f"{prefix}/link",
             methods=["POST"],
-            function=bound(start_link_flow),
+            function=provider.initiate_link,
             operation_id=f"{provider.id}_link",
         ),
         Route(
             path=f"{prefix}/finalize-link",
             methods=["POST"],
-            function=bound(finalize_link),
+            function=provider.finalize_link,
             operation_id=f"{provider.id}_finalize_link",
         ),
     ]

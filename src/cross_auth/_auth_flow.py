@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, cast
 
@@ -13,9 +14,9 @@ from ._context import Context
 from ._issuer import AuthorizationCodeGrantData
 from ._storage import User
 from .exceptions import CrossAuthException
-from .social_providers.oauth import (
+from .social_providers._shared import (
     OAuth2Exception,
-    OAuth2Provider,
+    OAuth2ProviderProtocol,
     ValidatedUserInfo,
 )
 from .utils._pkce import (
@@ -86,6 +87,12 @@ class InitiateLinkResponse(BaseModel):
     authorization_url: str
 
 
+@dataclass
+class PreparedLink:
+    state: str
+    authorization_url: str
+
+
 _AUTH_REQUEST_KEY = "oauth:authorization_request:{state}"
 _LINK_CODE_KEY = "oauth:link_request:{code}"
 _AUTH_CODE_KEY = "oauth:code:{code}"
@@ -112,7 +119,7 @@ def _load_auth_request(context: Context, state: str) -> AuthRequest | None:
 
 
 def _generate_provider_pkce(
-    provider: OAuth2Provider,
+    provider: OAuth2ProviderProtocol,
 ) -> tuple[str | None, str | None, str | None]:
     if not provider.supports_pkce:
         return None, None, None
@@ -135,7 +142,7 @@ def _is_safe_next_url(next_url: str) -> bool:
 
 
 async def start_session_flow(
-    provider: OAuth2Provider,
+    provider: OAuth2ProviderProtocol,
     request: AsyncHTTPRequest,
     context: Context,
 ) -> Response:
@@ -174,7 +181,7 @@ async def start_session_flow(
 
 
 async def start_connect_flow(
-    provider: OAuth2Provider,
+    provider: OAuth2ProviderProtocol,
     request: AsyncHTTPRequest,
     context: Context,
 ) -> Response:
@@ -223,7 +230,7 @@ async def start_connect_flow(
 
 
 async def start_token_flow(
-    provider: OAuth2Provider,
+    provider: OAuth2ProviderProtocol,
     request: AsyncHTTPRequest,
     context: Context,
 ) -> Response:
@@ -334,7 +341,7 @@ async def start_token_flow(
 
 
 async def handle_callback(
-    provider: OAuth2Provider,
+    provider: OAuth2ProviderProtocol,
     request: AsyncHTTPRequest,
     context: Context,
 ) -> Response:
@@ -479,7 +486,7 @@ def _flow_error(
 
 def resolve_or_create_user(
     *,
-    provider: OAuth2Provider,
+    provider: OAuth2ProviderProtocol,
     context: Context,
     validated: ValidatedUserInfo,
     user_info: dict[str, Any],
@@ -575,7 +582,7 @@ def resolve_or_create_user(
 def _complete_connect(
     *,
     auth_request: AuthRequest,
-    provider: OAuth2Provider,
+    provider: OAuth2ProviderProtocol,
     context: Context,
     validated: ValidatedUserInfo,
     user_info: dict[str, Any],
@@ -725,7 +732,7 @@ def _complete_link(
 
 
 async def start_link_flow(
-    provider: OAuth2Provider,
+    provider: OAuth2ProviderProtocol,
     request: AsyncHTTPRequest,
     context: Context,
 ) -> Response:
@@ -733,9 +740,37 @@ async def start_link_flow(
 
     Body: InitiateLinkRequest (JSON). Returns 200 with authorization URL.
     """
+    try:
+        prepared = await prepare_link(provider, request, context)
+    except CrossAuthException as e:
+        return Response.error(
+            e.error,
+            error_description=e.error_description,
+            status_code=e.status_code,
+        )
+
+    return Response(
+        status_code=200,
+        body=InitiateLinkResponse(
+            authorization_url=prepared.authorization_url
+        ).model_dump_json(),
+        headers={"Content-Type": "application/json"},
+    )
+
+
+async def prepare_link(
+    provider: OAuth2ProviderProtocol,
+    request: AsyncHTTPRequest,
+    context: Context,
+) -> PreparedLink:
+    """Validate and store link-flow state before building the provider URL.
+
+    This is intentionally separate from ``start_link_flow`` so provider
+    subclasses can customize the final response without scraping JSON output.
+    """
     user = context.get_user_from_request(request)
     if not user:
-        return Response.error(
+        raise CrossAuthException(
             "unauthorized",
             error_description="User must be authenticated to initiate link flow",
             status_code=401,
@@ -743,7 +778,7 @@ async def start_link_flow(
 
     account_linking = context.config.get("account_linking", {})
     if not account_linking.get("enabled", False):
-        return Response.error(
+        raise CrossAuthException(
             "linking_disabled",
             error_description="Account linking is not enabled",
         )
@@ -752,17 +787,19 @@ async def start_link_flow(
         link_request = InitiateLinkRequest.model_validate_json(await request.get_body())
     except (json.JSONDecodeError, ValidationError) as e:
         logger.error("Invalid request body: %s", e)
-        return Response.error(
+        raise CrossAuthException(
             "invalid_request", error_description="Invalid request body"
-        )
+        ) from e
 
     if not context.is_valid_redirect_uri(link_request.redirect_uri):
-        return Response.error(
+        raise CrossAuthException(
             "invalid_redirect_uri", error_description="Invalid redirect_uri"
         )
 
     if not context.is_valid_client_id(link_request.client_id):
-        return Response.error("invalid_client", error_description="Invalid client_id")
+        raise CrossAuthException(
+            "invalid_client", error_description="Invalid client_id"
+        )
 
     state = secrets.token_hex(16)
     verifier, challenge, challenge_method = _generate_provider_pkce(provider)
@@ -790,17 +827,14 @@ async def start_link_flow(
         code_challenge_method=challenge_method,
     )
 
-    return Response(
-        status_code=200,
-        body=InitiateLinkResponse(
-            authorization_url=authorization_url
-        ).model_dump_json(),
-        headers={"Content-Type": "application/json"},
+    return PreparedLink(
+        state=state,
+        authorization_url=authorization_url,
     )
 
 
 async def finalize_link(
-    provider: OAuth2Provider,
+    provider: OAuth2ProviderProtocol,
     request: AsyncHTTPRequest,
     context: Context,
 ) -> Response:
