@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [tool.uv.workspace]
-members = ["website", "examples/*"]
+members = ["website", "examples/fastapi"]
 
 [build-system]
 requires = ["hatchling"]

@@ -1,7 +1,7 @@
 [project]
 name = "cross-auth-fastapi-example"
 version = "0.1.0"
-description = "FastAPI session example for cross-auth"
+description = "FastAPI hybrid backend example for cross-auth"
 requires-python = ">=3.11"
 dependencies = [
     "cross-auth",
@@ -9,6 +9,7 @@ dependencies = [
     "jinja2>=3.1.0",
     "passlib[bcrypt]>=1.7.4",
     "python-multipart>=0.0.20",
+    "PyJWT[crypto]>=2.8.0",
 ]
 
 [tool.uv.sources]

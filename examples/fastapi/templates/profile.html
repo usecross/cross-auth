@@ -1,14 +1,15 @@
 {% extends "base.html" %}
 
-{% block title %}Profile · Cross-Auth FastAPI Session Example{% endblock %}
+{% block title %}Profile · Cross-Auth FastAPI Hybrid Example{% endblock %}
 
 {% block content %}
   <div class="hero">
     <div class="eyebrow">Signed In</div>
     <h1>{{ user.email }}</h1>
     <p class="lead">
-      This page is protected by the session cookie written by
-      <code>CrossAuth.login(...)</code>.
+      This page is protected by the session cookie written either by
+      <code>CrossAuth.login(...)</code> or by the GitHub session-social callback flow.
+      The same backend also exposes bearer-token APIs for the separate SPA demo.
     </p>
   </div>
 
@@ -24,25 +25,115 @@
           <span class="pill warn">no</span>
         {% endif %}
       </p>
-      <p>
-        <strong>Social accounts</strong> &nbsp;<span class="pill">not used here</span>
-      </p>
+      <div class="stack">
+        <p><strong>Social accounts</strong></p>
+        {% if user.social_accounts %}
+          <ul>
+            {% for account in user.social_accounts %}
+              <li>
+                <code>{{ account.provider }}</code>
+                · provider user <code>{{ account.provider_user_id }}</code>
+                {% if account.provider_email %}
+                  · {{ account.provider_email }}
+                {% endif %}
+                {% if account.provider_email_verified %}
+                  <span class="pill ok">verified</span>
+                {% else %}
+                  <span class="pill warn">unverified or unknown</span>
+                {% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <span class="pill">none linked</span>
+        {% endif %}
+      </div>
       <div class="actions">
         <a class="button" href="/">Home</a>
         <a class="button" href="/api/me">/api/me</a>
+        <a class="button" href="http://localhost:5173" target="_blank" rel="noreferrer">Open SPA demo</a>
+        <button type="button" id="link-github-button">Link GitHub account</button>
+        <a class="button" href="/auth/github/login?next=/profile" id="connect-github-link">Connect GitHub (session)</a>
         <form action="/logout" method="post">
           <button type="submit">Log out</button>
         </form>
       </div>
+      <p id="link-status" class="notice" hidden></p>
     </div>
 
     <div class="stack">
-      <h2>What This Example Covers</h2>
+      <h2>What This Backend Covers</h2>
       <ul>
         <li>In-memory user storage implementing the Cross-Auth account protocols</li>
-        <li>Session-based login and logout for a normal FastAPI app</li>
-        <li>Protected page rendering and authenticated JSON responses</li>
+        <li>Session-based password login and logout for a normal FastAPI app</li>
+        <li>Social login to browser session using the mock GitHub OAuth server</li>
+        <li>Generic auth-code + <code>/auth/token</code> flow for a separate SPA client</li>
+        <li>Protected page rendering and both session- and bearer-authenticated JSON responses</li>
       </ul>
     </div>
   </div>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    const linkButton = document.getElementById("link-github-button")
+    const linkStatus = document.getElementById("link-status")
+    const clientId = {{ spa_client_id|tojson }}
+    const redirectUri = `${window.location.origin}/link-callback`
+    const linkVerifierKey = "cross_auth_fastapi_link_code_verifier"
+
+    function generateRandomString() {
+      const bytes = new Uint8Array(32)
+      window.crypto.getRandomValues(bytes)
+      return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")
+    }
+
+    async function generateCodeChallenge(verifier) {
+      const encoder = new TextEncoder()
+      const data = encoder.encode(verifier)
+      const digest = await window.crypto.subtle.digest("SHA-256", data)
+      const base64 = btoa(String.fromCharCode(...new Uint8Array(digest)))
+      return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+    }
+
+    function setLinkStatus(message) {
+      linkStatus.hidden = false
+      linkStatus.textContent = message
+    }
+
+    linkButton?.addEventListener("click", async () => {
+      try {
+        linkButton.disabled = true
+        setLinkStatus("Redirecting to GitHub to link your account...")
+
+        const codeVerifier = generateRandomString()
+        const codeChallenge = await generateCodeChallenge(codeVerifier)
+        window.sessionStorage.setItem(linkVerifierKey, codeVerifier)
+
+        const response = await fetch("/auth/github/link", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            client_id: clientId,
+            redirect_uri: redirectUri,
+            code_challenge: codeChallenge,
+            code_challenge_method: "S256",
+          }),
+        })
+
+        if (!response.ok) {
+          const body = await response.text()
+          throw new Error(body || "Failed to initiate account linking")
+        }
+
+        const data = await response.json()
+        window.location.href = data.authorization_url
+      } catch (error) {
+        linkButton.disabled = false
+        setLinkStatus(error instanceof Error ? error.message : "Failed to initiate account linking")
+      }
+    })
+  </script>
 {% endblock %}

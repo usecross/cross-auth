@@ -148,19 +148,19 @@ class AppleProvider(OIDCProvider):
     def build_authorization_params(
         self,
         state: str,
-        proxy_redirect_uri: str,
-        response_type: str,
+        redirect_uri: str,
+        *,
         code_challenge: str | None = None,
         code_challenge_method: str | None = None,
         login_hint: str | None = None,
-    ) -> dict:
+    ) -> dict[str, str]:
         """Build authorization request parameters for Apple.
 
         IMPORTANT: scope must be space-separated ("name email"), NOT plus-encoded.
         """
-        params = {
+        params: dict[str, str] = {
             "client_id": self.client_id,
-            "redirect_uri": proxy_redirect_uri,
+            "redirect_uri": redirect_uri,
             "response_type": "code",
             "scope": "name email",  # Space-separated, NOT "name+email"
             "state": state,
@@ -218,7 +218,7 @@ class AppleProvider(OIDCProvider):
 
         return info
 
-    async def extract_callback_data(self, request: AsyncHTTPRequest) -> CallbackData:
+    async def extract_callback_params(self, request: AsyncHTTPRequest) -> CallbackData:
         """Extract callback data from Apple's POST form data.
 
         Apple uses response_mode=form_post, so callback data comes via POST.

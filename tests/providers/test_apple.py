@@ -105,8 +105,7 @@ def test_build_authorization_params_basic(apple_provider: AppleProvider):
     """Test basic authorization params."""
     params = apple_provider.build_authorization_params(
         state="test_state",
-        proxy_redirect_uri="https://example.com/callback",
-        response_type="code",
+        redirect_uri="https://example.com/callback",
     )
 
     assert params["client_id"] == "com.example.test"
@@ -121,8 +120,7 @@ def test_build_authorization_params_with_pkce(apple_provider: AppleProvider):
     """Test authorization params with PKCE."""
     params = apple_provider.build_authorization_params(
         state="test_state",
-        proxy_redirect_uri="https://example.com/callback",
-        response_type="code",
+        redirect_uri="https://example.com/callback",
         code_challenge="test_challenge",
         code_challenge_method="S256",
     )
@@ -135,8 +133,7 @@ def test_scope_is_space_separated(apple_provider: AppleProvider):
     """Test that scope uses space separator (not plus)."""
     params = apple_provider.build_authorization_params(
         state="test_state",
-        proxy_redirect_uri="https://example.com/callback",
-        response_type="code",
+        redirect_uri="https://example.com/callback",
     )
 
     # Critical: must be space-separated, not "name+email"
@@ -482,28 +479,3 @@ def test_validate_user_info_missing_id(apple_provider: AppleProvider):
         apple_provider.validate_user_info(user_info)
 
     assert exc_info.value.error == "server_error"
-
-
-# --- Routes tests ---
-
-
-def test_routes_include_post_callback(apple_provider: AppleProvider):
-    """Test that callback route accepts POST method."""
-    routes = apple_provider.routes
-
-    callback_route = next(r for r in routes if "callback" in r.path)
-
-    assert "POST" in callback_route.methods
-    assert "GET" in callback_route.methods  # Fallback
-
-
-def test_routes_count(apple_provider: AppleProvider):
-    """Test that all expected routes are registered."""
-    routes = apple_provider.routes
-
-    assert len(routes) == 4
-    paths = [r.path for r in routes]
-    assert "/apple/authorize" in paths
-    assert "/apple/callback" in paths
-    assert "/apple/finalize-link" in paths
-    assert "/apple/link" in paths

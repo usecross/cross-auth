@@ -43,6 +43,13 @@ def test_url_with_query_params():
     assert result == "http://example.com/auth/callback"
 
 
+def test_url_with_query_param_value_containing_slash():
+    """Test query params with slash characters don't leak into the path."""
+    url = "http://example.com/auth/login?next=/profile"
+    result = construct_relative_url(url, "callback")
+    assert result == "http://example.com/auth/callback"
+
+
 def test_root_path():
     """Test URL with root path."""
     url = "http://example.com/authorize"

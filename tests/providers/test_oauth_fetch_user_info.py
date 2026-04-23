@@ -1,4 +1,4 @@
-"""Tests for OAuth2Provider.get_user_info() method."""
+"""Tests for OAuth2Provider.fetch_user_info() method."""
 
 from unittest.mock import MagicMock
 
@@ -31,7 +31,7 @@ async def test_get_user_info_success(
         )
     )
 
-    user_info = oauth_provider.get_user_info(token_response, context)
+    user_info = oauth_provider.fetch_user_info(token_response, context)
 
     assert user_info["id"] == "123"
     assert user_info["email"] == "test@example.com"
@@ -49,7 +49,7 @@ async def test_get_user_info_endpoint_fails(
     )
 
     with pytest.raises(OAuth2Exception) as exc_info:
-        oauth_provider.get_user_info(token_response, context)
+        oauth_provider.fetch_user_info(token_response, context)
 
     assert exc_info.value.error == "server_error"
     assert exc_info.value.error_description == "Failed to fetch user info"
