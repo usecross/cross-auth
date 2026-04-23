@@ -622,7 +622,7 @@ def _complete_connect(
 def _complete_session(
     auth_request: AuthRequest, user: User, context: Context
 ) -> Response:
-    if context.create_session_cookie is None:
+    if not context.is_session_enabled:
         return Response.error(
             "server_error",
             error_description="Session flow not configured for this deployment",

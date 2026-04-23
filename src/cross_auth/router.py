@@ -3,7 +3,7 @@ from collections.abc import Awaitable, Callable
 from functools import partial
 from typing import Any
 
-from cross_web import AsyncHTTPRequest, Cookie, Response
+from cross_web import AsyncHTTPRequest, Response
 from fastapi import APIRouter
 
 from ._auth_flow import (
@@ -18,6 +18,7 @@ from ._config import Config
 from ._context import AccountsStorage, Context, SecondaryStorage, User
 from ._issuer import Issuer
 from ._route import Route
+from ._session import SessionConfig
 from .social_providers.oauth import OAuth2Provider
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,6 @@ FlowHandler = Callable[[OAuth2Provider, AsyncHTTPRequest, Context], Awaitable[Re
 
 
 def _provider_routes(provider: OAuth2Provider) -> list[Route]:
-    """Build the 5 HTTP routes that expose a provider's auth flows."""
     prefix = f"/{provider.id}"
 
     def bound(
@@ -88,7 +88,8 @@ class AuthRouter(APIRouter):
         trusted_origins: list[str],
         base_url: str | None = None,
         config: Config | None = None,
-        create_session_cookie: Callable[[str], Cookie] | None = None,
+        session_enabled: bool = False,
+        session_config: SessionConfig | None = None,
         default_next_url: str = "/",
     ):
         super().__init__()
@@ -104,7 +105,8 @@ class AuthRouter(APIRouter):
             get_user_from_request=get_user_from_request,
             base_url=base_url,
             config=config,
-            create_session_cookie=create_session_cookie,
+            session_enabled=session_enabled,
+            session_config=session_config,
             default_next_url=default_next_url,
         )
 
