@@ -39,4 +39,5 @@ The Playwright config starts:
 - `examples/fastapi` on `http://127.0.0.1:8000`
 - `examples/spa` on `http://127.0.0.1:5173`
 
-unless they are already running locally.
+by default. If you want Playwright to reuse servers you already started
+manually, set `PLAYWRIGHT_REUSE_SERVERS=1`.
