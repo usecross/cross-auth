@@ -1,6 +1,22 @@
 CHANGELOG
 =========
 
+0.10.0 - 2026-04-23
+-------------------
+
+This release adds session-based social login support to `CrossAuth` and the
+FastAPI integration.
+
+Highlights:
+
+- add a browser-session OAuth flow so social login can complete directly into a
+  session cookie
+- expand the FastAPI example app to demonstrate password login, social login,
+  session account linking, and the separate SPA auth-code flow together
+- add end-to-end coverage for the FastAPI + SPA example setup
+
+This release was contributed by [@patrick91](https://github.com/patrick91) in [#30](https://github.com/usecross/cross-auth/pull/30)
+
 0.9.1 - 2026-03-26
 ------------------
 
