@@ -66,6 +66,7 @@ Use this as a quick guide when deciding where custom logic belongs.
 | `oauth.callback`           | Inspect provider user data before Cross-Auth creates or finds a user         | Enforce email domain restrictions, reject unverified emails, apply provider-specific access rules           | Provision internal profiles, send first-login events, audit newly created users          |
 | `oauth.link`               | Control whether an already-authenticated user may start account linking      | Restrict linking by role, plan, tenant, or email domain                                                     | Track linking attempts, log provider selection, store link-start telemetry               |
 | `oauth.finalize_link`      | Validate the provider account before it is attached to the current user      | Disallow login-on-link, reject conflicting identities, require extra provider claims                        | Audit successful links, sync linked account metadata, trigger downstream account updates |
+| `oauth.disconnect`         | Control provider-account disconnection for an authenticated user             | Block disconnects for policy reasons, enforce plan or tenant rules                                          | Revoke provider tokens, clear provider caches, audit disconnected accounts               |
 | `token.password`           | Control OAuth password grant issuance for API clients                        | Disable password grant for some clients, enforce API client policy, reject risky usernames                  | Audit token issuance, increment metrics, notify legacy-client usage                      |
 | `token.authorization_code` | Control authorization-code token exchange for OAuth clients                  | Check user entitlement or requested scope, add final policy checks before issuing tokens                    | Audit code exchanges, record user/client pairs, emit token issuance telemetry            |
 
@@ -298,6 +299,43 @@ async def audit_link_complete(event: AfterOAuthFinalizeLinkEvent) -> None:
         provider=event.provider.id,
         social_account_id=str(event.social_account.id),
         created=event.created_social_account is not None,
+    )
+```
+
+### `oauth.disconnect`
+
+Runs around `DELETE /{provider}/connect` and
+`DELETE /{provider}/connect/{social_account_id}`, after Cross-Auth has found the
+selected provider account, verified it belongs to the current user, and computed
+whether the user has a usable password or another login-enabled social account.
+Use the before hook to block app-specific cases, then perform cleanup after the
+account record has been deleted. This before hook is policy-only and must return
+`None`.
+
+```python
+from cross_auth.hooks import (
+    AfterOAuthDisconnectEvent,
+    BeforeOAuthDisconnectEvent,
+)
+
+
+@auth.before("oauth.disconnect")
+async def require_disconnect_enabled(event: BeforeOAuthDisconnectEvent) -> None:
+    if event.provider.id == "github" and not settings.ALLOW_GITHUB_DISCONNECT:
+        raise CrossAuthException(
+            "forbidden",
+            "GitHub disconnect is disabled",
+            403,
+        )
+
+
+@auth.after("oauth.disconnect")
+async def cleanup_provider_state(event: AfterOAuthDisconnectEvent) -> None:
+    audit_log.record(
+        "oauth_disconnected",
+        user_id=str(event.user.id),
+        provider=event.provider.id,
+        social_account_id=str(event.social_account.id),
     )
 ```
 

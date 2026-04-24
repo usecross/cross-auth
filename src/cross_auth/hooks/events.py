@@ -153,6 +153,22 @@ class AfterOAuthFinalizeLinkEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class BeforeOAuthDisconnectEvent:
+    provider: OAuth2Provider
+    request: AsyncHTTPRequest
+    user: User
+    social_account: SocialAccount
+
+
+@dataclass(frozen=True, slots=True)
+class AfterOAuthDisconnectEvent:
+    provider: OAuth2Provider
+    request: AsyncHTTPRequest
+    user: User
+    social_account: SocialAccount
+
+
+@dataclass(frozen=True, slots=True)
 class BeforeTokenPasswordEvent:
     client_id: str
     username: str
@@ -190,6 +206,7 @@ __all__ = [
     "AfterLogoutEvent",
     "AfterOAuthAuthorizeEvent",
     "AfterOAuthCallbackEvent",
+    "AfterOAuthDisconnectEvent",
     "AfterOAuthFinalizeLinkEvent",
     "AfterOAuthLinkEvent",
     "AfterTokenAuthorizationCodeEvent",
@@ -199,6 +216,7 @@ __all__ = [
     "BeforeLogoutEvent",
     "BeforeOAuthAuthorizeEvent",
     "BeforeOAuthCallbackEvent",
+    "BeforeOAuthDisconnectEvent",
     "BeforeOAuthFinalizeLinkEvent",
     "BeforeOAuthLinkEvent",
     "BeforeTokenAuthorizationCodeEvent",

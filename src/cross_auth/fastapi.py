@@ -36,6 +36,7 @@ from .hooks._types import (
     AfterLogoutHandler,
     AfterOAuthAuthorizeHandler,
     AfterOAuthCallbackHandler,
+    AfterOAuthDisconnectHandler,
     AfterOAuthFinalizeLinkHandler,
     AfterOAuthLinkHandler,
     AfterTokenAuthorizationCodeHandler,
@@ -45,6 +46,7 @@ from .hooks._types import (
     BeforeLogoutHandler,
     BeforeOAuthAuthorizeHandler,
     BeforeOAuthCallbackHandler,
+    BeforeOAuthDisconnectHandler,
     BeforeOAuthFinalizeLinkHandler,
     BeforeOAuthLinkHandler,
     BeforeTokenAuthorizationCodeHandler,
@@ -175,6 +177,11 @@ class CrossAuth:
 
     @overload
     def before(
+        self, event: Literal["oauth.disconnect"]
+    ) -> Callable[[BeforeOAuthDisconnectHandler], BeforeOAuthDisconnectHandler]: ...
+
+    @overload
+    def before(
         self, event: Literal["token.password"]
     ) -> Callable[[BeforeTokenPasswordHandler], BeforeTokenPasswordHandler]: ...
 
@@ -230,6 +237,11 @@ class CrossAuth:
     def after(
         self, event: Literal["oauth.finalize_link"]
     ) -> Callable[[AfterOAuthFinalizeLinkHandler], AfterOAuthFinalizeLinkHandler]: ...
+
+    @overload
+    def after(
+        self, event: Literal["oauth.disconnect"]
+    ) -> Callable[[AfterOAuthDisconnectHandler], AfterOAuthDisconnectHandler]: ...
 
     @overload
     def after(

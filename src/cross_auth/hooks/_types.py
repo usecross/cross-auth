@@ -9,6 +9,7 @@ from .events import (
     AfterLogoutEvent,
     AfterOAuthAuthorizeEvent,
     AfterOAuthCallbackEvent,
+    AfterOAuthDisconnectEvent,
     AfterOAuthFinalizeLinkEvent,
     AfterOAuthLinkEvent,
     AfterTokenAuthorizationCodeEvent,
@@ -18,6 +19,7 @@ from .events import (
     BeforeLogoutEvent,
     BeforeOAuthAuthorizeEvent,
     BeforeOAuthCallbackEvent,
+    BeforeOAuthDisconnectEvent,
     BeforeOAuthFinalizeLinkEvent,
     BeforeOAuthLinkEvent,
     BeforeTokenAuthorizationCodeEvent,
@@ -32,6 +34,7 @@ HookEventName: TypeAlias = Literal[
     "oauth.callback",
     "oauth.link",
     "oauth.finalize_link",
+    "oauth.disconnect",
     "token.password",
     "token.authorization_code",
 ]
@@ -46,6 +49,7 @@ _ALL_EVENT_NAMES: frozenset[str] = frozenset(
         "oauth.callback",
         "oauth.link",
         "oauth.finalize_link",
+        "oauth.disconnect",
         "token.password",
         "token.authorization_code",
     }
@@ -103,6 +107,13 @@ BeforeOAuthFinalizeLinkHandler: TypeAlias = Callable[
 ]
 AfterOAuthFinalizeLinkHandler: TypeAlias = Callable[
     [AfterOAuthFinalizeLinkEvent], Awaitable[None] | None
+]
+
+BeforeOAuthDisconnectHandler: TypeAlias = Callable[
+    [BeforeOAuthDisconnectEvent], Awaitable[None] | None
+]
+AfterOAuthDisconnectHandler: TypeAlias = Callable[
+    [AfterOAuthDisconnectEvent], Awaitable[None] | None
 ]
 
 BeforeTokenPasswordHandler: TypeAlias = Callable[
