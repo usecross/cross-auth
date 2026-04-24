@@ -1,6 +1,16 @@
 CHANGELOG
 =========
 
+0.11.0 - 2026-04-24
+-------------------
+
+This release adds provider-level hooks for advanced OAuth flows. Providers now
+receive the incoming request when building authorization URLs, can intercept
+callbacks before the standard OAuth handler runs, and can post-process final
+redirect responses.
+
+This release was contributed by [@patrick91](https://github.com/patrick91) in [#32](https://github.com/usecross/cross-auth/pull/32)
+
 0.10.0 - 2026-04-23
 -------------------
 
