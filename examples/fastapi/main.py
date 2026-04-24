@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, cast
@@ -14,10 +14,24 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from passlib.context import CryptContext
 
-from cross_auth import AccountsStorage, SecondaryStorage, SessionConfig
+from cross_auth import (
+    AccountsStorage,
+    SecondaryStorage,
+    SessionConfig,
+)
 from cross_auth import User as UserProtocol
 from cross_auth._session import get_current_user as get_session_user
+from cross_auth.exceptions import CrossAuthException
 from cross_auth.fastapi import CrossAuth
+from cross_auth.hooks import (
+    AfterAuthenticateEvent,
+    AfterLoginEvent,
+    AfterLogoutEvent,
+    AfterOAuthCallbackEvent,
+    AfterTokenAuthorizationCodeEvent,
+    BeforeAuthenticateEvent,
+    BeforeOAuthCallbackEvent,
+)
 from cross_auth.social_providers.github import GitHubProvider
 
 APP_DIR = Path(__file__).parent
@@ -36,6 +50,7 @@ BACKEND_TRUSTED_REDIRECT_HOSTS = [
 TOKEN_ISSUER = "cross-auth-fastapi-example"
 TOKEN_SECRET = "cross-auth-fastapi-example-secret"  # noqa: S105
 TOKEN_EXPIRES_IN = 3600
+MAX_HOOK_EVENTS = 20
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 SPA_CORS_ORIGINS = [
@@ -270,6 +285,21 @@ def create_demo_token(user_id: str) -> tuple[str, int]:
     return jwt.encode(payload, TOKEN_SECRET, algorithm="HS256"), TOKEN_EXPIRES_IN
 
 
+hook_events: list[dict[str, str]] = []
+
+
+def record_hook_event(name: str, **fields: str) -> None:
+    hook_events.insert(
+        0,
+        {
+            "time": datetime.now(tz=UTC).strftime("%H:%M:%S"),
+            "name": name,
+            **fields,
+        },
+    )
+    del hook_events[MAX_HOOK_EVENTS:]
+
+
 def resolve_bearer_token(token: str) -> DemoUser:
     try:
         payload = jwt.decode(
@@ -351,6 +381,65 @@ auth = CrossAuth(
     },
 )
 
+
+@auth.before("authenticate")
+def normalize_password_login(event: BeforeAuthenticateEvent) -> BeforeAuthenticateEvent:
+    return replace(event, email=event.email.strip().lower())
+
+
+@auth.after("authenticate")
+def audit_password_login(event: AfterAuthenticateEvent) -> None:
+    record_hook_event(
+        "after:authenticate",
+        email=event.email,
+        user_id="" if event.user is None else str(event.user.id),
+        result="success" if event.user is not None else "failed",
+    )
+
+
+@auth.after("login")
+def audit_session_login(event: AfterLoginEvent) -> None:
+    event.response.headers = {
+        **(event.response.headers or {}),
+        "X-Cross-Auth-Hook": "login",
+    }
+    record_hook_event("after:login", user_id=event.user_id)
+
+
+@auth.after("logout")
+def audit_session_logout(event: AfterLogoutEvent) -> None:
+    record_hook_event("after:logout", session_id=event.session_id or "")
+
+
+@auth.before("oauth.callback")
+async def require_verified_provider_email(event: BeforeOAuthCallbackEvent) -> None:
+    if event.validated_user_info.email_verified is not True:
+        raise CrossAuthException(
+            "email_not_verified",
+            "The provider email must be verified for this demo.",
+        )
+
+
+@auth.after("oauth.callback")
+async def audit_oauth_callback(event: AfterOAuthCallbackEvent) -> None:
+    record_hook_event(
+        "after:oauth.callback",
+        flow=event.auth_request.flow,
+        provider=event.provider.id,
+        user_id=str(event.user.id),
+        created_user="yes" if event.created_user is not None else "no",
+    )
+
+
+@auth.after("token.authorization_code")
+async def audit_token_exchange(event: AfterTokenAuthorizationCodeEvent) -> None:
+    record_hook_event(
+        "after:token.authorization_code",
+        client_id=event.authorization_data.client_id,
+        user_id=event.authorization_data.user_id,
+    )
+
+
 app = FastAPI(title="Cross-Auth FastAPI Hybrid Example")
 app.add_middleware(
     CORSMiddleware,
@@ -377,6 +466,7 @@ def home(
             "error_message": get_error_message(error),
             "github_login_url": "/auth/github/login?next=/profile",
             "github_mock_base_url": GITHUB_MOCK_BASE_URL,
+            "hook_events": hook_events[:5],
             "spa_client_id": SPA_CLIENT_ID,
             "spa_demo_url": SPA_DEMO_URL,
             "user": user,
@@ -416,7 +506,16 @@ def profile(
     return templates.TemplateResponse(
         request,
         "profile.html",
-        {"user": user, "spa_client_id": SPA_CLIENT_ID},
+        {"hook_events": hook_events[:5], "user": user, "spa_client_id": SPA_CLIENT_ID},
+    )
+
+
+@app.get("/hooks")
+def hooks_page(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "hooks.html",
+        {"hook_events": hook_events},
     )
 
 

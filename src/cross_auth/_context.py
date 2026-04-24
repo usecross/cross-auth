@@ -6,6 +6,7 @@ from cross_web import AsyncHTTPRequest, Cookie
 from ._config import Config
 from ._session import SessionConfig, create_session, make_session_cookie, resolve_config
 from ._storage import AccountsStorage, SecondaryStorage, User
+from .hooks import HookRegistry
 from .utils._is_same_host import is_same_host
 
 
@@ -23,6 +24,7 @@ class Context:
         session_enabled: bool = False,
         session_config: SessionConfig | None = None,
         default_next_url: str = "/",
+        hooks: HookRegistry | None = None,
     ):
         self.secondary_storage = secondary_storage
         self.accounts_storage = accounts_storage
@@ -34,6 +36,7 @@ class Context:
         self._session_enabled = session_enabled
         self.session_config = session_config
         self.default_next_url = default_next_url
+        self.hooks = hooks if hooks is not None else HookRegistry()
 
     @property
     def is_session_enabled(self) -> bool:

@@ -7,6 +7,8 @@ from inline_snapshot import snapshot
 from cross_auth._context import Context
 from cross_auth._issuer import AuthorizationCodeGrantData, Issuer
 from cross_auth._storage import SecondaryStorage
+from cross_auth.exceptions import CrossAuthException
+from cross_auth.hooks import BeforeTokenPasswordEvent
 
 pytestmark = pytest.mark.asyncio
 
@@ -373,6 +375,40 @@ async def test_password_grant_invalid_username(issuer: Issuer, context: Context)
     assert response.status_code == 400
     assert response.json() == snapshot(
         {"error": "invalid_grant", "error_description": "Invalid username or password"}
+    )
+
+
+async def test_password_grant_preserves_unknown_hook_error_type(
+    issuer: Issuer,
+    context: Context,
+):
+    async def reject_request(event: BeforeTokenPasswordEvent) -> None:
+        raise CrossAuthException("forbidden", "Password grant is forbidden")
+
+    context.hooks.register_before(
+        "token.password",
+        reject_request,
+        allow_async=True,
+    )
+
+    response = await issuer.token(
+        AsyncHTTPRequest.from_form_data(
+            data={
+                "grant_type": "password",
+                "client_id": "test",
+                "username": "test@example.com",
+                "password": "password123",
+            }
+        ),
+        context,
+    )
+
+    assert response.status_code == 400
+    assert response.json() == snapshot(
+        {
+            "error": "forbidden",
+            "error_description": "Password grant is forbidden",
+        }
     )
 
 

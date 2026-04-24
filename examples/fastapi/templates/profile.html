@@ -71,6 +71,30 @@
         <li>Protected page rendering and both session- and bearer-authenticated JSON responses</li>
       </ul>
     </div>
+
+    <div class="full stack">
+      <h2>Recent Hook Activity</h2>
+      {% if hook_events %}
+        <ul>
+          {% for event in hook_events %}
+            <li>
+              <code>{{ event.time }}</code>
+              <strong>{{ event.name }}</strong>
+              {% for key, value in event.items() %}
+                {% if key not in ["time", "name"] and value %}
+                  · {{ key }}=<code>{{ value }}</code>
+                {% endif %}
+              {% endfor %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <span class="pill">no hook events yet</span>
+      {% endif %}
+      <div class="actions">
+        <a class="button" href="/hooks">View hook example</a>
+      </div>
+    </div>
   </div>
 {% endblock %}
 

@@ -25,6 +25,14 @@ Creates a session and sets the session cookie directly on the provided FastAPI
 Reads the session cookie from the request, deletes the session, and sets a
 clear-cookie directive on the provided FastAPI `Response`.
 
+### `before(event)`
+
+Registers a typed hook that runs before a Cross-Auth lifecycle event.
+
+### `after(event)`
+
+Registers a typed hook that runs after a Cross-Auth lifecycle event succeeds.
+
 ### `get_current_user(request)`
 
 A bound method usable as a FastAPI dependency. Resolves the current user from

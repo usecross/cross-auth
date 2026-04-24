@@ -204,6 +204,30 @@ def test_login(
         assert "Path=/" in resp.headers["set-cookie"]
 
 
+def test_login_preserves_existing_response_cookies(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+):
+    auth = _make_auth(secondary_storage, accounts_storage)
+    app = FastAPI()
+
+    @app.post("/do-login")
+    def do_login():
+        response = JSONResponse({"ok": True})
+        response.set_cookie("first", "1")
+        response.set_cookie("second", "2")
+        auth.login("test", response=response)
+        return response
+
+    with TestClient(app) as client:
+        resp = client.post("/do-login")
+
+    set_cookie_headers = resp.headers.get_list("set-cookie")
+    assert any(header.startswith("first=1;") for header in set_cookie_headers)
+    assert any(header.startswith("second=2;") for header in set_cookie_headers)
+    assert any(header.startswith("session_id=") for header in set_cookie_headers)
+
+
 def test_login_custom_session_config(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
@@ -281,6 +305,32 @@ def test_logout(
 
     # Session should be deleted
     assert get_session(session_id, secondary_storage) is None
+
+
+def test_logout_preserves_existing_response_cookies(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+):
+    auth = _make_auth(secondary_storage, accounts_storage)
+    app = FastAPI()
+    session_id, _ = create_session("test", secondary_storage)
+
+    @app.post("/do-logout")
+    def do_logout(request: Request):
+        response = JSONResponse({"ok": True})
+        response.set_cookie("first", "1")
+        response.set_cookie("second", "2")
+        auth.logout(request, response=response)
+        return response
+
+    with TestClient(app) as client:
+        client.cookies.set("session_id", session_id)
+        resp = client.post("/do-logout")
+
+    set_cookie_headers = resp.headers.get_list("set-cookie")
+    assert any(header.startswith("first=1;") for header in set_cookie_headers)
+    assert any(header.startswith("second=2;") for header in set_cookie_headers)
+    assert any(header.startswith("session_id=") for header in set_cookie_headers)
 
 
 def test_logout_no_session_cookie(
