@@ -165,6 +165,7 @@ async def start_session_flow(
     authorization_url = provider.build_authorization_url(
         state=state,
         redirect_uri=_proxy_redirect_uri(request, context),
+        request=request,
         code_challenge=challenge,
         code_challenge_method=challenge_method,
         login_hint=request.query_params.get("login_hint"),
@@ -215,6 +216,7 @@ async def start_connect_flow(
     authorization_url = provider.build_authorization_url(
         state=state,
         redirect_uri=_proxy_redirect_uri(request, context),
+        request=request,
         code_challenge=challenge,
         code_challenge_method=challenge_method,
     )
@@ -325,6 +327,7 @@ async def start_token_flow(
     authorization_url = provider.build_authorization_url(
         state=state,
         redirect_uri=_proxy_redirect_uri(request, context),
+        request=request,
         code_challenge=challenge,
         code_challenge_method=challenge_method,
         login_hint=login_hint,
@@ -344,7 +347,24 @@ async def handle_callback(
     completion: session (cookie + redirect to next_url), token (authorization code
     to client), connect (attach account to current user + redirect), or link
     (stash a link code).
+
+    The provider can short-circuit via `intercept_callback` (for non-OAuth
+    callback variants) and post-process the final redirect via
+    `finalize_redirect`.
     """
+    if intercepted := await provider.intercept_callback(request, context):
+        return intercepted
+
+    response = await _handle_oauth_callback(provider, request, context)
+    return await provider.finalize_redirect(request, response)
+
+
+async def _handle_oauth_callback(
+    provider: OAuth2Provider,
+    request: AsyncHTTPRequest,
+    context: Context,
+) -> Response:
+    """Handle the standard OAuth callback path after provider interception."""
     callback_data = await provider.extract_callback_params(request)
     state = callback_data.state
     auth_request = _load_auth_request(context, state) if state else None
@@ -786,6 +806,7 @@ async def start_link_flow(
     authorization_url = provider.build_authorization_url(
         state=state,
         redirect_uri=_proxy_redirect_uri(request, context),
+        request=request,
         code_challenge=challenge,
         code_challenge_method=challenge_method,
     )
