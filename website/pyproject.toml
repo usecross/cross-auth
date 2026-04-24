@@ -21,8 +21,9 @@ content_dir = "content"
 prefix = "/docs"
 index_page = "introduction"
 section_order = ["Getting Started", "Guides", "API Reference"]
-logo_url = "/static/logo.svg"
+logo_url = "/static/logo-full.svg"
 footer_logo_url = "/static/logo-full.svg"
+footer_logo_inverted_url = "/static/logo-full-inverted.svg"
 github_url = "https://github.com/usecross/cross-auth"
 
 [[tool.cross-docs.nav_links]]
