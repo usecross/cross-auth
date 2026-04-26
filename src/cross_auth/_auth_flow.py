@@ -192,7 +192,7 @@ async def disconnect_provider(
     request: AsyncHTTPRequest,
     context: Context,
 ) -> Response:
-    """DELETE /{provider}/connect[/{social_account_id}] — detach provider account."""
+    """DELETE /{provider}/social-accounts[/{social_account_id}] — detach account."""
     if (user := context.get_user_from_request(request)) is None:
         return Response.error(
             "unauthorized",

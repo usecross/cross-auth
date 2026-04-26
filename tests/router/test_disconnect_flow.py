@@ -35,7 +35,7 @@ def _add_social_account(
 
 
 def test_disconnect_requires_authentication(client: TestClient):
-    resp = client.delete("/fake/connect")
+    resp = client.delete("/fake/social-accounts")
 
     assert resp.status_code == 401
     assert resp.json() == {
@@ -45,7 +45,9 @@ def test_disconnect_requires_authentication(client: TestClient):
 
 
 def test_disconnect_requires_connected_account(client: TestClient):
-    resp = client.delete("/fake/connect", headers={"Authorization": "Bearer test"})
+    resp = client.delete(
+        "/fake/social-accounts", headers={"Authorization": "Bearer test"}
+    )
 
     assert resp.status_code == 400
     assert resp.json() == {
@@ -57,7 +59,9 @@ def test_disconnect_requires_connected_account(client: TestClient):
 def test_disconnect_deletes_provider_account(client: TestClient, accounts_storage):
     _add_social_account(accounts_storage)
 
-    resp = client.delete("/fake/connect", headers={"Authorization": "Bearer test"})
+    resp = client.delete(
+        "/fake/social-accounts", headers={"Authorization": "Bearer test"}
+    )
 
     assert resp.status_code == 200
     assert resp.json() == {"message": "fake account disconnected"}
@@ -79,7 +83,9 @@ def test_disconnect_by_provider_requires_specific_account_when_provider_has_mult
         provider_user_id="fake-user-2",
     )
 
-    resp = client.delete("/fake/connect", headers={"Authorization": "Bearer test"})
+    resp = client.delete(
+        "/fake/social-accounts", headers={"Authorization": "Bearer test"}
+    )
 
     assert resp.status_code == 400
     assert resp.json() == {
@@ -109,7 +115,7 @@ def test_disconnect_by_id_deletes_selected_account_when_provider_has_multiple_ac
     )
 
     resp = client.delete(
-        "/fake/connect/fake-account-2", headers={"Authorization": "Bearer test"}
+        "/fake/social-accounts/fake-account-2", headers={"Authorization": "Bearer test"}
     )
 
     assert resp.status_code == 200
@@ -129,7 +135,7 @@ def test_disconnect_rejects_account_for_different_provider(
     )
 
     resp = client.delete(
-        "/fake/connect/other-account", headers={"Authorization": "Bearer test"}
+        "/fake/social-accounts/other-account", headers={"Authorization": "Bearer test"}
     )
 
     assert resp.status_code == 400
@@ -159,7 +165,7 @@ def test_disconnect_rejects_account_for_different_user(
     )
 
     resp = client.delete(
-        "/fake/connect/other-user-fake-account",
+        "/fake/social-accounts/other-user-fake-account",
         headers={"Authorization": "Bearer test"},
     )
 
@@ -181,7 +187,7 @@ def test_disconnect_blocks_only_login_method(client: TestClient, accounts_storag
     _add_social_account(accounts_storage, is_login_method=True)
 
     resp = client.delete(
-        "/fake/connect/fake-account", headers={"Authorization": "Bearer test"}
+        "/fake/social-accounts/fake-account", headers={"Authorization": "Bearer test"}
     )
 
     assert resp.status_code == 400
@@ -207,7 +213,7 @@ def test_disconnect_allows_alternative_social_login(
     )
 
     resp = client.delete(
-        "/fake/connect/fake-account", headers={"Authorization": "Bearer test"}
+        "/fake/social-accounts/fake-account", headers={"Authorization": "Bearer test"}
     )
 
     assert resp.status_code == 200
@@ -225,7 +231,7 @@ def test_disconnect_allows_non_login_account_without_password(
     _add_social_account(accounts_storage, is_login_method=False)
 
     resp = client.delete(
-        "/fake/connect/fake-account", headers={"Authorization": "Bearer test"}
+        "/fake/social-accounts/fake-account", headers={"Authorization": "Bearer test"}
     )
 
     assert resp.status_code == 200
@@ -257,7 +263,8 @@ def test_disconnect_runs_hooks(auth: CrossAuth, accounts_storage):
 
     with TestClient(app) as client:
         resp = client.delete(
-            "/fake/connect/hook-account", headers={"Authorization": "Bearer test"}
+            "/fake/social-accounts/hook-account",
+            headers={"Authorization": "Bearer test"},
         )
 
     assert resp.status_code == 200
@@ -286,7 +293,8 @@ def test_disconnect_before_hook_can_block(auth: CrossAuth, accounts_storage):
 
     with TestClient(app) as client:
         resp = client.delete(
-            "/fake/connect/blocked-account", headers={"Authorization": "Bearer test"}
+            "/fake/social-accounts/blocked-account",
+            headers={"Authorization": "Bearer test"},
         )
 
     assert resp.status_code == 400
