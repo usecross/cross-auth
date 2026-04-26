@@ -18,11 +18,13 @@ from .hooks import (
     AfterLoginEvent,
     AfterOAuthAuthorizeEvent,
     AfterOAuthCallbackEvent,
+    AfterOAuthDisconnectEvent,
     AfterOAuthFinalizeLinkEvent,
     AfterOAuthLinkEvent,
     BeforeLoginEvent,
     BeforeOAuthAuthorizeEvent,
     BeforeOAuthCallbackEvent,
+    BeforeOAuthDisconnectEvent,
     BeforeOAuthFinalizeLinkEvent,
     BeforeOAuthLinkEvent,
 )
@@ -99,6 +101,10 @@ class InitiateLinkResponse(BaseModel):
     authorization_url: str
 
 
+class DisconnectResponse(BaseModel):
+    message: str
+
+
 class ResolvedUser(NamedTuple):
     user: User
     created: bool
@@ -155,6 +161,127 @@ def _is_safe_next_url(next_url: str) -> bool:
     if next_url.startswith("//"):
         return False
     return True
+
+
+def _has_alternative_login_method(
+    *,
+    user: User,
+    social_account: SocialAccount,
+    social_accounts: list[SocialAccount],
+) -> bool:
+    # if the current social account isn't a login method, it's always safe to disconnect
+    if not social_account.is_login_method:
+        return True
+
+    # if the user has a password, they can always disconnect the social account
+    if user.has_usable_password:
+        return True
+
+    return any(
+        not _same_id(account.id, social_account.id) and account.is_login_method
+        for account in social_accounts
+    )
+
+
+def _same_id(left: Any, right: Any) -> bool:
+    return str(left) == str(right)
+
+
+async def disconnect_provider(
+    provider: OAuth2Provider,
+    request: AsyncHTTPRequest,
+    context: Context,
+) -> Response:
+    """DELETE /{provider}/connect[/{social_account_id}] — detach provider account."""
+    if (user := context.get_user_from_request(request)) is None:
+        return Response.error(
+            "unauthorized",
+            error_description="Must be logged in to disconnect a social account",
+            status_code=401,
+        )
+
+    social_accounts = list(
+        context.accounts_storage.list_social_accounts(user_id=user.id)
+    )
+
+    if (social_account_id := request.path_params.get("social_account_id")) is None:
+        provider_accounts = [
+            account for account in social_accounts if account.provider == provider.id
+        ]
+
+        if len(provider_accounts) > 1:
+            return Response.error(
+                "multiple_accounts_connected",
+                error_description=(
+                    f"Multiple {provider.id} accounts are connected. "
+                    "Provide social_account_id to disconnect one."
+                ),
+            )
+
+        social_account = provider_accounts[0] if provider_accounts else None
+    else:
+        social_account = context.accounts_storage.find_social_account_by_id(
+            social_account_id
+        )
+
+    if (
+        social_account is None
+        or not _same_id(social_account.user_id, user.id)
+        or social_account.provider != provider.id
+    ):
+        return Response.error(
+            "account_not_connected",
+            error_description=f"{provider.id} account is not connected",
+        )
+
+    try:
+        await context.hooks.run_before_async(
+            "oauth.disconnect",
+            BeforeOAuthDisconnectEvent(
+                provider=provider,
+                request=request,
+                user=user,
+                social_account=social_account,
+            ),
+        )
+    except CrossAuthException as e:
+        return Response.error(
+            e.error,
+            error_description=e.error_description,
+            status_code=e.status_code,
+        )
+
+    if not _has_alternative_login_method(
+        user=user,
+        social_account=social_account,
+        social_accounts=social_accounts,
+    ):
+        return Response.error(
+            "no_alternative_login_method",
+            error_description=(
+                f"Cannot disconnect {provider.id} because it is your only login method."
+            ),
+        )
+
+    context.accounts_storage.delete_social_account(social_account.id)
+
+    await context.hooks.run_after_async(
+        "oauth.disconnect",
+        AfterOAuthDisconnectEvent(
+            provider=provider,
+            request=request,
+            user=user,
+            social_account=social_account,
+        ),
+    )
+
+    return Response(
+        status_code=200,
+        body=DisconnectResponse(
+            message=f"{provider.id} account disconnected"
+        ).model_dump_json(),
+        headers={"Content-Type": "application/json"},
+    )
 
 
 async def start_session_flow(

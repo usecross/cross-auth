@@ -63,6 +63,10 @@ SPA_TRUSTED_REDIRECT_HOSTS = [
 ]
 
 
+def same_id(left: Any, right: Any) -> bool:
+    return str(left) == str(right)
+
+
 @dataclass
 class DemoSocialAccount:
     id: str
@@ -87,6 +91,10 @@ class DemoUser:
     email_verified: bool
     hashed_password: str | None = None
     social_accounts: list[DemoSocialAccount] = field(default_factory=list)
+
+    @property
+    def has_usable_password(self) -> bool:
+        return self.hashed_password is not None
 
 
 class MemorySecondaryStorage(SecondaryStorage):
@@ -149,6 +157,26 @@ class MemoryAccountsStorage(AccountsStorage):
                 ):
                     return account
         return None
+
+    def find_social_account_by_id(
+        self,
+        social_account_id: Any,
+    ) -> DemoSocialAccount | None:
+        return next(
+            (
+                account
+                for user in self.users_by_id.values()
+                for account in user.social_accounts
+                if same_id(account.id, social_account_id)
+            ),
+            None,
+        )
+
+    def list_social_accounts(self, *, user_id: Any) -> list[DemoSocialAccount]:
+        user = self.find_user_by_id(user_id)
+        if user is None:
+            return []
+        return list(user.social_accounts)
 
     def create_user(
         self,
@@ -221,7 +249,7 @@ class MemoryAccountsStorage(AccountsStorage):
                 account
                 for user in self.users_by_id.values()
                 for account in user.social_accounts
-                if account.id == str(social_account_id)
+                if same_id(account.id, social_account_id)
             ),
             None,
         )
@@ -237,6 +265,14 @@ class MemoryAccountsStorage(AccountsStorage):
         social_account.provider_email = provider_email
         social_account.provider_email_verified = provider_email_verified
         return social_account
+
+    def delete_social_account(self, social_account_id: Any) -> None:
+        for user in self.users_by_id.values():
+            user.social_accounts = [
+                account
+                for account in user.social_accounts
+                if not same_id(account.id, social_account_id)
+            ]
 
 
 def serialize_user(user: DemoUser) -> dict[str, Any]:

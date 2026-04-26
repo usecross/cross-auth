@@ -22,6 +22,9 @@ class User(Protocol):
     hashed_password: str | None
 
     @property
+    def has_usable_password(self) -> bool: ...
+
+    @property
     def social_accounts(self) -> Iterable[SocialAccount]: ...
 
 
@@ -48,6 +51,13 @@ class AccountsStorage(Protocol):
         provider: str,
         provider_user_id: str,
     ) -> SocialAccount | None: ...
+
+    def find_social_account_by_id(
+        self,
+        social_account_id: Any,
+    ) -> SocialAccount | None: ...
+
+    def list_social_accounts(self, *, user_id: Any) -> Iterable[SocialAccount]: ...
 
     def create_user(
         self,
@@ -87,3 +97,5 @@ class AccountsStorage(Protocol):
         provider_email: str | None,
         provider_email_verified: bool | None,
     ) -> SocialAccount: ...
+
+    def delete_social_account(self, social_account_id: Any) -> None: ...

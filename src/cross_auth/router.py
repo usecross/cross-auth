@@ -7,6 +7,7 @@ from cross_web import AsyncHTTPRequest, Response
 from fastapi import APIRouter
 
 from ._auth_flow import (
+    disconnect_provider,
     finalize_link,
     handle_callback,
     start_connect_flow,
@@ -48,6 +49,18 @@ def _provider_routes(provider: OAuth2Provider) -> list[Route]:
             methods=["GET"],
             function=bound(start_connect_flow),
             operation_id=f"{provider.id}_connect",
+        ),
+        Route(
+            path=f"{prefix}/connect",
+            methods=["DELETE"],
+            function=bound(disconnect_provider),
+            operation_id=f"{provider.id}_disconnect",
+        ),
+        Route(
+            path=f"{prefix}/connect/{{social_account_id}}",
+            methods=["DELETE"],
+            function=bound(disconnect_provider),
+            operation_id=f"{provider.id}_disconnect_account",
         ),
         Route(
             path=f"{prefix}/authorize",

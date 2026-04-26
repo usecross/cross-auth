@@ -21,6 +21,10 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 TEST_PASSWORD = "password123"
 
 
+def _same_id(left: Any, right: Any) -> bool:
+    return str(left) == str(right)
+
+
 @dataclass
 class SocialAccount:
     id: str
@@ -42,8 +46,12 @@ class User:
     id: str
     email: str
     email_verified: bool
-    hashed_password: str
+    hashed_password: str | None
     social_accounts: list[SocialAccount]
+
+    @property
+    def has_usable_password(self) -> bool:
+        return self.hashed_password is not None
 
 
 class MemoryStorage(SecondaryStorage):
@@ -125,6 +133,26 @@ class MemoryAccountsStorage:
                     return social_account
         return None
 
+    def find_social_account_by_id(
+        self,
+        social_account_id: Any,
+    ) -> SocialAccount | None:
+        return next(
+            (
+                social_account
+                for user in self.data.values()
+                for social_account in user.social_accounts
+                if _same_id(social_account.id, social_account_id)
+            ),
+            None,
+        )
+
+    def list_social_accounts(self, *, user_id: Any) -> list[SocialAccount]:
+        user = self.find_user_by_id(user_id)
+        if user is None:
+            return []
+        return list(user.social_accounts)
+
     def create_social_account(
         self,
         *,
@@ -185,7 +213,7 @@ class MemoryAccountsStorage:
                 social_account
                 for user in self.data.values()
                 for social_account in user.social_accounts
-                if social_account.id == social_account_id
+                if _same_id(social_account.id, social_account_id)
             ),
             None,
         )
@@ -202,6 +230,14 @@ class MemoryAccountsStorage:
         social_account.provider_email_verified = provider_email_verified
 
         return social_account
+
+    def delete_social_account(self, social_account_id: Any) -> None:
+        for user in self.data.values():
+            user.social_accounts = [
+                account
+                for account in user.social_accounts
+                if not _same_id(account.id, social_account_id)
+            ]
 
 
 @pytest.fixture(scope="session")
