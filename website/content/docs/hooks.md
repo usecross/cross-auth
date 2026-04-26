@@ -304,13 +304,13 @@ async def audit_link_complete(event: AfterOAuthFinalizeLinkEvent) -> None:
 
 ### `oauth.disconnect`
 
-Runs around `DELETE /{provider}/connect` and
-`DELETE /{provider}/connect/{social_account_id}`, after Cross-Auth has found the
-selected provider account, verified it belongs to the current user, and computed
-whether the user has a usable password or another login-enabled social account.
-Use the before hook to block app-specific cases, then perform cleanup after the
-account record has been deleted. This before hook is policy-only and must return
-`None`.
+Runs around `DELETE /{provider}/social-accounts` and
+`DELETE /{provider}/social-accounts/{social_account_id}`, after Cross-Auth has
+found the selected provider account, verified it belongs to the current user,
+and computed whether the user has a usable password or another login-enabled
+social account. Use the before hook to block app-specific cases, then perform
+cleanup after the account record has been deleted. This before hook is
+policy-only and must return `None`.
 
 ```python
 from cross_auth.hooks import (

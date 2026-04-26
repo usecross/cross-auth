@@ -28,10 +28,10 @@ linked to the same user record via the `SocialAccount` model.
 The `POST /{provider}/link` endpoint handles account linking for authenticated
 users.
 
-The `DELETE /{provider}/connect` endpoint disconnects the current user's
+The `DELETE /{provider}/social-accounts` endpoint disconnects the current user's
 provider account when only one account for that provider is connected. If a user
 has multiple accounts for the same provider, use
-`DELETE /{provider}/connect/{social_account_id}` to choose the account
+`DELETE /{provider}/social-accounts/{social_account_id}` to choose the account
 explicitly. Cross-Auth verifies the selected social account belongs to the
 current user and provider, and blocks disconnecting it when it is the user's
 only login method. Use the `oauth.disconnect` hooks to add provider-specific

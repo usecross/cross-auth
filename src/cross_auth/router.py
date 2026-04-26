@@ -51,13 +51,13 @@ def _provider_routes(provider: OAuth2Provider) -> list[Route]:
             operation_id=f"{provider.id}_connect",
         ),
         Route(
-            path=f"{prefix}/connect",
+            path=f"{prefix}/social-accounts",
             methods=["DELETE"],
             function=bound(disconnect_provider),
             operation_id=f"{provider.id}_disconnect",
         ),
         Route(
-            path=f"{prefix}/connect/{{social_account_id}}",
+            path=f"{prefix}/social-accounts/{{social_account_id}}",
             methods=["DELETE"],
             function=bound(disconnect_provider),
             operation_id=f"{provider.id}_disconnect_account",
