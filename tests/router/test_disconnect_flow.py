@@ -44,6 +44,24 @@ def test_disconnect_requires_authentication(client: TestClient):
     }
 
 
+def test_disconnect_account_route_documents_path_parameter(auth: CrossAuth):
+    app = FastAPI()
+    app.include_router(auth.router)
+
+    operation = app.openapi()["paths"]["/fake/social-accounts/{social_account_id}"][
+        "delete"
+    ]
+
+    assert operation["parameters"] == [
+        {
+            "name": "social_account_id",
+            "in": "path",
+            "required": True,
+            "schema": {"type": "string", "title": "Social Account Id"},
+        }
+    ]
+
+
 def test_disconnect_requires_connected_account(client: TestClient):
     resp = client.delete(
         "/fake/social-accounts", headers={"Authorization": "Bearer test"}

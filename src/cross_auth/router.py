@@ -61,6 +61,14 @@ def _provider_routes(provider: OAuth2Provider) -> list[Route]:
             methods=["DELETE"],
             function=bound(disconnect_provider),
             operation_id=f"{provider.id}_disconnect_account",
+            path_parameters=[
+                {
+                    "name": "social_account_id",
+                    "in": "path",
+                    "required": True,
+                    "schema": {"type": "string", "title": "Social Account Id"},
+                }
+            ],
         ),
         Route(
             path=f"{prefix}/authorize",
@@ -137,7 +145,7 @@ class AuthRouter(APIRouter):
                 methods=route.methods,
                 response_model=route.response_model,
                 operation_id=route.operation_id,
-                openapi_extra=route.openapi,
+                openapi_extra=route.get_openapi_extra(),
                 summary=route.summary,
             )
 
