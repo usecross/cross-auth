@@ -1,6 +1,18 @@
 CHANGELOG
 =========
 
+0.13.1 - 2026-04-27
+-------------------
+
+This release fixes the OpenAPI schema for disconnecting a specific linked OAuth
+account.
+
+The `DELETE /{provider}/social-accounts/{social_account_id}` route now documents
+its required `social_account_id` path parameter, so generated clients and API
+docs correctly show the account-specific disconnect endpoint.
+
+This release was contributed by [@patrick91](https://github.com/patrick91) in [#35](https://github.com/usecross/cross-auth/pull/35)
+
 0.13.0 - 2026-04-26
 -------------------
 
