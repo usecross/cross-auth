@@ -68,6 +68,8 @@ class OAuth2Provider:
         client_id: str,
         client_secret: str | None = None,
         trust_email: bool = True,
+        *,
+        extra_authorization_params: dict[str, str] | None = None,
     ):
         """
         Initialize the OAuth2 provider.
@@ -79,10 +81,15 @@ class OAuth2Provider:
             trust_email: If True, emails from this provider are trusted for account
                 linking even without explicit email_verified=True. Set to False for
                 providers that don't verify email ownership.
+            extra_authorization_params: Additional query parameters to append to
+                the authorization URL (e.g., Google's ``access_type=offline``,
+                ``prompt=consent``, ``hd``, ``include_granted_scopes``). Keys that
+                conflict with provider-controlled params are ignored.
         """
         self.client_id = client_id
         self.client_secret = client_secret
         self.trust_email = trust_email
+        self.extra_authorization_params = extra_authorization_params
 
     def can_auto_link(self, context: Context, email_verified: bool | None) -> bool:
         """Check if auto-linking by email is allowed.
@@ -174,6 +181,13 @@ class OAuth2Provider:
             code_challenge_method=code_challenge_method,
             login_hint=login_hint,
         )
+
+        # Merge extras without overriding provider-controlled keys. setdefault
+        # protects state, client_id, redirect_uri, code_challenge, etc.
+        if self.extra_authorization_params:
+            for k, v in self.extra_authorization_params.items():
+                params.setdefault(k, v)
+
         return f"{self.authorization_endpoint}?{urlencode(params)}"
 
     async def intercept_callback(

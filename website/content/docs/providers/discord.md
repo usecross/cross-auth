@@ -2,7 +2,7 @@
 title: Discord
 description: Configure Discord OAuth for authentication
 section: Providers
-order: 4
+order: 5
 ---
 
 # Discord
