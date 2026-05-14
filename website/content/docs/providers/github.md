@@ -2,7 +2,7 @@
 title: GitHub
 description: Configure GitHub OAuth for authentication
 section: Providers
-order: 3
+order: 4
 ---
 
 # GitHub

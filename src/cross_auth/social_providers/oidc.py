@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -36,20 +37,42 @@ class OIDCProvider(OAuth2Provider):
     """
 
     jwks_uri: ClassVar[str]
-    issuer: ClassVar[str]
+    issuer: ClassVar[str | list[str]]
     jwks_cache_key: ClassVar[str]
 
     # OIDC providers typically don't need a userinfo endpoint
     user_info_endpoint: ClassVar[str | None] = None
 
     _JWKS_REFETCH_COOLDOWN: ClassVar[int] = 60  # seconds
+    _JWKS_TTL_FLOOR: ClassVar[int] = 300  # 5 minutes
+    _JWKS_TTL_CEILING: ClassVar[int] = 86400  # 24 hours
+    _JWKS_TTL_FALLBACK: ClassVar[int] = 3600  # 1 hour when no Cache-Control
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._jwks_last_fetch_time: float = 0.0
 
+    @classmethod
+    def _ttl_from_cache_control(cls, header: str | None) -> int:
+        """Extract max-age from a Cache-Control header, clamped to floor/ceiling.
+
+        Returns the fallback TTL if the header is missing or has no max-age.
+        """
+        if not header:
+            return cls._JWKS_TTL_FALLBACK
+
+        match = re.search(r"max-age\s*=\s*(\d+)", header, re.IGNORECASE)
+        if not match:
+            return cls._JWKS_TTL_FALLBACK
+
+        return max(cls._JWKS_TTL_FLOOR, min(int(match.group(1)), cls._JWKS_TTL_CEILING))
+
     def _fetch_jwks(self, secondary_storage: "SecondaryStorage") -> dict[str, Any]:
-        """Fetch provider's JWKS, using secondary_storage as cache."""
+        """Fetch provider's JWKS, using secondary_storage as cache.
+
+        TTL honors the JWKS response's Cache-Control max-age (clamped) so cache
+        doesn't outlive the provider's key rotation window.
+        """
         if cached := secondary_storage.get(self.jwks_cache_key):
             return json.loads(cached)
 
@@ -57,8 +80,9 @@ class OIDCProvider(OAuth2Provider):
         response.raise_for_status()
 
         jwks = response.json()
+        ttl = self._ttl_from_cache_control(response.headers.get("cache-control"))
 
-        secondary_storage.set(self.jwks_cache_key, json.dumps(jwks), ttl=86400)
+        secondary_storage.set(self.jwks_cache_key, json.dumps(jwks), ttl=ttl)
         self._jwks_last_fetch_time = time.monotonic()
         return jwks
 

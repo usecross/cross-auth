@@ -15,6 +15,7 @@ including OIDC providers and standard OAuth2 providers.
 | Provider                           | Type   | PKCE | Notes                            |
 | ---------------------------------- | ------ | ---- | -------------------------------- |
 | [Apple](/docs/providers/apple)     | OIDC   | Yes  | JWT client secret, POST callback |
+| [Google](/docs/providers/google)   | OIDC   | Yes  | ID token validation with JWKS    |
 | [GitHub](/docs/providers/github)   | OAuth2 | Yes  | Userinfo endpoint                |
 | [Discord](/docs/providers/discord) | OAuth2 | Yes  | Userinfo endpoint                |
 
@@ -35,9 +36,10 @@ You can use multiple providers simultaneously:
 from cross_auth.router import AuthRouter
 from cross_auth.social_providers.apple import AppleProvider
 from cross_auth.social_providers.github import GitHubProvider
+from cross_auth.social_providers.google import GoogleProvider
 
 auth_router = AuthRouter(
-    providers=[apple, github, discord],
+    providers=[apple, google, github, discord],
     # ... other config
 )
 ```
