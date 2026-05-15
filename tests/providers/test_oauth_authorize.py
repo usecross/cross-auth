@@ -1,12 +1,10 @@
 import pytest
-from cross_web import AsyncHTTPRequest, TestingRequestAdapter
+from cross_web import HTTPRequest, TestingHTTPRequestAdapter
 
 from cross_auth._auth_flow import AuthRequest, start_token_flow
 from cross_auth._context import Context
 from cross_auth._storage import SecondaryStorage
 from cross_auth.social_providers.oauth import OAuth2Provider
-
-pytestmark = pytest.mark.asyncio
 
 
 @pytest.mark.parametrize(
@@ -16,11 +14,11 @@ pytestmark = pytest.mark.asyncio
         {"response_type": "invalid"},
     ],
 )
-async def test_invalid_request_when_response_type_is_missing_or_invalid(
+def test_invalid_request_when_response_type_is_missing_or_invalid(
     oauth_provider: OAuth2Provider, context: Context, query_params: dict
 ):
-    request = AsyncHTTPRequest(
-        TestingRequestAdapter(
+    request = HTTPRequest(
+        TestingHTTPRequestAdapter(
             method="GET",
             url="http://localhost:8000/test/authorize",
             query_params={
@@ -31,7 +29,7 @@ async def test_invalid_request_when_response_type_is_missing_or_invalid(
         )
     )
 
-    response = await start_token_flow(oauth_provider, request, context)
+    response = start_token_flow(oauth_provider, request, context)
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -39,13 +37,13 @@ async def test_invalid_request_when_response_type_is_missing_or_invalid(
     assert "error=invalid_request" in response.headers["Location"]
 
 
-async def test_authorize_redirects_to_provider(
+def test_authorize_redirects_to_provider(
     oauth_provider: OAuth2Provider,
     context: Context,
     secondary_storage: SecondaryStorage,
 ):
-    request = AsyncHTTPRequest(
-        TestingRequestAdapter(
+    request = HTTPRequest(
+        TestingHTTPRequestAdapter(
             method="GET",
             url="http://localhost:8000/test/authorize",
             query_params={
@@ -59,7 +57,7 @@ async def test_authorize_redirects_to_provider(
         )
     )
 
-    response = await start_token_flow(oauth_provider, request, context)
+    response = start_token_flow(oauth_provider, request, context)
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -96,26 +94,24 @@ async def test_authorize_redirects_to_provider(
     assert authorization_request_data.client_code_challenge_method == "S256"
 
 
-async def test_authorize_requires_redirect_uri(
+def test_authorize_requires_redirect_uri(
     oauth_provider: OAuth2Provider, context: Context
 ):
-    request = AsyncHTTPRequest(
-        TestingRequestAdapter(
+    request = HTTPRequest(
+        TestingHTTPRequestAdapter(
             method="GET", url="http://localhost:8000/test/authorize", query_params={}
         )
     )
 
-    response = await start_token_flow(oauth_provider, request, context)
+    response = start_token_flow(oauth_provider, request, context)
 
     assert response.status_code == 400
     assert response.json() == {"error": "invalid_request"}
 
 
-async def test_invalid_redirect_uri_error(
-    oauth_provider: OAuth2Provider, context: Context
-):
-    request = AsyncHTTPRequest(
-        TestingRequestAdapter(
+def test_invalid_redirect_uri_error(oauth_provider: OAuth2Provider, context: Context):
+    request = HTTPRequest(
+        TestingHTTPRequestAdapter(
             method="GET",
             url="http://localhost:8000/test/authorize",
             query_params={
@@ -126,21 +122,21 @@ async def test_invalid_redirect_uri_error(
         )
     )
 
-    response = await start_token_flow(oauth_provider, request, context)
+    response = start_token_flow(oauth_provider, request, context)
 
     assert response.status_code == 400
     assert response.json() == {"error": "invalid_redirect_uri"}
 
 
-async def test_link_code_response_type_not_supported(
+def test_link_code_response_type_not_supported(
     oauth_provider: OAuth2Provider, context: Context
 ):
     """
     The authorize endpoint no longer supports response_type=link_code.
     Use POST /{provider}/link instead.
     """
-    request = AsyncHTTPRequest(
-        TestingRequestAdapter(
+    request = HTTPRequest(
+        TestingHTTPRequestAdapter(
             method="GET",
             url="http://localhost:8000/test/authorize",
             query_params={
@@ -155,7 +151,7 @@ async def test_link_code_response_type_not_supported(
         )
     )
 
-    response = await start_token_flow(oauth_provider, request, context)
+    response = start_token_flow(oauth_provider, request, context)
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -164,7 +160,7 @@ async def test_link_code_response_type_not_supported(
     assert "state=client_state_123" in location
 
 
-async def test_authorize_rejects_invalid_client_id(
+def test_authorize_rejects_invalid_client_id(
     oauth_provider: OAuth2Provider,
     secondary_storage: SecondaryStorage,
     accounts_storage,
@@ -175,15 +171,15 @@ async def test_authorize_rejects_invalid_client_id(
         secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
         create_token=lambda id: (f"token-{id}", 0),
-        get_user_from_request=lambda r: logged_in_user
-        if r.headers.get("Authorization") == "Bearer test"
-        else None,
+        get_user_from_request=lambda r: (
+            logged_in_user if r.headers.get("Authorization") == "Bearer test" else None
+        ),
         trusted_origins=["valid-frontend.com"],
         config={"allowed_client_ids": ["allowed_client"]},
     )
 
-    request = AsyncHTTPRequest(
-        TestingRequestAdapter(
+    request = HTTPRequest(
+        TestingHTTPRequestAdapter(
             method="GET",
             url="http://localhost:8000/test/authorize",
             query_params={
@@ -197,9 +193,7 @@ async def test_authorize_rejects_invalid_client_id(
         )
     )
 
-    response = await start_token_flow(
-        oauth_provider, request, context_with_client_validation
-    )
+    response = start_token_flow(oauth_provider, request, context_with_client_validation)
 
     assert response.status_code == 302
     assert response.headers is not None
@@ -208,7 +202,7 @@ async def test_authorize_rejects_invalid_client_id(
     assert "error_description=Invalid+client_id" in location
 
 
-async def test_authorize_accepts_valid_client_id(
+def test_authorize_accepts_valid_client_id(
     oauth_provider: OAuth2Provider,
     secondary_storage: SecondaryStorage,
     accounts_storage,
@@ -219,15 +213,15 @@ async def test_authorize_accepts_valid_client_id(
         secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
         create_token=lambda id: (f"token-{id}", 0),
-        get_user_from_request=lambda r: logged_in_user
-        if r.headers.get("Authorization") == "Bearer test"
-        else None,
+        get_user_from_request=lambda r: (
+            logged_in_user if r.headers.get("Authorization") == "Bearer test" else None
+        ),
         trusted_origins=["valid-frontend.com"],
         config={"allowed_client_ids": ["allowed_client"]},
     )
 
-    request = AsyncHTTPRequest(
-        TestingRequestAdapter(
+    request = HTTPRequest(
+        TestingHTTPRequestAdapter(
             method="GET",
             url="http://localhost:8000/test/authorize",
             query_params={
@@ -241,9 +235,7 @@ async def test_authorize_accepts_valid_client_id(
         )
     )
 
-    response = await start_token_flow(
-        oauth_provider, request, context_with_client_validation
-    )
+    response = start_token_flow(oauth_provider, request, context_with_client_validation)
 
     assert response.status_code == 302
     assert response.headers is not None

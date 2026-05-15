@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 import respx
-from cross_web import AsyncHTTPRequest
+from cross_web import HTTPRequest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -42,7 +42,7 @@ def _bearer_user_resolver(
     the seeded test user in `tests/conftest.py`.
     """
 
-    def resolve(request: AsyncHTTPRequest) -> User | None:
+    def resolve(request: HTTPRequest) -> User | None:
         auth_header = request.headers.get("Authorization") or request.headers.get(
             "authorization"
         )

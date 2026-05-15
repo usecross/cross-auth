@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
-from cross_web import AsyncHTTPRequest, Response
+from cross_web import HTTPRequest, Response
 from pydantic import AwareDatetime, BaseModel, Discriminator, Field, ValidationError
 from pydantic.type_adapter import TypeAdapter
 
@@ -142,11 +142,15 @@ class Issuer:
 
         return self._error_response(error_type, message)
 
-    async def token(self, request: AsyncHTTPRequest, context: Context) -> Response:
-        form_data = await request.get_form_data()
+    def token(
+        self,
+        request: HTTPRequest,
+        context: Context,
+    ) -> Response:
+        input_data = dict(request.post_data)
 
         try:
-            token_request = TokenRequestAdapter.validate_python(form_data.form)
+            token_request = TokenRequestAdapter.validate_python(input_data)
         except ValidationError as e:
             return self._format_validation_error(e)
 
@@ -154,11 +158,11 @@ class Issuer:
         # TODO: support confidential clients (client_secret)
 
         if isinstance(token_request, AuthorizationCodeGrantRequest):
-            return await self._authorization_code_grant(token_request, context)
+            return self._authorization_code_grant(token_request, context)
         elif isinstance(token_request, PasswordGrantRequest):
-            return await self._password_grant(token_request, context)
+            return self._password_grant(token_request, context)
 
-    async def _authorization_code_grant(
+    def _authorization_code_grant(
         self, request: AuthorizationCodeGrantRequest, context: Context
     ) -> Response:
         code = request.code
@@ -218,7 +222,7 @@ class Issuer:
             )
 
         try:
-            await context.hooks.run_before_async(
+            context.hooks.run_before(
                 "token.authorization_code",
                 BeforeTokenAuthorizationCodeEvent(
                     client_id=authorization_data.client_id,
@@ -241,7 +245,7 @@ class Issuer:
             scope="",
         )
 
-        await context.hooks.run_after_async(
+        context.hooks.run_after(
             "token.authorization_code",
             AfterTokenAuthorizationCodeEvent(
                 request=request,
@@ -264,13 +268,13 @@ class Issuer:
             cookies=[],
         )
 
-    async def _password_grant(
+    def _password_grant(
         self, request: PasswordGrantRequest, context: Context
     ) -> Response:
         user = context.accounts_storage.find_user_by_email(request.username)
 
         try:
-            await context.hooks.run_before_async(
+            context.hooks.run_before(
                 "token.password",
                 BeforeTokenPasswordEvent(
                     client_id=request.client_id,
@@ -307,7 +311,7 @@ class Issuer:
             scope="",
         )
 
-        await context.hooks.run_after_async(
+        context.hooks.run_after(
             "token.password",
             AfterTokenPasswordEvent(
                 request=request,
@@ -341,6 +345,7 @@ class Issuer:
                 response_model=TokenResponse,
                 operation_id="token",
                 request_type=TokenRequest,
+                read_form_data=True,
                 summary="OAuth 2.0 token endpoint",
                 openapi={
                     "requestBody": {

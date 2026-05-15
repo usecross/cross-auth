@@ -267,12 +267,12 @@ def test_disconnect_runs_hooks(auth: CrossAuth, accounts_storage):
     seen: dict[str, str] = {}
 
     @auth.before("oauth.disconnect")
-    async def capture_before(event: BeforeOAuthDisconnectEvent) -> None:
+    def capture_before(event: BeforeOAuthDisconnectEvent) -> None:
         seen["before_provider"] = event.provider.id
         seen["before_account"] = str(event.social_account.id)
 
     @auth.after("oauth.disconnect")
-    async def capture_after(event: AfterOAuthDisconnectEvent) -> None:
+    def capture_after(event: AfterOAuthDisconnectEvent) -> None:
         seen["after_provider"] = event.provider.id
         seen["after_account"] = str(event.social_account.id)
 
@@ -299,11 +299,11 @@ def test_disconnect_before_hook_can_block(auth: CrossAuth, accounts_storage):
     seen = {"after": False}
 
     @auth.before("oauth.disconnect")
-    async def block_disconnect(event: BeforeOAuthDisconnectEvent) -> None:
+    def block_disconnect(event: BeforeOAuthDisconnectEvent) -> None:
         raise CrossAuthException("disconnect_disabled", "Disconnect disabled")
 
     @auth.after("oauth.disconnect")
-    async def capture_after(event: AfterOAuthDisconnectEvent) -> None:
+    def capture_after(event: AfterOAuthDisconnectEvent) -> None:
         seen["after"] = True
 
     app = FastAPI()

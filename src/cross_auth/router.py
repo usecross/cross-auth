@@ -1,9 +1,9 @@
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from functools import partial
 from typing import Any
 
-from cross_web import AsyncHTTPRequest, Response
+from cross_web import HTTPRequest, Response
 from fastapi import APIRouter
 
 from ._auth_flow import (
@@ -26,7 +26,7 @@ from .social_providers.oauth import OAuth2Provider
 logger = logging.getLogger(__name__)
 
 
-FlowHandler = Callable[[OAuth2Provider, AsyncHTTPRequest, Context], Awaitable[Response]]
+FlowHandler = Callable[..., Response]
 
 
 def _provider_routes(provider: OAuth2Provider) -> list[Route]:
@@ -34,7 +34,7 @@ def _provider_routes(provider: OAuth2Provider) -> list[Route]:
 
     def bound(
         handler: FlowHandler,
-    ) -> Callable[[AsyncHTTPRequest, Context], Awaitable[Response]]:
+    ) -> Callable[..., Response]:
         return partial(handler, provider)
 
     return [
@@ -81,18 +81,21 @@ def _provider_routes(provider: OAuth2Provider) -> list[Route]:
             methods=["GET", "POST"],  # POST for Apple (response_mode=form_post)
             function=bound(handle_callback),
             operation_id=f"{provider.id}_callback",
+            read_form_data=True,
         ),
         Route(
             path=f"{prefix}/link",
             methods=["POST"],
             function=bound(start_link_flow),
             operation_id=f"{provider.id}_link",
+            read_body=True,
         ),
         Route(
             path=f"{prefix}/finalize-link",
             methods=["POST"],
             function=bound(finalize_link),
             operation_id=f"{provider.id}_finalize_link",
+            read_body=True,
         ),
     ]
 
@@ -105,7 +108,7 @@ class AuthRouter(APIRouter):
         providers: list[OAuth2Provider],
         secondary_storage: SecondaryStorage,
         accounts_storage: AccountsStorage,
-        get_user_from_request: Callable[[AsyncHTTPRequest], User | None],
+        get_user_from_request: Callable[[HTTPRequest], User | None],
         create_token: Callable[[str], tuple[str, int]],
         trusted_origins: list[str],
         base_url: str | None = None,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import Literal, TypeAlias
 
 from .events import (
@@ -39,7 +39,6 @@ HookEventName: TypeAlias = Literal[
     "token.authorization_code",
 ]
 
-_SYNC_EVENT_NAMES: frozenset[str] = frozenset({"authenticate", "login", "logout"})
 _ALL_EVENT_NAMES: frozenset[str] = frozenset(
     {
         "authenticate",
@@ -78,54 +77,34 @@ AfterLogoutHandler: TypeAlias = Callable[[AfterLogoutEvent], None]
 
 BeforeOAuthAuthorizeHandler: TypeAlias = Callable[
     [BeforeOAuthAuthorizeEvent],
-    BeforeOAuthAuthorizeEvent | Awaitable[BeforeOAuthAuthorizeEvent | None] | None,
+    BeforeOAuthAuthorizeEvent | None,
 ]
-AfterOAuthAuthorizeHandler: TypeAlias = Callable[
-    [AfterOAuthAuthorizeEvent], Awaitable[None] | None
-]
+AfterOAuthAuthorizeHandler: TypeAlias = Callable[[AfterOAuthAuthorizeEvent], None]
 
 BeforeOAuthCallbackHandler: TypeAlias = Callable[
     [BeforeOAuthCallbackEvent],
-    BeforeOAuthCallbackEvent | Awaitable[BeforeOAuthCallbackEvent | None] | None,
+    BeforeOAuthCallbackEvent | None,
 ]
-AfterOAuthCallbackHandler: TypeAlias = Callable[
-    [AfterOAuthCallbackEvent], Awaitable[None] | None
-]
+AfterOAuthCallbackHandler: TypeAlias = Callable[[AfterOAuthCallbackEvent], None]
 
-BeforeOAuthLinkHandler: TypeAlias = Callable[
-    [BeforeOAuthLinkEvent], Awaitable[None] | None
-]
-AfterOAuthLinkHandler: TypeAlias = Callable[
-    [AfterOAuthLinkEvent], Awaitable[None] | None
-]
+BeforeOAuthLinkHandler: TypeAlias = Callable[[BeforeOAuthLinkEvent], None]
+AfterOAuthLinkHandler: TypeAlias = Callable[[AfterOAuthLinkEvent], None]
 
 BeforeOAuthFinalizeLinkHandler: TypeAlias = Callable[
     [BeforeOAuthFinalizeLinkEvent],
-    BeforeOAuthFinalizeLinkEvent
-    | Awaitable[BeforeOAuthFinalizeLinkEvent | None]
-    | None,
+    BeforeOAuthFinalizeLinkEvent | None,
 ]
-AfterOAuthFinalizeLinkHandler: TypeAlias = Callable[
-    [AfterOAuthFinalizeLinkEvent], Awaitable[None] | None
-]
+AfterOAuthFinalizeLinkHandler: TypeAlias = Callable[[AfterOAuthFinalizeLinkEvent], None]
 
-BeforeOAuthDisconnectHandler: TypeAlias = Callable[
-    [BeforeOAuthDisconnectEvent], Awaitable[None] | None
-]
-AfterOAuthDisconnectHandler: TypeAlias = Callable[
-    [AfterOAuthDisconnectEvent], Awaitable[None] | None
-]
+BeforeOAuthDisconnectHandler: TypeAlias = Callable[[BeforeOAuthDisconnectEvent], None]
+AfterOAuthDisconnectHandler: TypeAlias = Callable[[AfterOAuthDisconnectEvent], None]
 
-BeforeTokenPasswordHandler: TypeAlias = Callable[
-    [BeforeTokenPasswordEvent], Awaitable[None] | None
-]
-AfterTokenPasswordHandler: TypeAlias = Callable[
-    [AfterTokenPasswordEvent], Awaitable[None] | None
-]
+BeforeTokenPasswordHandler: TypeAlias = Callable[[BeforeTokenPasswordEvent], None]
+AfterTokenPasswordHandler: TypeAlias = Callable[[AfterTokenPasswordEvent], None]
 
 BeforeTokenAuthorizationCodeHandler: TypeAlias = Callable[
-    [BeforeTokenAuthorizationCodeEvent], Awaitable[None] | None
+    [BeforeTokenAuthorizationCodeEvent], None
 ]
 AfterTokenAuthorizationCodeHandler: TypeAlias = Callable[
-    [AfterTokenAuthorizationCodeEvent], Awaitable[None] | None
+    [AfterTokenAuthorizationCodeEvent], None
 ]

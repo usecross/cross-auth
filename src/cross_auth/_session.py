@@ -4,7 +4,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Literal, TypedDict
 
-from cross_web import AsyncHTTPRequest, Cookie
+from cross_web import HTTPRequest, Cookie
 from pydantic import AwareDatetime, BaseModel
 
 from ._storage import AccountsStorage, SecondaryStorage, User
@@ -120,7 +120,7 @@ def make_clear_cookie(
 
 
 def get_current_user(
-    request: AsyncHTTPRequest,
+    request: HTTPRequest,
     storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
     config: SessionConfig | None = None,

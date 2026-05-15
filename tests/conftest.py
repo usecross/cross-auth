@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 import pytest
-from cross_web import AsyncHTTPRequest
+from cross_web import HTTPRequest
 from passlib.context import CryptContext
 
 from cross_auth._context import Context
@@ -268,7 +268,7 @@ def context(
     accounts_storage: AccountsStorage,
     logged_in_user: User,
 ) -> Context:
-    def _get_user_from_request(request: AsyncHTTPRequest) -> UserProtocol | None:
+    def _get_user_from_request(request: HTTPRequest) -> UserProtocol | None:
         if request.headers.get("Authorization") == "Bearer test":
             return cast(UserProtocol, logged_in_user)
 
