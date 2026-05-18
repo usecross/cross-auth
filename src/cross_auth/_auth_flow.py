@@ -43,6 +43,8 @@ from .utils._url import construct_relative_url
 
 logger = logging.getLogger(__name__)
 
+EXPECTED_OAUTH_CALLBACK_ERRORS = {"access_denied"}
+
 
 # TODO: explain these?
 FlowKind = Literal["session", "token", "link", "connect"]
@@ -556,7 +558,12 @@ async def _handle_oauth_callback(
     auth_request = _load_auth_request(context, state) if state else None
 
     if callback_data.error:
-        logger.error("OAuth error: %s", callback_data.error)
+        level = (
+            logging.INFO
+            if callback_data.error in EXPECTED_OAUTH_CALLBACK_ERRORS
+            else logging.ERROR
+        )
+        logger.log(level, "OAuth error: %s", callback_data.error)
         if auth_request is not None:
             if auth_request.provider_id != provider.id:
                 logger.error(

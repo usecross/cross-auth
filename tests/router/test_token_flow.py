@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from urllib.parse import parse_qs, urlparse
 
 import respx
 from fastapi.testclient import TestClient
 
+from cross_auth._auth_flow import logger as auth_flow_logger
 from cross_auth._issuer import AuthorizationCodeGrantData
 from cross_auth._storage import SecondaryStorage
 
@@ -102,14 +104,16 @@ def test_token_callback_mints_authorization_code_and_redirects(
 
 
 @respx.mock
-def test_token_callback_reports_provider_error_to_client(client: TestClient):
+def test_token_callback_reports_provider_error_to_client(client: TestClient, caplog):
     _, state = start_provider_auth(client, "/fake/authorize", params=_AUTHZ_PARAMS)
 
     # Simulate the provider bouncing us back with an error.
     mock_token_and_userinfo()  # not used, but keeps respx happy
-    resp = client.get(
-        "/fake/callback", params={"error": "access_denied", "state": state}
-    )
+    with caplog.at_level(logging.INFO, logger=auth_flow_logger.name):
+        resp = client.get(
+            "/fake/callback", params={"error": "access_denied", "state": state}
+        )
+
     assert resp.status_code == 302
     location = urlparse(resp.headers["location"])
     assert (
@@ -120,6 +124,29 @@ def test_token_callback_reports_provider_error_to_client(client: TestClient):
     assert qs["error"] == ["access_denied"]
     assert qs["error_description"] == ["Authorization failed: access_denied"]
     assert qs["state"] == ["client-csrf-state"]
+
+    flow_records = [r for r in caplog.records if r.name == auth_flow_logger.name]
+    assert len(flow_records) == 1
+    assert flow_records[0].levelno == logging.INFO
+    assert flow_records[0].getMessage() == "OAuth error: access_denied"
+
+
+@respx.mock
+def test_token_callback_logs_unexpected_provider_error(client: TestClient, caplog):
+    _, state = start_provider_auth(client, "/fake/authorize", params=_AUTHZ_PARAMS)
+
+    mock_token_and_userinfo()  # not used, but keeps respx happy
+    with caplog.at_level(logging.ERROR, logger=auth_flow_logger.name):
+        resp = client.get(
+            "/fake/callback", params={"error": "invalid_request", "state": state}
+        )
+
+    assert resp.status_code == 302
+    assert "error=invalid_request" in resp.headers["location"]
+    assert len(caplog.records) == 1
+    assert caplog.records[0].name == auth_flow_logger.name
+    assert caplog.records[0].levelno == logging.ERROR
+    assert caplog.records[0].getMessage() == "OAuth error: invalid_request"
 
 
 @respx.mock
