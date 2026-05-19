@@ -74,6 +74,20 @@ def _body_to_form_data(body: Any) -> FormData:
     return FormData(files={}, form={})
 
 
+def _form_data_request_body_openapi() -> dict[str, Any]:
+    return {
+        "content": {
+            "application/x-www-form-urlencoded": {
+                "schema": {
+                    "additionalProperties": True,
+                    "type": "object",
+                    "title": "Form Data",
+                }
+            }
+        }
+    }
+
+
 class Route:
     def __init__(
         self,
@@ -152,10 +166,14 @@ class Route:
         return wrapper
 
     def get_openapi_extra(self) -> dict[str, Any] | None:
-        if not self.path_parameters:
-            return self.openapi
-
         openapi = dict(self.openapi or {})
+
+        if self.read_form_data and "requestBody" not in openapi:
+            openapi["requestBody"] = _form_data_request_body_openapi()
+
+        if not self.path_parameters:
+            return openapi or None
+
         path_parameter_keys = {
             (parameter["name"], parameter["in"]) for parameter in self.path_parameters
         }

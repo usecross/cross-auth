@@ -132,3 +132,29 @@ def test_fastapi_endpoint_with_form_preload_uses_dependency(context):
 
     assert response.status_code == 204
     assert seen == {"form_data": {"name": "patrick"}}
+
+
+def test_fastapi_endpoint_with_form_preload_has_object_request_body(context):
+    route = Route("/items", ["POST"], _handler, read_form_data=True)
+
+    app = FastAPI()
+    app.add_api_route(
+        route.path,
+        route.to_fastapi_endpoint(context=context),
+        methods=route.methods,
+        openapi_extra=route.get_openapi_extra(),
+    )
+
+    operation = app.openapi()["paths"]["/items"]["post"]
+
+    assert operation["requestBody"] == {
+        "content": {
+            "application/x-www-form-urlencoded": {
+                "schema": {
+                    "additionalProperties": True,
+                    "type": "object",
+                    "title": "Form Data",
+                }
+            }
+        }
+    }
