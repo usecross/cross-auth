@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-import pytest
-from cross_web import AsyncHTTPRequest
+from cross_web import HTTPRequest
 from inline_snapshot import snapshot
 
 from cross_auth._context import Context
@@ -10,10 +9,8 @@ from cross_auth._storage import SecondaryStorage
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.hooks import BeforeTokenPasswordEvent
 
-pytestmark = pytest.mark.asyncio
 
-
-async def test_issuer(issuer: Issuer):
+def test_issuer(issuer: Issuer):
     (token_route,) = issuer.routes
 
     assert token_route.path == "/token"
@@ -21,11 +18,11 @@ async def test_issuer(issuer: Issuer):
     assert token_route.function == issuer.token
 
 
-async def test_returns_error_response_if_client_id_is_missing(
+def test_returns_error_response_if_client_id_is_missing(
     issuer: Issuer, context: Context
 ):
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(data={"grant_type": "authorization_code"}),
+    response = issuer.token(
+        HTTPRequest.from_form_data(data={"grant_type": "authorization_code"}),
         context,
     )
     assert response.status_code == 400
@@ -34,11 +31,11 @@ async def test_returns_error_response_if_client_id_is_missing(
     )
 
 
-async def test_returns_error_response_if_grant_type_is_missing(
+def test_returns_error_response_if_grant_type_is_missing(
     issuer: Issuer, context: Context
 ):
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(data={"client_id": "test"}), context
+    response = issuer.token(
+        HTTPRequest.from_form_data(data={"client_id": "test"}), context
     )
     assert response.status_code == 400
     assert response.json() == snapshot(
@@ -49,11 +46,9 @@ async def test_returns_error_response_if_grant_type_is_missing(
     )
 
 
-async def test_returns_error_for_unsupported_grant_type(
-    issuer: Issuer, context: Context
-):
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+def test_returns_error_for_unsupported_grant_type(issuer: Issuer, context: Context):
+    response = issuer.token(
+        HTTPRequest.from_form_data(
             data={"grant_type": "client_credentials", "client_id": "test"}
         ),
         context,
@@ -68,11 +63,9 @@ async def test_returns_error_for_unsupported_grant_type(
     )
 
 
-async def test_returns_error_response_if_code_is_missing(
-    issuer: Issuer, context: Context
-):
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+def test_returns_error_response_if_code_is_missing(issuer: Issuer, context: Context):
+    response = issuer.token(
+        HTTPRequest.from_form_data(
             data={"grant_type": "authorization_code", "client_id": "test"}
         ),
         context,
@@ -83,11 +76,11 @@ async def test_returns_error_response_if_code_is_missing(
     )
 
 
-async def test_returns_error_response_if_redirect_uri_is_missing(
+def test_returns_error_response_if_redirect_uri_is_missing(
     issuer: Issuer, context: Context
 ):
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+    response = issuer.token(
+        HTTPRequest.from_form_data(
             data={
                 "grant_type": "authorization_code",
                 "client_id": "test",
@@ -102,11 +95,9 @@ async def test_returns_error_response_if_redirect_uri_is_missing(
     )
 
 
-async def test_returns_error_response_if_code_is_invalid(
-    issuer: Issuer, context: Context
-):
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+def test_returns_error_response_if_code_is_invalid(issuer: Issuer, context: Context):
+    response = issuer.token(
+        HTTPRequest.from_form_data(
             data={
                 "grant_type": "authorization_code",
                 "client_id": "test",
@@ -124,11 +115,11 @@ async def test_returns_error_response_if_code_is_invalid(
     )
 
 
-async def test_returns_error_response_if_code_has_expired(
+def test_returns_error_response_if_code_has_expired(
     issuer: Issuer, context: Context, expired_code: str
 ):
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+    response = issuer.token(
+        HTTPRequest.from_form_data(
             data={
                 "grant_type": "authorization_code",
                 "client_id": "test",
@@ -149,11 +140,11 @@ async def test_returns_error_response_if_code_has_expired(
     )
 
 
-async def test_returns_error_response_if_redirect_uri_does_not_match(
+def test_returns_error_response_if_redirect_uri_does_not_match(
     issuer: Issuer, context: Context, valid_code: str
 ):
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+    response = issuer.token(
+        HTTPRequest.from_form_data(
             data={
                 "grant_type": "authorization_code",
                 "client_id": "test",
@@ -171,11 +162,11 @@ async def test_returns_error_response_if_redirect_uri_does_not_match(
     )
 
 
-async def test_returns_error_response_if_code_verifier_is_missing(
+def test_returns_error_response_if_code_verifier_is_missing(
     issuer: Issuer, context: Context, valid_code: str
 ):
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+    response = issuer.token(
+        HTTPRequest.from_form_data(
             data={
                 "grant_type": "authorization_code",
                 "client_id": "test",
@@ -192,7 +183,7 @@ async def test_returns_error_response_if_code_verifier_is_missing(
     )
 
 
-async def test_returns_error_response_if_client_id_does_not_match(
+def test_returns_error_response_if_client_id_does_not_match(
     issuer: Issuer, context: Context, secondary_storage: SecondaryStorage
 ):
     """
@@ -215,8 +206,8 @@ async def test_returns_error_response_if_client_id_does_not_match(
     )
 
     # Attempt to exchange with different client_id
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+    response = issuer.token(
+        HTTPRequest.from_form_data(
             data={
                 "grant_type": "authorization_code",
                 "client_id": "attacker-client",  # Different client!
@@ -234,11 +225,11 @@ async def test_returns_error_response_if_client_id_does_not_match(
     )
 
 
-async def test_returns_token_if_code_is_valid(
+def test_returns_token_if_code_is_valid(
     issuer: Issuer, context: Context, valid_code: str
 ):
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+    response = issuer.token(
+        HTTPRequest.from_form_data(
             data={
                 "grant_type": "authorization_code",
                 "client_id": "test",
@@ -264,7 +255,7 @@ async def test_returns_token_if_code_is_valid(
     )
 
 
-async def test_authorization_code_can_only_be_used_once(
+def test_authorization_code_can_only_be_used_once(
     issuer: Issuer, context: Context, valid_code: str
 ):
     """
@@ -273,8 +264,8 @@ async def test_authorization_code_can_only_be_used_once(
     reuse an intercepted authorization code.
     """
     # First exchange should succeed
-    response1 = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+    response1 = issuer.token(
+        HTTPRequest.from_form_data(
             data={
                 "grant_type": "authorization_code",
                 "client_id": "test",
@@ -289,8 +280,8 @@ async def test_authorization_code_can_only_be_used_once(
     assert response1.status_code == 200
 
     # Second attempt with same code should fail
-    response2 = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+    response2 = issuer.token(
+        HTTPRequest.from_form_data(
             data={
                 "grant_type": "authorization_code",
                 "client_id": "test",
@@ -308,9 +299,9 @@ async def test_authorization_code_can_only_be_used_once(
     )
 
 
-async def test_password_grant_missing_username(issuer: Issuer, context: Context):
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+def test_password_grant_missing_username(issuer: Issuer, context: Context):
+    response = issuer.token(
+        HTTPRequest.from_form_data(
             data={
                 "grant_type": "password",
                 "client_id": "test",
@@ -325,9 +316,9 @@ async def test_password_grant_missing_username(issuer: Issuer, context: Context)
     )
 
 
-async def test_password_grant_missing_password(issuer: Issuer, context: Context):
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+def test_password_grant_missing_password(issuer: Issuer, context: Context):
+    response = issuer.token(
+        HTTPRequest.from_form_data(
             data={
                 "grant_type": "password",
                 "client_id": "test",
@@ -342,9 +333,9 @@ async def test_password_grant_missing_password(issuer: Issuer, context: Context)
     )
 
 
-async def test_password_grant_invalid_credentials(issuer: Issuer, context: Context):
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+def test_password_grant_invalid_credentials(issuer: Issuer, context: Context):
+    response = issuer.token(
+        HTTPRequest.from_form_data(
             data={
                 "grant_type": "password",
                 "client_id": "test",
@@ -360,9 +351,9 @@ async def test_password_grant_invalid_credentials(issuer: Issuer, context: Conte
     )
 
 
-async def test_password_grant_invalid_username(issuer: Issuer, context: Context):
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+def test_password_grant_invalid_username(issuer: Issuer, context: Context):
+    response = issuer.token(
+        HTTPRequest.from_form_data(
             data={
                 "grant_type": "password",
                 "client_id": "test",
@@ -378,21 +369,20 @@ async def test_password_grant_invalid_username(issuer: Issuer, context: Context)
     )
 
 
-async def test_password_grant_preserves_unknown_hook_error_type(
+def test_password_grant_preserves_unknown_hook_error_type(
     issuer: Issuer,
     context: Context,
 ):
-    async def reject_request(event: BeforeTokenPasswordEvent) -> None:
+    def reject_request(event: BeforeTokenPasswordEvent) -> None:
         raise CrossAuthException("forbidden", "Password grant is forbidden")
 
     context.hooks.register_before(
         "token.password",
         reject_request,
-        allow_async=True,
     )
 
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+    response = issuer.token(
+        HTTPRequest.from_form_data(
             data={
                 "grant_type": "password",
                 "client_id": "test",
@@ -412,9 +402,9 @@ async def test_password_grant_preserves_unknown_hook_error_type(
     )
 
 
-async def test_password_grant_success(issuer: Issuer, context: Context):
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+def test_password_grant_success(issuer: Issuer, context: Context):
+    response = issuer.token(
+        HTTPRequest.from_form_data(
             data={
                 "grant_type": "password",
                 "client_id": "test",
@@ -438,9 +428,9 @@ async def test_password_grant_success(issuer: Issuer, context: Context):
     )
 
 
-async def test_password_grant_with_scope(issuer: Issuer, context: Context):
-    response = await issuer.token(
-        AsyncHTTPRequest.from_form_data(
+def test_password_grant_with_scope(issuer: Issuer, context: Context):
+    response = issuer.token(
+        HTTPRequest.from_form_data(
             data={
                 "grant_type": "password",
                 "client_id": "test",
@@ -465,7 +455,7 @@ async def test_password_grant_with_scope(issuer: Issuer, context: Context):
     )
 
 
-async def test_password_grant_has_consistent_timing(issuer: Issuer, context: Context):
+def test_password_grant_has_consistent_timing(issuer: Issuer, context: Context):
     """
     Test that password grant has consistent timing for existing and non-existing users.
     This prevents timing attacks that could be used to enumerate valid user accounts.
@@ -479,8 +469,8 @@ async def test_password_grant_has_consistent_timing(issuer: Issuer, context: Con
     nonexistent_times = []
     for _ in range(3):
         start = time.perf_counter()
-        await issuer.token(
-            AsyncHTTPRequest.from_form_data(
+        issuer.token(
+            HTTPRequest.from_form_data(
                 data={
                     "grant_type": "password",
                     "client_id": "test",
@@ -497,8 +487,8 @@ async def test_password_grant_has_consistent_timing(issuer: Issuer, context: Con
     existing_times = []
     for _ in range(3):
         start = time.perf_counter()
-        await issuer.token(
-            AsyncHTTPRequest.from_form_data(
+        issuer.token(
+            HTTPRequest.from_form_data(
                 data={
                     "grant_type": "password",
                     "client_id": "test",
@@ -518,7 +508,7 @@ async def test_password_grant_has_consistent_timing(issuer: Issuer, context: Con
     # The timing difference should be minimal (<50ms)
     # If it's larger, it indicates a timing attack vulnerability
     assert difference < 0.05, (
-        f"Timing difference too large: {difference*1000:.2f}ms. "
-        f"Non-existent: {avg_nonexistent*1000:.2f}ms, "
-        f"Existing: {avg_existing*1000:.2f}ms"
+        f"Timing difference too large: {difference * 1000:.2f}ms. "
+        f"Non-existent: {avg_nonexistent * 1000:.2f}ms, "
+        f"Existing: {avg_existing * 1000:.2f}ms"
     )

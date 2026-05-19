@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from cross_web import AsyncHTTPRequest, Cookie, Response
+    from cross_web import HTTPRequest, Cookie, Response
 
     from .._auth_flow import AuthRequest, InitiateLinkRequest, LinkCodeData
     from .._issuer import (
@@ -52,14 +52,14 @@ class AfterLoginEvent:
 
 @dataclass(frozen=True, slots=True)
 class BeforeLogoutEvent:
-    request: AsyncHTTPRequest
+    request: HTTPRequest
     response: Response
     session_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
 class AfterLogoutEvent:
-    request: AsyncHTTPRequest
+    request: HTTPRequest
     response: Response
     session_id: str | None
 
@@ -67,14 +67,14 @@ class AfterLogoutEvent:
 @dataclass(frozen=True, slots=True)
 class BeforeOAuthAuthorizeEvent:
     provider: OAuth2Provider
-    request: AsyncHTTPRequest
+    request: HTTPRequest
     login_hint: str | None
 
 
 @dataclass(frozen=True, slots=True)
 class AfterOAuthAuthorizeEvent:
     provider: OAuth2Provider
-    request: AsyncHTTPRequest
+    request: HTTPRequest
     redirect_uri: str
     client_id: str
     client_state: str | None
@@ -88,7 +88,7 @@ class AfterOAuthAuthorizeEvent:
 @dataclass(frozen=True, slots=True)
 class BeforeOAuthCallbackEvent:
     provider: OAuth2Provider
-    request: AsyncHTTPRequest
+    request: HTTPRequest
     user_info: UserInfo
     validated_user_info: ValidatedUserInfo
 
@@ -96,7 +96,7 @@ class BeforeOAuthCallbackEvent:
 @dataclass(frozen=True, slots=True)
 class AfterOAuthCallbackEvent:
     provider: OAuth2Provider
-    request: AsyncHTTPRequest
+    request: HTTPRequest
     auth_request: AuthRequest
     callback_data: CallbackData
     token_response: TokenResponse
@@ -114,14 +114,14 @@ class AfterOAuthCallbackEvent:
 @dataclass(frozen=True, slots=True)
 class BeforeOAuthLinkEvent:
     provider: OAuth2Provider
-    request: AsyncHTTPRequest
+    request: HTTPRequest
     user: User
 
 
 @dataclass(frozen=True, slots=True)
 class AfterOAuthLinkEvent:
     provider: OAuth2Provider
-    request: AsyncHTTPRequest
+    request: HTTPRequest
     user: User
     link_request: InitiateLinkRequest
     state: str
@@ -131,7 +131,7 @@ class AfterOAuthLinkEvent:
 @dataclass(frozen=True, slots=True)
 class BeforeOAuthFinalizeLinkEvent:
     provider: OAuth2Provider
-    request: AsyncHTTPRequest
+    request: HTTPRequest
     user: User
     allow_login: bool
     user_info: UserInfo
@@ -141,7 +141,7 @@ class BeforeOAuthFinalizeLinkEvent:
 @dataclass(frozen=True, slots=True)
 class AfterOAuthFinalizeLinkEvent:
     provider: OAuth2Provider
-    request: AsyncHTTPRequest
+    request: HTTPRequest
     user: User
     link_data: LinkCodeData
     allow_login: bool
@@ -155,7 +155,7 @@ class AfterOAuthFinalizeLinkEvent:
 @dataclass(frozen=True, slots=True)
 class BeforeOAuthDisconnectEvent:
     provider: OAuth2Provider
-    request: AsyncHTTPRequest
+    request: HTTPRequest
     user: User
     social_account: SocialAccount
 
@@ -163,7 +163,7 @@ class BeforeOAuthDisconnectEvent:
 @dataclass(frozen=True, slots=True)
 class AfterOAuthDisconnectEvent:
     provider: OAuth2Provider
-    request: AsyncHTTPRequest
+    request: HTTPRequest
     user: User
     social_account: SocialAccount
 

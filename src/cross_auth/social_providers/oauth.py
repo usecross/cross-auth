@@ -4,7 +4,7 @@ from typing import Any, ClassVar, NotRequired, TypedDict
 from urllib.parse import urlencode
 
 import httpx
-from cross_web import AsyncHTTPRequest
+from cross_web import HTTPRequest
 from pydantic import BaseModel, ValidationError
 
 from cross_auth.utils._response import Response
@@ -128,7 +128,7 @@ class OAuth2Provider:
         state: str,
         redirect_uri: str,
         *,
-        request: AsyncHTTPRequest | None = None,
+        request: HTTPRequest | None = None,
         code_challenge: str | None = None,
         code_challenge_method: str | None = None,
         login_hint: str | None = None,
@@ -163,7 +163,7 @@ class OAuth2Provider:
         state: str,
         redirect_uri: str,
         *,
-        request: AsyncHTTPRequest | None = None,
+        request: HTTPRequest | None = None,
         code_challenge: str | None = None,
         code_challenge_method: str | None = None,
         login_hint: str | None = None,
@@ -190,9 +190,9 @@ class OAuth2Provider:
 
         return f"{self.authorization_endpoint}?{urlencode(params)}"
 
-    async def intercept_callback(
+    def intercept_callback(
         self,
-        request: AsyncHTTPRequest,
+        request: HTTPRequest,
         context: Context,
     ) -> Response | None:
         """Inspect an incoming callback before the normal OAuth flow runs.
@@ -203,9 +203,9 @@ class OAuth2Provider:
         """
         return None
 
-    async def finalize_redirect(
+    def finalize_redirect(
         self,
-        request: AsyncHTTPRequest,
+        request: HTTPRequest,
         response: Response,
     ) -> Response:
         """Post-process the Response a flow handler is about to return.
@@ -216,7 +216,10 @@ class OAuth2Provider:
         """
         return response
 
-    async def extract_callback_params(self, request: AsyncHTTPRequest) -> CallbackData:
+    def extract_callback_params(
+        self,
+        request: HTTPRequest,
+    ) -> CallbackData:
         """Extract code, state, and error from callback request.
 
         Override for providers that use POST (e.g., Apple with response_mode=form_post).

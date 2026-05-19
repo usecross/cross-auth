@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 import respx
-from cross_web import AsyncHTTPRequest, TestingRequestAdapter
+from cross_web import HTTPRequest, TestingHTTPRequestAdapter
 
 from cross_auth._auth_flow import handle_callback, start_token_flow
 from cross_auth._context import Context
@@ -77,13 +77,12 @@ def example_provider_with_pkce() -> ExampleProviderWithPKCE:
 
 
 @respx.mock
-@pytest.mark.asyncio
-async def test_pkce_flow_includes_code_verifier(
+def test_pkce_flow_includes_code_verifier(
     example_provider_with_pkce: ExampleProviderWithPKCE,
     context: Context,
 ) -> None:
-    authorize_request = AsyncHTTPRequest(
-        TestingRequestAdapter(
+    authorize_request = HTTPRequest(
+        TestingHTTPRequestAdapter(
             method="GET",
             url="http://localhost:8000/example_pkce/authorize",
             query_params={
@@ -96,7 +95,7 @@ async def test_pkce_flow_includes_code_verifier(
         )
     )
 
-    authorize_response = await start_token_flow(
+    authorize_response = start_token_flow(
         example_provider_with_pkce, authorize_request, context
     )
 
@@ -113,8 +112,8 @@ async def test_pkce_flow_includes_code_verifier(
     assert stored_json["provider_code_verifier"] is not None
     stored_verifier = stored_json["provider_code_verifier"]
 
-    callback_request = AsyncHTTPRequest(
-        TestingRequestAdapter(
+    callback_request = HTTPRequest(
+        TestingHTTPRequestAdapter(
             method="GET",
             url="http://localhost:8000/example_pkce/callback",
             query_params={
@@ -141,7 +140,7 @@ async def test_pkce_flow_includes_code_verifier(
         )
     )
 
-    await handle_callback(example_provider_with_pkce, callback_request, context)
+    handle_callback(example_provider_with_pkce, callback_request, context)
 
     request_data = token_route.calls[0].request.content.decode()
 

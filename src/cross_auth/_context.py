@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from urllib.parse import urlparse
 
-from cross_web import AsyncHTTPRequest, Cookie
+from cross_web import HTTPRequest, Cookie
 
 from ._config import Config
 from ._session import SessionConfig, create_session, make_session_cookie, resolve_config
@@ -18,7 +18,7 @@ class Context:
         create_token: Callable[[str], tuple[str, int]],
         # TODO: this doesn't allow to use the library as an Identity Provider
         trusted_origins: list[str],
-        get_user_from_request: Callable[[AsyncHTTPRequest], User | None],
+        get_user_from_request: Callable[[HTTPRequest], User | None],
         base_url: str | None = None,
         config: Config | None = None,
         session_enabled: bool = False,

@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
-from cross_web import AsyncHTTPRequest, Response as CrossWebResponse
+from cross_web import HTTPRequest, Response as CrossWebResponse
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -143,13 +143,13 @@ def test_logout_hooks(
 
     @auth.before("logout")
     def capture_before(event: BeforeLogoutEvent) -> None:
-        assert isinstance(event.request, AsyncHTTPRequest)
+        assert isinstance(event.request, HTTPRequest)
         assert isinstance(event.response, CrossWebResponse)
         seen["before"] = event.session_id
 
     @auth.after("logout")
     def capture_after(event: AfterLogoutEvent) -> None:
-        assert isinstance(event.request, AsyncHTTPRequest)
+        assert isinstance(event.request, HTTPRequest)
         assert isinstance(event.response, CrossWebResponse)
         seen["after"] = event.session_id
 
@@ -226,8 +226,7 @@ def test_sync_events_reject_async_hooks(
         auth.before("login")(cast(Any, invalid_hook))
 
 
-@pytest.mark.asyncio
-async def test_policy_only_before_hooks_reject_replacement():
+def test_policy_only_before_hooks_reject_replacement():
     hooks = HookRegistry()
     event = BeforeTokenPasswordEvent(
         client_id="client",
@@ -236,7 +235,7 @@ async def test_policy_only_before_hooks_reject_replacement():
         scope=None,
     )
 
-    async def replace_event(
+    def replace_event(
         event: BeforeTokenPasswordEvent,
     ) -> BeforeTokenPasswordEvent:
         return event
@@ -244,15 +243,13 @@ async def test_policy_only_before_hooks_reject_replacement():
     hooks.register_before(
         "token.password",
         cast(Any, replace_event),
-        allow_async=True,
     )
 
     with pytest.raises(TypeError, match="token.password before hooks must return None"):
-        await hooks.run_before_async("token.password", event)
+        hooks.run_before("token.password", event)
 
 
-@pytest.mark.asyncio
-async def test_oauth_authorize_hooks(
+def test_oauth_authorize_hooks(
     secondary_storage,
     accounts_storage,
     oauth_provider,
@@ -265,13 +262,13 @@ async def test_oauth_authorize_hooks(
     seen: dict[str, str] = {}
 
     @auth.before("oauth.authorize")
-    async def apply_login_hint(
+    def apply_login_hint(
         event: BeforeOAuthAuthorizeEvent,
     ) -> BeforeOAuthAuthorizeEvent:
         return replace(event, login_hint="hooked@example.com")
 
     @auth.after("oauth.authorize")
-    async def capture_authorization_url(event: AfterOAuthAuthorizeEvent) -> None:
+    def capture_authorization_url(event: AfterOAuthAuthorizeEvent) -> None:
         seen["authorization_url"] = event.authorization_url
         seen["state"] = event.state
 
@@ -302,8 +299,7 @@ async def test_oauth_authorize_hooks(
     assert json.loads(stored)["client_id"] == "original-client"
 
 
-@pytest.mark.asyncio
-async def test_oauth_callback_hooks(
+def test_oauth_callback_hooks(
     secondary_storage,
     accounts_storage,
     oauth_provider,
@@ -332,7 +328,7 @@ async def test_oauth_callback_hooks(
     )
 
     @auth.before("oauth.callback")
-    async def rewrite_email(
+    def rewrite_email(
         event: BeforeOAuthCallbackEvent,
     ) -> BeforeOAuthCallbackEvent:
         user_info = {
@@ -347,7 +343,7 @@ async def test_oauth_callback_hooks(
         return replace(event, user_info=user_info, validated_user_info=validated)
 
     @auth.after("oauth.callback")
-    async def capture_created_user(event: AfterOAuthCallbackEvent) -> None:
+    def capture_created_user(event: AfterOAuthCallbackEvent) -> None:
         if event.created_user is not None:
             seen["email"] = event.created_user.email
 
@@ -387,8 +383,7 @@ async def test_oauth_callback_hooks(
     assert accounts_storage.find_user_by_email("hooked@example.com") is not None
 
 
-@pytest.mark.asyncio
-async def test_oauth_callback_hooks_run_for_session_flow(
+def test_oauth_callback_hooks_run_for_session_flow(
     secondary_storage,
     accounts_storage,
     oauth_provider,
@@ -402,7 +397,7 @@ async def test_oauth_callback_hooks_run_for_session_flow(
     seen: dict[str, str] = {}
 
     @auth.before("oauth.callback")
-    async def rewrite_session_email(
+    def rewrite_session_email(
         event: BeforeOAuthCallbackEvent,
     ) -> BeforeOAuthCallbackEvent:
         user_info = {
@@ -417,7 +412,7 @@ async def test_oauth_callback_hooks_run_for_session_flow(
         return replace(event, user_info=user_info, validated_user_info=validated)
 
     @auth.after("oauth.callback")
-    async def capture_session_callback(event: AfterOAuthCallbackEvent) -> None:
+    def capture_session_callback(event: AfterOAuthCallbackEvent) -> None:
         assert event.authorization_code is None
         assert event.redirect_uri is None
         if event.created_user is not None:
@@ -467,8 +462,7 @@ async def test_oauth_callback_hooks_run_for_session_flow(
     assert session.user_id == "session-provider-user-id"
 
 
-@pytest.mark.asyncio
-async def test_login_hooks_run_for_oauth_session_flow(
+def test_login_hooks_run_for_oauth_session_flow(
     secondary_storage,
     accounts_storage,
     oauth_provider,
@@ -540,8 +534,7 @@ async def test_login_hooks_run_for_oauth_session_flow(
     assert session.user_id == "oauth-session-user-id"
 
 
-@pytest.mark.asyncio
-async def test_oauth_link_hooks(
+def test_oauth_link_hooks(
     secondary_storage,
     accounts_storage,
     logged_in_user,
@@ -561,7 +554,7 @@ async def test_oauth_link_hooks(
     seen: dict[str, str] = {}
 
     @auth.after("oauth.link")
-    async def capture_state(event: AfterOAuthLinkEvent) -> None:
+    def capture_state(event: AfterOAuthLinkEvent) -> None:
         seen["state"] = event.state
         seen["authorization_url"] = event.authorization_url
 
@@ -588,8 +581,7 @@ async def test_oauth_link_hooks(
     )
 
 
-@pytest.mark.asyncio
-async def test_oauth_finalize_link_hooks(
+def test_oauth_finalize_link_hooks(
     secondary_storage,
     accounts_storage,
     logged_in_user,
@@ -623,13 +615,13 @@ async def test_oauth_finalize_link_hooks(
     )
 
     @auth.before("oauth.finalize_link")
-    async def disable_login_method(
+    def disable_login_method(
         event: BeforeOAuthFinalizeLinkEvent,
     ) -> BeforeOAuthFinalizeLinkEvent:
         return replace(event, allow_login=False)
 
     @auth.after("oauth.finalize_link")
-    async def capture_login_mode(event: AfterOAuthFinalizeLinkEvent) -> None:
+    def capture_login_mode(event: AfterOAuthFinalizeLinkEvent) -> None:
         seen["is_login_method"] = event.social_account.is_login_method
 
     respx_mock.post(oauth_provider.token_endpoint).mock(
@@ -667,8 +659,7 @@ async def test_oauth_finalize_link_hooks(
     assert seen == {"is_login_method": False}
 
 
-@pytest.mark.asyncio
-async def test_token_hooks(
+def test_token_hooks(
     secondary_storage,
     accounts_storage,
 ):
@@ -677,7 +668,7 @@ async def test_token_hooks(
     seen: dict[str, str] = {}
 
     @auth.before("token.password")
-    async def block_legacy_password_grant(event: BeforeTokenPasswordEvent) -> None:
+    def block_legacy_password_grant(event: BeforeTokenPasswordEvent) -> None:
         nonlocal blocked
         blocked = True
         if event.client_id == "legacy-spa":
@@ -687,7 +678,7 @@ async def test_token_hooks(
             )
 
     @auth.after("token.authorization_code")
-    async def capture_auth_code_token(event: AfterTokenAuthorizationCodeEvent) -> None:
+    def capture_auth_code_token(event: AfterTokenAuthorizationCodeEvent) -> None:
         seen["access_token"] = event.token_response.access_token
         raise CrossAuthException("invalid_grant", "ignored after hook failure")
 

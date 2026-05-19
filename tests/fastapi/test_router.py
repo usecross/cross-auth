@@ -48,6 +48,16 @@ def test_router(test_app: FastAPI):
                                     }
                                 },
                             },
+                            "422": {
+                                "description": "Validation Error",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "$ref": "#/components/schemas/HTTPValidationError"
+                                        }
+                                    }
+                                },
+                            },
                             "400": {
                                 "description": "Bad request - invalid parameters or grant",
                                 "content": {
@@ -127,6 +137,24 @@ def test_router(test_app: FastAPI):
                         },
                         "type": "object",
                         "title": "HTTPValidationError",
+                    },
+                    "ValidationError": {
+                        "properties": {
+                            "loc": {
+                                "items": {
+                                    "anyOf": [{"type": "string"}, {"type": "integer"}]
+                                },
+                                "type": "array",
+                                "title": "Location",
+                            },
+                            "msg": {"type": "string", "title": "Message"},
+                            "type": {"type": "string", "title": "Error Type"},
+                            "input": {"title": "Input"},
+                            "ctx": {"type": "object", "title": "Context"},
+                        },
+                        "type": "object",
+                        "required": ["loc", "msg", "type"],
+                        "title": "ValidationError",
                     },
                     "PasswordGrantRequest": {
                         "properties": {

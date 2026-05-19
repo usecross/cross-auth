@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Annotated, Any, cast
 
 import jwt
-from cross_web import AsyncHTTPRequest
+from cross_web import HTTPRequest
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -367,7 +367,7 @@ def resolve_bearer_user(request: Request) -> DemoUser:
     return resolve_bearer_token(token)
 
 
-def resolve_auth_user(request: AsyncHTTPRequest) -> DemoUser | None:
+def resolve_auth_user(request: HTTPRequest) -> DemoUser | None:
     authorization = request.headers.get("Authorization")
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ", 1)[1]
@@ -448,7 +448,7 @@ def audit_session_logout(event: AfterLogoutEvent) -> None:
 
 
 @auth.before("oauth.callback")
-async def require_verified_provider_email(event: BeforeOAuthCallbackEvent) -> None:
+def require_verified_provider_email(event: BeforeOAuthCallbackEvent) -> None:
     if event.validated_user_info.email_verified is not True:
         raise CrossAuthException(
             "email_not_verified",
@@ -457,7 +457,7 @@ async def require_verified_provider_email(event: BeforeOAuthCallbackEvent) -> No
 
 
 @auth.after("oauth.callback")
-async def audit_oauth_callback(event: AfterOAuthCallbackEvent) -> None:
+def audit_oauth_callback(event: AfterOAuthCallbackEvent) -> None:
     record_hook_event(
         "after:oauth.callback",
         flow=event.auth_request.flow,
@@ -468,7 +468,7 @@ async def audit_oauth_callback(event: AfterOAuthCallbackEvent) -> None:
 
 
 @auth.after("token.authorization_code")
-async def audit_token_exchange(event: AfterTokenAuthorizationCodeEvent) -> None:
+def audit_token_exchange(event: AfterTokenAuthorizationCodeEvent) -> None:
     record_hook_event(
         "after:token.authorization_code",
         client_id=event.authorization_data.client_id,

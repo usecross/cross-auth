@@ -10,7 +10,7 @@ import respx
 from cross_auth._context import Context
 from cross_auth._storage import AccountsStorage, SecondaryStorage
 from cross_auth.utils._response import Response
-from cross_web import AsyncHTTPRequest
+from cross_web import HTTPRequest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -36,7 +36,7 @@ class HookedFakeProvider(FakeProvider):
         state: str,
         redirect_uri: str,
         *,
-        request: AsyncHTTPRequest | None = None,
+        request: HTTPRequest | None = None,
         code_challenge: str | None = None,
         code_challenge_method: str | None = None,
         login_hint: str | None = None,
@@ -53,9 +53,9 @@ class HookedFakeProvider(FakeProvider):
             return url
         return _append_query(url, {"audience": audience})
 
-    async def intercept_callback(
+    def intercept_callback(
         self,
-        request: AsyncHTTPRequest,
+        request: HTTPRequest,
         context: Context,
     ) -> Response | None:
         if request.query_params.get("provider_status") == "pending":
@@ -65,9 +65,9 @@ class HookedFakeProvider(FakeProvider):
             )
         return None
 
-    async def finalize_redirect(
+    def finalize_redirect(
         self,
-        request: AsyncHTTPRequest,
+        request: HTTPRequest,
         response: Response,
     ) -> Response:
         if (

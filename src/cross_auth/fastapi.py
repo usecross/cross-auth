@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Literal, overload
 
-from cross_web import AsyncHTTPRequest, Cookie
+from cross_web import AsyncHTTPRequest, Cookie, HTTPRequest
 from cross_web import Response as CrossWebResponse
 from fastapi import HTTPException
 from fastapi import Request as FastAPIRequest
@@ -12,6 +12,7 @@ from fastapi import Response as FastAPIResponse
 from ._config import Config
 from ._context import AccountsStorage, SecondaryStorage, User
 from ._password import authenticate
+from ._request import make_http_request
 from ._session import (
     SessionConfig,
     create_session,
@@ -53,7 +54,6 @@ from .hooks._types import (
     BeforeTokenPasswordHandler,
     HookEventName,
 )
-from .hooks.registry import _event_allows_async
 from .router import AuthRouter
 from .social_providers.oauth import OAuth2Provider
 
@@ -71,7 +71,7 @@ class CrossAuth:
         create_token: Callable[[str], tuple[str, int]],
         trusted_origins: list[str],
         session_config: SessionConfig | None = None,
-        get_user_from_request: Callable[[AsyncHTTPRequest], User | None] | None = None,
+        get_user_from_request: Callable[[HTTPRequest], User | None] | None = None,
         base_url: str | None = None,
         config: Config | None = None,
         default_next_url: str = "/",
@@ -104,7 +104,7 @@ class CrossAuth:
     def router(self) -> AuthRouter:
         return self._router
 
-    def _default_get_user_from_request(self, request: AsyncHTTPRequest) -> User | None:
+    def _default_get_user_from_request(self, request: HTTPRequest) -> User | None:
         return get_current_user(
             request,
             self._storage,
@@ -114,7 +114,7 @@ class CrossAuth:
 
     def _resolve_user(self, request: FastAPIRequest) -> User | None:
         async_request = AsyncHTTPRequest.from_fastapi(request)
-        return self._get_user_from_request(async_request)
+        return self._get_user_from_request(make_http_request(async_request))
 
     def get_current_user(self, request: FastAPIRequest) -> User | None:
         return self._resolve_user(request)
@@ -195,10 +195,8 @@ class CrossAuth:
     def before(
         self, event: HookEventName
     ) -> Callable[[Callable[..., object]], Callable[..., object]]:
-        allow_async = _event_allows_async(event)
-
         def decorator(handler: Callable[..., object]) -> Callable[..., object]:
-            self._hooks.register_before(event, handler, allow_async=allow_async)
+            self._hooks.register_before(event, handler)
             return handler
 
         return decorator
@@ -258,10 +256,8 @@ class CrossAuth:
     def after(
         self, event: HookEventName
     ) -> Callable[[Callable[..., object]], Callable[..., object]]:
-        allow_async = _event_allows_async(event)
-
         def decorator(handler: Callable[..., object]) -> Callable[..., object]:
-            self._hooks.register_after(event, handler, allow_async=allow_async)
+            self._hooks.register_after(event, handler)
             return handler
 
         return decorator
@@ -340,7 +336,7 @@ class CrossAuth:
     def logout(self, request: FastAPIRequest, *, response: FastAPIResponse) -> None:
         resolved = resolve_config(self._session_config)
         cookie_name = resolved["cookie_name"]
-        hook_request = AsyncHTTPRequest.from_fastapi(request)
+        hook_request = make_http_request(AsyncHTTPRequest.from_fastapi(request))
         hook_response = self._make_hook_response(response)
         event = self._hooks.run_before(
             "logout",

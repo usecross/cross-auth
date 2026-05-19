@@ -4,7 +4,7 @@ import time
 from typing import Annotated, Any, Literal
 
 import jwt
-from cross_web import AsyncHTTPRequest
+from cross_web import HTTPRequest
 from pydantic import BaseModel, BeforeValidator, EmailStr
 
 from .oauth import (
@@ -150,7 +150,7 @@ class AppleProvider(OIDCProvider):
         state: str,
         redirect_uri: str,
         *,
-        request: AsyncHTTPRequest | None = None,
+        request: HTTPRequest | None = None,
         code_challenge: str | None = None,
         code_challenge_method: str | None = None,
         login_hint: str | None = None,
@@ -219,7 +219,10 @@ class AppleProvider(OIDCProvider):
 
         return info
 
-    async def extract_callback_params(self, request: AsyncHTTPRequest) -> CallbackData:
+    def extract_callback_params(
+        self,
+        request: HTTPRequest,
+    ) -> CallbackData:
         """Extract callback data from Apple's POST form data.
 
         Apple uses response_mode=form_post, so callback data comes via POST.
@@ -230,18 +233,26 @@ class AppleProvider(OIDCProvider):
                 error_description="Apple callback must be POST (response_mode=form_post)",
             )
 
-        form_data = await request.get_form_data()
+        form_data = request.post_data
+
+        def get_form_value(key: str) -> str | None:
+            value = form_data.get(key)
+
+            if isinstance(value, bytes):
+                return value.decode()
+
+            return value
 
         extra: dict[str, Any] = {}
-        if user_json := form_data.form.get("user"):
+        if user_json := get_form_value("user"):
             try:
                 extra["user"] = json.loads(user_json)
             except json.JSONDecodeError:
                 logger.warning("Failed to parse Apple user JSON: %s", user_json)
 
         return CallbackData(
-            code=form_data.form.get("code"),
-            state=form_data.form.get("state"),
-            error=form_data.form.get("error"),
+            code=get_form_value("code"),
+            state=get_form_value("state"),
+            error=get_form_value("error"),
             extra=extra if extra else None,
         )

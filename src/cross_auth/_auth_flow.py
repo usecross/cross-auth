@@ -6,7 +6,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, NamedTuple, cast
 
-from cross_web import AsyncHTTPRequest
+from cross_web import HTTPRequest
 from pydantic import BaseModel, HttpUrl, TypeAdapter, ValidationError
 
 from ._context import Context
@@ -151,7 +151,7 @@ def _generate_provider_pkce(
     return verifier, calculate_s256_challenge(verifier), "S256"
 
 
-def _proxy_redirect_uri(request: AsyncHTTPRequest, context: Context) -> str:
+def _proxy_redirect_uri(request: HTTPRequest, context: Context) -> str:
     return construct_relative_url(str(request.url), "callback", context.base_url)
 
 
@@ -189,9 +189,9 @@ def _same_id(left: Any, right: Any) -> bool:
     return str(left) == str(right)
 
 
-async def disconnect_provider(
+def disconnect_provider(
     provider: OAuth2Provider,
-    request: AsyncHTTPRequest,
+    request: HTTPRequest,
     context: Context,
 ) -> Response:
     """DELETE /{provider}/social-accounts[/{social_account_id}] — detach account."""
@@ -237,7 +237,7 @@ async def disconnect_provider(
         )
 
     try:
-        await context.hooks.run_before_async(
+        context.hooks.run_before(
             "oauth.disconnect",
             BeforeOAuthDisconnectEvent(
                 provider=provider,
@@ -267,7 +267,7 @@ async def disconnect_provider(
 
     context.accounts_storage.delete_social_account(social_account.id)
 
-    await context.hooks.run_after_async(
+    context.hooks.run_after(
         "oauth.disconnect",
         AfterOAuthDisconnectEvent(
             provider=provider,
@@ -286,9 +286,9 @@ async def disconnect_provider(
     )
 
 
-async def start_session_flow(
+def start_session_flow(
     provider: OAuth2Provider,
-    request: AsyncHTTPRequest,
+    request: HTTPRequest,
     context: Context,
 ) -> Response:
     """GET /{provider}/login — start a session (cookie) login flow.
@@ -326,9 +326,9 @@ async def start_session_flow(
     return Response.redirect(authorization_url)
 
 
-async def start_connect_flow(
+def start_connect_flow(
     provider: OAuth2Provider,
-    request: AsyncHTTPRequest,
+    request: HTTPRequest,
     context: Context,
 ) -> Response:
     """GET /{provider}/connect — logged-in user attaches a social account.
@@ -376,9 +376,9 @@ async def start_connect_flow(
     return Response.redirect(authorization_url)
 
 
-async def start_token_flow(
+def start_token_flow(
     provider: OAuth2Provider,
-    request: AsyncHTTPRequest,
+    request: HTTPRequest,
     context: Context,
 ) -> Response:
     """GET /{provider}/authorize — start an OAuth authorization-code flow for a client app."""
@@ -466,7 +466,7 @@ async def start_token_flow(
     )
 
     try:
-        authorize_event = await context.hooks.run_before_async(
+        authorize_event = context.hooks.run_before(
             "oauth.authorize",
             authorize_event,
         )
@@ -505,7 +505,7 @@ async def start_token_flow(
         login_hint=authorize_event.login_hint,
     )
 
-    await context.hooks.run_after_async(
+    context.hooks.run_after(
         "oauth.authorize",
         AfterOAuthAuthorizeEvent(
             provider=provider,
@@ -524,9 +524,9 @@ async def start_token_flow(
     return Response.redirect(authorization_url)
 
 
-async def handle_callback(
+def handle_callback(
     provider: OAuth2Provider,
-    request: AsyncHTTPRequest,
+    request: HTTPRequest,
     context: Context,
 ) -> Response:
     """GET/POST /{provider}/callback — provider redirects back here.
@@ -540,20 +540,20 @@ async def handle_callback(
     callback variants) and post-process the final redirect via
     `finalize_redirect`.
     """
-    if intercepted := await provider.intercept_callback(request, context):
+    if intercepted := provider.intercept_callback(request, context):
         return intercepted
 
-    response = await _handle_oauth_callback(provider, request, context)
-    return await provider.finalize_redirect(request, response)
+    response = _handle_oauth_callback(provider, request, context)
+    return provider.finalize_redirect(request, response)
 
 
-async def _handle_oauth_callback(
+def _handle_oauth_callback(
     provider: OAuth2Provider,
-    request: AsyncHTTPRequest,
+    request: HTTPRequest,
     context: Context,
 ) -> Response:
     """Handle the standard OAuth callback path after provider interception."""
-    callback_data = await provider.extract_callback_params(request)
+    callback_data = provider.extract_callback_params(request)
     state = callback_data.state
     auth_request = _load_auth_request(context, state) if state else None
 
@@ -639,7 +639,7 @@ async def _handle_oauth_callback(
             validated_user_info=validated,
         )
         try:
-            callback_event = await context.hooks.run_before_async(
+            callback_event = context.hooks.run_before(
                 "oauth.callback",
                 callback_event,
             )
@@ -693,7 +693,7 @@ async def _handle_oauth_callback(
                 status_code=e.status_code,
             )
 
-        await context.hooks.run_after_async(
+        context.hooks.run_after(
             "oauth.callback",
             AfterOAuthCallbackEvent(
                 provider=provider,
@@ -721,7 +721,7 @@ async def _handle_oauth_callback(
     if auth_request.flow == "token":
         code, response = _complete_token(auth_request, resolved_user.user, context)
         assert auth_request.client_redirect_uri is not None
-        await context.hooks.run_after_async(
+        context.hooks.run_after(
             "oauth.callback",
             AfterOAuthCallbackEvent(
                 provider=provider,
@@ -1059,9 +1059,9 @@ def _complete_link(
     )
 
 
-async def start_link_flow(
+def start_link_flow(
     provider: OAuth2Provider,
-    request: AsyncHTTPRequest,
+    request: HTTPRequest,
     context: Context,
 ) -> Response:
     """POST /{provider}/link — logged-in user starts an account-linking flow.
@@ -1084,7 +1084,7 @@ async def start_link_flow(
         )
 
     try:
-        link_request = InitiateLinkRequest.model_validate_json(await request.get_body())
+        link_request = InitiateLinkRequest.model_validate_json(request.body)
     except (json.JSONDecodeError, ValidationError) as e:
         logger.error("Invalid request body: %s", e)
         return Response.error(
@@ -1100,7 +1100,7 @@ async def start_link_flow(
         return Response.error("invalid_client", error_description="Invalid client_id")
 
     try:
-        await context.hooks.run_before_async(
+        context.hooks.run_before(
             "oauth.link",
             BeforeOAuthLinkEvent(
                 provider=provider,
@@ -1142,7 +1142,7 @@ async def start_link_flow(
         code_challenge_method=challenge_method,
     )
 
-    await context.hooks.run_after_async(
+    context.hooks.run_after(
         "oauth.link",
         AfterOAuthLinkEvent(
             provider=provider,
@@ -1163,9 +1163,9 @@ async def start_link_flow(
     )
 
 
-async def finalize_link(
+def finalize_link(
     provider: OAuth2Provider,
-    request: AsyncHTTPRequest,
+    request: HTTPRequest,
     context: Context,
 ) -> Response:
     """POST /{provider}/finalize-link — client redeems a link_code."""
@@ -1176,7 +1176,7 @@ async def finalize_link(
         )
 
     try:
-        request_data = json.loads(await request.get_body())
+        request_data = json.loads(request.body)
     except json.JSONDecodeError as e:
         logger.error("Invalid request body: %s", e)
         return Response.error(
@@ -1255,7 +1255,7 @@ async def finalize_link(
         validated_user_info=validated,
     )
     try:
-        finalize_event = await context.hooks.run_before_async(
+        finalize_event = context.hooks.run_before(
             "oauth.finalize_link",
             finalize_event,
         )
@@ -1329,7 +1329,7 @@ async def finalize_link(
         )
         created_social_account = social_account
 
-    await context.hooks.run_after_async(
+    context.hooks.run_after(
         "oauth.finalize_link",
         AfterOAuthFinalizeLinkEvent(
             provider=provider,

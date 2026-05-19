@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from cross_web import AsyncHTTPRequest, TestingRequestAdapter
+from cross_web import HTTPRequest, TestingHTTPRequestAdapter
 
 from cross_auth import AccountsStorage, SecondaryStorage
 from cross_auth._password import authenticate
@@ -136,8 +136,8 @@ def test_make_clear_cookie():
     assert cookie.domain == "example.com"
 
 
-def _make_request(cookies: dict[str, str] | None = None) -> AsyncHTTPRequest:
-    return AsyncHTTPRequest(TestingRequestAdapter(cookies=cookies))
+def _make_request(cookies: dict[str, str] | None = None) -> HTTPRequest:
+    return HTTPRequest(TestingHTTPRequestAdapter(cookies=cookies))
 
 
 def test_get_current_user(

@@ -369,7 +369,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "bcrypt", specifier = ">=4.0.0,<5.0.0" },
-    { name = "cross-web", specifier = ">=0.4.0" },
+    { name = "cross-web", specifier = ">=0.7.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "passlib", extras = ["bcrypt"], specifier = ">=1.7.4" },
     { name = "pydantic", extras = ["email"], specifier = ">=2.11.3" },
@@ -473,14 +473,14 @@ wheels = [
 
 [[package]]
 name = "cross-web"
-version = "0.6.0"
+version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ad/83/b5ef04565acc065387dda3a4fbf0c4cfb6bab805c81b66b2bc5b5ac9a282/cross_web-0.6.0.tar.gz", hash = "sha256:ae90570802615365ca1a781117b43bfd0d6cd3bf611649d24c3a206a82a693c9", size = 331315, upload-time = "2026-04-13T14:29:12.718Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4a/a0/bdb8370215987cc5bde497cb8b976b17ab14841566ecef2aab6ae3e6c7b0/cross_web-0.7.0.tar.gz", hash = "sha256:15fbc8b9a824a055db8127fd6e43e0773074f620fdecb6b2b587d3d0a2bdd459", size = 332407, upload-time = "2026-05-19T14:18:48.849Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/35/a2/dab06d9b80cb76c700883186a9a2e6fd103342c9b4def4d88f5787796e17/cross_web-0.6.0-py3-none-any.whl", hash = "sha256:bdebf0c08d02f3a48cf67b6904d3a6d8fd8cab2cd905592ab96ab00b259cd582", size = 24820, upload-time = "2026-04-13T14:29:11.198Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/4a/78b52ec2edcbd9b123638f4e0421fd8699ebe653ebf63ac5f82abd2665bc/cross_web-0.7.0-py3-none-any.whl", hash = "sha256:ddea9be3c68b48eaf16561847a5831a559786949c544b3701432e00a4e8d19d9", size = 25207, upload-time = "2026-05-19T14:18:47.614Z" },
 ]
 
 [[package]]
