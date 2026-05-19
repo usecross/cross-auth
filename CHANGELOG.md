@@ -1,6 +1,18 @@
 CHANGELOG
 =========
 
+0.15.0 - 2026-05-19
+-------------------
+
+This release makes auth routes and hooks synchronous, allowing applications that
+use synchronous dependencies such as database clients to run auth logic without
+blocking the event loop.
+
+It also updates Cross Auth to use `cross-web`'s synchronous `HTTPRequest`
+wrapper.
+
+This release was contributed by [@patrick91](https://github.com/patrick91) in [#38](https://github.com/usecross/cross-auth/pull/38)
+
 0.14.1 - 2026-05-18
 -------------------
 
