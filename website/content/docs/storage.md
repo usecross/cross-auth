@@ -12,6 +12,13 @@ Cross-Auth uses Python protocol classes (structural subtyping) for storage. You
 don't need to inherit from a base class -- just implement the required methods
 and Cross-Auth will accept your objects.
 
+Cross-Auth separates transient OAuth state from durable session state:
+
+- `SecondaryStorage` stores short-lived values such as authorization codes, PKCE
+  challenges, and link codes.
+- `SessionStorage` stores revocable session records for browser cookies and
+  bearer tokens issued by `/token`.
+
 ## AccountsStorage
 
 The `AccountsStorage` protocol defines how Cross-Auth looks up and creates
@@ -56,12 +63,12 @@ class User(Protocol):
 
 ## SecondaryStorage
 
-The `SecondaryStorage` protocol is used for ephemeral data: sessions, OAuth
-authorization codes, and PKCE challenges.
+The `SecondaryStorage` protocol is used for ephemeral OAuth data: authorization
+codes, PKCE challenges, and link codes.
 
 ```python
 class SecondaryStorage(Protocol):
-    def set(self, key: str, value: str): ...
+    def set(self, key: str, value: str, ttl: int | None = None): ...
     def get(self, key: str) -> str | None: ...
     def delete(self, key: str): ...
     def pop(self, key: str) -> str | None: ...
@@ -77,8 +84,8 @@ class RedisStorage:
     def __init__(self, url: str = "redis://localhost:6379"):
         self.client = redis.from_url(url)
 
-    def set(self, key: str, value: str):
-        self.client.set(key, value)
+    def set(self, key: str, value: str, ttl: int | None = None):
+        self.client.set(key, value, ex=ttl)
 
     def get(self, key: str) -> str | None:
         result = self.client.get(key)
@@ -94,3 +101,61 @@ class RedisStorage:
         result, _ = pipe.execute()
         return result.decode() if result else None
 ```
+
+## SessionStorage
+
+The `SessionStorage` protocol stores durable, revocable session records. Browser
+session cookies and OAuth bearer tokens both contain opaque session tokens; only
+the token hash is stored.
+
+```python
+class SessionRecord(Protocol):
+    id: Any
+    user_id: Any
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    expires_at: AwareDatetime
+    last_active_at: AwareDatetime | None
+    revoked_at: AwareDatetime | None
+    client_id: str | None
+    client_name: str | None
+    user_agent: str | None
+    ip: str | None
+
+    @property
+    def status(self) -> Literal["active", "expired", "revoked"]: ...
+
+
+class SessionListResult(Protocol):
+    records: Sequence[SessionRecord]
+    next_cursor: str | None
+
+
+class SessionStorage(Protocol):
+    def create(
+        self,
+        *,
+        token_hash: str,
+        user_id: Any,
+        created_at: AwareDatetime,
+        updated_at: AwareDatetime,
+        expires_at: AwareDatetime,
+        client_id: str | None = None,
+        client_name: str | None = None,
+        user_agent: str | None = None,
+        ip: str | None = None,
+        last_active_at: AwareDatetime | None = None,
+    ) -> SessionRecord: ...
+
+    def get(self, *, token_hash: str, now: AwareDatetime) -> SessionRecord | None: ...
+    def get_any(self, session_id: Any) -> SessionRecord | None: ...
+    def refresh(self, session_id: Any, **kwargs) -> SessionRecord | None: ...
+    def revoke(self, session_id: Any, *, revoked_at: AwareDatetime) -> None: ...
+    def list_for_user(self, user_id: Any, **kwargs) -> SessionListResult: ...
+    def revoke_all_for_user(self, user_id: Any, **kwargs) -> int: ...
+```
+
+`session_storage` is optional when constructing `CrossAuth`, but session-backed
+features require it. `login()`, `logout()`, and session-management methods raise
+clearly when no `session_storage` is configured. The built-in `/token` endpoint
+is still registered, but successful token issuance requires `session_storage`.

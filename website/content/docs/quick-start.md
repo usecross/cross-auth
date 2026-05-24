@@ -15,15 +15,17 @@ cookie management for you.
 
 ## Step 1: Implement Storage
 
-Cross-Auth uses protocol classes to abstract storage. You need two
-implementations:
+Cross-Auth uses protocol classes to abstract storage. For session login you need
+three implementations:
 
 - **`AccountsStorage`** -- For looking up users by email or ID.
-- **`SecondaryStorage`** -- For storing sessions (Redis, in-memory dict,
-  database, etc.).
+- **`SecondaryStorage`** -- For transient OAuth data such as authorization
+  codes, PKCE challenges, and link codes.
+- **`SessionStorage`** -- For durable, revocable browser sessions and bearer
+  tokens.
 
 ```python
-from cross_auth import AccountsStorage, SecondaryStorage
+from cross_auth import AccountsStorage, SecondaryStorage, SessionStorage
 
 
 # Example: in-memory secondary storage (use Redis in production)
@@ -31,7 +33,7 @@ class MemoryStorage:
     def __init__(self):
         self.data = {}
 
-    def set(self, key: str, value: str):
+    def set(self, key: str, value: str, ttl: int | None = None):
         self.data[key] = value
 
     def get(self, key: str) -> str | None:
@@ -44,6 +46,9 @@ class MemoryStorage:
         return self.data.pop(key, None)
 ```
 
+Implement `SessionStorage` with your database's normal row model. The
+[Storage](/docs/storage) guide shows the full protocol.
+
 ## Step 2: Create the CrossAuth Instance
 
 ```python
@@ -51,9 +56,9 @@ from cross_auth.fastapi import CrossAuth
 
 auth = CrossAuth(
     providers=[],
-    storage=session_storage,
+    storage=secondary_storage,
     accounts_storage=accounts_storage,
-    create_token=lambda _: ("", 0),
+    session_storage=session_storage,
     trusted_origins=["https://myapp.com"],
 )
 ```

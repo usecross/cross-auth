@@ -12,7 +12,7 @@ if TYPE_CHECKING:
         AuthorizationCodeGrantRequest,
         PasswordGrantRequest,
     )
-    from .._session import SessionData
+    from .._storage import SessionRecord
     from .._storage import SocialAccount, User
     from ..models.oauth_token_response import TokenResponse
     from ..social_providers.oauth import (
@@ -45,8 +45,7 @@ class BeforeLoginEvent:
 class AfterLoginEvent:
     user_id: str
     response: Response
-    session_id: str
-    session_data: SessionData
+    session_record: SessionRecord
     cookie: Cookie
 
 
@@ -54,14 +53,14 @@ class AfterLoginEvent:
 class BeforeLogoutEvent:
     request: HTTPRequest
     response: Response
-    session_id: str | None
+    session_record: SessionRecord | None
 
 
 @dataclass(frozen=True, slots=True)
 class AfterLogoutEvent:
     request: HTTPRequest
     response: Response
-    session_id: str | None
+    session_record: SessionRecord | None
 
 
 @dataclass(frozen=True, slots=True)

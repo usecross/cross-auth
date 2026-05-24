@@ -25,6 +25,11 @@ The recommended flow for public clients (SPAs, mobile apps):
 5. Client exchanges the code + `code_verifier` for an access token at the token
    endpoint.
 
+The token endpoint issues opaque bearer tokens backed by `SessionStorage`. These
+tokens are revocable session records, not JWTs. Configure `session_storage` on
+`CrossAuth` to enable token issuance; without it, `/token` returns an OAuth
+error instead of minting a token.
+
 ### Password Grant
 
 Available for first-party applications where the client is trusted:
@@ -38,6 +43,18 @@ grant_type=password&client_id=my-app&username=user@example.com&password=secret
 
 > **Note:** The password grant is less secure than the authorization code flow
 > and should only be used by first-party clients.
+
+## Token Usage
+
+Use the returned `access_token` as a bearer token:
+
+```http
+Authorization: Bearer <access_token>
+```
+
+Cross-Auth stores the token hash in `SessionStorage`, uses
+`SessionConfig.max_age` for `expires_in`, and can revoke tokens with the
+session-management APIs.
 
 ## Social Login
 

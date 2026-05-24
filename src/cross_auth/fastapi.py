@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Literal, overload
+from datetime import datetime, timezone
+from typing import Any, Literal, overload
 
 from cross_web import AsyncHTTPRequest, Cookie, HTTPRequest
 from cross_web import Response as CrossWebResponse
@@ -14,14 +15,27 @@ from ._context import AccountsStorage, SecondaryStorage, User
 from ._password import authenticate
 from ._request import make_http_request
 from ._session import (
+    ResolvedSession,
     SessionConfig,
+    SessionMetadata,
     create_session,
-    delete_session,
     get_current_user,
     make_clear_cookie,
     make_session_cookie,
     resolve_config,
+    resolve_current_session,
 )
+from ._session import (
+    get_session as get_session_by_token,
+)
+from ._storage import (
+    SessionListOrder,
+    SessionListResult,
+    SessionRecord,
+    SessionStatus,
+    SessionStorage,
+)
+from ._tokens import TokenIssuer
 from .hooks import (
     AfterAuthenticateEvent,
     AfterLoginEvent,
@@ -68,9 +82,9 @@ class CrossAuth:
         providers: list[OAuth2Provider],
         storage: SecondaryStorage,
         accounts_storage: AccountsStorage,
-        create_token: Callable[[str], tuple[str, int]],
         trusted_origins: list[str],
-        session_config: SessionConfig | None = None,
+        session_storage: SessionStorage | None = None,
+        token_issuer: TokenIssuer | None = None,
         get_user_from_request: Callable[[HTTPRequest], User | None] | None = None,
         base_url: str | None = None,
         config: Config | None = None,
@@ -78,7 +92,8 @@ class CrossAuth:
     ):
         self._storage = storage
         self._accounts_storage = accounts_storage
-        self._session_config = session_config
+        self._session_storage = session_storage
+        self._session_config: SessionConfig | None = (config or {}).get("session")
         self._hooks = HookRegistry()
 
         self._get_user_from_request = (
@@ -89,13 +104,12 @@ class CrossAuth:
             providers=providers,
             secondary_storage=storage,
             accounts_storage=accounts_storage,
+            session_storage=session_storage,
+            token_issuer=token_issuer,
             get_user_from_request=self._get_user_from_request,
-            create_token=create_token,
             trusted_origins=trusted_origins,
             base_url=base_url,
             config=config,
-            session_enabled=True,
-            session_config=self._session_config,
             default_next_url=default_next_url,
             hooks=self._hooks,
         )
@@ -104,10 +118,17 @@ class CrossAuth:
     def router(self) -> AuthRouter:
         return self._router
 
+    def _require_session_storage(self) -> SessionStorage:
+        if self._session_storage is None:
+            raise RuntimeError("session_storage is required for session operations")
+        return self._session_storage
+
     def _default_get_user_from_request(self, request: HTTPRequest) -> User | None:
+        if self._session_storage is None:
+            return None
         return get_current_user(
             request,
-            self._storage,
+            self._session_storage,
             self._accounts_storage,
             self._session_config,
         )
@@ -116,14 +137,113 @@ class CrossAuth:
         async_request = AsyncHTTPRequest.from_fastapi(request)
         return self._get_user_from_request(make_http_request(async_request))
 
-    def get_current_user(self, request: FastAPIRequest) -> User | None:
+    def get_current_user(
+        self, request: FastAPIRequest, response: FastAPIResponse
+    ) -> User | None:
+        # Roll the cookie before resolving the user so the refresh is captured
+        # here; the resolver then re-reads the (already refreshed) record.
+        self._roll_session_cookie(request, response)
         return self._resolve_user(request)
 
-    def require_current_user(self, request: FastAPIRequest) -> User:
+    def get_current_session(
+        self, request: FastAPIRequest, response: FastAPIResponse
+    ) -> SessionRecord | None:
+        session_storage = self._require_session_storage()
+        async_request = AsyncHTTPRequest.from_fastapi(request)
+        resolution = resolve_current_session(
+            make_http_request(async_request),
+            session_storage,
+            self._session_config,
+        )
+        if resolution is None:
+            return None
+        self._roll_cookie_for(resolution, response)
+        return resolution.record
+
+    def require_current_user(
+        self, request: FastAPIRequest, response: FastAPIResponse
+    ) -> User:
+        self._roll_session_cookie(request, response)
         user = self._resolve_user(request)
         if user is None:
             raise HTTPException(status_code=401)
         return user
+
+    def _roll_cookie_for(
+        self, resolution: ResolvedSession, response: FastAPIResponse
+    ) -> None:
+        """Reissue Set-Cookie when a cookie-backed session was just refreshed.
+
+        Sliding sessions (``update_age``) extend the stored ``expires_at`` on
+        read; without re-sending the cookie the browser would still drop it at
+        the original Max-Age. Bearer tokens have no cookie to roll.
+        """
+        if resolution.source == "cookie" and resolution.refreshed:
+            cookie = make_session_cookie(resolution.token, self._session_config)
+            self._set_cookie_on_response(response, cookie)
+
+    def _roll_session_cookie(
+        self, request: FastAPIRequest, response: FastAPIResponse | None
+    ) -> None:
+        # No response to write to, no store, or no sliding window -> nothing to do.
+        if response is None or self._session_storage is None:
+            return
+        if resolve_config(self._session_config).get("update_age") is None:
+            return
+        async_request = AsyncHTTPRequest.from_fastapi(request)
+        resolution = resolve_current_session(
+            make_http_request(async_request),
+            self._session_storage,
+            self._session_config,
+        )
+        if resolution is not None:
+            self._roll_cookie_for(resolution, response)
+
+    def list_sessions(
+        self,
+        user_id: Any,
+        *,
+        status: SessionStatus | None = None,
+        order_by: SessionListOrder = "updated_at_desc",
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> SessionListResult:
+        return self._require_session_storage().list_for_user(
+            user_id,
+            now=datetime.now(tz=timezone.utc),
+            status=status,
+            order_by=order_by,
+            limit=limit,
+            cursor=cursor,
+        )
+
+    def get_session(self, session_id: Any, *, user_id: Any) -> SessionRecord | None:
+        session = self._require_session_storage().get_any(session_id)
+        if session is None or str(session.user_id) != str(user_id):
+            return None
+        return session
+
+    def revoke_session(self, session_id: Any, *, user_id: Any) -> None:
+        session = self.get_session(session_id, user_id=user_id)
+        if session is None:
+            return
+        self._require_session_storage().revoke(
+            session.id,
+            revoked_at=datetime.now(tz=timezone.utc),
+        )
+
+    def revoke_other_sessions(self, *, user_id: Any, keep_session_id: Any) -> int:
+        return self._require_session_storage().revoke_all_for_user(
+            user_id,
+            revoked_at=datetime.now(tz=timezone.utc),
+            except_session_id=keep_session_id,
+        )
+
+    def revoke_all_sessions(self, *, user_id: Any) -> int:
+        return self._require_session_storage().revoke_all_for_user(
+            user_id,
+            revoked_at=datetime.now(tz=timezone.utc),
+        )
 
     def authenticate(self, email: str, password: str) -> User | None:
         event = self._hooks.run_before(
@@ -308,7 +428,14 @@ class CrossAuth:
         for cookie in source.cookies or []:
             self._set_cookie_on_response(target, cookie)
 
-    def login(self, user_id: str, *, response: FastAPIResponse) -> None:
+    def login(
+        self,
+        user_id: str,
+        *,
+        response: FastAPIResponse,
+        metadata: SessionMetadata | None = None,
+    ) -> None:
+        session_storage = self._require_session_storage()
         hook_response = self._make_hook_response(response)
         event = self._hooks.run_before(
             "login",
@@ -316,39 +443,56 @@ class CrossAuth:
         )
         resolved = resolve_config(self._session_config)
         max_age = resolved["max_age"]
-        session_id, session_data = create_session(
-            event.user_id, self._storage, max_age=max_age
+        session_token, session_record = create_session(
+            event.user_id,
+            session_storage,
+            max_age=max_age,
+            metadata=metadata,
+            token_hasher=resolved["token_hasher"],
         )
-        cookie = make_session_cookie(session_id, self._session_config)
+        cookie = make_session_cookie(session_token, self._session_config)
         self._add_cookie_to_hook_response(event.response, cookie)
         self._hooks.run_after(
             "login",
             AfterLoginEvent(
                 user_id=event.user_id,
                 response=event.response,
-                session_id=session_id,
-                session_data=session_data,
+                session_record=session_record,
                 cookie=cookie,
             ),
         )
         self._apply_hook_response(event.response, response)
 
     def logout(self, request: FastAPIRequest, *, response: FastAPIResponse) -> None:
+        session_storage = self._require_session_storage()
         resolved = resolve_config(self._session_config)
-        cookie_name = resolved["cookie_name"]
+        cookie_name = resolved["cookies"]["name"]
         hook_request = make_http_request(AsyncHTTPRequest.from_fastapi(request))
         hook_response = self._make_hook_response(response)
+        session_token = hook_request.cookies.get(cookie_name)
+        session_record = (
+            get_session_by_token(
+                session_token,
+                session_storage,
+                self._session_config,
+            )
+            if session_token is not None
+            else None
+        )
         event = self._hooks.run_before(
             "logout",
             BeforeLogoutEvent(
                 request=hook_request,
                 response=hook_response,
-                session_id=hook_request.cookies.get(cookie_name),
+                session_record=session_record,
             ),
         )
 
-        if event.session_id is not None:
-            delete_session(event.session_id, self._storage)
+        if event.session_record is not None:
+            session_storage.revoke(
+                event.session_record.id,
+                revoked_at=datetime.now(tz=timezone.utc),
+            )
 
         cookie = make_clear_cookie(self._session_config)
         self._add_cookie_to_hook_response(event.response, cookie)
@@ -357,7 +501,7 @@ class CrossAuth:
             AfterLogoutEvent(
                 request=event.request,
                 response=event.response,
-                session_id=event.session_id,
+                session_record=event.session_record,
             ),
         )
         self._apply_hook_response(event.response, response)

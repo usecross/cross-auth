@@ -11,6 +11,7 @@ from cross_auth.utils._pkce import validate_pkce
 from ._context import Context
 from ._password import DUMMY_PASSWORD_HASH, pwd_context, validate_password
 from ._route import Form, Route
+from ._tokens import TokenIssueRequest
 from .exceptions import CrossAuthException
 from .hooks import (
     AfterTokenAuthorizationCodeEvent,
@@ -158,12 +159,15 @@ class Issuer:
         # TODO: support confidential clients (client_secret)
 
         if isinstance(token_request, AuthorizationCodeGrantRequest):
-            return self._authorization_code_grant(token_request, context)
+            return self._authorization_code_grant(token_request, context, request)
         elif isinstance(token_request, PasswordGrantRequest):
-            return self._password_grant(token_request, context)
+            return self._password_grant(token_request, context, request)
 
     def _authorization_code_grant(
-        self, request: AuthorizationCodeGrantRequest, context: Context
+        self,
+        request: AuthorizationCodeGrantRequest,
+        context: Context,
+        http_request: HTTPRequest,
     ) -> Response:
         code = request.code
 
@@ -233,7 +237,18 @@ class Issuer:
         except CrossAuthException as e:
             return self._error_response(e.error, e.error_description)
 
-        token, expires_in = context.create_token(authorization_data.user_id)
+        try:
+            token, expires_in = context.issue_token(
+                TokenIssueRequest(
+                    user_id=authorization_data.user_id,
+                    client_id=authorization_data.client_id,
+                    grant_type="authorization_code",
+                    scope=request.scope,
+                    http_request=http_request,
+                )
+            )
+        except CrossAuthException as e:
+            return self._error_response(e.error, e.error_description)
 
         token_data = TokenResponse(
             access_token=token,
@@ -269,7 +284,10 @@ class Issuer:
         )
 
     def _password_grant(
-        self, request: PasswordGrantRequest, context: Context
+        self,
+        request: PasswordGrantRequest,
+        context: Context,
+        http_request: HTTPRequest,
     ) -> Response:
         user = context.accounts_storage.find_user_by_email(request.username)
 
@@ -299,7 +317,19 @@ class Issuer:
         if not valid or user is None:
             return self._error_response("invalid_grant", "Invalid username or password")
 
-        token, expires_in = context.create_token(str(user.id))
+        try:
+            token, expires_in = context.issue_token(
+                TokenIssueRequest(
+                    user_id=str(user.id),
+                    client_id=request.client_id,
+                    scope=request.scope,
+                    username=request.username,
+                    http_request=http_request,
+                    grant_type="password",
+                )
+            )
+        except CrossAuthException as e:
+            return self._error_response(e.error, e.error_description)
 
         token_data = TokenResponse(
             access_token=token,

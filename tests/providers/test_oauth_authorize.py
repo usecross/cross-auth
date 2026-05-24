@@ -170,7 +170,6 @@ def test_authorize_rejects_invalid_client_id(
     context_with_client_validation = Context(
         secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
-        create_token=lambda id: (f"token-{id}", 0),
         get_user_from_request=lambda r: (
             logged_in_user if r.headers.get("Authorization") == "Bearer test" else None
         ),
@@ -212,7 +211,6 @@ def test_authorize_accepts_valid_client_id(
     context_with_client_validation = Context(
         secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
-        create_token=lambda id: (f"token-{id}", 0),
         get_user_from_request=lambda r: (
             logged_in_user if r.headers.get("Authorization") == "Bearer test" else None
         ),

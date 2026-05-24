@@ -33,8 +33,8 @@ framework-specific decorators or middleware.
 
 Cross-Auth separates concerns into three layers:
 
-1. **Storage protocols** -- Define how users and sessions are persisted. You
-   implement these for your database.
+1. **Storage protocols** -- Define how users, transient OAuth data, and durable
+   sessions are persisted. You implement these for your database.
 2. **Core functions** -- Plain Python functions for authentication, session
    management, and token issuance.
 3. **Framework integration** -- Optional route handlers and middleware for your
@@ -47,9 +47,9 @@ from fastapi.responses import JSONResponse
 
 auth = CrossAuth(
     providers=[],
-    storage=session_storage,
+    storage=secondary_storage,
     accounts_storage=accounts_storage,
-    create_token=lambda _: ("", 0),
+    session_storage=session_storage,
     trusted_origins=["https://myapp.com"],
 )
 

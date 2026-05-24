@@ -211,6 +211,77 @@
         font-size: 0.88rem;
       }
 
+      /* ── Session Dashboard ── */
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .tabs {
+        display: inline-flex;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+      }
+      .tabs a {
+        padding: 6px 10px;
+        border-right: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 0.82rem;
+        font-weight: 600;
+        text-decoration: none;
+        background: white;
+      }
+      .tabs a:last-child { border-right: none; }
+      .tabs a[aria-current="page"] {
+        color: white;
+        background: var(--text);
+      }
+      .table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: white;
+      }
+      table {
+        width: 100%;
+        min-width: 720px;
+        border-collapse: collapse;
+        table-layout: fixed;
+      }
+      th, td {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        background: #f5f5f5;
+      }
+      th:first-child, td:first-child { width: 260px; }
+      th:nth-child(2), td:nth-child(2) { width: 86px; }
+      th:nth-child(3), td:nth-child(3),
+      th:nth-child(4), td:nth-child(4),
+      th:nth-child(5), td:nth-child(5) { width: 140px; }
+      th:last-child, td:last-child {
+        width: 110px;
+        text-align: right;
+        white-space: nowrap;
+      }
+      tr:last-child td { border-bottom: none; }
+      .cell-main { display: grid; gap: 3px; }
+      .cell-main .pill { justify-self: start; }
+      .muted-small { color: var(--muted); font-size: 0.82rem; }
+      td code { white-space: nowrap; }
+
       /* ── Footer ── */
       .footer {
         padding: 14px 24px;
@@ -235,6 +306,7 @@
         <nav class="header-nav">
           <a href="/">Home</a>
           <a href="/profile">Profile</a>
+          <a href="/sessions">Sessions</a>
           <a href="/hooks">Hooks</a>
           <a href="/api/me">/me</a>
         </nav>

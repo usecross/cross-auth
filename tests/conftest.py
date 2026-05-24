@@ -7,11 +7,19 @@ import pytest
 from cross_web import HTTPRequest
 from passlib.context import CryptContext
 
+from cross_auth._auth_flow import LinkCodeData
 from cross_auth._context import Context
 from cross_auth._issuer import AuthorizationCodeGrantData, Issuer
-from cross_auth._storage import AccountsStorage, SecondaryStorage, User as UserProtocol
+from cross_auth._storage import (
+    AccountsStorage,
+    SecondaryStorage,
+    SessionListOrder,
+    SessionListResult,
+    SessionStatus,
+    SessionStorage,
+    User as UserProtocol,
+)
 from cross_auth.exceptions import CrossAuthException
-from cross_auth._auth_flow import LinkCodeData
 
 pytestmark = pytest.mark.asyncio
 
@@ -70,6 +78,164 @@ class MemoryStorage(SecondaryStorage):
     def pop(self, key: str) -> str | None:
         """Atomically get and delete a key. Returns None if key doesn't exist."""
         return self.data.pop(key, None)
+
+
+@dataclass
+class MemorySessionRecord:
+    id: str
+    token_hash: str
+    user_id: str
+    created_at: datetime
+    updated_at: datetime
+    expires_at: datetime
+    last_active_at: datetime | None = None
+    revoked_at: datetime | None = None
+    client_id: str | None = None
+    client_name: str | None = None
+    user_agent: str | None = None
+    ip: str | None = None
+
+    @property
+    def status(self) -> SessionStatus:
+        if self.revoked_at is not None:
+            return "revoked"
+        if datetime.now(tz=timezone.utc) > self.expires_at:
+            return "expired"
+        return "active"
+
+
+@dataclass
+class MemorySessionListResult:
+    records: list[MemorySessionRecord]
+    next_cursor: str | None = None
+
+
+class MemorySessionStorage(SessionStorage):
+    def __init__(self):
+        self.records: dict[str, MemorySessionRecord] = {}
+
+    def create(
+        self,
+        *,
+        token_hash: str,
+        user_id: Any,
+        created_at: datetime,
+        updated_at: datetime,
+        expires_at: datetime,
+        client_id: str | None = None,
+        client_name: str | None = None,
+        user_agent: str | None = None,
+        ip: str | None = None,
+        last_active_at: datetime | None = None,
+    ) -> MemorySessionRecord:
+        record = MemorySessionRecord(
+            id=str(uuid.uuid4()),
+            token_hash=token_hash,
+            user_id=str(user_id),
+            created_at=created_at,
+            updated_at=updated_at,
+            expires_at=expires_at,
+            client_id=client_id,
+            client_name=client_name,
+            user_agent=user_agent,
+            ip=ip,
+            last_active_at=last_active_at,
+        )
+        self.records[record.id] = record
+        return record
+
+    def get(self, *, token_hash: str, now: datetime) -> MemorySessionRecord | None:
+        record = next(
+            (
+                record
+                for record in self.records.values()
+                if record.token_hash == token_hash
+            ),
+            None,
+        )
+        if record is None or record.revoked_at is not None or now > record.expires_at:
+            return None
+        return record
+
+    def get_any(self, session_id: Any) -> MemorySessionRecord | None:
+        return self.records.get(str(session_id))
+
+    def list_for_user(
+        self,
+        user_id: Any,
+        *,
+        now: datetime,
+        status: SessionStatus | None = None,
+        order_by: SessionListOrder = "updated_at_desc",
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> SessionListResult:
+        records = [
+            record for record in self.records.values() if record.user_id == str(user_id)
+        ]
+        if status is not None:
+            records = [
+                record
+                for record in records
+                if _session_status(record, now=now) == status
+            ]
+
+        field, direction = order_by.rsplit("_", 1)
+        records.sort(
+            key=lambda record: getattr(record, field),
+            reverse=direction == "desc",
+        )
+        return cast(
+            SessionListResult,
+            MemorySessionListResult(records=records[:limit]),
+        )
+
+    def refresh(
+        self,
+        session_id: Any,
+        *,
+        updated_at: datetime,
+        expires_at: datetime,
+        last_active_at: datetime | None = None,
+    ) -> MemorySessionRecord | None:
+        record = self.get_any(session_id)
+        if record is None:
+            return None
+        record.updated_at = updated_at
+        record.expires_at = expires_at
+        record.last_active_at = last_active_at
+        return record
+
+    def revoke(self, session_id: Any, *, revoked_at: datetime) -> None:
+        record = self.get_any(session_id)
+        if record is not None:
+            record.revoked_at = revoked_at
+
+    def revoke_all_for_user(
+        self,
+        user_id: Any,
+        *,
+        revoked_at: datetime,
+        except_session_id: Any | None = None,
+    ) -> int:
+        count = 0
+        for record in self.records.values():
+            if record.user_id != str(user_id):
+                continue
+            if except_session_id is not None and record.id == str(except_session_id):
+                continue
+            if record.revoked_at is None:
+                record.revoked_at = revoked_at
+                count += 1
+        return count
+
+
+def _session_status(record: MemorySessionRecord, *, now: datetime) -> SessionStatus:
+    if record.revoked_at is not None:
+        return "revoked"
+    if now > record.expires_at:
+        return "expired"
+    return "active"
 
 
 class MemoryAccountsStorage:
@@ -251,6 +417,11 @@ def secondary_storage() -> SecondaryStorage:
 
 
 @pytest.fixture
+def session_storage() -> MemorySessionStorage:
+    return MemorySessionStorage()
+
+
+@pytest.fixture
 def accounts_storage(test_password_hash: str) -> MemoryAccountsStorage:
     return MemoryAccountsStorage(test_password_hash)
 
@@ -266,6 +437,7 @@ def logged_in_user(accounts_storage: MemoryAccountsStorage) -> User:
 def context(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
     logged_in_user: User,
 ) -> Context:
     def _get_user_from_request(request: HTTPRequest) -> UserProtocol | None:
@@ -277,7 +449,7 @@ def context(
     return Context(
         secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
-        create_token=lambda id: (f"token-{id}", 0),
+        session_storage=session_storage,
         get_user_from_request=_get_user_from_request,
         trusted_origins=["valid-frontend.com"],
     )

@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block title %}Sessions · Cross-Auth FastAPI Hybrid Example{% endblock %}
+
+{% block content %}
+  <div class="hero">
+    <div class="eyebrow">Session Dashboard</div>
+    <h1>Active sessions for {{ user.email }}</h1>
+    <p class="lead">
+      Cookie and first-party bearer sign-ins are stored in the same durable
+      session store. Revocation takes effect immediately for both transports.
+    </p>
+  </div>
+
+  <div class="grid cols-1">
+    <div class="stack">
+      <div class="toolbar">
+        <nav class="tabs" aria-label="Session filters">
+          <a href="/sessions" {% if current_status is none %}aria-current="page"{% endif %}>All</a>
+          <a href="/sessions?status=active" {% if current_status == "active" %}aria-current="page"{% endif %}>Active</a>
+          <a href="/sessions?status=expired" {% if current_status == "expired" %}aria-current="page"{% endif %}>Expired</a>
+          <a href="/sessions?status=revoked" {% if current_status == "revoked" %}aria-current="page"{% endif %}>Revoked</a>
+        </nav>
+        <form action="/sessions/revoke-other" method="post">
+          <button type="submit">Revoke other sessions</button>
+        </form>
+      </div>
+
+      {% if sessions %}
+        <div class="table-wrap">
+          <table data-testid="sessions-table">
+            <thead>
+              <tr>
+                <th>Access</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th>Last active</th>
+                <th>Expires</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for session in sessions %}
+                <tr data-session-id="{{ session.id }}" data-current="{{ 'true' if session.current else 'false' }}">
+                  <td>
+                    <div class="cell-main">
+                      <strong>{{ session.access_label }}</strong>
+                      {% if session.current %}
+                        <span class="pill ok">current</span>
+                      {% endif %}
+                      {% if session.user_agent %}
+                        <span class="muted-small">{{ session.user_agent }}</span>
+                      {% endif %}
+                      {% if session.client_id %}
+                        <span class="muted-small">client_id={{ session.client_id }}</span>
+                      {% endif %}
+                    </div>
+                  </td>
+                  <td>
+                    {% if session.status == "active" %}
+                      <span class="pill ok">active</span>
+                    {% elif session.status == "revoked" %}
+                      <span class="pill warn">revoked</span>
+                    {% else %}
+                      <span class="pill">expired</span>
+                    {% endif %}
+                  </td>
+                  <td><code>{{ session.created_at[5:16]|replace("T", " ") }}</code></td>
+                  <td>
+                    {% if session.last_active_at %}
+                      <code>{{ session.last_active_at[5:16]|replace("T", " ") }}</code>
+                    {% else %}
+                      <span class="pill">unknown</span>
+                    {% endif %}
+                  </td>
+                  <td><code>{{ session.expires_at[5:16]|replace("T", " ") }}</code></td>
+                  <td>
+                    {% if session.status == "active" and not session.current %}
+                      <form action="/sessions/{{ session.id }}/revoke" method="post">
+                        <button type="submit">Revoke</button>
+                      </form>
+                    {% elif session.current %}
+                      <span class="pill">current</span>
+                    {% else %}
+                      <span class="pill">retained</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% if next_query %}
+          <div class="toolbar">
+            <a href="/sessions?{{ next_query }}" data-testid="sessions-next">Next page →</a>
+          </div>
+        {% endif %}
+      {% else %}
+        <span class="pill">no sessions in this filter</span>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}

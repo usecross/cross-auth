@@ -8,8 +8,9 @@ import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from cross_auth._auth_flow import AuthRequest
 from cross_auth._session import get_session
-from cross_auth._storage import SecondaryStorage
+from cross_auth._storage import SecondaryStorage, SessionStorage
 
 from .conftest import (
     load_auth_request,
@@ -68,7 +69,8 @@ def test_login_respects_custom_default_next_url(
 
 @respx.mock
 def test_session_callback_creates_session_and_redirects_to_next(
-    client: TestClient, secondary_storage: SecondaryStorage
+    client: TestClient,
+    session_storage: SessionStorage,
 ):
     mock_token_and_userinfo(email="alice@example.com")
 
@@ -83,7 +85,7 @@ def test_session_callback_creates_session_and_redirects_to_next(
     session_cookie = resp.cookies.get("session_id")
     assert session_cookie is not None
 
-    session = get_session(session_cookie, secondary_storage)
+    session = get_session(session_cookie, session_storage)
     assert session is not None
 
 
@@ -113,3 +115,50 @@ def test_session_callback_reports_provider_error(client: TestClient):
     )
     assert resp.status_code == 400
     assert resp.json()["error"] == "access_denied"
+
+
+def test_login_route_unregistered_without_cookie_auth(build_auth):
+    auth = build_auth(config={})  # cookie_auth disabled
+    app = FastAPI()
+    app.include_router(auth.router)
+    with TestClient(app, follow_redirects=False) as client:
+        assert client.get("/fake/login").status_code == 404
+
+
+def test_login_route_registered_with_cookie_auth(build_auth):
+    auth = build_auth(config={"session": {"cookies": {"auth": True}}})
+    app = FastAPI()
+    app.include_router(auth.router)
+    with TestClient(app, follow_redirects=False) as client:
+        assert client.get("/fake/login").status_code == 302
+
+
+@respx.mock
+def test_session_callback_errors_without_cookie_auth(
+    build_auth,
+    secondary_storage: SecondaryStorage,
+):
+    auth = build_auth(config={})  # cookie_auth disabled; /login not registered
+    app = FastAPI()
+    app.include_router(auth.router)
+
+    mock_token_and_userinfo(email="alice@example.com")
+
+    # Inject a session-flow auth request directly (no /login route to start one).
+    secondary_storage.set(
+        "oauth:authorization_request:state-1",
+        AuthRequest(
+            flow="session",
+            provider_id="fake",
+            state="state-1",
+            next_url="/dashboard",
+        ).model_dump_json(),
+    )
+
+    with TestClient(app, follow_redirects=False) as client:
+        resp = client.get(
+            "/fake/callback", params={"code": "provider-code", "state": "state-1"}
+        )
+
+    assert resp.status_code == 400
+    assert "cookies" in resp.text

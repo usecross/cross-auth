@@ -1,13 +1,17 @@
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from cross_web import HTTPRequest
 from inline_snapshot import snapshot
 
 from cross_auth._context import Context
 from cross_auth._issuer import AuthorizationCodeGrantData, Issuer
+from cross_auth._password import DUMMY_PASSWORD_HASH
 from cross_auth._storage import SecondaryStorage
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.hooks import BeforeTokenPasswordEvent
+
+from .conftest import MemorySessionStorage
 
 
 def test_issuer(issuer: Issuer):
@@ -225,8 +229,11 @@ def test_returns_error_response_if_client_id_does_not_match(
     )
 
 
-def test_returns_token_if_code_is_valid(
-    issuer: Issuer, context: Context, valid_code: str
+def test_returns_opaque_session_token_if_code_is_valid(
+    issuer: Issuer,
+    context: Context,
+    valid_code: str,
+    session_storage: MemorySessionStorage,
 ):
     response = issuer.token(
         HTTPRequest.from_form_data(
@@ -244,13 +251,176 @@ def test_returns_token_if_code_is_valid(
     assert response.status_code == 200
     assert response.json() == snapshot(
         {
-            "access_token": "token-test",
+            "access_token": mock.ANY,
             "token_type": "Bearer",
-            "expires_in": 0,
+            "expires_in": 86400,
             "refresh_token": None,
             "refresh_token_expires_in": None,
             "scope": "",
             "id_token": None,
+        }
+    )
+    assert [
+        {
+            "token_hash": record.token_hash,
+            "user_id": record.user_id,
+            "client_id": record.client_id,
+        }
+        for record in session_storage.records.values()
+    ] == snapshot(
+        [
+            {
+                "token_hash": mock.ANY,
+                "user_id": "test",
+                "client_id": "test",
+            }
+        ]
+    )
+
+
+def test_authorization_code_grant_uses_token_issuer_without_session_storage(
+    issuer: Issuer,
+    secondary_storage: SecondaryStorage,
+    accounts_storage,
+    valid_code: str,
+):
+    issued_requests = []
+
+    def issue_token(request):
+        issued_requests.append(request)
+        return "stateless-token", 3600
+
+    context = Context(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=None,
+        token_issuer=issue_token,
+        get_user_from_request=lambda _: None,
+        trusted_origins=["valid-frontend.com"],
+    )
+
+    http_request = HTTPRequest.from_form_data(
+        data={
+            "grant_type": "authorization_code",
+            "client_id": "test",
+            "code": valid_code,
+            "redirect_uri": "test",
+            "code_verifier": "test",
+        }
+    )
+
+    response = issuer.token(http_request, context)
+
+    assert response.status_code == 200
+    assert response.json() == snapshot(
+        {
+            "access_token": "stateless-token",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "refresh_token": None,
+            "refresh_token_expires_in": None,
+            "scope": "",
+            "id_token": None,
+        }
+    )
+
+    [token_request] = issued_requests
+    assert token_request.user_id == "test"
+    assert token_request.client_id == "test"
+    assert token_request.grant_type == "authorization_code"
+    assert token_request.scope is None
+    assert token_request.username is None
+    assert token_request.http_request is http_request
+
+
+def test_password_grant_uses_token_issuer_without_session_storage(
+    issuer: Issuer,
+    secondary_storage: SecondaryStorage,
+    accounts_storage,
+):
+    issued_requests = []
+
+    def issue_token(request):
+        issued_requests.append(request)
+        return "password-token", 1800
+
+    context = Context(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=None,
+        token_issuer=issue_token,
+        get_user_from_request=lambda _: None,
+        trusted_origins=["valid-frontend.com"],
+    )
+
+    http_request = HTTPRequest.from_form_data(
+        data={
+            "grant_type": "password",
+            "client_id": "test",
+            "username": "test@example.com",
+            "password": "password123",
+            "scope": "read write",
+        }
+    )
+
+    response = issuer.token(http_request, context)
+
+    assert response.status_code == 200
+    assert response.json() == snapshot(
+        {
+            "access_token": "password-token",
+            "token_type": "Bearer",
+            "expires_in": 1800,
+            "refresh_token": None,
+            "refresh_token_expires_in": None,
+            "scope": "",
+            "id_token": None,
+        }
+    )
+
+    [token_request] = issued_requests
+    assert token_request.user_id == "test"
+    assert token_request.client_id == "test"
+    assert token_request.grant_type == "password"
+    assert token_request.scope == "read write"
+    assert token_request.username == "test@example.com"
+    assert token_request.http_request is http_request
+
+
+def test_token_endpoint_errors_without_token_issuer_or_session_storage(
+    issuer: Issuer,
+    secondary_storage: SecondaryStorage,
+    accounts_storage,
+    valid_code: str,
+):
+    context = Context(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=None,
+        get_user_from_request=lambda _: None,
+        trusted_origins=["valid-frontend.com"],
+    )
+
+    response = issuer.token(
+        HTTPRequest.from_form_data(
+            data={
+                "grant_type": "authorization_code",
+                "client_id": "test",
+                "code": valid_code,
+                "redirect_uri": "test",
+                "code_verifier": "test",
+            }
+        ),
+        context,
+    )
+
+    assert response.status_code == 400
+    assert response.json() == snapshot(
+        {
+            "error": "server_error",
+            "error_description": (
+                "The token endpoint requires token_issuer or session_storage"
+            ),
         }
     )
 
@@ -402,7 +572,11 @@ def test_password_grant_preserves_unknown_hook_error_type(
     )
 
 
-def test_password_grant_success(issuer: Issuer, context: Context):
+def test_password_grant_success(
+    issuer: Issuer,
+    context: Context,
+    session_storage: MemorySessionStorage,
+):
     response = issuer.token(
         HTTPRequest.from_form_data(
             data={
@@ -417,18 +591,38 @@ def test_password_grant_success(issuer: Issuer, context: Context):
     assert response.status_code == 200
     assert response.json() == snapshot(
         {
-            "access_token": "token-test",
+            "access_token": mock.ANY,
             "token_type": "Bearer",
-            "expires_in": 0,
+            "expires_in": 86400,
             "refresh_token": None,
             "refresh_token_expires_in": None,
             "scope": "",
             "id_token": None,
         }
     )
+    assert [
+        {
+            "token_hash": record.token_hash,
+            "user_id": record.user_id,
+            "client_id": record.client_id,
+        }
+        for record in session_storage.records.values()
+    ] == snapshot(
+        [
+            {
+                "token_hash": mock.ANY,
+                "user_id": "test",
+                "client_id": "test",
+            }
+        ]
+    )
 
 
-def test_password_grant_with_scope(issuer: Issuer, context: Context):
+def test_password_grant_with_scope(
+    issuer: Issuer,
+    context: Context,
+    session_storage: MemorySessionStorage,
+):
     response = issuer.token(
         HTTPRequest.from_form_data(
             data={
@@ -444,71 +638,70 @@ def test_password_grant_with_scope(issuer: Issuer, context: Context):
     assert response.status_code == 200
     assert response.json() == snapshot(
         {
-            "access_token": "token-test",
+            "access_token": mock.ANY,
             "token_type": "Bearer",
-            "expires_in": 0,
+            "expires_in": 86400,
             "refresh_token": None,
             "refresh_token_expires_in": None,
             "scope": "",
             "id_token": None,
         }
     )
-
-
-def test_password_grant_has_consistent_timing(issuer: Issuer, context: Context):
-    """
-    Test that password grant has consistent timing for existing and non-existing users.
-    This prevents timing attacks that could be used to enumerate valid user accounts.
-
-    Both scenarios should take roughly the same time because we always perform
-    password verification, even for non-existent users (using a dummy hash).
-    """
-    import time
-
-    # Measure timing for non-existent user (should run dummy hash verification)
-    nonexistent_times = []
-    for _ in range(3):
-        start = time.perf_counter()
-        issuer.token(
-            HTTPRequest.from_form_data(
-                data={
-                    "grant_type": "password",
-                    "client_id": "test",
-                    "username": "nonexistent@example.com",
-                    "password": "wrong_password",
-                }
-            ),
-            context,
-        )
-        end = time.perf_counter()
-        nonexistent_times.append(end - start)
-
-    # Measure timing for existing user with wrong password (should run real hash verification)
-    existing_times = []
-    for _ in range(3):
-        start = time.perf_counter()
-        issuer.token(
-            HTTPRequest.from_form_data(
-                data={
-                    "grant_type": "password",
-                    "client_id": "test",
-                    "username": "test@example.com",
-                    "password": "wrong_password",
-                }
-            ),
-            context,
-        )
-        end = time.perf_counter()
-        existing_times.append(end - start)
-
-    avg_nonexistent = sum(nonexistent_times) / len(nonexistent_times)
-    avg_existing = sum(existing_times) / len(existing_times)
-    difference = abs(avg_existing - avg_nonexistent)
-
-    # The timing difference should be minimal (<50ms)
-    # If it's larger, it indicates a timing attack vulnerability
-    assert difference < 0.05, (
-        f"Timing difference too large: {difference * 1000:.2f}ms. "
-        f"Non-existent: {avg_nonexistent * 1000:.2f}ms, "
-        f"Existing: {avg_existing * 1000:.2f}ms"
+    assert [
+        {
+            "token_hash": record.token_hash,
+            "user_id": record.user_id,
+            "client_id": record.client_id,
+        }
+        for record in session_storage.records.values()
+    ] == snapshot(
+        [
+            {
+                "token_hash": mock.ANY,
+                "user_id": "test",
+                "client_id": "test",
+            }
+        ]
     )
+
+
+def test_password_grant_verifies_password_hash_for_unknown_users(
+    issuer: Issuer,
+    context: Context,
+):
+    existing_user = context.accounts_storage.find_user_by_email("test@example.com")
+    assert existing_user is not None
+    assert existing_user.hashed_password is not None
+
+    verification_calls: list[tuple[str, str]] = []
+
+    def record_password_verification(password: str, password_hash: str) -> bool:
+        verification_calls.append((password, password_hash))
+        return False
+
+    def request_password_token(username: str):
+        return issuer.token(
+            HTTPRequest.from_form_data(
+                data={
+                    "grant_type": "password",
+                    "client_id": "test",
+                    "username": username,
+                    "password": "wrong_password",
+                }
+            ),
+            context,
+        )
+
+    with mock.patch(
+        "cross_auth._password.pwd_context.verify",
+        side_effect=record_password_verification,
+    ):
+        existing_response = request_password_token("test@example.com")
+        unknown_response = request_password_token("nonexistent@example.com")
+
+    assert existing_response.status_code == 400
+    assert unknown_response.status_code == 400
+    assert verification_calls == [
+        ("wrong_password", existing_user.hashed_password),
+        ("wrong_password", DUMMY_PASSWORD_HASH),
+    ]
