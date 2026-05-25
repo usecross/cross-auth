@@ -96,11 +96,13 @@ def hooked_provider() -> HookedFakeProvider:
 def client(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage,
     hooked_provider: HookedFakeProvider,
 ) -> Generator[TestClient, None, None]:
     auth = _build_auth(
         storage=secondary_storage,
         accounts_storage=accounts_storage,
+        session_storage=session_storage,
         providers=[hooked_provider],
     )
     app = FastAPI()

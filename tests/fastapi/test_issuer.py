@@ -1,3 +1,5 @@
+from unittest import mock
+
 from fastapi.testclient import TestClient
 from inline_snapshot import snapshot
 
@@ -186,7 +188,10 @@ def test_returns_error_response_if_redirect_uri_does_not_match(
     )
 
 
-def test_returns_token_if_code_is_valid(client: TestClient, valid_code: str) -> None:
+def test_returns_token_if_code_is_valid(
+    client: TestClient,
+    valid_code: str,
+) -> None:
     response = client.post(
         "/token",
         data={
@@ -201,9 +206,9 @@ def test_returns_token_if_code_is_valid(client: TestClient, valid_code: str) -> 
     assert response.status_code == 200
     assert response.json() == snapshot(
         {
-            "access_token": "",
+            "access_token": mock.ANY,
             "token_type": "Bearer",
-            "expires_in": 0,
+            "expires_in": 86400,
             "refresh_token": None,
             "refresh_token_expires_in": None,
             "scope": "",
@@ -244,7 +249,9 @@ def test_password_grant_invalid_username(client: TestClient) -> None:
     )
 
 
-def test_password_grant_success(client: TestClient) -> None:
+def test_password_grant_success(
+    client: TestClient,
+) -> None:
     response = client.post(
         "/token",
         data={
@@ -257,9 +264,9 @@ def test_password_grant_success(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.json() == snapshot(
         {
-            "access_token": "",
+            "access_token": mock.ANY,
             "token_type": "Bearer",
-            "expires_in": 0,
+            "expires_in": 86400,
             "refresh_token": None,
             "refresh_token_expires_in": None,
             "scope": "",
@@ -268,7 +275,9 @@ def test_password_grant_success(client: TestClient) -> None:
     )
 
 
-def test_password_grant_with_scope(client: TestClient) -> None:
+def test_password_grant_with_scope(
+    client: TestClient,
+) -> None:
     response = client.post(
         "/token",
         data={
@@ -282,9 +291,9 @@ def test_password_grant_with_scope(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.json() == snapshot(
         {
-            "access_token": "",
+            "access_token": mock.ANY,
             "token_type": "Bearer",
-            "expires_in": 0,
+            "expires_in": 86400,
             "refresh_token": None,
             "refresh_token_expires_in": None,
             "scope": "",

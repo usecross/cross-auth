@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TypedDict
 
+from ._session import SessionConfig
+
 
 class AccountLinkingConfig(TypedDict, total=False):
     """Account linking configuration."""
@@ -28,3 +30,8 @@ class Config(TypedDict, total=False):
     # is skipped (any client_id is accepted). When set, only these client_ids
     # are allowed to initiate OAuth flows.
     allowed_client_ids: list[str]
+
+    # Session cookie settings (cookie name, max_age, secure, etc.) plus the
+    # cookie_auth flag that enables the browser /{provider}/login flow. See
+    # SessionConfig. cookie_auth requires session_storage to be provided.
+    session: SessionConfig

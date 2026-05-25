@@ -27,9 +27,9 @@ from cross_auth.fastapi import CrossAuth
 
 auth = CrossAuth(
     providers=[],
-    storage=session_storage,
+    storage=secondary_storage,
     accounts_storage=accounts_storage,
-    create_token=lambda _: ("", 0),
+    session_storage=session_storage,
     trusted_origins=["https://myapp.com"],
 )
 ```
@@ -138,13 +138,14 @@ from cross_auth.hooks import AfterLogoutEvent, BeforeLogoutEvent
 
 @auth.before("logout")
 def require_active_session(event: BeforeLogoutEvent) -> None:
-    if event.session_id is None:
+    if event.session_record is None:
         raise CrossAuthException("unauthorized", "No active session", 401)
 
 
 @auth.after("logout")
 def audit_logout(event: AfterLogoutEvent) -> None:
-    audit_log.record("session_logout", session_id=event.session_id)
+    session_id = None if event.session_record is None else event.session_record.id
+    audit_log.record("session_logout", session_id=session_id)
 ```
 
 ## OAuth Hooks

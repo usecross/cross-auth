@@ -1,10 +1,11 @@
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Request
+import pytest
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
-from cross_auth import AccountsStorage, SecondaryStorage, User
+from cross_auth import AccountsStorage, SecondaryStorage, SessionStorage, User
 from cross_auth._session import create_session, get_session
 from cross_auth.fastapi import CrossAuth
 from cross_auth.router import AuthRouter
@@ -12,16 +13,88 @@ from cross_auth.router import AuthRouter
 TEST_PASSWORD = "password123"  # noqa: S105
 
 
+def test_token_only_mode_without_session_storage(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+):
+    auth = CrossAuth(
+        providers=[],
+        storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        trusted_origins=[],
+    )
+    assert auth.router is not None
+
+
+def test_token_endpoint_uses_token_issuer_without_session_storage(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+):
+    issued_requests = []
+
+    def issue_token(request):
+        issued_requests.append(request)
+        return "stateless-token", 900
+
+    auth = CrossAuth(
+        providers=[],
+        storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        token_issuer=issue_token,
+        trusted_origins=[],
+    )
+    app = FastAPI()
+    app.include_router(auth.router)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/token",
+            data={
+                "grant_type": "password",
+                "client_id": "mobile-app",
+                "username": "test@example.com",
+                "password": TEST_PASSWORD,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["access_token"] == "stateless-token"
+    assert response.json()["expires_in"] == 900
+
+    [token_request] = issued_requests
+    assert token_request.user_id == "test"
+    assert token_request.client_id == "mobile-app"
+    assert token_request.grant_type == "password"
+    assert token_request.username == "test@example.com"
+
+
+def test_get_current_session_requires_session_storage(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+):
+    auth = CrossAuth(
+        providers=[],
+        storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        trusted_origins=[],
+    )
+    request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
+    response = Response()
+    with pytest.raises(RuntimeError, match="session_storage is required"):
+        auth.get_current_session(request, response)
+
+
 def _make_auth(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
     **kwargs,
 ) -> CrossAuth:
     return CrossAuth(
         providers=[],
         storage=secondary_storage,
         accounts_storage=accounts_storage,
-        create_token=lambda _: ("", 0),
+        session_storage=session_storage,
         trusted_origins=[],
         **kwargs,
     )
@@ -30,8 +103,9 @@ def _make_auth(
 def test_get_current_user(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
     app = FastAPI()
     app.include_router(auth.router)
 
@@ -41,7 +115,7 @@ def test_get_current_user(
             return {"user": None}
         return {"user": user.id}
 
-    session_id, _ = create_session("test", secondary_storage)
+    session_id, _ = create_session("test", session_storage)
 
     with TestClient(app) as client:
         resp = client.get("/me", cookies={"session_id": session_id})
@@ -52,8 +126,9 @@ def test_get_current_user(
 def test_get_current_user_no_cookie(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
     app = FastAPI()
 
     @app.get("/me")
@@ -69,8 +144,9 @@ def test_get_current_user_no_cookie(
 def test_require_current_user(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
     app = FastAPI()
 
     @app.get("/me")
@@ -81,7 +157,7 @@ def test_require_current_user(
         resp = client.get("/me")
         assert resp.status_code == 401
 
-    session_id, _ = create_session("test", secondary_storage)
+    session_id, _ = create_session("test", session_storage)
 
     with TestClient(app) as client:
         resp = client.get("/me", cookies={"session_id": session_id})
@@ -92,11 +168,13 @@ def test_require_current_user(
 def test_get_current_user_custom_session_config(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
 ):
     auth = _make_auth(
         secondary_storage,
         accounts_storage,
-        session_config={"cookie_name": "my_sid"},
+        session_storage,
+        config={"session": {"cookies": {"name": "my_sid"}}},
     )
     app = FastAPI()
 
@@ -106,7 +184,7 @@ def test_get_current_user_custom_session_config(
             return {"user": None}
         return {"user": user.id}
 
-    session_id, _ = create_session("test", secondary_storage)
+    session_id, _ = create_session("test", session_storage)
 
     with TestClient(app) as client:
         # Default cookie name should not work
@@ -122,8 +200,9 @@ def test_get_current_user_custom_session_config(
 def test_router_property(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
     assert isinstance(auth.router, AuthRouter)
 
     app = FastAPI()
@@ -133,20 +212,21 @@ def test_router_property(
 def test_auto_wired_get_user_from_request(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
 ):
     """Verify that when no get_user_from_request is provided, the router's
     context uses session-based lookup. We expose the context's callback
     through an endpoint that calls it directly."""
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
 
-    session_id, _ = create_session("test", secondary_storage)
+    session_id, _ = create_session("test", session_storage)
 
     app = FastAPI()
     app.include_router(auth.router)
 
     @app.get("/check")
-    async def check(request: Request):
-        user = auth.get_current_user(request)
+    async def check(request: Request, response: Response):
+        user = auth.get_current_user(request, response)
         if user is None:
             return {"user": None}
         return {"user": user.id}
@@ -164,8 +244,9 @@ def test_auto_wired_get_user_from_request(
 def test_authenticate(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
     user = auth.authenticate("test@example.com", TEST_PASSWORD)
     assert user is not None
     assert user.email == "test@example.com"
@@ -174,8 +255,9 @@ def test_authenticate(
 def test_authenticate_wrong_password(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
     result = auth.authenticate("test@example.com", "wrong-password")
     assert result is None
 
@@ -183,8 +265,9 @@ def test_authenticate_wrong_password(
 def test_login(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
     app = FastAPI()
 
     @app.post("/do-login")
@@ -207,8 +290,9 @@ def test_login(
 def test_login_preserves_existing_response_cookies(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
     app = FastAPI()
 
     @app.post("/do-login")
@@ -231,11 +315,13 @@ def test_login_preserves_existing_response_cookies(
 def test_login_custom_session_config(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
 ):
     auth = _make_auth(
         secondary_storage,
         accounts_storage,
-        session_config={"cookie_name": "my_sid", "max_age": 3600},
+        session_storage,
+        config={"session": {"max_age": 3600, "cookies": {"name": "my_sid"}}},
     )
     app = FastAPI()
 
@@ -255,8 +341,9 @@ def test_login_custom_session_config(
 def test_login_creates_valid_session(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
     app = FastAPI()
 
     @app.post("/do-login")
@@ -272,7 +359,7 @@ def test_login_creates_valid_session(
         assert session_id
 
     # The session should be retrievable.
-    session = get_session(session_id, secondary_storage)
+    session = get_session(session_id, session_storage)
     assert session is not None
     assert session.user_id == "test"
 
@@ -280,13 +367,14 @@ def test_login_creates_valid_session(
 def test_logout(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
     app = FastAPI()
     app.include_router(auth.router)
 
     # Create a session first.
-    session_id, _ = create_session("test", secondary_storage)
+    session_id, _ = create_session("test", session_storage)
 
     @app.post("/do-logout")
     def do_logout(request: Request):
@@ -304,16 +392,17 @@ def test_logout(
         assert "Max-Age=0" in resp.headers["set-cookie"]
 
     # Session should be deleted
-    assert get_session(session_id, secondary_storage) is None
+    assert get_session(session_id, session_storage) is None
 
 
 def test_logout_preserves_existing_response_cookies(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
     app = FastAPI()
-    session_id, _ = create_session("test", secondary_storage)
+    session_id, _ = create_session("test", session_storage)
 
     @app.post("/do-logout")
     def do_logout(request: Request):
@@ -336,8 +425,9 @@ def test_logout_preserves_existing_response_cookies(
 def test_logout_no_session_cookie(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
     app = FastAPI()
 
     @app.post("/logout")
@@ -357,15 +447,17 @@ def test_logout_no_session_cookie(
 def test_logout_custom_cookie_name(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
 ):
     auth = _make_auth(
         secondary_storage,
         accounts_storage,
-        session_config={"cookie_name": "my_sid"},
+        session_storage,
+        config={"session": {"cookies": {"name": "my_sid"}}},
     )
     app = FastAPI()
 
-    session_id, _ = create_session("test", secondary_storage)
+    session_id, _ = create_session("test", session_storage)
 
     @app.post("/logout")
     def do_logout(request: Request):
@@ -382,4 +474,4 @@ def test_logout_custom_cookie_name(
         assert "Max-Age=0" in resp.headers["set-cookie"]
 
     # Session should be deleted
-    assert get_session(session_id, secondary_storage) is None
+    assert get_session(session_id, session_storage) is None

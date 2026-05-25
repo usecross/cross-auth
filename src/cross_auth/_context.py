@@ -4,8 +4,23 @@ from urllib.parse import urlparse
 from cross_web import HTTPRequest, Cookie
 
 from ._config import Config
-from ._session import SessionConfig, create_session, make_session_cookie, resolve_config
-from ._storage import AccountsStorage, SecondaryStorage, User
+from ._session import (
+    SessionConfig,
+    SessionMetadata,
+    _get_header,
+    create_session,
+    make_session_cookie,
+    resolve_config,
+)
+from ._storage import (
+    AccountsStorage,
+    SecondaryStorage,
+    SessionRecord,
+    SessionStorage,
+    User,
+)
+from ._tokens import TokenIssueRequest, TokenIssuer
+from .exceptions import CrossAuthException
 from .hooks import HookRegistry
 from .utils._is_same_host import is_same_host
 
@@ -15,44 +30,84 @@ class Context:
         self,
         secondary_storage: SecondaryStorage,
         accounts_storage: AccountsStorage,
-        create_token: Callable[[str], tuple[str, int]],
         # TODO: this doesn't allow to use the library as an Identity Provider
         trusted_origins: list[str],
         get_user_from_request: Callable[[HTTPRequest], User | None],
+        session_storage: SessionStorage | None = None,
+        token_issuer: TokenIssuer | None = None,
         base_url: str | None = None,
         config: Config | None = None,
-        session_enabled: bool = False,
-        session_config: SessionConfig | None = None,
         default_next_url: str = "/",
         hooks: HookRegistry | None = None,
     ):
         self.secondary_storage = secondary_storage
         self.accounts_storage = accounts_storage
-        self.create_token = create_token
+        self.session_storage = session_storage
         self.trusted_origins = trusted_origins
         self.get_user_from_request = get_user_from_request
+        self.token_issuer = token_issuer
         self.base_url = base_url
         self.config: Config = config if config is not None else {}
-        self._session_enabled = session_enabled
-        self.session_config = session_config
+        self.session_config: SessionConfig | None = self.config.get("session")
         self.default_next_url = default_next_url
         self.hooks = hooks if hooks is not None else HookRegistry()
 
-    @property
-    def is_session_enabled(self) -> bool:
-        return self._session_enabled
+        if self.cookie_auth_enabled and session_storage is None:
+            raise ValueError(
+                "config['session']['cookies']['auth'] is enabled but no "
+                "session_storage was provided"
+            )
 
-    def create_session_cookie(self, user_id: str) -> Cookie:
-        if not self.is_session_enabled:
+    @property
+    def cookie_auth_enabled(self) -> bool:
+        cookies = (self.config.get("session") or {}).get("cookies") or {}
+        return cookies.get("auth", False)
+
+    def create_session(
+        self,
+        user_id: str,
+        metadata: SessionMetadata | None = None,
+    ) -> tuple[str, SessionRecord]:
+        session_storage = self.session_storage
+        if session_storage is None:
             raise RuntimeError("Session flow not configured for this deployment")
 
         resolved = resolve_config(self.session_config)
-        session_id, _ = create_session(
+        return create_session(
             user_id,
-            self.secondary_storage,
+            session_storage,
             max_age=resolved["max_age"],
+            metadata=metadata,
+            token_hasher=resolved["token_hasher"],
         )
-        return make_session_cookie(session_id, self.session_config)
+
+    def create_session_cookie(
+        self,
+        user_id: str,
+        metadata: SessionMetadata | None = None,
+    ) -> Cookie:
+        session_token, _ = self.create_session(user_id, metadata)
+        return make_session_cookie(session_token, self.session_config)
+
+    def issue_token(self, request: TokenIssueRequest) -> tuple[str, int]:
+        if self.token_issuer is not None:
+            return self.token_issuer(request)
+
+        if self.session_storage is None:
+            raise CrossAuthException(
+                "server_error",
+                "The token endpoint requires token_issuer or session_storage",
+            )
+
+        resolved = resolve_config(self.session_config)
+        session_token, _ = self.create_session(
+            request.user_id,
+            {
+                "client_id": request.client_id,
+                "user_agent": _get_header(request.http_request.headers, "user-agent"),
+            },
+        )
+        return session_token, resolved["max_age"]
 
     def is_valid_redirect_uri(self, redirect_uri: str) -> bool:
         host = urlparse(redirect_uri).netloc

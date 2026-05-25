@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from cross_auth._auth_flow import AuthRequest
 from cross_auth._config import Config
-from cross_auth._storage import AccountsStorage, SecondaryStorage, User
+from cross_auth._storage import AccountsStorage, SecondaryStorage, SessionStorage, User
 from cross_auth.fastapi import CrossAuth
 from cross_auth.social_providers.oauth import OAuth2Provider
 
@@ -58,16 +58,19 @@ def _build_auth(
     *,
     storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
     providers: list[OAuth2Provider],
     trusted_origins: list[str] | None = None,
     config: Config | None = None,
     default_next_url: str = "/",
 ) -> CrossAuth:
+    if config is None:
+        config = {"session": {"cookies": {"auth": True}}}
     return CrossAuth(
         providers=providers,
         storage=storage,
         accounts_storage=accounts_storage,
-        create_token=lambda user_id: (f"token-{user_id}", 0),
+        session_storage=session_storage,
         trusted_origins=trusted_origins or ["client.example"],
         config=config,
         default_next_url=default_next_url,
@@ -79,11 +82,13 @@ def _build_auth(
 def auth(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
     fake_provider: FakeProvider,
 ) -> CrossAuth:
     return _build_auth(
         storage=secondary_storage,
         accounts_storage=accounts_storage,
+        session_storage=session_storage,
         providers=[fake_provider],
     )
 
@@ -92,12 +97,14 @@ def auth(
 def build_auth(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
     fake_provider: FakeProvider,
 ):
     def _make(**overrides: Any) -> CrossAuth:
         return _build_auth(
             storage=secondary_storage,
             accounts_storage=accounts_storage,
+            session_storage=session_storage,
             providers=[fake_provider],
             **overrides,
         )

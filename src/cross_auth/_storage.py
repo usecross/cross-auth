@@ -1,7 +1,19 @@
+from collections.abc import Iterable, Sequence
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any, Literal
 
+from pydantic import AwareDatetime
 from typing_extensions import Protocol
+
+SessionStatus = Literal["active", "expired", "revoked"]
+SessionListOrder = Literal[
+    "updated_at_desc",
+    "updated_at_asc",
+    "created_at_desc",
+    "created_at_asc",
+    "expires_at_desc",
+    "expires_at_asc",
+]
 
 
 class SocialAccount(Protocol):
@@ -38,6 +50,89 @@ class SecondaryStorage(Protocol):
     def pop(self, key: str) -> str | None:
         """Atomically get and delete a key. Returns None if key doesn't exist."""
         ...
+
+
+class SessionRecord(Protocol):
+    id: Any
+    user_id: Any
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    expires_at: AwareDatetime
+    last_active_at: AwareDatetime | None
+    revoked_at: AwareDatetime | None
+    client_id: str | None
+    client_name: str | None
+    user_agent: str | None
+    ip: str | None
+
+    @property
+    def status(self) -> SessionStatus: ...
+
+
+class SessionListResult(Protocol):
+    records: Sequence[SessionRecord]
+    next_cursor: str | None
+
+
+class SessionStorage(Protocol):
+    def create(
+        self,
+        *,
+        token_hash: str,
+        user_id: Any,
+        created_at: AwareDatetime,
+        updated_at: AwareDatetime,
+        expires_at: AwareDatetime,
+        client_id: str | None = None,
+        client_name: str | None = None,
+        user_agent: str | None = None,
+        ip: str | None = None,
+        last_active_at: AwareDatetime | None = None,
+    ) -> SessionRecord: ...
+
+    def get(
+        self,
+        *,
+        token_hash: str,
+        now: AwareDatetime,
+    ) -> SessionRecord | None: ...
+
+    def get_any(self, session_id: Any) -> SessionRecord | None: ...
+
+    def list_for_user(
+        self,
+        user_id: Any,
+        *,
+        now: AwareDatetime,
+        status: SessionStatus | None = None,
+        order_by: SessionListOrder = "updated_at_desc",
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> SessionListResult: ...
+
+    def refresh(
+        self,
+        session_id: Any,
+        *,
+        updated_at: AwareDatetime,
+        expires_at: AwareDatetime,
+        last_active_at: AwareDatetime | None = None,
+    ) -> SessionRecord | None: ...
+
+    def revoke(
+        self,
+        session_id: Any,
+        *,
+        revoked_at: AwareDatetime,
+    ) -> None: ...
+
+    def revoke_all_for_user(
+        self,
+        user_id: Any,
+        *,
+        revoked_at: AwareDatetime,
+        except_session_id: Any | None = None,
+    ) -> int: ...
 
 
 class AccountsStorage(Protocol):

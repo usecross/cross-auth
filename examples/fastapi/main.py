@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, cast
+from urllib.parse import urlencode
 
-import jwt
 from cross_web import HTTPRequest
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi import Depends, FastAPI, Form, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -18,6 +18,10 @@ from cross_auth import (
     AccountsStorage,
     SecondaryStorage,
     SessionConfig,
+    SessionListOrder,
+    SessionListResult,
+    SessionStatus,
+    SessionStorage,
 )
 from cross_auth import User as UserProtocol
 from cross_auth._session import get_current_user as get_session_user
@@ -47,10 +51,9 @@ BACKEND_TRUSTED_REDIRECT_HOSTS = [
     "localhost:8000",
     "127.0.0.1:8000",
 ]
-TOKEN_ISSUER = "cross-auth-fastapi-example"
-TOKEN_SECRET = "cross-auth-fastapi-example-secret"  # noqa: S105
-TOKEN_EXPIRES_IN = 3600
 MAX_HOOK_EVENTS = 20
+# Small page size so the demo's handful of sessions paginate visibly.
+SESSIONS_PAGE_SIZE = 5
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 SPA_CORS_ORIGINS = [
@@ -113,6 +116,169 @@ class MemorySecondaryStorage(SecondaryStorage):
 
     def pop(self, key: str) -> str | None:
         return self.data.pop(key, None)
+
+
+@dataclass
+class DemoSessionRecord:
+    id: str
+    token_hash: str
+    user_id: str
+    created_at: datetime
+    updated_at: datetime
+    expires_at: datetime
+    last_active_at: datetime | None = None
+    revoked_at: datetime | None = None
+    client_id: str | None = None
+    client_name: str | None = None
+    user_agent: str | None = None
+    ip: str | None = None
+
+    @property
+    def status(self) -> SessionStatus:
+        return session_status(self, now=datetime.now(tz=UTC))
+
+
+@dataclass
+class DemoSessionListResult:
+    records: list[DemoSessionRecord]
+    next_cursor: str | None = None
+
+
+class MemorySessionStorage(SessionStorage):
+    def __init__(self) -> None:
+        self.sessions_by_id: dict[str, DemoSessionRecord] = {}
+
+    def create(
+        self,
+        *,
+        token_hash: str,
+        user_id: Any,
+        created_at: datetime,
+        updated_at: datetime,
+        expires_at: datetime,
+        client_id: str | None = None,
+        client_name: str | None = None,
+        user_agent: str | None = None,
+        ip: str | None = None,
+        last_active_at: datetime | None = None,
+    ) -> DemoSessionRecord:
+        record = DemoSessionRecord(
+            id=str(uuid.uuid4()),
+            token_hash=token_hash,
+            user_id=str(user_id),
+            created_at=created_at,
+            updated_at=updated_at,
+            expires_at=expires_at,
+            client_id=client_id,
+            client_name=client_name,
+            user_agent=user_agent,
+            ip=ip,
+            last_active_at=last_active_at,
+        )
+        self.sessions_by_id[record.id] = record
+        return record
+
+    def get(self, *, token_hash: str, now: datetime) -> DemoSessionRecord | None:
+        record = next(
+            (
+                record
+                for record in self.sessions_by_id.values()
+                if record.token_hash == token_hash
+            ),
+            None,
+        )
+        if record is None:
+            return None
+        if record.revoked_at is not None or now > record.expires_at:
+            return None
+        return record
+
+    def get_any(self, session_id: Any) -> DemoSessionRecord | None:
+        return self.sessions_by_id.get(str(session_id))
+
+    def list_for_user(
+        self,
+        user_id: Any,
+        *,
+        now: datetime,
+        status: SessionStatus | None = None,
+        order_by: SessionListOrder = "updated_at_desc",
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> SessionListResult:
+        records = [
+            record
+            for record in self.sessions_by_id.values()
+            if record.user_id == str(user_id)
+        ]
+        if status is not None:
+            records = [
+                record
+                for record in records
+                if session_status(record, now=now) == status
+            ]
+
+        field, direction = order_by.rsplit("_", 1)
+        # Tie-break on id so the order is total and the cursor is stable.
+        records.sort(
+            key=lambda record: (getattr(record, field), record.id),
+            reverse=direction == "desc",
+        )
+
+        # The cursor is the id of the last record from the previous page. A real
+        # store would encode the (sort key, id) pair so it can resume with an
+        # indexed range query instead of scanning; for the demo we slice.
+        if cursor is not None:
+            ids = [record.id for record in records]
+            if cursor in ids:
+                records = records[ids.index(cursor) + 1 :]
+
+        page = records[:limit]
+        has_more = len(records) > limit
+        next_cursor = page[-1].id if has_more and page else None
+        return cast(
+            SessionListResult,
+            DemoSessionListResult(records=page, next_cursor=next_cursor),
+        )
+
+    def refresh(
+        self,
+        session_id: Any,
+        *,
+        updated_at: datetime,
+        expires_at: datetime,
+        last_active_at: datetime | None = None,
+    ) -> DemoSessionRecord | None:
+        record = self.get_any(session_id)
+        if record is None:
+            return None
+        record.updated_at = updated_at
+        record.expires_at = expires_at
+        record.last_active_at = last_active_at
+        return record
+
+    def revoke(self, session_id: Any, *, revoked_at: datetime) -> None:
+        record = self.get_any(session_id)
+        if record is not None:
+            record.revoked_at = revoked_at
+
+    def revoke_all_for_user(
+        self,
+        user_id: Any,
+        *,
+        revoked_at: datetime,
+        except_session_id: Any | None = None,
+    ) -> int:
+        count = 0
+        for record in self.sessions_by_id.values():
+            if record.user_id != str(user_id):
+                continue
+            if except_session_id is not None and record.id == str(except_session_id):
+                continue
+            if record.revoked_at is None:
+                record.revoked_at = revoked_at
+                count += 1
+        return count
 
 
 class MemoryAccountsStorage(AccountsStorage):
@@ -294,6 +460,55 @@ def serialize_user(user: DemoUser) -> dict[str, Any]:
     }
 
 
+def session_status(record: DemoSessionRecord, *, now: datetime) -> SessionStatus:
+    if record.revoked_at is not None:
+        return "revoked"
+    if now > record.expires_at:
+        return "expired"
+    return "active"
+
+
+def session_access_label(record: DemoSessionRecord) -> str:
+    if record.client_id:
+        return f"Authorized Application ({record.client_name or record.client_id})"
+    if record.user_agent:
+        if "Chrome" in record.user_agent:
+            browser = "Chrome"
+        elif "Firefox" in record.user_agent:
+            browser = "Firefox"
+        elif "Safari" in record.user_agent:
+            browser = "Safari"
+        else:
+            browser = "Browser"
+        return f"Browser ({browser})"
+    return "Browser"
+
+
+def serialize_session(
+    record: DemoSessionRecord,
+    *,
+    current_session_id: str | None,
+) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "user_id": record.user_id,
+        "status": record.status,
+        "access_label": session_access_label(record),
+        "created_at": record.created_at.isoformat(),
+        "updated_at": record.updated_at.isoformat(),
+        "expires_at": record.expires_at.isoformat(),
+        "last_active_at": (
+            record.last_active_at.isoformat() if record.last_active_at else None
+        ),
+        "revoked_at": record.revoked_at.isoformat() if record.revoked_at else None,
+        "client_id": record.client_id,
+        "client_name": record.client_name,
+        "user_agent": record.user_agent,
+        "ip": record.ip,
+        "current": record.id == current_session_id,
+    }
+
+
 def get_error_message(error: str | None) -> str | None:
     if error == "invalid_credentials":
         return "The demo credentials were invalid."
@@ -308,17 +523,6 @@ def get_error_message(error: str | None) -> str | None:
     if error == "email_not_verified":
         return "The provider reported an unverified email address."
     return None
-
-
-def create_demo_token(user_id: str) -> tuple[str, int]:
-    now = datetime.now(tz=UTC)
-    payload = {
-        "sub": user_id,
-        "iss": TOKEN_ISSUER,
-        "iat": now,
-        "exp": now + timedelta(seconds=TOKEN_EXPIRES_IN),
-    }
-    return jwt.encode(payload, TOKEN_SECRET, algorithm="HS256"), TOKEN_EXPIRES_IN
 
 
 hook_events: list[dict[str, str]] = []
@@ -336,55 +540,17 @@ def record_hook_event(name: str, **fields: str) -> None:
     del hook_events[MAX_HOOK_EVENTS:]
 
 
-def resolve_bearer_token(token: str) -> DemoUser:
-    try:
-        payload = jwt.decode(
-            token,
-            TOKEN_SECRET,
-            algorithms=["HS256"],
-            issuer=TOKEN_ISSUER,
-        )
-    except jwt.PyJWTError as e:
-        raise HTTPException(status_code=401, detail="Invalid bearer token") from e
-
-    user_id = payload.get("sub")
-    if not isinstance(user_id, str):
-        raise HTTPException(status_code=401, detail="Invalid bearer token")
-
-    user = accounts_storage.find_user_by_id(user_id)
-    if user is None:
-        raise HTTPException(status_code=401, detail="User not found")
-
-    return user
-
-
-def resolve_bearer_user(request: Request) -> DemoUser:
-    authorization = request.headers.get("Authorization")
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-
-    token = authorization.split(" ", 1)[1]
-    return resolve_bearer_token(token)
-
-
 def resolve_auth_user(request: HTTPRequest) -> DemoUser | None:
-    authorization = request.headers.get("Authorization")
-    if authorization and authorization.startswith("Bearer "):
-        token = authorization.split(" ", 1)[1]
-        try:
-            return resolve_bearer_token(token)
-        except HTTPException:
-            return None
-
-    return cast(
-        DemoUser | None,
-        get_session_user(
-            request,
-            secondary_storage,
-            accounts_storage,
-            {"cookie_name": SESSION_COOKIE_NAME, "secure": False},
-        ),
+    session_user = get_session_user(
+        request,
+        session_storage,
+        accounts_storage,
+        SESSION_CONFIG,
     )
+    if session_user is not None:
+        return cast(DemoUser, session_user)
+
+    return None
 
 
 github = GitHubProvider(
@@ -396,24 +562,29 @@ github = GitHubProvider(
 )
 
 secondary_storage = MemorySecondaryStorage()
+session_storage = MemorySessionStorage()
 accounts_storage = MemoryAccountsStorage()
 SESSION_CONFIG: SessionConfig = {
-    "cookie_name": SESSION_COOKIE_NAME,
-    "secure": False,
+    "update_age": 60,
+    "cookies": {
+        "auth": True,
+        "name": SESSION_COOKIE_NAME,
+        "secure": False,
+    },
 }
 
 auth = CrossAuth(
     providers=[github],
     storage=secondary_storage,
     accounts_storage=accounts_storage,
-    create_token=create_demo_token,
+    session_storage=session_storage,
     trusted_origins=[*SPA_TRUSTED_REDIRECT_HOSTS, *BACKEND_TRUSTED_REDIRECT_HOSTS],
-    session_config=SESSION_CONFIG,
     get_user_from_request=resolve_auth_user,
     default_next_url="/profile",
     config={
         "account_linking": {"enabled": True},
         "allowed_client_ids": [SPA_CLIENT_ID],
+        "session": SESSION_CONFIG,
     },
 )
 
@@ -444,7 +615,10 @@ def audit_session_login(event: AfterLoginEvent) -> None:
 
 @auth.after("logout")
 def audit_session_logout(event: AfterLogoutEvent) -> None:
-    record_hook_event("after:logout", session_id=event.session_id or "")
+    record_hook_event(
+        "after:logout",
+        session_id="" if event.session_record is None else str(event.session_record.id),
+    )
 
 
 @auth.before("oauth.callback")
@@ -512,6 +686,7 @@ def home(
 
 @app.post("/login")
 def login(
+    request: Request,
     email: Annotated[str, Form()],
     password: Annotated[str, Form()],
 ) -> RedirectResponse:
@@ -520,7 +695,11 @@ def login(
         return RedirectResponse(url="/?error=invalid_credentials", status_code=303)
 
     response = RedirectResponse(url="/profile", status_code=303)
-    auth.login(str(user.id), response=response)
+    auth.login(
+        str(user.id),
+        response=response,
+        metadata={"user_agent": request.headers.get("User-Agent")},
+    )
     return response
 
 
@@ -546,6 +725,78 @@ def profile(
     )
 
 
+@app.get("/sessions")
+def sessions_page(
+    request: Request,
+    response: Response,
+    user: Annotated[UserProtocol | None, Depends(auth.get_current_user)],
+    status: SessionStatus | None = None,
+    cursor: str | None = None,
+):
+    if user is None:
+        return RedirectResponse(url="/", status_code=303)
+
+    current_session = auth.get_current_session(request, response)
+    result = auth.list_sessions(
+        str(user.id),
+        status=status,
+        limit=SESSIONS_PAGE_SIZE,
+        cursor=cursor,
+    )
+    sessions = [
+        serialize_session(
+            cast(DemoSessionRecord, record),
+            current_session_id=(
+                str(current_session.id) if current_session is not None else None
+            ),
+        )
+        for record in result.records
+    ]
+
+    next_query = None
+    if result.next_cursor is not None:
+        params = {"cursor": result.next_cursor}
+        if status is not None:
+            params["status"] = status
+        next_query = urlencode(params)
+
+    return templates.TemplateResponse(
+        request,
+        "sessions.html",
+        {
+            "current_status": status,
+            "hook_events": hook_events[:5],
+            "sessions": sessions,
+            "user": user,
+            "next_query": next_query,
+        },
+    )
+
+
+@app.post("/sessions/{session_id}/revoke")
+def revoke_session_form(
+    session_id: str,
+    user: Annotated[UserProtocol, Depends(auth.require_current_user)],
+) -> RedirectResponse:
+    auth.revoke_session(session_id, user_id=str(user.id))
+    return RedirectResponse(url="/sessions", status_code=303)
+
+
+@app.post("/sessions/revoke-other")
+def revoke_other_sessions_form(
+    request: Request,
+    user: Annotated[UserProtocol, Depends(auth.require_current_user)],
+    response: Response,
+) -> RedirectResponse:
+    current_session = auth.get_current_session(request, response)
+    if current_session is not None:
+        auth.revoke_other_sessions(
+            user_id=str(user.id),
+            keep_session_id=current_session.id,
+        )
+    return RedirectResponse(url="/sessions", status_code=303)
+
+
 @app.get("/hooks")
 def hooks_page(request: Request):
     return templates.TemplateResponse(
@@ -569,3 +820,59 @@ def api_me_session(
     user: Annotated[UserProtocol, Depends(auth.require_current_user)],
 ) -> JSONResponse:
     return JSONResponse(serialize_user(cast(DemoUser, user)))
+
+
+@app.get("/api/sessions")
+def api_sessions(
+    request: Request,
+    response: Response,
+    user: Annotated[UserProtocol, Depends(auth.require_current_user)],
+    status: SessionStatus | None = None,
+    cursor: str | None = None,
+) -> JSONResponse:
+    current_session = auth.get_current_session(request, response)
+    result = auth.list_sessions(
+        str(user.id),
+        status=status,
+        limit=SESSIONS_PAGE_SIZE,
+        cursor=cursor,
+    )
+    return JSONResponse(
+        {
+            "sessions": [
+                serialize_session(
+                    cast(DemoSessionRecord, record),
+                    current_session_id=(
+                        str(current_session.id) if current_session is not None else None
+                    ),
+                )
+                for record in result.records
+            ],
+            "next_cursor": result.next_cursor,
+        }
+    )
+
+
+@app.post("/api/sessions/{session_id}/revoke")
+def api_revoke_session(
+    session_id: str,
+    user: Annotated[UserProtocol, Depends(auth.require_current_user)],
+) -> JSONResponse:
+    auth.revoke_session(session_id, user_id=str(user.id))
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/sessions/revoke-other")
+def api_revoke_other_sessions(
+    request: Request,
+    user: Annotated[UserProtocol, Depends(auth.require_current_user)],
+    response: Response,
+) -> JSONResponse:
+    current_session = auth.get_current_session(request, response)
+    revoked = 0
+    if current_session is not None:
+        revoked = auth.revoke_other_sessions(
+            user_id=str(user.id),
+            keep_session_id=current_session.id,
+        )
+    return JSONResponse({"ok": True, "revoked": revoked})

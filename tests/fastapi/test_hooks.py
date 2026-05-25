@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from respx import MockRouter
 
 from cross_auth._auth_flow import AuthRequest, LinkCodeData
+from cross_auth._config import Config
 from cross_auth._issuer import AuthorizationCodeGrantData
 from cross_auth._session import get_session
 from cross_auth.exceptions import CrossAuthException
@@ -56,15 +57,18 @@ def _make_auth(
     secondary_storage,
     accounts_storage,
     *,
+    session_storage,
     providers: list[OAuth2Provider] | None = None,
     get_user_from_request=None,
-    config=None,
+    config: Config | None = None,
 ) -> CrossAuth:
+    if config is None:
+        config = {"session": {"cookies": {"auth": True}}}
     return CrossAuth(
         providers=providers if providers is not None else [],
         storage=secondary_storage,
         accounts_storage=accounts_storage,
-        create_token=lambda user_id: (f"token-{user_id}", 0),
+        session_storage=session_storage,
         trusted_origins=["valid-frontend.com"],
         get_user_from_request=get_user_from_request,
         config=config,
@@ -74,8 +78,13 @@ def _make_auth(
 def test_authenticate_hooks(
     secondary_storage,
     accounts_storage,
+    session_storage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        session_storage=session_storage,
+    )
     seen: dict[str, str | None] = {}
 
     @auth.before("authenticate")
@@ -96,8 +105,13 @@ def test_authenticate_hooks(
 def test_login_hooks_mutate_user_id_and_response(
     secondary_storage,
     accounts_storage,
+    session_storage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        session_storage=session_storage,
+    )
     app = FastAPI()
 
     @auth.before("login")
@@ -125,7 +139,7 @@ def test_login_hooks_mutate_user_id_and_response(
     assert session_id is not None
     assert resp.headers["x-session-user"] == "test"
 
-    session = get_session(session_id, secondary_storage)
+    session = get_session(session_id, session_storage)
     assert session is not None
     assert session.user_id == "test"
 
@@ -133,25 +147,32 @@ def test_login_hooks_mutate_user_id_and_response(
 def test_logout_hooks(
     secondary_storage,
     accounts_storage,
+    session_storage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        session_storage=session_storage,
+    )
     seen: dict[str, str | None] = {}
     session_response = Response()
     auth.login("test", response=session_response)
     session_cookie = session_response.headers["set-cookie"].split(";", 1)[0]
     session_id = session_cookie.split("=", 1)[1]
+    session_record = get_session(session_id, session_storage)
+    assert session_record is not None
 
     @auth.before("logout")
     def capture_before(event: BeforeLogoutEvent) -> None:
         assert isinstance(event.request, HTTPRequest)
         assert isinstance(event.response, CrossWebResponse)
-        seen["before"] = event.session_id
+        seen["before"] = str(event.session_record.id) if event.session_record else None
 
     @auth.after("logout")
     def capture_after(event: AfterLogoutEvent) -> None:
         assert isinstance(event.request, HTTPRequest)
         assert isinstance(event.response, CrossWebResponse)
-        seen["after"] = event.session_id
+        seen["after"] = str(event.session_record.id) if event.session_record else None
 
     request = Request(
         {
@@ -165,34 +186,29 @@ def test_logout_hooks(
     response = Response()
     auth.logout(request, response=response)
 
-    assert seen == {"before": session_id, "after": session_id}
-    assert get_session(session_id, secondary_storage) is None
+    assert seen == {"before": str(session_record.id), "after": str(session_record.id)}
+    assert get_session(session_id, session_storage) is None
 
 
 def test_logout_hooks_without_session_cookie(
     secondary_storage,
     accounts_storage,
-    monkeypatch,
+    session_storage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
-    seen: dict[str, str | None] = {}
-    delete_calls: list[str] = []
-
-    def fail_if_delete_session_is_called(session_id, storage) -> None:
-        delete_calls.append(session_id)
-
-    monkeypatch.setattr(
-        "cross_auth.fastapi.delete_session",
-        fail_if_delete_session_is_called,
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        session_storage=session_storage,
     )
+    seen: dict[str, str | None] = {}
 
     @auth.before("logout")
     def capture_before(event: BeforeLogoutEvent) -> None:
-        seen["before"] = event.session_id
+        seen["before"] = str(event.session_record.id) if event.session_record else None
 
     @auth.after("logout")
     def capture_after(event: AfterLogoutEvent) -> None:
-        seen["after"] = event.session_id
+        seen["after"] = str(event.session_record.id) if event.session_record else None
 
     request = Request(
         {
@@ -207,14 +223,18 @@ def test_logout_hooks_without_session_cookie(
     auth.logout(request, response=response)
 
     assert seen == {"before": None, "after": None}
-    assert delete_calls == []
 
 
 def test_sync_events_reject_async_hooks(
     secondary_storage,
     accounts_storage,
+    session_storage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        session_storage=session_storage,
+    )
 
     with pytest.raises(
         TypeError, match="login hooks for sync events must be synchronous"
@@ -252,11 +272,13 @@ def test_policy_only_before_hooks_reject_replacement():
 def test_oauth_authorize_hooks(
     secondary_storage,
     accounts_storage,
+    session_storage,
     oauth_provider,
 ):
     auth = _make_auth(
         secondary_storage,
         accounts_storage,
+        session_storage=session_storage,
         providers=[oauth_provider],
     )
     seen: dict[str, str] = {}
@@ -302,12 +324,14 @@ def test_oauth_authorize_hooks(
 def test_oauth_callback_hooks(
     secondary_storage,
     accounts_storage,
+    session_storage,
     oauth_provider,
     respx_mock: MockRouter,
 ):
     auth = _make_auth(
         secondary_storage,
         accounts_storage,
+        session_storage=session_storage,
         providers=[oauth_provider],
     )
     seen: dict[str, str] = {}
@@ -386,12 +410,14 @@ def test_oauth_callback_hooks(
 def test_oauth_callback_hooks_run_for_session_flow(
     secondary_storage,
     accounts_storage,
+    session_storage,
     oauth_provider,
     respx_mock: MockRouter,
 ):
     auth = _make_auth(
         secondary_storage,
         accounts_storage,
+        session_storage=session_storage,
         providers=[oauth_provider],
     )
     seen: dict[str, str] = {}
@@ -457,7 +483,7 @@ def test_oauth_callback_hooks_run_for_session_flow(
     assert seen == {"email": "session-hooked@example.com"}
     assert accounts_storage.find_user_by_email("session-hooked@example.com") is not None
 
-    session = get_session(session_id, secondary_storage)
+    session = get_session(session_id, session_storage)
     assert session is not None
     assert session.user_id == "session-provider-user-id"
 
@@ -465,12 +491,14 @@ def test_oauth_callback_hooks_run_for_session_flow(
 def test_login_hooks_run_for_oauth_session_flow(
     secondary_storage,
     accounts_storage,
+    session_storage,
     oauth_provider,
     respx_mock: MockRouter,
 ):
     auth = _make_auth(
         secondary_storage,
         accounts_storage,
+        session_storage=session_storage,
         providers=[oauth_provider],
     )
     seen: dict[str, str] = {}
@@ -529,7 +557,7 @@ def test_login_hooks_run_for_oauth_session_flow(
         "after_user_id": "oauth-session-user-id",
     }
 
-    session = get_session(session_id, secondary_storage)
+    session = get_session(session_id, session_storage)
     assert session is not None
     assert session.user_id == "oauth-session-user-id"
 
@@ -537,12 +565,14 @@ def test_login_hooks_run_for_oauth_session_flow(
 def test_oauth_link_hooks(
     secondary_storage,
     accounts_storage,
+    session_storage,
     logged_in_user,
     oauth_provider,
 ):
     auth = _make_auth(
         secondary_storage,
         accounts_storage,
+        session_storage=session_storage,
         providers=[oauth_provider],
         get_user_from_request=lambda request: (
             logged_in_user
@@ -584,6 +614,7 @@ def test_oauth_link_hooks(
 def test_oauth_finalize_link_hooks(
     secondary_storage,
     accounts_storage,
+    session_storage,
     logged_in_user,
     oauth_provider,
     respx_mock: MockRouter,
@@ -591,6 +622,7 @@ def test_oauth_finalize_link_hooks(
     auth = _make_auth(
         secondary_storage,
         accounts_storage,
+        session_storage=session_storage,
         providers=[oauth_provider],
         get_user_from_request=lambda request: (
             logged_in_user
@@ -662,8 +694,13 @@ def test_oauth_finalize_link_hooks(
 def test_token_hooks(
     secondary_storage,
     accounts_storage,
+    session_storage,
 ):
-    auth = _make_auth(secondary_storage, accounts_storage)
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        session_storage=session_storage,
+    )
     blocked = False
     seen: dict[str, str] = {}
 
@@ -725,4 +762,5 @@ def test_token_hooks(
         "error_description": "Password grant disabled",
     }
     assert success_resp.status_code == 200
-    assert seen == {"access_token": "token-test"}
+    assert seen["access_token"] != "token-test"
+    assert get_session(seen["access_token"], session_storage) is not None

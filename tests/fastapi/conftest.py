@@ -6,6 +6,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.testclient import TestClient
 
 from cross_auth._context import AccountsStorage, SecondaryStorage
+from cross_auth._storage import SessionStorage
 from cross_auth.router import AuthRouter
 
 
@@ -13,6 +14,7 @@ from cross_auth.router import AuthRouter
 def test_app(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
 ) -> FastAPI:
     app = FastAPI()
 
@@ -20,8 +22,8 @@ def test_app(
         providers=[],
         secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
+        session_storage=session_storage,
         get_user_from_request=lambda _: None,
-        create_token=lambda _: ("", 0),
         trusted_origins=[],
     )
 

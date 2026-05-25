@@ -9,7 +9,7 @@ backend as if Cross-Auth were a standalone authentication server.
 - redirect to the backend generic provider authorize endpoint
 - callback handling in a separate frontend app
 - auth-code exchange at `/auth/token`
-- client-side bearer token storage
+- client-side storage of an opaque, revocable bearer token
 - authenticated API call to the backend with `Authorization: Bearer ...`
 
 ## Run It

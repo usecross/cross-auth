@@ -11,7 +11,7 @@ from pydantic import BaseModel, HttpUrl, TypeAdapter, ValidationError
 
 from ._context import Context
 from ._issuer import AuthorizationCodeGrantData
-from ._session import create_session, make_session_cookie, resolve_config
+from ._session import _get_header, make_session_cookie
 from ._storage import SocialAccount, User
 from .exceptions import CrossAuthException
 from .hooks import (
@@ -684,7 +684,12 @@ def _handle_oauth_callback(
 
     if auth_request.flow == "session":
         try:
-            response = _complete_session(auth_request, resolved_user.user, context)
+            response = _complete_session(
+                auth_request,
+                resolved_user.user,
+                context,
+                request,
+            )
         except CrossAuthException as e:
             return _flow_error(
                 auth_request,
@@ -943,12 +948,18 @@ def _complete_connect(
 
 
 def _complete_session(
-    auth_request: AuthRequest, user: User, context: Context
+    auth_request: AuthRequest,
+    user: User,
+    context: Context,
+    request: HTTPRequest,
 ) -> Response:
-    if not context.is_session_enabled:
+    if not context.cookie_auth_enabled:
         return Response.error(
             "server_error",
-            error_description="Session flow not configured for this deployment",
+            error_description=(
+                "Cookie auth is not enabled for this deployment "
+                "(config['session']['cookies']['auth'])"
+            ),
         )
 
     next_url = auth_request.next_url or context.default_next_url
@@ -959,13 +970,11 @@ def _complete_session(
         BeforeLoginEvent(user_id=str(user.id), response=response),
     )
 
-    resolved = resolve_config(context.session_config)
-    session_id, session_data = create_session(
+    session_token, session_record = context.create_session(
         event.user_id,
-        context.secondary_storage,
-        max_age=resolved["max_age"],
+        {"user_agent": _get_header(request.headers, "user-agent")},
     )
-    cookie = make_session_cookie(session_id, context.session_config)
+    cookie = make_session_cookie(session_token, context.session_config)
 
     if event.response.cookies is None:
         event.response.cookies = []
@@ -976,8 +985,7 @@ def _complete_session(
         AfterLoginEvent(
             user_id=event.user_id,
             response=event.response,
-            session_id=session_id,
-            session_data=session_data,
+            session_record=session_record,
             cookie=cookie,
         ),
     )

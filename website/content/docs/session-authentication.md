@@ -9,8 +9,9 @@ section: Guides
 
 Session-based authentication is the traditional approach for server-rendered web
 applications. After a user logs in with their email and password, the server
-creates a session and sends a session ID cookie to the browser. Subsequent
-requests include this cookie, allowing the server to identify the user.
+creates a session and sends an opaque session-token cookie to the browser.
+Subsequent requests include this cookie, allowing the server to identify the
+user.
 
 Cross-Auth provides a high-level `CrossAuth` class with `login()` and `logout()`
 methods for framework integrations, as well as lower-level functions for custom
@@ -29,9 +30,9 @@ from fastapi.responses import JSONResponse
 
 auth = CrossAuth(
     providers=[],
-    storage=session_storage,
+    storage=secondary_storage,
     accounts_storage=accounts_storage,
-    create_token=lambda _: ("", 0),
+    session_storage=session_storage,
     trusted_origins=["https://myapp.com"],
 )
 
@@ -51,7 +52,7 @@ auth.login(str(user.id), response=response)
 ```python
 from fastapi import Request
 
-# Delete session + clear cookie in one step
+# Revoke session + clear cookie in one step
 response = JSONResponse({"ok": True})
 auth.logout(request, response=response)
 ```
@@ -75,6 +76,11 @@ def protected(
     user: Annotated[User, Depends(auth.require_current_user)],
 ): ...  # raises 401 if not logged in
 ```
+
+`session_storage` is optional when constructing `CrossAuth`, but session-backed
+features require it. `login()`, `logout()`, and session-management methods raise
+clearly when no `session_storage` is configured. The built-in `/token` endpoint
+is still registered, but successful token issuance requires `session_storage`.
 
 ## Lower-Level Session Functions
 
@@ -107,26 +113,27 @@ After authentication, create a session to persist the login:
 ```python
 from cross_auth._session import create_session
 
-session_id, session_data = create_session(str(user.id), session_storage)
+session_token, session_record = create_session(str(user.id), session_storage)
 ```
 
-The session ID is a cryptographically secure random token
-(`secrets.token_urlsafe(32)`, ~256 bits of entropy). Session data is stored in
-your `SecondaryStorage` under the key `session:{session_id}`.
+The session token is a cryptographically secure random value
+(`secrets.token_urlsafe(32)`, ~256 bits of entropy). Cross-Auth stores only a
+hash of that token in `SessionStorage`, together with the session metadata and
+expiry.
 
 #### Session Fixation Protection
 
 Always create a **new** session after authentication. Never reuse an existing
-session ID from before login -- this prevents session fixation attacks.
+session token from before login -- this prevents session fixation attacks.
 
 ### Reading Sessions
 
-Retrieve a session by its ID:
+Retrieve a session by its token:
 
 ```python
 from cross_auth._session import get_session
 
-session = get_session(session_id, session_storage)
+session = get_session(session_token, session_storage)
 
 if session is None:
     # Session not found or expired
@@ -134,19 +141,31 @@ if session is None:
 
 print(session.user_id)
 print(session.created_at)
+print(session.status)
 ```
 
 ### Deleting Sessions
 
-Delete a session to log the user out:
+Revoke a session to log the user out:
 
 ```python
 from cross_auth._session import delete_session
 
-delete_session(session_id, session_storage)
+delete_session(session_token, session_storage)
 ```
 
-This is a no-op if the session doesn't exist.
+This revokes the stored session record. It is a no-op if the session doesn't
+exist.
+
+### Bearer Tokens
+
+The built-in OAuth `/token` endpoint issues the same kind of opaque session
+token that `create_session()` returns. API clients send it with
+`Authorization: Bearer ...`, and Cross-Auth resolves it through
+`SessionStorage`.
+
+Because bearer tokens are session records, they are revocable with the same
+session-management APIs. Cross-Auth does not issue JWT access tokens by default.
 
 ### Cookie Helpers
 
@@ -157,7 +176,7 @@ Cross-Auth provides helpers to create properly configured session cookies:
 ```python
 from cross_auth._session import make_session_cookie
 
-cookie = make_session_cookie(session_id)
+cookie = make_session_cookie(session_token)
 # cookie.name = "session_id"
 # cookie.secure = True
 # cookie.httponly = True
@@ -184,26 +203,28 @@ from cross_auth import SessionConfig
 from cross_auth._session import make_session_cookie
 
 config: SessionConfig = {
-    "cookie_name": "my_app_session",
     "max_age": 3600,  # 1 hour
-    "secure": True,
-    "httponly": True,
-    "samesite": "strict",
-    "path": "/",
-    "domain": ".example.com",
+    "cookies": {
+        "name": "my_app_session",
+        "secure": True,
+        "httponly": True,
+        "samesite": "strict",
+        "path": "/",
+        "domain": ".example.com",
+    },
 }
 
-cookie = make_session_cookie(session_id, config)
+cookie = make_session_cookie(session_token, config)
 ```
 
 ## Cookie Defaults
 
-| Setting       | Default        | Notes                                  |
-| ------------- | -------------- | -------------------------------------- |
-| `cookie_name` | `"session_id"` | Name of the cookie                     |
-| `max_age`     | `86400` (24h)  | Session lifetime in seconds            |
-| `secure`      | `True`         | Only sent over HTTPS                   |
-| `httponly`    | `True`         | Not accessible via JavaScript          |
-| `samesite`    | `"lax"`        | Prevents CSRF on cross-origin requests |
-| `path`        | `"/"`          | Cookie is valid for all paths          |
-| `domain`      | `None`         | Scoped to the current domain           |
+| Setting            | Default        | Notes                                  |
+| ------------------ | -------------- | -------------------------------------- |
+| `max_age`          | `86400` (24h)  | Session lifetime in seconds            |
+| `cookies.name`     | `"session_id"` | Name of the cookie                     |
+| `cookies.secure`   | `True`         | Only sent over HTTPS                   |
+| `cookies.httponly` | `True`         | Not accessible via JavaScript          |
+| `cookies.samesite` | `"lax"`        | Prevents CSRF on cross-origin requests |
+| `cookies.path`     | `"/"`          | Cookie is valid for all paths          |
+| `cookies.domain`   | `None`         | Scoped to the current domain           |

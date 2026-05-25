@@ -7,7 +7,7 @@ Playwright tests written in TypeScript.
 
 ## What It Tests
 
-- auth-code + token login from the separate SPA
+- auth-code + opaque bearer-token login from the separate SPA
 - bearer-authenticated API access from the SPA
 - GitHub account linking for a session-authenticated backend user
 - GitHub account linking for a bearer-authenticated client
