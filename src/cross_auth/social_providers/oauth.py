@@ -111,13 +111,15 @@ class OAuth2Provider:
 
         Returns True if:
         - Either email is missing (no comparison possible), OR
-        - Emails match (case-insensitive), OR
+        - Emails match after normalization (case-insensitive by default), OR
         - allow_different_emails is enabled
         """
         if not provider_email or not user_email:
             return True
 
-        if provider_email.lower() == user_email.lower():
+        if context.normalize_email(provider_email) == context.normalize_email(
+            user_email
+        ):
             return True
 
         account_linking = context.config.get("account_linking", {})

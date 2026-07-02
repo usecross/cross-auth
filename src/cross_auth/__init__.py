@@ -1,4 +1,5 @@
 from cross_auth._context import Context
+from cross_auth._email import normalize_email
 from cross_auth._session import SessionConfig, SessionCookieConfig
 from cross_auth._storage import (
     AccountsStorage,
@@ -79,6 +80,7 @@ __all__ = [
     "SessionRecord",
     "SessionStatus",
     "SessionStorage",
+    "normalize_email",
     "session_status",
     "TokenExchangeParams",
     "TokenIssueRequest",

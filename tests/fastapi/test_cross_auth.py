@@ -252,6 +252,17 @@ def test_authenticate(
     assert user.email == "test@example.com"
 
 
+def test_authenticate_normalizes_email(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
+    user = auth.authenticate("  Test@Example.COM ", TEST_PASSWORD)
+    assert user is not None
+    assert user.email == "test@example.com"
+
+
 def test_authenticate_wrong_password(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,

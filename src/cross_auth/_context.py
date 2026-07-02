@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 from cross_web import HTTPRequest, Cookie
 
 from ._config import Config
+from ._email import normalize_email as _default_normalize_email
 from ._session import (
     SessionConfig,
     SessionMetadata,
@@ -39,6 +40,7 @@ class Context:
         config: Config | None = None,
         default_next_url: str = "/",
         hooks: HookRegistry | None = None,
+        normalize_email: Callable[[str], str] | None = None,
     ):
         self.secondary_storage = secondary_storage
         self.accounts_storage = accounts_storage
@@ -47,6 +49,11 @@ class Context:
         self.get_user_from_request = get_user_from_request
         self.token_issuer = token_issuer
         self.base_url = base_url
+        # Applied to every user lookup/creation by email (not to the raw
+        # provider_email stored on social accounts).
+        self.normalize_email = (
+            normalize_email if normalize_email is not None else _default_normalize_email
+        )
         self.config: Config = config if config is not None else {}
         self.session_config: SessionConfig | None = self.config.get("session")
         self.default_next_url = default_next_url

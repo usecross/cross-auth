@@ -289,7 +289,9 @@ class Issuer:
         context: Context,
         http_request: HTTPRequest,
     ) -> Response:
-        user = context.accounts_storage.find_user_by_email(request.username)
+        user = context.accounts_storage.find_user_by_email(
+            context.normalize_email(request.username)
+        )
 
         try:
             context.hooks.run_before(
