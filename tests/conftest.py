@@ -18,6 +18,7 @@ from cross_auth._storage import (
     SessionStatus,
     SessionStorage,
     User as UserProtocol,
+    session_status,
 )
 from cross_auth.exceptions import CrossAuthException
 
@@ -97,11 +98,7 @@ class MemorySessionRecord:
 
     @property
     def status(self) -> SessionStatus:
-        if self.revoked_at is not None:
-            return "revoked"
-        if datetime.now(tz=timezone.utc) > self.expires_at:
-            return "expired"
-        return "active"
+        return session_status(self)
 
 
 @dataclass
@@ -153,7 +150,7 @@ class MemorySessionStorage(SessionStorage):
             ),
             None,
         )
-        if record is None or record.revoked_at is not None or now > record.expires_at:
+        if record is None or session_status(record, now=now) != "active":
             return None
         return record
 
@@ -177,7 +174,7 @@ class MemorySessionStorage(SessionStorage):
             records = [
                 record
                 for record in records
-                if _session_status(record, now=now) == status
+                if session_status(record, now=now) == status
             ]
 
         field, direction = order_by.rsplit("_", 1)
@@ -203,12 +200,13 @@ class MemorySessionStorage(SessionStorage):
             return None
         record.updated_at = updated_at
         record.expires_at = expires_at
-        record.last_active_at = last_active_at
+        if last_active_at is not None:
+            record.last_active_at = last_active_at
         return record
 
     def revoke(self, session_id: Any, *, revoked_at: datetime) -> None:
         record = self.get_any(session_id)
-        if record is not None:
+        if record is not None and record.revoked_at is None:
             record.revoked_at = revoked_at
 
     def revoke_all_for_user(
@@ -228,14 +226,6 @@ class MemorySessionStorage(SessionStorage):
                 record.revoked_at = revoked_at
                 count += 1
         return count
-
-
-def _session_status(record: MemorySessionRecord, *, now: datetime) -> SessionStatus:
-    if record.revoked_at is not None:
-        return "revoked"
-    if now > record.expires_at:
-        return "expired"
-    return "active"
 
 
 class MemoryAccountsStorage:

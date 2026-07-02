@@ -1,5 +1,5 @@
 from collections.abc import Iterable, Sequence
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import AwareDatetime
@@ -74,6 +74,31 @@ class SessionListResult(Protocol):
     next_cursor: str | None
 
 
+def session_status(
+    record: SessionRecord,
+    *,
+    now: datetime | None = None,
+) -> SessionStatus:
+    """Derive a session's status from its revocation and expiry timestamps.
+
+    This is the single source of truth for the active/expired/revoked state
+    machine: storage implementations and ``SessionRecord.status`` properties
+    should delegate here rather than re-deriving it. A session is ``active``
+    up to and including the exact expiry instant. Naive datetimes are assumed
+    to be UTC; ``now`` defaults to the current UTC time.
+    """
+    if record.revoked_at is not None:
+        return "revoked"
+    if now is None:
+        now = datetime.now(tz=timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    expires_at = record.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return "expired" if now > expires_at else "active"
+
+
 class SessionStorage(Protocol):
     def create(
         self,
@@ -117,7 +142,10 @@ class SessionStorage(Protocol):
         updated_at: AwareDatetime,
         expires_at: AwareDatetime,
         last_active_at: AwareDatetime | None = None,
-    ) -> SessionRecord | None: ...
+    ) -> SessionRecord | None:
+        """Roll a session forward. When ``last_active_at`` is omitted (None),
+        the stored value is preserved rather than cleared."""
+        ...
 
     def revoke(
         self,
