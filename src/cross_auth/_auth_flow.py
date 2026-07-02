@@ -122,17 +122,23 @@ _LINK_CODE_KEY = "oauth:link_request:{code}"
 _AUTH_CODE_KEY = "oauth:code:{code}"
 _AUTH_CODE_TTL = timedelta(minutes=10)
 _LINK_CODE_TTL = timedelta(minutes=10)
+# How long a user has to complete the redirect dance at the provider. Also the
+# TTL of the stored state, so abandoned flows don't accumulate in storage.
+_AUTH_REQUEST_TTL = timedelta(minutes=10)
 
 
 def _store_auth_request(context: Context, data: AuthRequest) -> None:
     context.secondary_storage.set(
         _AUTH_REQUEST_KEY.format(state=data.state),
         data.model_dump_json(),
+        ttl=int(_AUTH_REQUEST_TTL.total_seconds()),
     )
 
 
 def _load_auth_request(context: Context, state: str) -> AuthRequest | None:
-    raw = context.secondary_storage.get(_AUTH_REQUEST_KEY.format(state=state))
+    # pop, not get: the state is a single-use CSRF token, so consume it on the
+    # callback to close the replay window rather than waiting for the TTL.
+    raw = context.secondary_storage.pop(_AUTH_REQUEST_KEY.format(state=state))
     if raw is None:
         return None
     try:
@@ -1020,6 +1026,7 @@ def _complete_token(
     context.secondary_storage.set(
         _AUTH_CODE_KEY.format(code=code),
         grant_data.model_dump_json(),
+        ttl=int(_AUTH_CODE_TTL.total_seconds()),
     )
 
     query_params: dict[str, str] = {"code": code}
@@ -1062,6 +1069,7 @@ def _complete_link(
     context.secondary_storage.set(
         _LINK_CODE_KEY.format(code=code),
         data.model_dump_json(),
+        ttl=int(_LINK_CODE_TTL.total_seconds()),
     )
 
     return Response.redirect(
