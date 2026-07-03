@@ -1,3 +1,4 @@
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -64,21 +65,30 @@ class User:
 
 
 class MemoryStorage(SecondaryStorage):
-    def __init__(self):
-        self.data = {}
+    def __init__(self) -> None:
+        self.data: dict[str, tuple[str, float | None]] = {}
 
-    def set(self, key: str, value: str, ttl: int | None = None):
-        self.data[key] = value
+    def set(self, key: str, value: str, ttl: int | None = None) -> None:
+        expires_at = time.monotonic() + ttl if ttl is not None else None
+        self.data[key] = (value, expires_at)
 
     def get(self, key: str) -> str | None:
-        return self.data.get(key)
+        if (entry := self.data.get(key)) is None:
+            return None
+        value, expires_at = entry
+        if expires_at is not None and time.monotonic() >= expires_at:
+            del self.data[key]
+            return None
+        return value
 
-    def delete(self, key: str):
-        del self.data[key]
+    def delete(self, key: str) -> None:
+        self.data.pop(key, None)
 
     def pop(self, key: str) -> str | None:
         """Atomically get and delete a key. Returns None if key doesn't exist."""
-        return self.data.pop(key, None)
+        value = self.get(key)
+        self.data.pop(key, None)
+        return value
 
 
 @dataclass

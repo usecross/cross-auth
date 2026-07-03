@@ -41,11 +41,17 @@ class User(Protocol):
 
 
 class SecondaryStorage(Protocol):
-    def set(self, key: str, value: str, ttl: int | None = None): ...
+    def set(self, key: str, value: str, ttl: int | None = None) -> None:
+        """Store a value.
+
+        ``ttl`` is in seconds and must be enforced when provided; for some keys
+        it is the only thing that expires the stored value.
+        """
+        ...
 
     def get(self, key: str) -> str | None: ...
 
-    def delete(self, key: str): ...
+    def delete(self, key: str) -> None: ...
 
     def pop(self, key: str) -> str | None:
         """Atomically get and delete a key. Returns None if key doesn't exist."""

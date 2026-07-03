@@ -90,6 +90,29 @@ def test_session_callback_creates_session_and_redirects_to_next(
 
 
 @respx.mock
+def test_session_callback_consumes_state(
+    client: TestClient,
+    secondary_storage: SecondaryStorage,
+):
+    # The state is a single-use CSRF token: a successful callback consumes it,
+    # so replaying the same callback is rejected as an unknown state.
+    mock_token_and_userinfo(email="alice@example.com")
+    _, state = start_provider_auth(client, "/fake/login")
+
+    first = client.get(
+        "/fake/callback", params={"code": "provider-code", "state": state}
+    )
+    assert first.status_code == 302
+    assert secondary_storage.get(f"oauth:authorization_request:{state}") is None
+
+    replay = client.get(
+        "/fake/callback", params={"code": "provider-code", "state": state}
+    )
+    assert replay.status_code == 400
+    assert replay.json()["error"] == "server_error"
+
+
+@respx.mock
 def test_session_callback_rejects_missing_state(client: TestClient):
     mock_token_and_userinfo()
     resp = client.get("/fake/callback", params={"code": "provider-code"})
