@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Generator
+from typing import Any, Callable, Generator
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -63,6 +63,7 @@ def _build_auth(
     trusted_origins: list[str] | None = None,
     config: Config | None = None,
     default_next_url: str = "/",
+    normalize_email: Callable[[str], str] | None = None,
 ) -> CrossAuth:
     if config is None:
         config = {"session": {"cookies": {"auth": True}}}
@@ -75,6 +76,7 @@ def _build_auth(
         config=config,
         default_next_url=default_next_url,
         get_user_from_request=_bearer_user_resolver(accounts_storage),
+        normalize_email=normalize_email,
     )
 
 

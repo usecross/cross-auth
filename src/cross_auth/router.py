@@ -127,6 +127,7 @@ class AuthRouter(APIRouter):
         config: Config | None = None,
         default_next_url: str = "/",
         hooks: HookRegistry | None = None,
+        normalize_email: Callable[[str], str] | None = None,
     ):
         super().__init__()
 
@@ -144,6 +145,7 @@ class AuthRouter(APIRouter):
             config=config,
             default_next_url=default_next_url,
             hooks=hooks,
+            normalize_email=normalize_email,
         )
 
         provider_routes: list[Route] = []

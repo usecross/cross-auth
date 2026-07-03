@@ -12,6 +12,7 @@ from fastapi import Response as FastAPIResponse
 
 from ._config import Config
 from ._context import AccountsStorage, SecondaryStorage, User
+from ._email import normalize_email as _normalize_email
 from ._password import authenticate
 from ._request import make_http_request
 from ._session import (
@@ -89,12 +90,16 @@ class CrossAuth:
         base_url: str | None = None,
         config: Config | None = None,
         default_next_url: str = "/",
+        normalize_email: Callable[[str], str] | None = None,
     ):
         self._storage = storage
         self._accounts_storage = accounts_storage
         self._session_storage = session_storage
         self._session_config: SessionConfig | None = (config or {}).get("session")
         self._hooks = HookRegistry()
+        self._normalize_email = (
+            normalize_email if normalize_email is not None else _normalize_email
+        )
 
         self._get_user_from_request = (
             get_user_from_request or self._default_get_user_from_request
@@ -112,6 +117,7 @@ class CrossAuth:
             config=config,
             default_next_url=default_next_url,
             hooks=self._hooks,
+            normalize_email=normalize_email,
         )
 
     @property
@@ -251,7 +257,11 @@ class CrossAuth:
             BeforeAuthenticateEvent(email=email, password=password),
         )
 
-        user = authenticate(event.email, event.password, self._accounts_storage)
+        # Normalize at the lookup only: the hook events keep the email exactly
+        # as the client submitted it.
+        user = authenticate(
+            self._normalize_email(event.email), event.password, self._accounts_storage
+        )
 
         self._hooks.run_after(
             "authenticate",

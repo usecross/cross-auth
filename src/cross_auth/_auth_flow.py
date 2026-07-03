@@ -829,12 +829,15 @@ def resolve_or_create_user(
 
     user: User | None = None
     created_user = False
+    # Lookups and creation use the normalized (canonical) form; the raw
+    # provider email is still stored on the social account as provider_email.
+    email = context.normalize_email(validated.email)
 
     if provider.can_auto_link(context, validated.email_verified):
-        user = context.accounts_storage.find_user_by_email(validated.email)
+        user = context.accounts_storage.find_user_by_email(email)
 
     if not user:
-        existing_user = context.accounts_storage.find_user_by_email(validated.email)
+        existing_user = context.accounts_storage.find_user_by_email(email)
         if existing_user:
             raise CrossAuthException(
                 "account_not_linked",
@@ -857,7 +860,7 @@ def resolve_or_create_user(
 
         user = context.accounts_storage.create_user(
             user_info=user_info,
-            email=validated.email,
+            email=email,
             email_verified=validated.email_verified or False,
         )
         created_user = True
