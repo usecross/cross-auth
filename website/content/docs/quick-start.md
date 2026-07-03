@@ -13,41 +13,61 @@ application using Cross-Auth's `CrossAuth` class. The class provides high-level
 `login()` and `logout()` methods that handle session creation, deletion, and
 cookie management for you.
 
-## Step 1: Implement Storage
+## Step 1: Set Up Storage
 
-Cross-Auth uses protocol classes to abstract storage. For session login you need
-three implementations:
+Cross-Auth needs three storage backends:
 
-- **`AccountsStorage`** -- For looking up users by email or ID.
 - **`SecondaryStorage`** -- For transient OAuth data such as authorization
   codes, PKCE challenges, and link codes.
+- **`AccountsStorage`** -- For looking up and creating users.
 - **`SessionStorage`** -- For durable, revocable browser sessions and bearer
   tokens.
 
-```python
-from cross_auth import AccountsStorage, SecondaryStorage, SessionStorage
+The built-in adapters cover the common Redis + SQLModel setup. Install the
+extras:
 
-
-# Example: in-memory secondary storage (use Redis in production)
-class MemoryStorage:
-    def __init__(self):
-        self.data = {}
-
-    def set(self, key: str, value: str, ttl: int | None = None):
-        self.data[key] = value
-
-    def get(self, key: str) -> str | None:
-        return self.data.get(key)
-
-    def delete(self, key: str):
-        self.data.pop(key, None)
-
-    def pop(self, key: str) -> str | None:
-        return self.data.pop(key, None)
+```bash
+uv add 'cross-auth[redis,sqlmodel]'
 ```
 
-Implement `SessionStorage` with your database's normal row model. The
-[Storage](/docs/storage) guide shows the full protocol.
+Use `RedisStorage` for secondary storage, and the SQLModel adapters for your
+accounts and sessions. You own the models; the adapters implement the protocols.
+See the [Storage](/docs/storage) guide for the model definitions (`User`,
+`SocialAccount`, `UserSession`) used below.
+
+```python
+import redis
+from sqlmodel import Session, create_engine
+
+from cross_auth.storage.redis import RedisStorage
+from cross_auth.storage.sqlmodel import (
+    SQLModelAccountsStorage,
+    SQLModelSessionStorage,
+)
+
+# User, SocialAccount and UserSession are your own SQLModel models — see the
+# Storage guide for the definitions used here. The "+psycopg" driver needs a
+# database driver installed (e.g. `pip install psycopg`).
+engine = create_engine("postgresql+psycopg://localhost/myapp")
+
+secondary_storage = RedisStorage(redis.Redis.from_url("redis://localhost:6379"))
+
+
+accounts_storage = SQLModelAccountsStorage(
+    User, SocialAccount, session_factory=lambda: Session(engine)
+)
+session_storage = SQLModelSessionStorage(
+    UserSession, session_factory=lambda: Session(engine)
+)
+```
+
+Need invite checks, team creation, custom user construction, or post-signup
+telemetry? Subclass the accounts storage and override the signup hooks
+(`build_user`, `on_signup`, `after_signup`) — see the [Storage](/docs/storage)
+guide.
+
+Using a different ORM? The [Storage](/docs/storage) guide shows how to implement
+the protocols directly.
 
 ## Step 2: Create the CrossAuth Instance
 
@@ -62,6 +82,11 @@ auth = CrossAuth(
     trusted_origins=["https://myapp.com"],
 )
 ```
+
+Emails are trimmed and lowercased before every lookup and signup, so
+`Alice@Example.com` and `alice@example.com` are the same account. Pass a
+callable as `normalize_email=` to customize this (e.g. to also collapse Gmail
+dot-aliases).
 
 ## Step 3: Login
 
