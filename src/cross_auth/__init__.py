@@ -9,6 +9,7 @@ from cross_auth._storage import (
     SessionStatus,
     SessionStorage,
     User,
+    session_status,
 )
 from cross_auth._tokens import TokenIssueRequest, TokenIssuer
 from cross_auth.hooks import (
@@ -78,6 +79,7 @@ __all__ = [
     "SessionRecord",
     "SessionStatus",
     "SessionStorage",
+    "session_status",
     "TokenExchangeParams",
     "TokenIssueRequest",
     "TokenIssuer",
