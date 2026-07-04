@@ -83,7 +83,7 @@
 
     <div class="stack">
       <h2>Demo Accounts</h2>
-      <p>The backend seeds one in-memory password user at startup.</p>
+      <p>Storage runs on the built-in SQLModel adapters over in-memory SQLite; the backend seeds one password user at startup.</p>
       <ul>
         <li>Password login email: <code>{{ demo_email }}</code></li>
         <li>Password login password: <code>{{ demo_password }}</code></li>
@@ -95,7 +95,13 @@
         Enter <code>{{ demo_email }}</code> there to link the seeded demo user, or any other email to create a new in-memory local user.
       </p>
       <p>
-        Emails starting with <code>unverified</code> are treated as unverified by the mock.
+        Emails starting with <code>unverified</code> are treated as unverified by the mock
+        and rejected by <code>require_verified_email</code>. Emails at
+        <code>blocked.example</code> are rejected by a <code>before oauth.callback</code> hook;
+        emails at <code>banned.example</code> get past the hook but abort inside the signup
+        transaction (<code>on_signup</code>), rolling back the new user. Try
+        <code>demo+anything@example.com</code> to see the custom <code>normalize_email</code>
+        resolve it to the seeded demo user.
       </p>
     </div>
 

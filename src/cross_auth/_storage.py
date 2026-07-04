@@ -76,8 +76,14 @@ class SessionRecord(Protocol):
 
 
 class SessionListResult(Protocol):
-    records: Sequence[SessionRecord]
-    next_cursor: str | None
+    # Read-only properties so implementations can return concrete model types
+    # (e.g. list[MySessionRecord]) covariantly; a plain attribute would demand
+    # an invariant match that no concrete implementation can satisfy.
+    @property
+    def records(self) -> Sequence[SessionRecord]: ...
+
+    @property
+    def next_cursor(self) -> str | None: ...
 
 
 def session_status(

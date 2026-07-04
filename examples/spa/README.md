@@ -11,6 +11,8 @@ backend as if Cross-Auth were a standalone authentication server.
 - auth-code exchange at `/auth/token`
 - client-side storage of an opaque, revocable bearer token
 - authenticated API call to the backend with `Authorization: Bearer ...`
+- listing connected social accounts and disconnecting one with a bearer `DELETE`
+- signing out of every session at once via `/api/sessions/revoke-all`
 
 ## Run It
 

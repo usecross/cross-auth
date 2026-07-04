@@ -377,6 +377,67 @@ export default function App() {
     setError("")
   }
 
+  async function disconnectAccount(account) {
+    setError("")
+
+    try {
+      const response = await fetch(
+        `${authBaseUrl}/auth/${account.provider}/social-accounts/${account.id}`,
+        {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${accessToken}` },
+        },
+      )
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        // Surfaces the "no_alternative_login_method" guard message.
+        throw new Error(
+          body.error_description || body.error || "Failed to disconnect account",
+        )
+      }
+
+      await fetchTokenUser(accessToken)
+    } catch (disconnectError) {
+      setStatus("error")
+      setError(
+        disconnectError instanceof Error
+          ? disconnectError.message
+          : "Failed to disconnect account",
+      )
+    }
+  }
+
+  async function revokeAllSessions() {
+    if (!accessToken) {
+      return
+    }
+
+    setError("")
+
+    try {
+      const response = await fetch(`${authBaseUrl}/api/sessions/revoke-all`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      })
+
+      if (!response.ok) {
+        const body = await response.text()
+        throw new Error(body || "Failed to sign out everywhere")
+      }
+
+      // The bearer session this token belonged to is now revoked.
+      clearToken()
+    } catch (revokeError) {
+      setStatus("error")
+      setError(
+        revokeError instanceof Error
+          ? revokeError.message
+          : "Failed to sign out everywhere",
+      )
+    }
+  }
+
   return (
     <div className="shell">
       <header className="hero">
@@ -474,8 +535,35 @@ export default function App() {
             <button onClick={clearToken} disabled={!accessToken}>
               Clear token
             </button>
+            <button onClick={() => void revokeAllSessions()} disabled={!accessToken}>
+              Sign out everywhere
+            </button>
           </div>
         </section>
+
+        {tokenUser ? (
+          <section className="card stack full" data-testid="accounts-panel">
+            <h2>Accounts</h2>
+            {tokenUser.social_accounts?.length ? (
+              <ul>
+                {tokenUser.social_accounts.map((account) => (
+                  <li key={account.id}>
+                    <code>{account.provider}</code>
+                    {account.provider_email ? ` · ${account.provider_email}` : null}
+                    <span className={`pill ${account.is_login_method ? "ok" : ""}`}>
+                      {account.is_login_method ? "login method" : "linked only"}
+                    </span>
+                    <button onClick={() => void disconnectAccount(account)}>
+                      Disconnect
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p>No connected accounts yet.</p>
+            )}
+          </section>
+        ) : null}
 
         <section className="card stack full">
           <h2>Bearer Token</h2>

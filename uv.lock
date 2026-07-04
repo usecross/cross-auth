@@ -514,7 +514,7 @@ name = "cross-auth-fastapi-example"
 version = "0.1.0"
 source = { virtual = "examples/fastapi" }
 dependencies = [
-    { name = "cross-auth" },
+    { name = "cross-auth", extra = ["sqlmodel"] },
     { name = "fastapi", extra = ["standard"] },
     { name = "jinja2" },
     { name = "passlib", extra = ["bcrypt"] },
@@ -524,7 +524,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cross-auth", editable = "." },
+    { name = "cross-auth", extras = ["sqlmodel"], editable = "." },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.115.12" },
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "passlib", extras = ["bcrypt"], specifier = ">=1.7.4" },

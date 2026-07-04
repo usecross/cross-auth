@@ -21,9 +21,14 @@
           <a href="/sessions?status=expired" {% if current_status == "expired" %}aria-current="page"{% endif %}>Expired</a>
           <a href="/sessions?status=revoked" {% if current_status == "revoked" %}aria-current="page"{% endif %}>Revoked</a>
         </nav>
-        <form action="/sessions/revoke-other" method="post">
-          <button type="submit">Revoke other sessions</button>
-        </form>
+        <div class="actions">
+          <form action="/sessions/revoke-other" method="post">
+            <button type="submit">Revoke other sessions</button>
+          </form>
+          <form action="/sessions/revoke-all" method="post">
+            <button type="submit">Log out everywhere</button>
+          </form>
+        </div>
       </div>
 
       {% if sessions %}

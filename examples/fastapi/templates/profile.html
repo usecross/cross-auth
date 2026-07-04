@@ -30,7 +30,7 @@
         {% if user.social_accounts %}
           <ul>
             {% for account in user.social_accounts %}
-              <li>
+              <li data-social-account-id="{{ account.id }}">
                 <code>{{ account.provider }}</code>
                 · provider user <code>{{ account.provider_user_id }}</code>
                 {% if account.provider_email %}
@@ -41,9 +41,19 @@
                 {% else %}
                   <span class="pill warn">unverified or unknown</span>
                 {% endif %}
+                {% if account.is_login_method %}
+                  <span class="pill">login method</span>
+                {% endif %}
+                <button
+                  type="button"
+                  class="disconnect-account"
+                  data-provider="{{ account.provider }}"
+                  data-social-account-id="{{ account.id }}"
+                >Disconnect</button>
               </li>
             {% endfor %}
           </ul>
+          <p id="disconnect-status" class="notice" hidden></p>
         {% else %}
           <span class="pill">none linked</span>
         {% endif %}
@@ -54,7 +64,7 @@
         <a class="button" href="/api/me">/api/me</a>
         <a class="button" href="http://localhost:5173" target="_blank" rel="noreferrer">Open SPA demo</a>
         <button type="button" id="link-github-button">Link GitHub account</button>
-        <a class="button" href="/auth/github/login?next=/profile" id="connect-github-link">Connect GitHub (session)</a>
+        <a class="button" href="/auth/github/connect?next=/profile" id="connect-github-link">Connect GitHub (session)</a>
         <form action="/logout" method="post">
           <button type="submit">Log out</button>
         </form>
@@ -160,5 +170,31 @@
         setLinkStatus(error instanceof Error ? error.message : "Failed to initiate account linking")
       }
     })
+
+    const disconnectStatus = document.getElementById("disconnect-status")
+
+    for (const button of document.querySelectorAll(".disconnect-account")) {
+      button.addEventListener("click", async () => {
+        button.disabled = true
+        try {
+          // HTML forms can't issue DELETE; fetch carries the session cookie.
+          const response = await fetch(
+            `/auth/${button.dataset.provider}/social-accounts/${button.dataset.socialAccountId}`,
+            { method: "DELETE" },
+          )
+          if (!response.ok) {
+            const body = await response.json().catch(() => ({}))
+            // Surfaces the "no_alternative_login_method" guard message inline.
+            throw new Error(body.error_description || body.error || "Failed to disconnect account")
+          }
+          window.location.reload()
+        } catch (error) {
+          button.disabled = false
+          disconnectStatus.hidden = false
+          disconnectStatus.textContent =
+            error instanceof Error ? error.message : "Failed to disconnect account"
+        }
+      })
+    }
   </script>
 {% endblock %}

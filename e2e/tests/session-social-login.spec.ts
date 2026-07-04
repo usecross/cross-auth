@@ -16,5 +16,7 @@ test("session social login succeeds", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "demo@example.com" }),
   ).toBeVisible()
-  await expect(page.getByText("provider user")).toBeVisible()
+  // .first(): the shared demo user can hold several social accounts when
+  // parallel tests each connect GitHub to it.
+  await expect(page.getByText("provider user").first()).toBeVisible()
 })

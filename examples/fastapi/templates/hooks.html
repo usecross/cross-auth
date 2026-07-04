@@ -7,10 +7,10 @@
     <div class="eyebrow">Lifecycle Hooks</div>
     <h1>Hook registrations in this example</h1>
     <p class="lead">
-      The FastAPI example uses hooks to normalize local password login, audit
+      The FastAPI example uses hooks to trim the local password login email, audit
       successful lifecycle steps, add a response header after session creation,
-      require verified provider email on OAuth callback, and record SPA token
-      exchanges.
+      block a disallowed provider email domain on OAuth callback, and record SPA
+      token exchanges.
     </p>
   </div>
 
@@ -18,11 +18,11 @@
     <div class="stack">
       <h2>Registered Hooks</h2>
       <ul>
-        <li><code>before:authenticate</code> trims and lowercases the email before password verification.</li>
+        <li><code>before:authenticate</code> trims the email; lowercasing and +tag stripping run in normalize_email at lookup.</li>
         <li><code>after:authenticate</code> records whether password authentication succeeded.</li>
         <li><code>after:login</code> records session creation and adds <code>X-Cross-Auth-Hook: login</code>.</li>
         <li><code>after:logout</code> records the cleared session ID.</li>
-        <li><code>before:oauth.callback</code> blocks OAuth users with unverified provider email.</li>
+        <li><code>before:oauth.callback</code> blocks provider emails from a disallowed domain (unverified emails are rejected by the require_verified_email flag).</li>
         <li><code>after:oauth.callback</code> records social session and SPA authorization callbacks.</li>
         <li><code>after:token.authorization_code</code> records SPA token exchanges.</li>
       </ul>
