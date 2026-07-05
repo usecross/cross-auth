@@ -44,8 +44,8 @@ queue, or observability code.
   mutable event fields documented below.
 - Use `after` hooks for post-success work such as audit logs, metrics, welcome
   emails, or provisioning records.
-- Session hooks (`authenticate`, `login`, `logout`) are synchronous. OAuth and
-  token hooks may be synchronous or asynchronous.
+- Session hooks (`authenticate`, `login`, `logout`, `session.issue`) are
+  synchronous. OAuth and token hooks may be synchronous or asynchronous.
 - Hook events use framework-neutral `cross_web` request and response objects at
   the hook boundary.
 - Do not enforce security policy in an `after` hook. If an operation should be
@@ -62,6 +62,7 @@ Use this as a quick guide when deciding where custom logic belongs.
 | `authenticate`             | Customize password-based sign-in checks before a session is created          | Normalize email addresses, block specific accounts, enforce tenant-specific password login rules            | Audit successful and failed password authentication attempts                             |
 | `login`                    | Control browser session creation and the HTTP response used for session auth | Block session login for service users, remap temporary IDs, add request-scoped policy checks                | Add headers or cookies, publish "user logged in" telemetry                               |
 | `logout`                   | Control session deletion and post-logout side effects                        | Require an active session, prevent logout in special flows, capture session context before deletion         | Audit logout activity, revoke related application state, trigger notifications           |
+| `session.issue`            | Control programmatic bearer-token issuance (`issue_session_token`)           | Block issuance for suspended users, clamp requested lifetimes, enforce per-client policy                    | Audit issued sessions, emit token-issuance telemetry                                     |
 | `oauth.authorize`          | Shape the outbound OAuth authorization request                               | Attach tenant-specific login hints, require extra app-level context, normalize provider-facing request data | Track provider redirects, record generated state values for observability                |
 | `oauth.callback`           | Inspect provider user data before Cross-Auth creates or finds a user         | Enforce email domain restrictions, reject unverified emails, apply provider-specific access rules           | Provision internal profiles, send first-login events, audit newly created users          |
 | `oauth.link`               | Control whether an already-authenticated user may start account linking      | Restrict linking by role, plan, tenant, or email domain                                                     | Track linking attempts, log provider selection, store link-start telemetry               |
@@ -124,6 +125,33 @@ def add_login_header(event: AfterLoginEvent) -> None:
         "X-Session-User": event.user_id,
     }
     metrics.increment("session.login.created")
+```
+
+### `session.issue`
+
+Runs around `issue_session_token`, so bearer tokens minted programmatically (a
+GraphQL sign-in mutation, a CLI) go through the same policy surface as cookie
+logins and `/token` grants. The `before` event carries `user_id`, `max_age`, and
+`metadata` and can be replaced to rewrite them; the `after` event carries the
+created session record — never the raw token.
+
+```python
+from dataclasses import replace
+
+from cross_auth.hooks import AfterSessionIssueEvent, BeforeSessionIssueEvent
+
+
+@auth.before("session.issue")
+def clamp_mobile_lifetime(event: BeforeSessionIssueEvent):
+    if event.user_id in suspended_users:
+        raise CrossAuthException("access_denied")
+    if event.max_age is not None and event.max_age > MAX_MOBILE_TTL:
+        return replace(event, max_age=MAX_MOBILE_TTL)
+
+
+@auth.after("session.issue")
+def audit_issued_session(event: AfterSessionIssueEvent) -> None:
+    audit_log.record("session.issued", session_id=event.session_record.id)
 ```
 
 ### `logout`

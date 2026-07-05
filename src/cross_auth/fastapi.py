@@ -42,9 +42,11 @@ from .hooks import (
     AfterAuthenticateEvent,
     AfterLoginEvent,
     AfterLogoutEvent,
+    AfterSessionIssueEvent,
     BeforeAuthenticateEvent,
     BeforeLoginEvent,
     BeforeLogoutEvent,
+    BeforeSessionIssueEvent,
     HookRegistry,
 )
 from .hooks._types import (
@@ -56,6 +58,7 @@ from .hooks._types import (
     AfterOAuthDisconnectHandler,
     AfterOAuthFinalizeLinkHandler,
     AfterOAuthLinkHandler,
+    AfterSessionIssueHandler,
     AfterTokenAuthorizationCodeHandler,
     AfterTokenPasswordHandler,
     BeforeAuthenticateHandler,
@@ -66,6 +69,7 @@ from .hooks._types import (
     BeforeOAuthDisconnectHandler,
     BeforeOAuthFinalizeLinkHandler,
     BeforeOAuthLinkHandler,
+    BeforeSessionIssueHandler,
     BeforeTokenAuthorizationCodeHandler,
     BeforeTokenPasswordHandler,
     HookEventName,
@@ -301,6 +305,11 @@ class CrossAuth:
 
     @overload
     def before(
+        self, event: Literal["session.issue"]
+    ) -> Callable[[BeforeSessionIssueHandler], BeforeSessionIssueHandler]: ...
+
+    @overload
+    def before(
         self, event: Literal["logout"]
     ) -> Callable[[BeforeLogoutHandler], BeforeLogoutHandler]: ...
 
@@ -359,6 +368,11 @@ class CrossAuth:
     def after(
         self, event: Literal["login"]
     ) -> Callable[[AfterLoginHandler], AfterLoginHandler]: ...
+
+    @overload
+    def after(
+        self, event: Literal["session.issue"]
+    ) -> Callable[[AfterSessionIssueHandler], AfterSessionIssueHandler]: ...
 
     @overload
     def after(
@@ -456,6 +470,45 @@ class CrossAuth:
 
         for cookie in source.cookies or []:
             self._set_cookie_on_response(target, cookie)
+
+    def issue_session_token(
+        self,
+        user_id: str,
+        *,
+        max_age: int | None = None,
+        metadata: SessionMetadata | None = None,
+    ) -> tuple[str, SessionRecord]:
+        """Create a session and return its bearer token with the record.
+
+        For clients that authenticate outside the built-in ``/token`` endpoint
+        and outside a browser — a GraphQL sign-in mutation for a native app, a
+        CLI. The returned token is the same revocable opaque token ``/token``
+        issues: clients send it as ``Authorization: Bearer ...`` and
+        ``get_current_user`` resolves it. ``max_age`` overrides the configured
+        session lifetime (e.g. longer-lived mobile sessions than browser
+        cookies). No cookie is set; the ``session.issue`` hooks run around the
+        creation, and the raw token is never exposed to them.
+        """
+        session_storage = self._require_session_storage()
+        event = self._hooks.run_before(
+            "session.issue",
+            BeforeSessionIssueEvent(
+                user_id=user_id, max_age=max_age, metadata=metadata
+            ),
+        )
+        resolved = resolve_config(self._session_config)
+        session_token, record = create_session(
+            event.user_id,
+            session_storage,
+            max_age=event.max_age if event.max_age is not None else resolved["max_age"],
+            metadata=event.metadata,
+            token_hasher=resolved["token_hasher"],
+        )
+        self._hooks.run_after(
+            "session.issue",
+            AfterSessionIssueEvent(user_id=event.user_id, session_record=record),
+        )
+        return session_token, record
 
     def login(
         self,
