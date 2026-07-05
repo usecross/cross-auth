@@ -25,7 +25,7 @@ from cross_auth._session import (
     hash_session_token,
 )
 from cross_auth._storage import AccountsStorage, SecondaryStorage
-from cross_auth.fastapi import CrossAuth
+from cross_auth.fastapi import CrossAuth, SessionCookieMiddleware
 
 from .conftest import MemorySessionStorage
 
@@ -427,6 +427,7 @@ def test_token_endpoint_errors_without_token_issuer_or_session_storage(
 
 def _sliding_app(auth: CrossAuth) -> FastAPI:
     app = FastAPI()
+    app.add_middleware(SessionCookieMiddleware)
 
     @app.get("/me")
     def me(user: Any = Depends(auth.get_current_user)) -> dict[str, Any]:
@@ -500,3 +501,127 @@ def test_bearer_session_refreshes_without_setting_cookie(
     assert resp.json() == {"user": "test"}
     assert "set-cookie" not in resp.headers
     assert record.expires_at == NOW + timedelta(seconds=80)
+
+
+@time_machine.travel(NOW, tick=False)
+def test_direct_call_rolls_cookie_through_middleware_on_direct_response(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: MemorySessionStorage,
+):
+    """The two cases a dependency-injected Response can never serve: a direct
+    ``get_current_user(request)`` call, and a handler returning a Response
+    instance (FastAPI drops the temporal response's headers then). The
+    middleware delivers the rolled cookie for both at once."""
+    auth = _make_auth(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=session_storage,
+        config={
+            "session": {
+                "max_age": 60,
+                "update_age": 10,
+                "cookies": {"secure": False},
+            }
+        },
+    )
+    app = FastAPI()
+    app.add_middleware(SessionCookieMiddleware)
+
+    @app.get("/inline")
+    def inline(request: Request) -> JSONResponse:
+        user = auth.get_current_user(request)
+        return JSONResponse({"user": None if user is None else user.id})
+
+    token, record = create_session("test", session_storage, max_age=60)
+    client = TestClient(app)
+
+    with time_machine.travel(NOW + timedelta(seconds=20), tick=False):
+        resp = client.get("/inline", cookies={"session_id": token})
+
+    assert resp.json() == {"user": "test"}
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert "session_id=" in set_cookie
+    assert "Max-Age=60" in set_cookie
+    assert record.expires_at == NOW + timedelta(seconds=80)
+
+
+@time_machine.travel(NOW, tick=False)
+def test_refresh_without_middleware_warns_and_skips_the_cookie(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: MemorySessionStorage,
+):
+    auth = _make_auth(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=session_storage,
+        config={
+            "session": {
+                "max_age": 60,
+                "update_age": 10,
+                "cookies": {"secure": False},
+            }
+        },
+    )
+    app = FastAPI()  # no SessionCookieMiddleware
+
+    @app.get("/me")
+    def me(request: Request) -> dict[str, Any]:
+        user = auth.get_current_user(request)
+        return {"user": None if user is None else user.id}
+
+    token, record = create_session("test", session_storage, max_age=60)
+    client = TestClient(app)
+
+    with time_machine.travel(NOW + timedelta(seconds=20), tick=False):
+        with pytest.warns(UserWarning, match="SessionCookieMiddleware"):
+            resp = client.get("/me", cookies={"session_id": token})
+
+    # The stored record still slid; only the browser cookie was left behind.
+    assert resp.json() == {"user": "test"}
+    assert "set-cookie" not in resp.headers
+    assert record.expires_at == NOW + timedelta(seconds=80)
+
+
+@time_machine.travel(NOW, tick=False)
+def test_logout_clear_cookie_wins_over_queued_roll(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: MemorySessionStorage,
+):
+    """Resolving the user (queues a roll) and then logging out in the same
+    request must not resurrect the session: the handler's clearing cookie
+    wins and the middleware drops the rolled copy."""
+    auth = _make_auth(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=session_storage,
+        config={
+            "session": {
+                "max_age": 60,
+                "update_age": 10,
+                "cookies": {"secure": False},
+            }
+        },
+    )
+    app = FastAPI()
+    app.add_middleware(SessionCookieMiddleware)
+
+    @app.post("/logout")
+    def logout(request: Request) -> JSONResponse:
+        auth.get_current_user(request)  # e.g. shared context resolving viewer
+        response = JSONResponse({"ok": True})
+        auth.logout(request, response=response)
+        return response
+
+    token, _ = create_session("test", session_storage, max_age=60)
+    client = TestClient(app)
+
+    with time_machine.travel(NOW + timedelta(seconds=20), tick=False):
+        resp = client.post("/logout", cookies={"session_id": token})
+
+    cookies = resp.headers.get_list("set-cookie")
+    assert len(cookies) == 1
+    assert 'session_id=""' in cookies[0]
+    assert "Max-Age=0" in cookies[0]

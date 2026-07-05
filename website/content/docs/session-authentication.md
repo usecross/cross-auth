@@ -59,7 +59,9 @@ auth.logout(request, response=response)
 
 ### Get Current User
 
-Use `get_current_user` or `require_current_user` as FastAPI dependencies:
+`get_current_user` and `require_current_user` take only the request, so they
+work as FastAPI dependencies and as plain calls — in shared-context builders,
+GraphQL resolvers, or template helpers — with a single API:
 
 ```python
 from typing import Annotated
@@ -75,7 +77,31 @@ def me(user: Annotated[User | None, Depends(auth.get_current_user)]): ...
 def protected(
     user: Annotated[User, Depends(auth.require_current_user)],
 ): ...  # raises 401 if not logged in
+
+
+def build_context(request: Request) -> dict:  # outside dependency injection
+    return {"user": auth.get_current_user(request)}
 ```
+
+### Sliding Sessions
+
+With `update_age` configured, reads refresh the stored session record — and the
+browser's cookie must be re-sent so its `Max-Age` slides too. Install
+`SessionCookieMiddleware` once and rolled cookies are delivered on whatever
+response the handler produces, including responses returned directly (redirects,
+streaming, server-rendered pages):
+
+```python
+from cross_auth.fastapi import SessionCookieMiddleware
+
+app.add_middleware(SessionCookieMiddleware)
+```
+
+Without `update_age` the middleware is inert and can be omitted. If a session
+refreshes and the middleware is missing, Cross-Auth emits a warning instead of
+silently letting the browser cookie lapse. A cookie the handler already set
+itself — `logout()` clearing it, `login()` replacing it — always wins over the
+rolled copy.
 
 `session_storage` is optional when constructing `CrossAuth`, but session-backed
 features require it. `login()`, `logout()`, and session-management methods raise

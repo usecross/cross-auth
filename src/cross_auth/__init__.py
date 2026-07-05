@@ -9,6 +9,7 @@ from cross_auth._storage import (
     SessionRecord,
     SessionStatus,
     SessionStorage,
+    SocialAccount,
     User,
     session_status,
 )
@@ -80,6 +81,7 @@ __all__ = [
     "SessionRecord",
     "SessionStatus",
     "SessionStorage",
+    "SocialAccount",
     "normalize_email",
     "session_status",
     "TokenExchangeParams",

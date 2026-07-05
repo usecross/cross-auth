@@ -17,21 +17,48 @@ SessionListOrder = Literal[
 
 
 class SocialAccount(Protocol):
-    id: Any
-    user_id: Any
-    provider_user_id: str
-    provider: str
-    provider_email: str | None
-    provider_email_verified: bool | None
+    # Data members on this and the other record protocols are read-only
+    # properties: core only reads them, and a plain protocol attribute would
+    # demand an exact invariant match where a property lets concrete models
+    # narrow the type (e.g. `provider_email_verified: bool`).
+    @property
+    def id(self) -> Any: ...
+
+    @property
+    def user_id(self) -> Any: ...
+
+    @property
+    def provider_user_id(self) -> str: ...
+
+    @property
+    def provider(self) -> str: ...
+
+    @property
+    def provider_email(self) -> str | None: ...
+
+    @property
+    def provider_email_verified(self) -> bool | None: ...
+
     # TODO: Add endpoint to toggle is_login_method for existing social accounts
-    is_login_method: bool
+    @property
+    def is_login_method(self) -> bool: ...
 
 
 class User(Protocol):
-    id: Any
-    email: str
-    email_verified: bool
-    hashed_password: str | None
+    @property
+    def id(self) -> Any: ...
+
+    # Nullable: apps may hold users without an email (created before email
+    # capture, or via providers that withhold it). Core never reads this —
+    # email lookups go through ``find_user_by_email``.
+    @property
+    def email(self) -> str | None: ...
+
+    @property
+    def email_verified(self) -> bool: ...
+
+    @property
+    def hashed_password(self) -> str | None: ...
 
     @property
     def has_usable_password(self) -> bool: ...
@@ -59,17 +86,38 @@ class SecondaryStorage(Protocol):
 
 
 class SessionRecord(Protocol):
-    id: Any
-    user_id: Any
-    created_at: AwareDatetime
-    updated_at: AwareDatetime
-    expires_at: AwareDatetime
-    last_active_at: AwareDatetime | None
-    revoked_at: AwareDatetime | None
-    client_id: str | None
-    client_name: str | None
-    user_agent: str | None
-    ip: str | None
+    @property
+    def id(self) -> Any: ...
+
+    @property
+    def user_id(self) -> Any: ...
+
+    @property
+    def created_at(self) -> AwareDatetime: ...
+
+    @property
+    def updated_at(self) -> AwareDatetime: ...
+
+    @property
+    def expires_at(self) -> AwareDatetime: ...
+
+    @property
+    def last_active_at(self) -> AwareDatetime | None: ...
+
+    @property
+    def revoked_at(self) -> AwareDatetime | None: ...
+
+    @property
+    def client_id(self) -> str | None: ...
+
+    @property
+    def client_name(self) -> str | None: ...
+
+    @property
+    def user_agent(self) -> str | None: ...
+
+    @property
+    def ip(self) -> str | None: ...
 
     @property
     def status(self) -> SessionStatus: ...

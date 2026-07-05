@@ -334,7 +334,7 @@ def test_oauth_callback_hooks(
         session_storage=session_storage,
         providers=[oauth_provider],
     )
-    seen: dict[str, str] = {}
+    seen: dict[str, str | None] = {}
 
     secondary_storage.set(
         "oauth:authorization_request:test_state",
@@ -420,7 +420,7 @@ def test_oauth_callback_hooks_run_for_session_flow(
         session_storage=session_storage,
         providers=[oauth_provider],
     )
-    seen: dict[str, str] = {}
+    seen: dict[str, str | None] = {}
 
     @auth.before("oauth.callback")
     def rewrite_session_email(

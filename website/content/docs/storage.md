@@ -370,12 +370,16 @@ implementations can compare exactly against the stored (lowercase) value. Pass
 `normalize_email=` to `CrossAuth` to customize this — e.g. to also collapse
 Gmail dot-aliases.
 
-Your user model must expose these attributes:
+Your user model must expose these attributes. Cross-Auth only ever reads them
+(the protocols declare read-only properties), so your model may narrow an
+optional type — a non-nullable `provider_email_verified: bool` on a social
+account, for example — and plain columns, properties, or ORM attributes all
+qualify:
 
 ```python
 class User(Protocol):
     id: Any
-    email: str
+    email: str | None
     email_verified: bool
     hashed_password: str | None
 

@@ -1,7 +1,7 @@
 from typing import Annotated
 
 import pytest
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
@@ -79,9 +79,8 @@ def test_get_current_session_requires_session_storage(
         trusted_origins=[],
     )
     request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
-    response = Response()
     with pytest.raises(RuntimeError, match="session_storage is required"):
-        auth.get_current_session(request, response)
+        auth.get_current_session(request)
 
 
 def _make_auth(
@@ -225,8 +224,8 @@ def test_auto_wired_get_user_from_request(
     app.include_router(auth.router)
 
     @app.get("/check")
-    async def check(request: Request, response: Response):
-        user = auth.get_current_user(request, response)
+    async def check(request: Request):
+        user = auth.get_current_user(request)
         if user is None:
             return {"user": None}
         return {"user": user.id}
