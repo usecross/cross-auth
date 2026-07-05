@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 
 import cross_auth
 from cross_web import HTTPRequest
-from fastapi import Depends, FastAPI, Form, Request, Response
+from fastapi import Depends, FastAPI, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -25,7 +25,7 @@ from cross_auth import (
 from cross_auth import User as UserProtocol
 from cross_auth._session import get_current_user as get_session_user
 from cross_auth.exceptions import CrossAuthException
-from cross_auth.fastapi import CrossAuth
+from cross_auth.fastapi import CrossAuth, SessionCookieMiddleware
 from cross_auth.hooks import (
     AfterAuthenticateEvent,
     AfterLoginEvent,
@@ -508,6 +508,9 @@ def audit_token_exchange(event: AfterTokenAuthorizationCodeEvent) -> None:
 
 
 app = FastAPI(title="Cross-Auth FastAPI Hybrid Example")
+# Sessions use update_age (sliding expiry), so rolled cookies need a way onto
+# outgoing responses — including the RedirectResponses these handlers return.
+app.add_middleware(SessionCookieMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=SPA_CORS_ORIGINS,
@@ -586,7 +589,6 @@ def profile(
 @app.get("/sessions")
 def sessions_page(
     request: Request,
-    response: Response,
     user: Annotated[UserProtocol | None, Depends(auth.get_current_user)],
     status: SessionStatus | None = None,
     cursor: str | None = None,
@@ -594,7 +596,7 @@ def sessions_page(
     if user is None:
         return RedirectResponse(url="/", status_code=303)
 
-    current_session = auth.get_current_session(request, response)
+    current_session = auth.get_current_session(request)
     result = auth.list_sessions(
         str(user.id),
         status=status,
@@ -644,9 +646,8 @@ def revoke_session_form(
 def revoke_other_sessions_form(
     request: Request,
     user: Annotated[UserProtocol, Depends(auth.require_current_user)],
-    response: Response,
 ) -> RedirectResponse:
-    current_session = auth.get_current_session(request, response)
+    current_session = auth.get_current_session(request)
     if current_session is not None:
         auth.revoke_other_sessions(
             user_id=str(user.id),
@@ -696,12 +697,11 @@ def api_me_session(
 @app.get("/api/sessions")
 def api_sessions(
     request: Request,
-    response: Response,
     user: Annotated[UserProtocol, Depends(auth.require_current_user)],
     status: SessionStatus | None = None,
     cursor: str | None = None,
 ) -> JSONResponse:
-    current_session = auth.get_current_session(request, response)
+    current_session = auth.get_current_session(request)
     result = auth.list_sessions(
         str(user.id),
         status=status,
@@ -737,9 +737,8 @@ def api_revoke_session(
 def api_revoke_other_sessions(
     request: Request,
     user: Annotated[UserProtocol, Depends(auth.require_current_user)],
-    response: Response,
 ) -> JSONResponse:
-    current_session = auth.get_current_session(request, response)
+    current_session = auth.get_current_session(request)
     revoked = 0
     if current_session is not None:
         revoked = auth.revoke_other_sessions(

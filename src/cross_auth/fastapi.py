@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, Literal, overload
@@ -9,6 +10,7 @@ from cross_web import Response as CrossWebResponse
 from fastapi import HTTPException
 from fastapi import Request as FastAPIRequest
 from fastapi import Response as FastAPIResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ._config import Config
 from ._context import AccountsStorage, SecondaryStorage, User
@@ -16,7 +18,6 @@ from ._email import normalize_email as _normalize_email
 from ._password import authenticate
 from ._request import make_http_request
 from ._session import (
-    ResolvedSession,
     SessionConfig,
     SessionMetadata,
     create_session,
@@ -74,6 +75,12 @@ from .social_providers.oauth import OAuth2Provider
 
 # TODO: if we add more framework integrations, extract shared storage/session
 # logic into a private _BaseCrossAuth class that framework classes inherit from.
+
+# request.state slots shared between CrossAuth and SessionCookieMiddleware. The
+# middleware marks the sink on the way in; session reads queue rolled cookies
+# as they resolve; the middleware serializes them onto the outgoing response.
+_COOKIE_SINK_STATE_KEY = "cross_auth_cookie_sink"
+_ROLLED_COOKIES_STATE_KEY = "cross_auth_rolled_cookies"
 
 
 class CrossAuth:
@@ -143,17 +150,21 @@ class CrossAuth:
         async_request = AsyncHTTPRequest.from_fastapi(request)
         return self._get_user_from_request(make_http_request(async_request))
 
-    def get_current_user(
-        self, request: FastAPIRequest, response: FastAPIResponse
-    ) -> User | None:
-        # Roll the cookie before resolving the user so the refresh is captured
-        # here; the resolver then re-reads the (already refreshed) record.
-        self._roll_session_cookie(request, response)
+    def get_current_user(self, request: FastAPIRequest) -> User | None:
+        """Resolve the current user from the request's session.
+
+        Works both as a FastAPI dependency and called directly (shared-context
+        builders, GraphQL resolvers, template helpers). With sliding sessions
+        (``update_age``) the stored record refreshes on read; install
+        ``SessionCookieMiddleware`` so the rolled cookie also reaches the
+        browser.
+        """
+        # Refresh (and queue the rolled cookie) before resolving the user so
+        # the resolver re-reads the already-refreshed record.
+        self._queue_session_refresh(request)
         return self._resolve_user(request)
 
-    def get_current_session(
-        self, request: FastAPIRequest, response: FastAPIResponse
-    ) -> SessionRecord | None:
+    def get_current_session(self, request: FastAPIRequest) -> SessionRecord | None:
         session_storage = self._require_session_storage()
         async_request = AsyncHTTPRequest.from_fastapi(request)
         resolution = resolve_current_session(
@@ -163,36 +174,24 @@ class CrossAuth:
         )
         if resolution is None:
             return None
-        self._roll_cookie_for(resolution, response)
+        # Sliding sessions extend the stored expires_at on read; without
+        # re-sending the cookie the browser would still drop it at the
+        # original Max-Age. Bearer tokens have no cookie to roll.
+        if resolution.source == "cookie" and resolution.refreshed:
+            self._queue_rolled_cookie(
+                request, make_session_cookie(resolution.token, self._session_config)
+            )
         return resolution.record
 
-    def require_current_user(
-        self, request: FastAPIRequest, response: FastAPIResponse
-    ) -> User:
-        self._roll_session_cookie(request, response)
-        user = self._resolve_user(request)
+    def require_current_user(self, request: FastAPIRequest) -> User:
+        user = self.get_current_user(request)
         if user is None:
             raise HTTPException(status_code=401)
         return user
 
-    def _roll_cookie_for(
-        self, resolution: ResolvedSession, response: FastAPIResponse
-    ) -> None:
-        """Reissue Set-Cookie when a cookie-backed session was just refreshed.
-
-        Sliding sessions (``update_age``) extend the stored ``expires_at`` on
-        read; without re-sending the cookie the browser would still drop it at
-        the original Max-Age. Bearer tokens have no cookie to roll.
-        """
-        if resolution.source == "cookie" and resolution.refreshed:
-            cookie = make_session_cookie(resolution.token, self._session_config)
-            self._set_cookie_on_response(response, cookie)
-
-    def _roll_session_cookie(
-        self, request: FastAPIRequest, response: FastAPIResponse | None
-    ) -> None:
-        # No response to write to, no store, or no sliding window -> nothing to do.
-        if response is None or self._session_storage is None:
+    def _queue_session_refresh(self, request: FastAPIRequest) -> None:
+        # No store or no sliding window -> reads never refresh anything.
+        if self._session_storage is None:
             return
         if resolve_config(self._session_config).get("update_age") is None:
             return
@@ -202,8 +201,28 @@ class CrossAuth:
             self._session_storage,
             self._session_config,
         )
-        if resolution is not None:
-            self._roll_cookie_for(resolution, response)
+        if (
+            resolution is not None
+            and resolution.source == "cookie"
+            and resolution.refreshed
+        ):
+            self._queue_rolled_cookie(
+                request, make_session_cookie(resolution.token, self._session_config)
+            )
+
+    def _queue_rolled_cookie(self, request: FastAPIRequest, cookie: Cookie) -> None:
+        state = request.scope.setdefault("state", {})
+        if _COOKIE_SINK_STATE_KEY not in state:
+            warnings.warn(
+                "A sliding session refreshed but SessionCookieMiddleware is "
+                "not installed, so the rolled session cookie cannot reach the "
+                "browser and the user will be logged out at the cookie's "
+                "original Max-Age. Add "
+                "`app.add_middleware(SessionCookieMiddleware)`.",
+                stacklevel=2,
+            )
+            return
+        state.setdefault(_ROLLED_COOKIES_STATE_KEY, []).append(cookie)
 
     def list_sessions(
         self,
@@ -515,3 +534,65 @@ class CrossAuth:
             ),
         )
         self._apply_hook_response(event.response, response)
+
+
+def _serialize_cookie(cookie: Cookie) -> bytes:
+    # Reuse starlette's Set-Cookie serialization instead of hand-rolling it.
+    scratch = FastAPIResponse()
+    scratch.set_cookie(
+        key=cookie.name,
+        value=cookie.value,
+        max_age=cookie.max_age,
+        path=cookie.path or "/",
+        domain=cookie.domain,
+        secure=cookie.secure,
+        httponly=cookie.httponly,
+        samesite=cookie.samesite,
+    )
+    return scratch.headers["set-cookie"].encode("latin-1")
+
+
+class SessionCookieMiddleware:
+    """Delivers rolled sliding-session cookies on the outgoing response.
+
+    Install once when sessions are configured with ``update_age``::
+
+        app.add_middleware(SessionCookieMiddleware)
+
+    Session reads that refresh a cookie-backed session queue the rolled cookie
+    on the request state; this middleware serializes it onto whatever response
+    the handler produces — including responses returned directly (redirects,
+    streaming, server-rendered pages), which a dependency-injected ``Response``
+    can never reach. A cookie the handler already set itself (``logout``
+    clearing it, ``login`` replacing it) wins: the rolled copy is dropped
+    instead of fighting it. Without ``update_age`` reads never roll a cookie
+    and the middleware is inert.
+    """
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        state = scope.setdefault("state", {})
+        state[_COOKIE_SINK_STATE_KEY] = True
+
+        async def send_with_rolled_cookies(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                for cookie in state.get(_ROLLED_COOKIES_STATE_KEY, []):
+                    _append_unless_cookie_set(message, cookie)
+            await send(message)
+
+        await self.app(scope, receive, send_with_rolled_cookies)
+
+
+def _append_unless_cookie_set(message: Message, cookie: Cookie) -> None:
+    headers: list[tuple[bytes, bytes]] = message.setdefault("headers", [])
+    prefix = f"{cookie.name}=".encode("latin-1")
+    for name, value in headers:
+        if name.lower() == b"set-cookie" and value.startswith(prefix):
+            return
+    headers.append((b"set-cookie", _serialize_cookie(cookie)))
