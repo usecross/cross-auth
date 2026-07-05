@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest import mock
@@ -25,7 +26,9 @@ from cross_auth._session import (
     hash_session_token,
 )
 from cross_auth._storage import AccountsStorage, SecondaryStorage
+from cross_auth.exceptions import CrossAuthException
 from cross_auth.fastapi import CrossAuth, SessionCookieMiddleware
+from cross_auth.hooks import AfterSessionIssueEvent, BeforeSessionIssueEvent
 
 from .conftest import MemorySessionStorage
 
@@ -625,3 +628,84 @@ def test_logout_clear_cookie_wins_over_queued_roll(
     assert len(cookies) == 1
     assert 'session_id=""' in cookies[0]
     assert "Max-Age=0" in cookies[0]
+
+
+@time_machine.travel(NOW, tick=False)
+def test_issue_session_token_creates_revocable_bearer_session(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: MemorySessionStorage,
+):
+    """A programmatically issued token authenticates as a bearer through the
+    same read path as cookies, carries its own max_age and metadata, and dies
+    with revoke_session."""
+    auth = _make_auth(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=session_storage,
+        config={"session": {"max_age": 60, "cookies": {"secure": False}}},
+    )
+    app = FastAPI()
+
+    @app.get("/me")
+    def me(user: Any = Depends(auth.get_current_user)) -> dict[str, Any]:
+        return {"user": None if user is None else user.id}
+
+    token, record = auth.issue_session_token(
+        "test",
+        max_age=3600,  # longer-lived than the configured cookie sessions
+        metadata={"client_name": "ios"},
+    )
+    assert record.expires_at == NOW + timedelta(seconds=3600)
+    assert record.client_name == "ios"
+
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    resp = client.get("/me", headers=headers)
+    assert resp.json() == {"user": "test"}
+
+    auth.revoke_session(record.id, user_id="test")
+
+    resp = client.get("/me", headers=headers)
+    assert resp.json() == {"user": None}
+
+
+@time_machine.travel(NOW, tick=False)
+def test_session_issue_hooks_can_rewrite_and_block(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: MemorySessionStorage,
+):
+    """session.issue hooks close the policy gap between the three ways a
+    session comes to exist: before-hooks can rewrite the request (clamp
+    max_age) or block it entirely, and after-hooks see the created record but
+    never the raw token."""
+    auth = _make_auth(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=session_storage,
+        config={"session": {"max_age": 60, "cookies": {"secure": False}}},
+    )
+    audited: list[Any] = []
+
+    @auth.before("session.issue")
+    def clamp_and_screen(event: BeforeSessionIssueEvent):
+        if event.user_id == "suspended":
+            raise CrossAuthException("access_denied")
+        if event.max_age is not None and event.max_age > 3600:
+            return replace(event, max_age=3600)
+        return None
+
+    @auth.after("session.issue")
+    def audit(event: AfterSessionIssueEvent) -> None:
+        audited.append(event.session_record)
+
+    token, record = auth.issue_session_token("test", max_age=86400)
+    assert record.expires_at == NOW + timedelta(seconds=3600)  # clamped
+    assert audited == [record]
+
+    with pytest.raises(CrossAuthException):
+        auth.issue_session_token("suspended")
+    assert audited == [record]  # nothing created, nothing audited
+    assert len(session_storage.records) == 1

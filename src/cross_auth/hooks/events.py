@@ -12,6 +12,7 @@ if TYPE_CHECKING:
         AuthorizationCodeGrantRequest,
         PasswordGrantRequest,
     )
+    from .._session import SessionMetadata
     from .._storage import SessionRecord
     from .._storage import SocialAccount, User
     from ..models.oauth_token_response import TokenResponse
@@ -47,6 +48,21 @@ class AfterLoginEvent:
     response: Response
     session_record: SessionRecord
     cookie: Cookie
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeSessionIssueEvent:
+    user_id: str
+    max_age: int | None
+    metadata: SessionMetadata | None
+
+
+@dataclass(frozen=True, slots=True)
+class AfterSessionIssueEvent:
+    # The raw token is deliberately not exposed to hooks; the record carries
+    # everything audit and policy handlers need.
+    user_id: str
+    session_record: SessionRecord
 
 
 @dataclass(frozen=True, slots=True)

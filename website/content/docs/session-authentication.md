@@ -190,6 +190,21 @@ token that `create_session()` returns. API clients send it with
 `Authorization: Bearer ...`, and Cross-Auth resolves it through
 `SessionStorage`.
 
+For clients that authenticate outside `/token` and outside a browser — a GraphQL
+sign-in mutation for a native app, a CLI — mint the token directly:
+
+```python
+token, record = auth.issue_session_token(
+    str(user.id),
+    max_age=60 * 60 * 24 * 30,  # e.g. longer-lived mobile sessions
+    metadata={"client_name": "ios"},
+)
+```
+
+The client sends it as `Authorization: Bearer ...` and `get_current_user`
+resolves it like any other session. No cookie is set; the `session.issue` hooks
+run around the creation, so policy and audit handlers cover this path too.
+
 Because bearer tokens are session records, they are revocable with the same
 session-management APIs. Cross-Auth does not issue JWT access tokens by default.
 
