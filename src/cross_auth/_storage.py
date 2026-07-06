@@ -43,6 +43,24 @@ class SocialAccount(Protocol):
     @property
     def is_login_method(self) -> bool: ...
 
+    # Provider credentials. Core already writes these through
+    # update_social_account/create_social_account kwargs; declaring them
+    # readable lets token-less sign-ins preserve stored values.
+    @property
+    def access_token(self) -> str | None: ...
+
+    @property
+    def refresh_token(self) -> str | None: ...
+
+    @property
+    def access_token_expires_at(self) -> AwareDatetime | None: ...
+
+    @property
+    def refresh_token_expires_at(self) -> AwareDatetime | None: ...
+
+    @property
+    def scope(self) -> str | None: ...
+
 
 class User(Protocol):
     @property
