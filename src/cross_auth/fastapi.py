@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import secrets
 import warnings
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, Literal, overload
+from typing import Any, Literal, cast, overload
 
 from cross_web import AsyncHTTPRequest, Cookie, HTTPRequest
 from cross_web import Response as CrossWebResponse
@@ -12,6 +14,7 @@ from fastapi import Request as FastAPIRequest
 from fastapi import Response as FastAPIResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from ._auth_flow import resolve_or_create_user
 from ._config import Config
 from ._context import AccountsStorage, SecondaryStorage, User
 from ._email import normalize_email as _normalize_email
@@ -42,10 +45,12 @@ from .hooks import (
     AfterAuthenticateEvent,
     AfterLoginEvent,
     AfterLogoutEvent,
+    AfterOAuthIdTokenEvent,
     AfterSessionIssueEvent,
     BeforeAuthenticateEvent,
     BeforeLoginEvent,
     BeforeLogoutEvent,
+    BeforeOAuthIdTokenEvent,
     BeforeSessionIssueEvent,
     HookRegistry,
 )
@@ -57,6 +62,7 @@ from .hooks._types import (
     AfterOAuthCallbackHandler,
     AfterOAuthDisconnectHandler,
     AfterOAuthFinalizeLinkHandler,
+    AfterOAuthIdTokenHandler,
     AfterOAuthLinkHandler,
     AfterSessionIssueHandler,
     AfterTokenAuthorizationCodeHandler,
@@ -68,17 +74,54 @@ from .hooks._types import (
     BeforeOAuthCallbackHandler,
     BeforeOAuthDisconnectHandler,
     BeforeOAuthFinalizeLinkHandler,
+    BeforeOAuthIdTokenHandler,
     BeforeOAuthLinkHandler,
     BeforeSessionIssueHandler,
     BeforeTokenAuthorizationCodeHandler,
     BeforeTokenPasswordHandler,
     HookEventName,
 )
+from .exceptions import CrossAuthException
 from .router import AuthRouter
-from .social_providers.oauth import OAuth2Provider
+from .social_providers.oauth import OAuth2Exception, OAuth2Provider, UserInfo
+from .social_providers.oidc import OIDCProvider
 
 # TODO: if we add more framework integrations, extract shared storage/session
 # logic into a private _BaseCrossAuth class that framework classes inherit from.
+
+
+class _NoTokenResponse:
+    """Native id_token sign-ins have no OAuth token exchange: there is no
+    access or refresh token to store on the social account."""
+
+    access_token = None
+    refresh_token = None
+    access_token_expires_at = None
+    refresh_token_expires_at = None
+    scope = None
+
+
+_NO_TOKEN_RESPONSE = _NoTokenResponse()
+
+
+def _verify_nonce(claims: dict[str, Any], nonce: str) -> None:
+    # The app sends the raw nonce; the token carries either the raw value
+    # (Google) or its SHA-256 hex digest (Apple hashes what the app sent).
+    claim = claims.get("nonce")
+    if not isinstance(claim, str):
+        raise OAuth2Exception(
+            error="invalid_token",
+            error_description="id_token has no nonce claim to verify",
+        )
+    hashed = hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+    if not (
+        secrets.compare_digest(claim, nonce) or secrets.compare_digest(claim, hashed)
+    ):
+        raise OAuth2Exception(
+            error="invalid_token",
+            error_description="id_token nonce mismatch",
+        )
+
 
 # request.state slots shared between CrossAuth and SessionCookieMiddleware. The
 # middleware marks the sink on the way in; session reads queue rolled cookies
@@ -111,6 +154,9 @@ class CrossAuth:
         self._normalize_email = (
             normalize_email if normalize_email is not None else _normalize_email
         )
+        self._providers: dict[str, OAuth2Provider] = {
+            provider.id: provider for provider in providers
+        }
 
         self._get_user_from_request = (
             get_user_from_request or self._default_get_user_from_request
@@ -274,6 +320,83 @@ class CrossAuth:
             revoked_at=datetime.now(tz=timezone.utc),
         )
 
+    def sign_in_with_id_token(
+        self,
+        provider: str,
+        id_token: str,
+        *,
+        user_info: dict[str, Any] | None = None,
+        nonce: str | None = None,
+    ) -> tuple[User, bool]:
+        """Sign in a native/SDK login by validating a provider ``id_token``.
+
+        The headless sibling of the OAuth callback: Apple's ASAuthorization or
+        Google's Credential Manager hand the app a signed id_token, and the
+        app posts it to your API (e.g. a GraphQL sign-in mutation). The token
+        is validated against the provider's JWKS, then the user is found or
+        created by the same core the web callback uses — normalized email
+        lookup, the auto-link policy gate, and the accounts-storage signup
+        hooks. Returns ``(user, created)``; pair it with
+        ``issue_session_token`` to hand the client a bearer token.
+
+        ``user_info`` overlays the token claims for data the provider delivers
+        outside the token — Apple sends the user's name only on the first
+        authorization, and only to the app. ``nonce`` is the raw value the app
+        generated for the provider request; when given, it must match the
+        token's nonce claim (raw or SHA-256, Apple hashes it). Runs the
+        ``oauth.id_token`` hooks.
+        """
+        registered = self._providers.get(provider)
+        if registered is None:
+            raise CrossAuthException(
+                "invalid_request",
+                error_description=f"Unknown provider: {provider!r}",
+            )
+        if not isinstance(registered, OIDCProvider):
+            raise CrossAuthException(
+                "invalid_request",
+                error_description=(
+                    f"Provider {provider!r} does not issue id_tokens; only "
+                    "OIDC providers support id_token sign-in"
+                ),
+            )
+
+        event = self._hooks.run_before(
+            "oauth.id_token",
+            BeforeOAuthIdTokenEvent(
+                provider=provider, id_token=id_token, user_info=user_info
+            ),
+        )
+
+        claims = registered.validate_id_token(event.id_token, self._storage)
+        if nonce is not None:
+            _verify_nonce(claims, nonce)
+
+        merged: dict[str, Any] = {
+            **registered.extract_user_info_from_claims(claims),
+            **(event.user_info or {}),
+        }
+        validated = registered.validate_user_info(cast("UserInfo", merged))
+
+        resolved_user, resolved_account = resolve_or_create_user(
+            provider=registered,
+            context=self._router.context,
+            validated=validated,
+            user_info=merged,
+            token_response=_NO_TOKEN_RESPONSE,
+        )
+
+        self._hooks.run_after(
+            "oauth.id_token",
+            AfterOAuthIdTokenEvent(
+                provider=provider,
+                user=resolved_user.user,
+                created=resolved_user.created,
+                social_account=resolved_account.account,
+            ),
+        )
+        return resolved_user.user, resolved_user.created
+
     def authenticate(self, email: str, password: str) -> User | None:
         event = self._hooks.run_before(
             "authenticate",
@@ -307,6 +430,11 @@ class CrossAuth:
     def before(
         self, event: Literal["session.issue"]
     ) -> Callable[[BeforeSessionIssueHandler], BeforeSessionIssueHandler]: ...
+
+    @overload
+    def before(
+        self, event: Literal["oauth.id_token"]
+    ) -> Callable[[BeforeOAuthIdTokenHandler], BeforeOAuthIdTokenHandler]: ...
 
     @overload
     def before(
@@ -373,6 +501,11 @@ class CrossAuth:
     def after(
         self, event: Literal["session.issue"]
     ) -> Callable[[AfterSessionIssueHandler], AfterSessionIssueHandler]: ...
+
+    @overload
+    def after(
+        self, event: Literal["oauth.id_token"]
+    ) -> Callable[[AfterOAuthIdTokenHandler], AfterOAuthIdTokenHandler]: ...
 
     @overload
     def after(

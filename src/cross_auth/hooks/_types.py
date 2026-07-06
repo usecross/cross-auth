@@ -11,6 +11,7 @@ from .events import (
     AfterOAuthCallbackEvent,
     AfterOAuthDisconnectEvent,
     AfterOAuthFinalizeLinkEvent,
+    AfterOAuthIdTokenEvent,
     AfterOAuthLinkEvent,
     AfterSessionIssueEvent,
     AfterTokenAuthorizationCodeEvent,
@@ -22,6 +23,7 @@ from .events import (
     BeforeOAuthCallbackEvent,
     BeforeOAuthDisconnectEvent,
     BeforeOAuthFinalizeLinkEvent,
+    BeforeOAuthIdTokenEvent,
     BeforeOAuthLinkEvent,
     BeforeSessionIssueEvent,
     BeforeTokenAuthorizationCodeEvent,
@@ -35,6 +37,7 @@ HookEventName: TypeAlias = Literal[
     "session.issue",
     "oauth.authorize",
     "oauth.callback",
+    "oauth.id_token",
     "oauth.link",
     "oauth.finalize_link",
     "oauth.disconnect",
@@ -50,6 +53,7 @@ _ALL_EVENT_NAMES: frozenset[str] = frozenset(
         "session.issue",
         "oauth.authorize",
         "oauth.callback",
+        "oauth.id_token",
         "oauth.link",
         "oauth.finalize_link",
         "oauth.disconnect",
@@ -65,6 +69,7 @@ _RETURNABLE_BEFORE_EVENT_NAMES: frozenset[str] = frozenset(
         "session.issue",
         "oauth.authorize",
         "oauth.callback",
+        "oauth.id_token",
         "oauth.finalize_link",
     }
 )
@@ -72,6 +77,10 @@ _RETURNABLE_BEFORE_EVENT_NAMES: frozenset[str] = frozenset(
 BeforeAuthenticateHandler: TypeAlias = Callable[
     [BeforeAuthenticateEvent], BeforeAuthenticateEvent | None
 ]
+BeforeOAuthIdTokenHandler: TypeAlias = Callable[
+    [BeforeOAuthIdTokenEvent], BeforeOAuthIdTokenEvent | None
+]
+AfterOAuthIdTokenHandler: TypeAlias = Callable[[AfterOAuthIdTokenEvent], None]
 BeforeSessionIssueHandler: TypeAlias = Callable[
     [BeforeSessionIssueEvent], BeforeSessionIssueEvent | None
 ]
