@@ -147,6 +147,7 @@ class AuthRouter(APIRouter):
             hooks=hooks,
             normalize_email=normalize_email,
         )
+        self.context = context
 
         provider_routes: list[Route] = []
         for provider in providers:

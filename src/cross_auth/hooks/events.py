@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from cross_web import HTTPRequest, Cookie, Response
@@ -48,6 +48,21 @@ class AfterLoginEvent:
     response: Response
     session_record: SessionRecord
     cookie: Cookie
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeOAuthIdTokenEvent:
+    provider: str
+    id_token: str
+    user_info: dict[str, Any] | None
+
+
+@dataclass(frozen=True, slots=True)
+class AfterOAuthIdTokenEvent:
+    provider: str
+    user: User
+    created: bool
+    social_account: SocialAccount
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +238,9 @@ __all__ = [
     "AfterOAuthCallbackEvent",
     "AfterOAuthDisconnectEvent",
     "AfterOAuthFinalizeLinkEvent",
+    "AfterOAuthIdTokenEvent",
     "AfterOAuthLinkEvent",
+    "AfterSessionIssueEvent",
     "AfterTokenAuthorizationCodeEvent",
     "AfterTokenPasswordEvent",
     "BeforeAuthenticateEvent",
@@ -233,7 +250,9 @@ __all__ = [
     "BeforeOAuthCallbackEvent",
     "BeforeOAuthDisconnectEvent",
     "BeforeOAuthFinalizeLinkEvent",
+    "BeforeOAuthIdTokenEvent",
     "BeforeOAuthLinkEvent",
+    "BeforeSessionIssueEvent",
     "BeforeTokenAuthorizationCodeEvent",
     "BeforeTokenPasswordEvent",
 ]

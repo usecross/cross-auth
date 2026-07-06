@@ -44,3 +44,34 @@ Each provider requires:
 - **Client ID** -- From the provider's developer console.
 - **Client Secret** -- From the provider's developer console.
 - **Redirect URI** -- The callback URL in your app.
+
+## Native Sign-In (id_token)
+
+Native apps don't redirect: Apple's ASAuthorization and Google's Credential
+Manager hand the app a signed **id_token** directly, and the app posts it to
+your API — a GraphQL sign-in mutation, a REST endpoint. Validate it and sign the
+user in with `sign_in_with_id_token`:
+
+```python
+user, created = auth.sign_in_with_id_token(
+    "apple",
+    identity_token,
+    # Apple sends the name only on first authorization, outside the token.
+    user_info={"first_name": first_name, "last_name": last_name},
+    nonce=raw_nonce,  # optional; matched raw or SHA-256 against the claim
+)
+token, record = auth.issue_session_token(str(user.id), metadata={"client_name": "ios"})
+```
+
+The token is validated against the provider's JWKS (signature, issuer, audience,
+expiry), then the user is found or created by the same core the web callback
+uses: normalized email lookup, the account-linking policy gate, and your
+accounts-storage signup hooks. No OAuth token exchange happens, so no access or
+refresh tokens are stored on the social account. The `oauth.id_token` hooks run
+around the flow.
+
+Only OIDC providers issue id_tokens, so this works for Apple and Google (and any
+`OIDCProvider` subclass); providers without an id_token, like GitHub, raise
+`invalid_request`. To let a native sign-in attach to an existing account with
+the same email, enable account linking (see above) — otherwise a matching email
+raises `account_not_linked`.
