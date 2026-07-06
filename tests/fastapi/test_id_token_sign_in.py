@@ -204,3 +204,49 @@ def test_nonce_matches_raw_or_hashed_claim(
     )
     with pytest.raises(OAuth2Exception):
         no_nonce.sign_in_with_id_token("stub", VALID_TOKEN, nonce=raw)
+
+
+def test_token_less_sign_in_preserves_credentials_from_a_web_flow(
+    secondary_storage: SecondaryStorage,
+    accounts_storage,
+):
+    """Web flow stores Google-style tokens; a later native sign-in for the
+    same account must refresh identity fields without clobbering them —
+    background API calls depend on the stored refresh token."""
+    provider = StubOIDCProvider(
+        {"sub": "mixed-1", "email": "renamed@example.com", "email_verified": True}
+    )
+    auth = _make_auth(secondary_storage, accounts_storage, provider)
+
+    # Simulate the earlier web callback: user + social account with tokens.
+    web_user = accounts_storage.create_user(
+        user_info={"id": "mixed-1"}, email="mixed@example.com", email_verified=True
+    )
+    accounts_storage.create_social_account(
+        user_id=web_user.id,
+        provider="stub",
+        provider_user_id="mixed-1",
+        access_token="web-access",
+        refresh_token="web-refresh",
+        access_token_expires_at=None,
+        refresh_token_expires_at=None,
+        scope="calendar.readonly",
+        user_info={"id": "mixed-1"},
+        provider_email="mixed@example.com",
+        provider_email_verified=True,
+        is_login_method=True,
+    )
+
+    user, created = auth.sign_in_with_id_token("stub", VALID_TOKEN)
+
+    assert created is False
+    assert user.id == web_user.id
+    account = accounts_storage.find_social_account(
+        provider="stub", provider_user_id="mixed-1"
+    )
+    # Credentials survived the token-less sign-in...
+    assert account.access_token == "web-access"
+    assert account.refresh_token == "web-refresh"
+    assert account.scope == "calendar.readonly"
+    # ...while identity fields refreshed from the new token's claims.
+    assert account.provider_email == "renamed@example.com"

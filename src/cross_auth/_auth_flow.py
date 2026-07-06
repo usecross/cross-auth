@@ -802,13 +802,22 @@ def resolve_or_create_user(
     )
 
     if social_account:
+        # A token-less sign-in (native id_token: no OAuth code exchange)
+        # refreshes identity fields but must not clobber credentials stored by
+        # an earlier web flow — e.g. a Google refresh token that background
+        # API calls depend on. A web exchange always carries an access_token.
+        source = (
+            token_response
+            if token_response.access_token is not None
+            else social_account
+        )
         social_account = context.accounts_storage.update_social_account(
             social_account.id,
-            access_token=token_response.access_token,
-            refresh_token=token_response.refresh_token,
-            access_token_expires_at=token_response.access_token_expires_at,
-            refresh_token_expires_at=token_response.refresh_token_expires_at,
-            scope=token_response.scope,
+            access_token=source.access_token,
+            refresh_token=source.refresh_token,
+            access_token_expires_at=source.access_token_expires_at,
+            refresh_token_expires_at=source.refresh_token_expires_at,
+            scope=source.scope,
             user_info=user_info,
             provider_email=validated.email,
             provider_email_verified=validated.email_verified,
