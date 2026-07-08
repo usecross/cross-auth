@@ -86,9 +86,16 @@ def _provider_routes(provider: OAuth2Provider, *, cookie_auth: bool) -> list[Rou
             ),
             Route(
                 path=f"{prefix}/callback",
-                methods=["GET", "POST"],  # POST for Apple (response_mode=form_post)
+                methods=["GET"],
                 function=bound(handle_callback),
                 operation_id=f"{provider.id}_callback",
+                read_form_data=True,
+            ),
+            Route(
+                path=f"{prefix}/callback",
+                methods=["POST"],  # POST for Apple (response_mode=form_post)
+                function=bound(handle_callback),
+                operation_id=f"{provider.id}_callback_post",
                 read_form_data=True,
             ),
             Route(
