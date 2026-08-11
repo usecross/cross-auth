@@ -32,8 +32,10 @@ from cross_auth.hooks import (
     AfterLogoutEvent,
     AfterOAuthCallbackEvent,
     AfterTokenAuthorizationCodeEvent,
+    AfterUserCreateEvent,
     BeforeAuthenticateEvent,
     BeforeOAuthCallbackEvent,
+    BeforeUserCreateEvent,
 )
 from cross_auth.social_providers.github import GitHubProvider
 from cross_auth.storage.sqlmodel import (
@@ -120,11 +122,13 @@ class SocialAccount(SQLModel, table=True):
 
 
 class WelcomeNote(SQLModel, table=True):
-    # AccountsStore.on_signup adds one of these so the demo has a related row
-    # that joins the same commit as the new user.
+    # AccountsStore._build_user adds one of these so the demo has a
+    # related row that joins the same commit as the new user.
     id: int | None = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="user.id")
+    user_id: int | None = Field(default=None, foreign_key="user.id", nullable=False)
     message: str
+
+    user: "User" = Relationship(back_populates="welcome_notes")
 
 
 class User(SQLModel, table=True):
@@ -132,10 +136,11 @@ class User(SQLModel, table=True):
     email: str = Field(index=True)
     email_verified: bool = False
     hashed_password: str | None = None
-    # Extra demo column populated by AccountsStore.build_user.
+    # Extra demo column populated by the user.create hook.
     display_name: str | None = None
 
     social_accounts: list[SocialAccount] = Relationship(back_populates="user")
+    welcome_notes: list[WelcomeNote] = Relationship(back_populates="user")
 
     @property
     def has_usable_password(self) -> bool:
@@ -199,54 +204,16 @@ class AccountsStore(SQLModelAccountsStorage[User, SocialAccount]):
     UserModel = User
     SocialAccountModel = SocialAccount
 
-    def build_user(
+    def _build_user(
         self,
         *,
         session: Session,
-        user_info: dict[str, object],
-        email: str,
-        email_verified: bool,
+        **kwargs: Any,
     ) -> User:
-        # Guarantee: the only place the User row is constructed on OAuth signup.
-        name = user_info.get("name")
-        display_name = str(name) if name else email.split("@", 1)[0]
-        return User(
-            email=email,
-            email_verified=email_verified,
-            display_name=display_name,
-        )
-
-    def on_signup(
-        self,
-        *,
-        session: Session,
-        user: User,
-        user_info: dict[str, object],
-        email_verified: bool,
-    ) -> None:
-        # Guarantee: runs inside the signup transaction — raising rolls it back
-        # and nothing is persisted. Uses a different domain than the
-        # before("oauth.callback") hook (which runs first and would shadow it).
-        if user.email.endswith("@banned.example"):
-            raise CrossAuthException(
-                "signup_blocked",
-                "Signups from that domain are not allowed.",
-            )
+        user = super()._build_user(session=session, **kwargs)
         # Guarantee: this row is committed in the same transaction as the user.
-        session.flush()  # assign user.id before using it as a foreign key
-        assert user.id is not None
-        session.add(
-            WelcomeNote(user_id=user.id, message=f"Welcome, {user.display_name}!")
-        )
-
-    def after_signup(
-        self,
-        *,
-        user: User,
-        user_info: dict[str, object],
-    ) -> None:
-        # Guarantee: runs after commit — the user is already persisted.
-        record_hook_event("after_signup", user_id=str(user.id), email=user.email)
+        session.add(WelcomeNote(user=user, message=f"Welcome, {user.display_name}!"))
+        return user
 
 
 def serialize_user(user: User) -> dict[str, Any]:
@@ -368,7 +335,7 @@ github = GitHubProvider(
 
 secondary_storage = MemorySecondaryStorage()
 # Swap for Redis: from cross_auth.storage.redis import RedisStorage
-# storage = RedisStorage(redis.Redis.from_url(os.environ["REDIS_URL"]))
+# storage = RedisStorage.from_url(os.environ["REDIS_URL"])
 accounts_storage = AccountsStore(session_factory=open_db_session)
 session_storage = SQLModelSessionStorage(SessionRecord, session_factory=open_db_session)
 
@@ -456,6 +423,35 @@ def audit_password_login(event: AfterAuthenticateEvent) -> None:
         user_id="" if event.user is None else str(event.user.id),
         result="success" if event.user is not None else "failed",
     )
+
+
+@auth.after("user.create")
+def audit_created_user(event: AfterUserCreateEvent) -> None:
+    # The adapter transaction has committed before this public hook runs.
+    record_hook_event(
+        "after:user.create",
+        user_id=str(event.user.id),
+        email=event.user.email or "",
+    )
+
+
+@auth.before("user.create")
+def populate_user_fields(event: BeforeUserCreateEvent) -> BeforeUserCreateEvent:
+    name = event.user_info.get("name")
+    display_name = str(name) if name else event.email.split("@", 1)[0]
+    return replace(
+        event,
+        extra_fields={**event.extra_fields, "display_name": display_name},
+    )
+
+
+@auth.before("user.create")
+def reject_banned_signup(event: BeforeUserCreateEvent) -> None:
+    if event.email.endswith("@banned.example"):
+        raise CrossAuthException(
+            "signup_blocked",
+            "Signups from that domain are not allowed.",
+        )
 
 
 @auth.after("login")

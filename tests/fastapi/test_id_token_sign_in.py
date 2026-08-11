@@ -136,10 +136,13 @@ def test_hooks_can_rewrite_user_info_block_and_observe(
     created_user_info: dict[str, Any] = {}
     original_create_user = accounts_storage.create_user
 
-    def recording_create_user(*, user_info, email, email_verified):
+    def recording_create_user(*, user_info, email, email_verified, extra_fields=None):
         created_user_info.update(user_info)
         return original_create_user(
-            user_info=user_info, email=email, email_verified=email_verified
+            user_info=user_info,
+            email=email,
+            email_verified=email_verified,
+            extra_fields=extra_fields,
         )
 
     accounts_storage.create_user = recording_create_user
@@ -159,7 +162,7 @@ def test_hooks_can_rewrite_user_info_block_and_observe(
     user, created = auth.sign_in_with_id_token("stub", VALID_TOKEN)
 
     assert created is True
-    # The overlay from the before-hook reached the storage signup hooks.
+    # The overlay from the before hook reached account storage.
     assert created_user_info["first_name"] == "Hooked"
     [event] = seen_after
     assert event.provider == "stub"

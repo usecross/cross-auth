@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Self
 
 if TYPE_CHECKING:
     from redis import Redis
@@ -25,7 +25,14 @@ def _decode(value: RedisValue) -> str | None:
 class RedisStorage:
     """Store transient auth data (OAuth, PKCE, verification, reset) in Redis.
 
-    Pass an existing redis client::
+    Create and own a client from a Redis URL::
+
+        from cross_auth.storage.redis import RedisStorage
+
+        storage = RedisStorage.from_url("redis://localhost:6379")
+
+    Call ``close()`` during application shutdown to release that client's
+    connection pool. Alternatively, pass an existing redis client::
 
         import redis
         from cross_auth.storage.redis import RedisStorage
@@ -37,12 +44,30 @@ class RedisStorage:
     with ``GETDEL`` support: a Redis server >= 6.2 and redis-py >= 4.2
     (``pop`` uses the ``GETDEL`` command).
 
-    The client is fixed at construction. To point tests elsewhere, construct
-    a new ``RedisStorage`` with a different client rather than patching the
-    settings the client was built from.
+    An injected client remains owned by its caller, so ``close()`` leaves it
+    open. The client is fixed at construction. To point tests elsewhere,
+    construct a new ``RedisStorage`` with a different client rather than
+    patching the settings the client was built from.
     """
 
     def __init__(self, client: Redis):
+        self._owns_client = False
+        self._set_client(client)
+
+    @classmethod
+    def from_url(cls, url: str, **kwargs: Any) -> Self:
+        """Create storage that owns a synchronous redis-py client.
+
+        ``kwargs`` are passed to ``redis.Redis.from_url``. Call ``close()``
+        during application shutdown to release its connection pool.
+        """
+        from redis import Redis
+
+        storage = cls(Redis.from_url(url, **kwargs))
+        storage._owns_client = True
+        return storage
+
+    def _set_client(self, client: Redis) -> None:
         if not callable(getattr(client, "getdel", None)):
             raise TypeError(
                 f"{type(self).__name__} requires a Redis client with GETDEL "
@@ -67,6 +92,20 @@ class RedisStorage:
                 f"unawaited coroutine instead of a value."
             )
         self._client = client
+
+    def close(self) -> None:
+        """Close the client created by ``from_url``.
+
+        Clients passed to the constructor remain owned by their caller and
+        are not closed.
+        """
+        if self._owns_client:
+            self._client.close()
+
+    @property
+    def client(self) -> Redis:
+        """The underlying redis-py client for app-specific Redis commands."""
+        return self._client
 
     def set(self, key: str, value: str, ttl: int | None = None) -> None:
         if ttl is not None and ttl <= 0:

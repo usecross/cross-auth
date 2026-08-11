@@ -66,9 +66,9 @@ token, record = auth.issue_session_token(str(user.id), metadata={"client_name": 
 The token is validated against the provider's JWKS (signature, issuer, audience,
 expiry), then the user is found or created by the same core the web callback
 uses: normalized email lookup, the account-linking policy gate, and your
-accounts-storage signup hooks. No OAuth token exchange happens, so no access or
-refresh tokens are stored on the social account. The `oauth.id_token` hooks run
-around the flow.
+`user.create`, `social_account.create`, and `social_account.update` hooks. No
+OAuth token exchange happens, so no access or refresh tokens are stored on the
+social account. The `oauth.id_token` hooks also run around the outer flow.
 
 Only OIDC providers issue id_tokens, so this works for Apple and Google (and any
 `OIDCProvider` subclass); providers without an id_token, like GitHub, raise

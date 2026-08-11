@@ -1,5 +1,6 @@
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
@@ -241,6 +242,9 @@ class MemorySessionStorage(SessionStorage):
 class MemoryAccountsStorage:
     def __init__(self, test_password_hash: str):
         self.test_password_hash = test_password_hash
+        self.last_user_extra_fields: dict[str, Any] = {}
+        self.last_social_account_extra_fields: dict[str, Any] = {}
+        self.social_account_extra_fields_history: list[dict[str, Any]] = []
         self.data = {
             "test": User(
                 id="test",
@@ -263,6 +267,7 @@ class MemoryAccountsStorage:
         user_info: dict[str, Any],
         email: str,
         email_verified: bool,
+        extra_fields: Mapping[str, Any] | None = None,
     ) -> User:
         if self.find_user_by_email(email) is not None:
             raise ValueError("User already exists")
@@ -272,6 +277,8 @@ class MemoryAccountsStorage:
                 "email_not_invited",
                 "This email has not yet been invited to join FastAPI Cloud",
             )
+
+        self.last_user_extra_fields = dict(extra_fields or {})
 
         user = User(
             id=str(user_info["id"]),
@@ -334,6 +341,7 @@ class MemoryAccountsStorage:
         provider_email: str | None,
         provider_email_verified: bool | None,
         is_login_method: bool,
+        extra_fields: Mapping[str, Any] | None = None,
     ) -> SocialAccount:
         if user_id not in self.data:
             raise ValueError("User does not exist")
@@ -356,6 +364,10 @@ class MemoryAccountsStorage:
         )
 
         user.social_accounts.append(social_account)
+        self.last_social_account_extra_fields = dict(extra_fields or {})
+        self.social_account_extra_fields_history.append(
+            self.last_social_account_extra_fields
+        )
 
         self.data[user_id] = user
 
@@ -373,6 +385,7 @@ class MemoryAccountsStorage:
         user_info: dict[str, Any],
         provider_email: str | None,
         provider_email_verified: bool | None,
+        extra_fields: Mapping[str, Any] | None = None,
     ) -> SocialAccount:
         social_account = next(
             (
@@ -394,6 +407,10 @@ class MemoryAccountsStorage:
         social_account.scope = scope
         social_account.provider_email = provider_email
         social_account.provider_email_verified = provider_email_verified
+        self.last_social_account_extra_fields = dict(extra_fields or {})
+        self.social_account_extra_fields_history.append(
+            self.last_social_account_extra_fields
+        )
 
         return social_account
 

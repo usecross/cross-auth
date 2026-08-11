@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -49,7 +49,7 @@ _SOCIAL_ACCOUNT_DATETIME_FIELDS = (
     "refresh_token_expires_at",
 )
 
-# Write-only columns the default payload builders populate, beyond the
+# Write-only columns the adapter populates by default, beyond the
 # protocol fields already checked via _required_models. SQLModel table models
 # silently ignore unknown constructor kwargs, so without this check a missing
 # column would silently drop OAuth tokens instead of failing.
@@ -60,6 +60,24 @@ _SOCIAL_ACCOUNT_WRITE_FIELDS = (
     "refresh_token_expires_at",
     "scope",
 )
+
+_SOCIAL_ACCOUNT_STANDARD_FIELDS = frozenset(
+    {
+        "user_id",
+        "provider",
+        "provider_user_id",
+        "access_token",
+        "refresh_token",
+        "access_token_expires_at",
+        "refresh_token_expires_at",
+        "scope",
+        "provider_email",
+        "provider_email_verified",
+        "is_login_method",
+    }
+)
+
+_USER_STANDARD_FIELDS = frozenset({"email", "email_verified"})
 
 # Sentinel for ids that cannot possibly match the column type (e.g. "abc"
 # against an integer primary key).
@@ -551,27 +569,26 @@ class SQLModelAccountsStorage(
             User, SocialAccount, session_factory=lambda: Session(engine)
         )
 
-    App-specific signup behaviour hangs off three hooks around the signup
-    transaction: ``build_user`` (construct the instance — required when your
-    model needs more than ``UserModel(email=..., email_verified=...)``),
-    ``on_signup`` (inside the transaction, pre-commit), and ``after_signup``
-    (post-commit side effects)::
+    Map app-specific user columns with the typed ``user.create`` hook's
+    ``extra_fields``. For the rare case where related rows must join the same
+    transaction, override the private ``_build_user`` escape hatch,
+    call ``super()``, add the related rows, and return the user::
 
         class AccountsStore(SQLModelAccountsStorage[User, SocialAccount]):
             UserModel = User
             SocialAccountModel = SocialAccount
 
-            def on_signup(self, *, session, user, user_info, email_verified):
-                if not is_invited(user.email):
-                    raise CrossAuthException(...)  # aborts; nothing persists
+            def _build_user(self, *, session, **kwargs):
+                user = super()._build_user(session=session, **kwargs)
                 session.add(Team(owner=user))      # joins the same commit
+                return user
 
-            def after_signup(self, *, user, user_info):
-                telemetry.capture("account_created", user_id=user.id)
-
-    Override the query and payload hooks for behaviour such as excluding
-    soft-deleted users, tenant scoping, or mapping provider-specific fields
-    onto extra columns. ``filter_social_account_query`` is applied to reads
+    Use CrossAuth's typed ``user.create``, ``social_account.create``, and
+    ``social_account.update`` hooks for lifecycle policy, side effects, and
+    mapping provider-specific values onto extra columns. Override the query
+    extension methods for behaviour such as
+    excluding soft-deleted users or tenant scoping.
+    ``filter_social_account_query`` is applied to reads
     and writes alike — except the eager-loaded ``user.social_accounts``
     relationship on a returned user, which is loaded unfiltered; go through
     ``list_social_accounts`` for a filtered read. Configuration is validated
@@ -580,6 +597,7 @@ class SQLModelAccountsStorage(
 
     UserModel: type[UserModelT]
     SocialAccountModel: type[SocialAccountModelT]
+    excluded_social_account_fields: ClassVar[frozenset[str]] = frozenset()
 
     # The full cross_auth.User / cross_auth.SocialAccount protocol surfaces.
     # Core reads some of these mid-flow (e.g. has_usable_password during
@@ -634,32 +652,27 @@ class SQLModelAccountsStorage(
         self._validate_social_account_write_fields()
 
     def _validate_social_account_write_fields(self) -> None:
-        # Only enforced while the default payload builders are in use: a store
-        # that overrides them decides itself which columns to write (e.g. an
-        # app that never persists provider tokens).
-        cls = SQLModelAccountsStorage
-        uses_default_builders = (
-            type(self).build_social_account_create_values
-            is cls.build_social_account_create_values
-            or type(self).build_social_account_update_values
-            is cls.build_social_account_update_values
-        )
-        if not uses_default_builders:
-            return
         model = self.SocialAccountModel
+        unsupported_exclusions = self.excluded_social_account_fields - set(
+            _SOCIAL_ACCOUNT_WRITE_FIELDS
+        )
+        if unsupported_exclusions:
+            raise TypeError(
+                "excluded_social_account_fields only supports optional provider "
+                f"credential fields; got {sorted(unsupported_exclusions)!r}"
+            )
         missing = [
             field
             for field in _SOCIAL_ACCOUNT_WRITE_FIELDS
-            if _column(model, field) is None
+            if field not in self.excluded_social_account_fields
+            and _column(model, field) is None
         ]
         if missing:
             raise TypeError(
                 f"{model.__name__} is missing the {missing!r} mapped column(s) "
                 f"written by {type(self).__name__}. SQLModel's constructor only "
                 f"accepts pydantic fields — a property is not settable through "
-                f"it, so these values would be silently lost. Add the columns, "
-                f"or override build_social_account_create_values / "
-                f"build_social_account_update_values to drop them."
+                f"it, so these values would be silently lost. Add the columns."
             )
 
     def _check_social_account_values(self, values: dict[str, object]) -> None:
@@ -668,7 +681,7 @@ class SQLModelAccountsStorage(
         if unknown:
             raise TypeError(
                 f"{model.__name__} has no mapped column(s) {unknown!r}, but "
-                f"the social-account payload builder returned them. SQLModel's "
+                f"a social-account hook produced them. SQLModel's "
                 f"constructor only accepts pydantic fields — a property is not "
                 f"settable through it, so these values would be silently lost."
             )
@@ -704,31 +717,26 @@ class SQLModelAccountsStorage(
         user_info: dict[str, object],
         email: str,
         email_verified: bool,
+        extra_fields: Mapping[str, object] | None = None,
     ) -> UserModelT:
         """Create a user in a single adapter-owned transaction.
 
-        Asks ``build_user`` for the instance, adds it, runs the ``on_signup``
-        hook, commits, and returns the user safe to read after the session
-        closes (scalar columns loaded, ``social_accounts`` eager-loaded); the
-        ``after_signup`` hook then runs post-commit. Unlike ``find_user_by_id``
-        this does not apply ``filter_user_query``, so a freshly created user
-        is always returned.
+        Builds and adds the user to the adapter-owned session, commits, and
+        returns the user safe to read after the session closes (scalar columns
+        loaded, ``social_accounts`` eager-loaded). Unlike ``find_user_by_id``
+        this does not apply ``filter_user_query``, so a freshly created user is
+        always returned.
         """
         model = self.UserModel
         with self._open_session() as session:
-            user = self.build_user(
+            user = self._build_user(
                 session=session,
                 user_info=user_info,
                 email=email,
                 email_verified=email_verified,
+                extra_fields=extra_fields,
             )
             session.add(user)
-            self.on_signup(
-                session=session,
-                user=user,
-                user_info=user_info,
-                email_verified=email_verified,
-            )
             session.commit()
             statement = (
                 select(model)
@@ -736,7 +744,6 @@ class SQLModelAccountsStorage(
                 .options(*self._user_query_options)
             )
             user = session.exec(statement).one()
-        self.after_signup(user=user, user_info=user_info)
         return user
 
     def _find_social_account(self, *where: Any) -> SocialAccountModelT | None:
@@ -791,22 +798,25 @@ class SQLModelAccountsStorage(
         provider_email: str | None,
         provider_email_verified: bool | None,
         is_login_method: bool,
+        extra_fields: Mapping[str, object] | None = None,
     ) -> SocialAccountModelT:
         coerced_user_id = _coerce_id(self.SocialAccountModel, "user_id", user_id)
-        values = self.build_social_account_create_values(
-            user_id=user_id if coerced_user_id is _NO_MATCH else coerced_user_id,
-            provider=provider,
-            provider_user_id=provider_user_id,
-            access_token=access_token,
-            refresh_token=refresh_token,
-            access_token_expires_at=access_token_expires_at,
-            refresh_token_expires_at=refresh_token_expires_at,
-            scope=scope,
-            user_info=user_info,
-            provider_email=provider_email,
-            provider_email_verified=provider_email_verified,
-            is_login_method=is_login_method,
-        )
+        values: dict[str, object] = {
+            "user_id": user_id if coerced_user_id is _NO_MATCH else coerced_user_id,
+            "provider": provider,
+            "provider_user_id": provider_user_id,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "access_token_expires_at": access_token_expires_at,
+            "refresh_token_expires_at": refresh_token_expires_at,
+            "scope": scope,
+            "provider_email": provider_email,
+            "provider_email_verified": provider_email_verified,
+            "is_login_method": is_login_method,
+        }
+        for field in self.excluded_social_account_fields:
+            values.pop(field)
+        self._merge_social_account_extra_fields(values, extra_fields)
         self._check_social_account_values(values)
         values = self._bind_social_account_datetimes(values)
         with self._open_session() as session:
@@ -827,22 +837,24 @@ class SQLModelAccountsStorage(
         user_info: dict[str, object],
         provider_email: str | None,
         provider_email_verified: bool | None,
+        extra_fields: Mapping[str, object] | None = None,
     ) -> SocialAccountModelT:
         with self._open_session() as session:
             row = self._get_social_account_for_write(session, social_account_id)
             if row is None:
                 raise ValueError(f"Social account {social_account_id!r} does not exist")
-            values = self.build_social_account_update_values(
-                record=row,
-                access_token=access_token,
-                refresh_token=refresh_token,
-                access_token_expires_at=access_token_expires_at,
-                refresh_token_expires_at=refresh_token_expires_at,
-                scope=scope,
-                user_info=user_info,
-                provider_email=provider_email,
-                provider_email_verified=provider_email_verified,
-            )
+            values: dict[str, object] = {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "access_token_expires_at": access_token_expires_at,
+                "refresh_token_expires_at": refresh_token_expires_at,
+                "scope": scope,
+                "provider_email": provider_email,
+                "provider_email_verified": provider_email_verified,
+            }
+            for field in self.excluded_social_account_fields:
+                values.pop(field)
+            self._merge_social_account_extra_fields(values, extra_fields)
             self._check_social_account_values(values)
             values = self._bind_social_account_datetimes(values)
             for key, value in values.items():
@@ -885,61 +897,80 @@ class SQLModelAccountsStorage(
             for key, value in values.items()
         }
 
-    def build_user(
+    @staticmethod
+    def _merge_user_extra_fields(
+        values: dict[str, object], extra_fields: Mapping[str, object] | None
+    ) -> None:
+        if not extra_fields:
+            return
+        conflicts = _USER_STANDARD_FIELDS & extra_fields.keys()
+        if conflicts:
+            fields = sorted(conflicts)
+            raise ValueError(
+                "user.create extra_fields cannot replace standard "
+                f"field(s) {fields!r}; use the dedicated event field"
+            )
+        values.update(extra_fields)
+
+    def _check_user_values(self, values: dict[str, object]) -> None:
+        model = self.UserModel
+        unknown = [key for key in values if _column(model, key) is None]
+        if unknown:
+            raise TypeError(
+                f"{model.__name__} has no mapped column(s) {unknown!r}, but "
+                f"a user.create hook produced them. SQLModel's constructor "
+                f"only accepts pydantic fields — a property is not settable "
+                f"through it, so these values would be silently lost."
+            )
+
+    @staticmethod
+    def _merge_social_account_extra_fields(
+        values: dict[str, object], extra_fields: Mapping[str, object] | None
+    ) -> None:
+        if not extra_fields:
+            return
+        conflicts = _SOCIAL_ACCOUNT_STANDARD_FIELDS & extra_fields.keys()
+        if conflicts:
+            fields = sorted(conflicts)
+            raise ValueError(
+                "social-account hook extra_fields cannot replace standard "
+                f"field(s) {fields!r}; use the dedicated event field when writable"
+            )
+        values.update(extra_fields)
+
+    def _build_user(
         self,
         *,
         session: Session,
         user_info: dict[str, object],
         email: str,
         email_verified: bool,
+        extra_fields: Mapping[str, object] | None,
     ) -> UserModelT:
-        """Construct the new user instance for ``create_user``.
+        """Construct the new user graph inside the adapter-owned session.
 
-        Override when the default ``UserModel(email=..., email_verified=...)``
-        call doesn't fit — extra required columns, generated fields (e.g. a
-        unique username, which is why the open ``session`` is provided), or a
-        differently-named column: SQLModel silently ignores unknown
-        constructor kwargs, so a model storing verification under another
-        name must be constructed explicitly here. Return the instance without
-        adding or committing it; ``create_user`` does both.
+        The default applies hook-provided ``extra_fields`` to mapped columns,
+        constructs ``UserModel``, then assigns ``email_verified`` through the
+        model attribute. That assignment supports either a mapped field or a
+        writable property backed by a differently-named column.
+
+        This is a private escape hatch for apps that need related rows in the
+        same transaction. Overrides should call ``super()``, add their related
+        rows to ``session``, and return the user. Do not add or commit the user
+        itself or perform external I/O; ``create_user`` owns those operations.
         """
-        return self.UserModel(email=email, email_verified=email_verified)
-
-    def on_signup(
-        self,
-        *,
-        session: Session,
-        user: UserModelT,
-        user_info: dict[str, object],
-        email_verified: bool,
-    ) -> None:
-        """Attach app-specific signup behaviour. Runs inside the signup
-        transaction, after ``user`` is added but before the commit.
-
-        - Raise (e.g. ``CrossAuthException`` for an invite check) to abort the
-          signup: the transaction rolls back and nothing is persisted.
-        - Mutate ``user`` to set extra columns (profile defaults, values
-          derived from ``user_info``).
-        - ``session.add(...)`` related rows (a team, a billing record) to
-          include them in the same commit.
-
-        ``user`` is not flushed yet, so ``user.id`` may be unset; call
-        ``session.flush()`` if you need it. The default does nothing.
-        """
-
-    def after_signup(
-        self,
-        *,
-        user: UserModelT,
-        user_info: dict[str, object],
-    ) -> None:
-        """Run side effects after the signup transaction has committed —
-        telemetry, welcome emails, queueing background work.
-
-        ``user`` is the committed, fully-loaded instance ``create_user`` is
-        about to return. Raising here does NOT undo the signup; the user is
-        already persisted. The default does nothing.
-        """
+        values: dict[str, object] = {"email": email}
+        self._merge_user_extra_fields(values, extra_fields)
+        self._check_user_values(values)
+        user = self.UserModel(**values)
+        try:
+            setattr(user, "email_verified", email_verified)
+        except AttributeError as exc:
+            raise TypeError(
+                f"{self.UserModel.__name__}.email_verified must be a mapped "
+                "field or writable property"
+            ) from exc
+        return user
 
     def filter_user_query(
         self, statement: SelectOfScalar[UserModelT]
@@ -957,30 +988,3 @@ class SQLModelAccountsStorage(
         unfiltered; filtered reads must go through ``list_social_accounts``.
         """
         return statement
-
-    def build_social_account_create_values(
-        self, *, user_info: dict[str, object], **fields: object
-    ) -> dict[str, object]:
-        """Build the column values for a new social account row.
-
-        ``user_info`` is provided for apps that derive extra columns (such as a
-        provider username); by default it is not persisted. Override to map
-        provider-specific fields onto your own columns.
-        """
-        return fields
-
-    def build_social_account_update_values(
-        self,
-        *,
-        user_info: dict[str, object],
-        record: SocialAccountModelT,
-        **fields: object,
-    ) -> dict[str, object]:
-        """Build the column values for updating a social account row.
-
-        ``record`` is the loaded row being updated — read its current state
-        (e.g. ``record.provider`` / ``record.provider_user_id``) to derive
-        columns such as a provider username. Return the values to write
-        rather than mutating ``record`` directly.
-        """
-        return fields

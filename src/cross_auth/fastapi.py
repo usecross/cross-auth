@@ -5,7 +5,7 @@ import secrets
 import warnings
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, Literal, cast, overload
+from typing import Any, Literal, Protocol, TypeVar, cast, overload
 
 from cross_web import AsyncHTTPRequest, Cookie, HTTPRequest
 from cross_web import Response as CrossWebResponse
@@ -65,8 +65,11 @@ from .hooks._types import (
     AfterOAuthIdTokenHandler,
     AfterOAuthLinkHandler,
     AfterSessionIssueHandler,
+    AfterSocialAccountCreateHandler,
+    AfterSocialAccountUpdateHandler,
     AfterTokenAuthorizationCodeHandler,
     AfterTokenPasswordHandler,
+    AfterUserCreateHandler,
     BeforeAuthenticateHandler,
     BeforeLoginHandler,
     BeforeLogoutHandler,
@@ -77,14 +80,37 @@ from .hooks._types import (
     BeforeOAuthIdTokenHandler,
     BeforeOAuthLinkHandler,
     BeforeSessionIssueHandler,
+    BeforeSocialAccountCreateHandler,
+    BeforeSocialAccountUpdateHandler,
     BeforeTokenAuthorizationCodeHandler,
     BeforeTokenPasswordHandler,
+    BeforeUserCreateHandler,
     HookEventName,
+    _AfterSocialAccountCreateOrUpdateHandler,
+    _BeforeSocialAccountCreateOrUpdateHandler,
 )
 from .exceptions import CrossAuthException
 from .router import AuthRouter
 from .social_providers.oauth import OAuth2Exception, OAuth2Provider, UserInfo
 from .social_providers.oidc import OIDCProvider
+
+_SpecificSocialAccountHandlerT = TypeVar("_SpecificSocialAccountHandlerT")
+_CombinedSocialAccountHandlerT = TypeVar("_CombinedSocialAccountHandlerT")
+
+
+class _SocialAccountDecorator(
+    Protocol[_SpecificSocialAccountHandlerT, _CombinedSocialAccountHandlerT]
+):
+    @overload
+    def __call__(
+        self, handler: _CombinedSocialAccountHandlerT, /
+    ) -> _CombinedSocialAccountHandlerT: ...
+
+    @overload
+    def __call__(
+        self, handler: _SpecificSocialAccountHandlerT, /
+    ) -> _SpecificSocialAccountHandlerT: ...
+
 
 # TODO: if we add more framework integrations, extract shared storage/session
 # logic into a private _BaseCrossAuth class that framework classes inherit from.
@@ -433,6 +459,27 @@ class CrossAuth:
 
     @overload
     def before(
+        self, event: Literal["user.create"]
+    ) -> Callable[[BeforeUserCreateHandler], BeforeUserCreateHandler]: ...
+
+    @overload
+    def before(
+        self, event: Literal["social_account.create"]
+    ) -> _SocialAccountDecorator[
+        BeforeSocialAccountCreateHandler,
+        _BeforeSocialAccountCreateOrUpdateHandler,
+    ]: ...
+
+    @overload
+    def before(
+        self, event: Literal["social_account.update"]
+    ) -> _SocialAccountDecorator[
+        BeforeSocialAccountUpdateHandler,
+        _BeforeSocialAccountCreateOrUpdateHandler,
+    ]: ...
+
+    @overload
+    def before(
         self, event: Literal["oauth.id_token"]
     ) -> Callable[[BeforeOAuthIdTokenHandler], BeforeOAuthIdTokenHandler]: ...
 
@@ -501,6 +548,27 @@ class CrossAuth:
     def after(
         self, event: Literal["session.issue"]
     ) -> Callable[[AfterSessionIssueHandler], AfterSessionIssueHandler]: ...
+
+    @overload
+    def after(
+        self, event: Literal["user.create"]
+    ) -> Callable[[AfterUserCreateHandler], AfterUserCreateHandler]: ...
+
+    @overload
+    def after(
+        self, event: Literal["social_account.create"]
+    ) -> _SocialAccountDecorator[
+        AfterSocialAccountCreateHandler,
+        _AfterSocialAccountCreateOrUpdateHandler,
+    ]: ...
+
+    @overload
+    def after(
+        self, event: Literal["social_account.update"]
+    ) -> _SocialAccountDecorator[
+        AfterSocialAccountUpdateHandler,
+        _AfterSocialAccountCreateOrUpdateHandler,
+    ]: ...
 
     @overload
     def after(

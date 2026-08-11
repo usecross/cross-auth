@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Column, DateTime
-from sqlmodel import Field, Relationship, Session, SQLModel
+from sqlmodel import Field, Relationship, SQLModel
 from sqlmodel.sql.expression import SelectOfScalar
 
 from cross_auth import SessionStatus, session_status
@@ -159,6 +159,7 @@ class SocialAccount(SQLModel, table=True):
     user_id: int = Field(foreign_key="user.id")
     provider: str
     provider_user_id: str
+    provider_username: str | None = None
     access_token: str | None = None
     refresh_token: str | None = None
     access_token_expires_at: datetime | None = None
@@ -189,18 +190,6 @@ class AccountsStore(SQLModelAccountsStorage[User, SocialAccount]):
     UserModel = User
     SocialAccountModel = SocialAccount
 
-    def on_signup(
-        self,
-        *,
-        session: Session,
-        user: User,
-        user_info: dict[str, object],
-        email_verified: bool,
-    ) -> None:
-        hashed_password = user_info.get("hashed_password")
-        assert hashed_password is None or isinstance(hashed_password, str)
-        user.hashed_password = hashed_password
-
 
 class SoftDeleteAccountsStore(AccountsStore):
     def filter_user_query(
@@ -210,9 +199,7 @@ class SoftDeleteAccountsStore(AccountsStore):
 
 
 class LeanSocialAccount(SQLModel, table=True):
-    """Social account without the token/scope columns — for an app that never
-    persists provider tokens. Only valid together with payload builders that
-    drop those fields (see LeanAccountsStore)."""
+    """Social account without the required token/scope columns."""
 
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id")
@@ -223,33 +210,17 @@ class LeanSocialAccount(SQLModel, table=True):
     is_login_method: bool = True
 
 
-_TOKEN_FIELDS = (
-    "access_token",
-    "refresh_token",
-    "access_token_expires_at",
-    "refresh_token_expires_at",
-    "scope",
-)
-
-
 class LeanAccountsStore(AccountsStore):
     SocialAccountModel = LeanSocialAccount  # type: ignore[assignment]
-
-    def build_social_account_create_values(
-        self, *, user_info: dict[str, object], **fields: object
-    ) -> dict[str, object]:
-        return {k: v for k, v in fields.items() if k not in _TOKEN_FIELDS}
-
-    def build_social_account_update_values(
-        self,
-        *,
-        user_info: dict[str, object],
-        # Annotated with the class's declared generic (the runtime rows are
-        # LeanSocialAccount, see the SocialAccountModel reassignment above).
-        record: SocialAccount,
-        **fields: object,
-    ) -> dict[str, object]:
-        return {k: v for k, v in fields.items() if k not in _TOKEN_FIELDS}
+    excluded_social_account_fields = frozenset(
+        {
+            "access_token",
+            "refresh_token",
+            "access_token_expires_at",
+            "refresh_token_expires_at",
+            "scope",
+        }
+    )
 
 
 class PropertyScopeSocialAccount(SQLModel, table=True):
@@ -297,3 +268,29 @@ class PropUser(SQLModel, table=True):
 class PropAccountsStore(SQLModelAccountsStorage[PropUser, SocialAccount]):
     UserModel = PropUser
     SocialAccountModel = SocialAccount
+
+
+class AliasedVerifiedUser(SQLModel, table=True):
+    """Cloud-style user with required profile data and renamed verification."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    email: str = Field(index=True)
+    full_name: str
+    is_verified: bool = False
+    hashed_password: str | None = None
+
+    @property
+    def email_verified(self) -> bool:
+        return self.is_verified
+
+    @email_verified.setter
+    def email_verified(self, value: bool) -> None:
+        self.is_verified = value
+
+    @property
+    def has_usable_password(self) -> bool:
+        return self.hashed_password is not None
+
+    @property
+    def social_accounts(self) -> list[SocialAccount]:
+        return []

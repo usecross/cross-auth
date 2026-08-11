@@ -8,6 +8,7 @@ from cross_auth.storage.sqlmodel import SQLModelAccountsStorage
 
 from .models import (
     AccountsStore,
+    AliasedVerifiedUser,
     LeanAccountsStore,
     LeanSocialAccount,
     PropAccountsStore,
@@ -141,8 +142,10 @@ def test_create_user_bypasses_filter_user_query(engine):
     # A fresh user must always be returned, even when filter_user_query would
     # exclude it — otherwise create_user could return None mid-signup.
     class DeletedOnSignupStore(SoftDeleteAccountsStore):
-        def on_signup(self, *, session, user, user_info, email_verified):
+        def _build_user(self, *, session, **kwargs):
+            user = super()._build_user(session=session, **kwargs)
             user.deleted = True
+            return user
 
     store = DeletedOnSignupStore(session_factory=lambda: Session(engine))
 
@@ -155,19 +158,19 @@ def test_create_user_bypasses_filter_user_query(engine):
     assert store.find_user_by_id(user.id) is None  # filtered lookup excludes it
 
 
-def test_on_signup_joins_the_create_user_transaction(engine):
-    # The cloud-style signup: on_signup adds related rows to the session it
-    # receives, and everything commits as one unit of work. The returned user
-    # must still satisfy the read-after-close contract, including the
-    # eager-loaded relationship rows created in the same transaction.
+def test_build_user_override_joins_the_create_user_transaction(engine):
+    # The cloud-style signup: an override composes with the default and adds
+    # related rows to the same unit of work.
     class TeamSignupStore(AccountsStore):
-        def on_signup(self, *, session, user, user_info, email_verified):
+        def _build_user(self, *, session, **kwargs):
+            user = super()._build_user(session=session, **kwargs)
             # user_id is populated from the relationship at flush time.
             session.add(
                 SocialAccount(  # ty: ignore[missing-argument]
                     user=user, provider="github", provider_user_id="linked-1"
                 )
             )
+            return user
 
     store = TeamSignupStore(session_factory=lambda: Session(engine))
 
@@ -181,11 +184,12 @@ def test_on_signup_joins_the_create_user_transaction(engine):
     assert [a.provider_user_id for a in accounts] == ["linked-1"]
 
 
-def test_on_signup_raise_aborts_the_signup(engine):
-    # An invite check raising inside the hook rolls back the transaction:
+def test_build_user_raise_aborts_the_signup(engine):
+    # Raising from the private escape hatch rolls back the transaction:
     # neither the user nor any related rows are persisted.
     class InviteOnlyStore(AccountsStore):
-        def on_signup(self, *, session, user, user_info, email_verified):
+        def _build_user(self, *, session, **kwargs):
+            user = super()._build_user(session=session, **kwargs)
             session.add(
                 SocialAccount(  # ty: ignore[missing-argument]
                     user=user, provider="github", provider_user_id="rollback-1"
@@ -207,19 +211,15 @@ def test_on_signup_raise_aborts_the_signup(engine):
     )
 
 
-def test_build_user_controls_construction(engine):
-    # Models needing more than UserModel(email=..., email_verified=...) —
-    # generated usernames, renamed columns — override build_user.
+def test_build_user_override_can_customize_the_user(engine):
     class CustomConstructionStore(SQLModelAccountsStorage[User, SocialAccount]):
         UserModel = User
         SocialAccountModel = SocialAccount
 
-        def build_user(self, *, session, user_info, email, email_verified):
-            return User(
-                email=email,
-                email_verified=email_verified,
-                hashed_password=f"gen:{user_info['seed']}",
-            )
+        def _build_user(self, *, session, **kwargs):
+            user = super()._build_user(session=session, **kwargs)
+            user.hashed_password = f"gen:{kwargs['user_info']['seed']}"
+            return user
 
     store = CustomConstructionStore(session_factory=lambda: Session(engine))
 
@@ -231,36 +231,43 @@ def test_build_user_controls_construction(engine):
     assert user.email_verified is True
 
 
-def test_on_signup_receives_email_verified(engine):
-    captured = []
-
-    class VerifiedStore(AccountsStore):
-        def on_signup(self, *, session, user, user_info, email_verified):
-            captured.append(email_verified)
-
-    store = VerifiedStore(session_factory=lambda: Session(engine))
-    store.create_user(user_info={}, email="v@example.com", email_verified=True)
-
-    assert captured == [True]
-
-
-def test_after_signup_runs_after_commit(engine):
-    seen = []
-
-    class TelemetryStore(AccountsStore):
-        def after_signup(self, *, user, user_info):
-            # The transaction is already committed: the user has its id and
-            # is visible to a fresh session.
-            found = self.find_user_by_id(user.id)
-            seen.append((user.id, found is not None))
-
-    store = TelemetryStore(session_factory=lambda: Session(engine))
-
-    user = store.create_user(
-        user_info={}, email="telemetry@example.com", email_verified=True
+def test_user_extra_fields_support_required_columns_and_verification_alias(engine):
+    store = SQLModelAccountsStorage(
+        AliasedVerifiedUser,
+        SocialAccount,
+        session_factory=lambda: Session(engine),
     )
 
-    assert seen == [(user.id, True)]
+    user = store.create_user(
+        user_info={},
+        email="aliased@example.com",
+        email_verified=True,
+        extra_fields={"full_name": "Aliased User"},
+    )
+
+    assert user.full_name == "Aliased User"
+    assert user.email_verified is True
+    assert user.is_verified is True
+
+
+def test_user_extra_fields_must_be_mapped_columns(store):
+    with pytest.raises(TypeError, match="display_name"):
+        store.create_user(
+            user_info={},
+            email="unknown-field@example.com",
+            email_verified=True,
+            extra_fields={"display_name": "Unknown"},
+        )
+
+
+def test_user_extra_fields_cannot_replace_standard_fields(store):
+    with pytest.raises(ValueError, match="email"):
+        store.create_user(
+            user_info={},
+            email="standard-field@example.com",
+            email_verified=True,
+            extra_fields={"email": "override@example.com"},
+        )
 
 
 def test_find_social_account(store, engine):
@@ -442,9 +449,10 @@ def test_filter_hook_applies_to_writes(store, engine):
 
 def test_create_user_override(store):
     user = store.create_user(
-        user_info={"hashed_password": "hashed"},
+        user_info={},
         email="new@example.com",
         email_verified=False,
+        extra_fields={"hashed_password": "hashed"},
     )
 
     assert user.id is not None
@@ -518,14 +526,22 @@ def test_social_account_model_missing_protocol_field_raises_at_construction(engi
         BadStore(session_factory=lambda: Session(engine))
 
 
-def test_missing_token_columns_with_default_builders_raises_at_construction(engine):
+def test_missing_token_columns_raises_at_construction(engine):
     # SQLModel silently ignores unknown constructor kwargs, so a model missing
-    # the token columns would silently drop OAuth tokens. With the default
-    # payload builders this must fail at startup.
+    # the token columns would silently drop OAuth tokens. This must fail at
+    # startup.
     class BadStore(AccountsStore):
         SocialAccountModel = LeanSocialAccount
 
     with pytest.raises(TypeError, match="access_token"):
+        BadStore(session_factory=lambda: Session(engine))
+
+
+def test_only_optional_credential_fields_can_be_excluded(engine):
+    class BadStore(AccountsStore):
+        excluded_social_account_fields = frozenset({"provider"})
+
+    with pytest.raises(TypeError, match="only supports optional provider credential"):
         BadStore(session_factory=lambda: Session(engine))
 
 
@@ -541,7 +557,7 @@ def test_write_field_as_property_raises_at_construction(engine):
         BadStore(session_factory=lambda: Session(engine))
 
 
-def test_tokenless_model_works_with_overridden_builders(engine):
+def test_tokenless_model_works_with_excluded_fields(engine):
     store = LeanAccountsStore(session_factory=lambda: Session(engine))
     user_id = _seed_user(engine)
 
@@ -579,16 +595,11 @@ def test_tokenless_model_works_with_overridden_builders(engine):
     assert updated.provider_email == "b@example.com"
 
 
-def test_payload_builder_typo_raises_at_write(engine):
-    class TypoStore(AccountsStore):
-        def build_social_account_create_values(self, *, user_info, **fields):
-            fields["acess_token"] = fields.pop("access_token")
-            return fields
-
-    store = TypoStore(session_factory=lambda: Session(engine))
+def test_extra_field_typo_raises_at_write(engine):
+    store = AccountsStore(session_factory=lambda: Session(engine))
     user_id = _seed_user(engine)
 
-    with pytest.raises(TypeError, match="acess_token"):
+    with pytest.raises(TypeError, match="provider_usernam"):
         store.create_social_account(
             user_id=user_id,
             provider="google",
@@ -602,16 +613,12 @@ def test_payload_builder_typo_raises_at_write(engine):
             provider_email=None,
             provider_email_verified=None,
             is_login_method=True,
+            extra_fields={"provider_usernam": "octocat"},
         )
 
 
-def test_payload_builder_hook(engine):
-    class CustomStore(AccountsStore):
-        def build_social_account_create_values(self, *, user_info, **fields):
-            fields["scope"] = f"derived:{user_info.get('login')}"
-            return fields
-
-    store = CustomStore(session_factory=lambda: Session(engine))
+def test_extra_fields_are_written_on_create_and_update(engine):
+    store = AccountsStore(session_factory=lambda: Session(engine))
     user_id = _seed_user(engine)
 
     account = store.create_social_account(
@@ -622,60 +629,19 @@ def test_payload_builder_hook(engine):
         refresh_token=None,
         access_token_expires_at=None,
         refresh_token_expires_at=None,
-        scope="ignored",
-        user_info={"login": "octocat"},
+        scope=None,
+        user_info={},
         provider_email=None,
         provider_email_verified=None,
         is_login_method=True,
+        extra_fields={"provider_username": "octocat"},
     )
 
-    assert account.scope == "derived:octocat"
-
-
-def test_update_payload_builder_hook(engine):
-    class CustomStore(AccountsStore):
-        def build_social_account_update_values(self, *, user_info, record, **fields):
-            fields["scope"] = f"derived:{user_info.get('login')}"
-            return fields
-
-    store = CustomStore(session_factory=lambda: Session(engine))
-    user_id = _seed_user(engine)
-    account_id = _seed_social(engine, user_id=user_id, access_token="old")
+    assert account.provider_username == "octocat"
 
     updated = store.update_social_account(
-        account_id,
+        account.id,
         access_token="new",
-        refresh_token=None,
-        access_token_expires_at=None,
-        refresh_token_expires_at=None,
-        scope="ignored",
-        user_info={"login": "octocat"},
-        provider_email=None,
-        provider_email_verified=None,
-    )
-
-    assert updated.scope == "derived:octocat"
-    assert updated.access_token == "new"
-
-
-def test_update_payload_builder_receives_the_existing_record(engine):
-    # The cloud case: provider_username is recomputed on update from the
-    # row's provider and provider_user_id, which are not among the update
-    # fields — the hook must be able to read them from the loaded record.
-    class CustomStore(AccountsStore):
-        def build_social_account_update_values(self, *, user_info, record, **fields):
-            fields["scope"] = f"{record.provider}:{record.provider_user_id}"
-            return fields
-
-    store = CustomStore(session_factory=lambda: Session(engine))
-    user_id = _seed_user(engine)
-    account_id = _seed_social(
-        engine, user_id=user_id, provider="github", provider_user_id="g-7"
-    )
-
-    updated = store.update_social_account(
-        account_id,
-        access_token=None,
         refresh_token=None,
         access_token_expires_at=None,
         refresh_token_expires_at=None,
@@ -683,6 +649,30 @@ def test_update_payload_builder_receives_the_existing_record(engine):
         user_info={},
         provider_email=None,
         provider_email_verified=None,
+        extra_fields={"provider_username": "hubot"},
     )
 
-    assert updated.scope == "github:g-7"
+    assert updated.provider_username == "hubot"
+    assert updated.access_token == "new"
+
+
+def test_extra_fields_cannot_replace_standard_fields(engine):
+    store = AccountsStore(session_factory=lambda: Session(engine))
+    user_id = _seed_user(engine)
+
+    with pytest.raises(ValueError, match="cannot replace standard"):
+        store.create_social_account(
+            user_id=user_id,
+            provider="github",
+            provider_user_id="g-1",
+            access_token=None,
+            refresh_token=None,
+            access_token_expires_at=None,
+            refresh_token_expires_at=None,
+            scope=None,
+            user_info={},
+            provider_email=None,
+            provider_email_verified=None,
+            is_login_method=True,
+            extra_fields={"provider": "google"},
+        )

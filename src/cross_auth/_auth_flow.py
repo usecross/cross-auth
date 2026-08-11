@@ -21,12 +21,18 @@ from .hooks import (
     AfterOAuthDisconnectEvent,
     AfterOAuthFinalizeLinkEvent,
     AfterOAuthLinkEvent,
+    AfterSocialAccountCreateEvent,
+    AfterSocialAccountUpdateEvent,
+    AfterUserCreateEvent,
     BeforeLoginEvent,
     BeforeOAuthAuthorizeEvent,
     BeforeOAuthCallbackEvent,
     BeforeOAuthDisconnectEvent,
     BeforeOAuthFinalizeLinkEvent,
     BeforeOAuthLinkEvent,
+    BeforeSocialAccountCreateEvent,
+    BeforeSocialAccountUpdateEvent,
+    BeforeUserCreateEvent,
 )
 from .social_providers.oauth import (
     OAuth2Exception,
@@ -787,6 +793,148 @@ def _flow_error(
     )
 
 
+def _create_user(
+    *,
+    context: Context,
+    user_info: dict[str, Any],
+    email: str,
+    email_verified: bool,
+) -> User:
+    event = context.hooks.run_before(
+        "user.create",
+        BeforeUserCreateEvent(
+            user_info=user_info,
+            email=email,
+            email_verified=email_verified,
+            extra_fields={},
+        ),
+    )
+    user = context.accounts_storage.create_user(
+        user_info=event.user_info,
+        email=event.email,
+        email_verified=event.email_verified,
+        extra_fields=event.extra_fields,
+    )
+    context.hooks.run_after(
+        "user.create",
+        AfterUserCreateEvent(user_info=event.user_info, user=user),
+    )
+    return user
+
+
+def _create_social_account(
+    *,
+    context: Context,
+    user_id: Any,
+    provider: str,
+    provider_user_id: str,
+    access_token: str | None,
+    refresh_token: str | None,
+    access_token_expires_at: datetime | None,
+    refresh_token_expires_at: datetime | None,
+    scope: str | None,
+    user_info: dict[str, Any],
+    provider_email: str | None,
+    provider_email_verified: bool | None,
+    is_login_method: bool,
+) -> SocialAccount:
+    event = context.hooks.run_before(
+        "social_account.create",
+        BeforeSocialAccountCreateEvent(
+            user_id=user_id,
+            provider=provider,
+            provider_user_id=provider_user_id,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            access_token_expires_at=access_token_expires_at,
+            refresh_token_expires_at=refresh_token_expires_at,
+            scope=scope,
+            user_info=user_info,
+            provider_email=provider_email,
+            provider_email_verified=provider_email_verified,
+            is_login_method=is_login_method,
+            extra_fields={},
+        ),
+    )
+    social_account = context.accounts_storage.create_social_account(
+        user_id=event.user_id,
+        provider=event.provider,
+        provider_user_id=event.provider_user_id,
+        access_token=event.access_token,
+        refresh_token=event.refresh_token,
+        access_token_expires_at=event.access_token_expires_at,
+        refresh_token_expires_at=event.refresh_token_expires_at,
+        scope=event.scope,
+        user_info=event.user_info,
+        provider_email=event.provider_email,
+        provider_email_verified=event.provider_email_verified,
+        is_login_method=event.is_login_method,
+        extra_fields=event.extra_fields,
+    )
+    context.hooks.run_after(
+        "social_account.create",
+        AfterSocialAccountCreateEvent(
+            user_info=event.user_info,
+            social_account=social_account,
+        ),
+    )
+    return social_account
+
+
+def _update_social_account(
+    *,
+    context: Context,
+    social_account: SocialAccount,
+    access_token: str | None,
+    refresh_token: str | None,
+    access_token_expires_at: datetime | None,
+    refresh_token_expires_at: datetime | None,
+    scope: str | None,
+    user_info: dict[str, Any],
+    provider_email: str | None,
+    provider_email_verified: bool | None,
+) -> SocialAccount:
+    event = context.hooks.run_before(
+        "social_account.update",
+        BeforeSocialAccountUpdateEvent(
+            social_account=social_account,
+            user_id=social_account.user_id,
+            provider=social_account.provider,
+            provider_user_id=social_account.provider_user_id,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            access_token_expires_at=access_token_expires_at,
+            refresh_token_expires_at=refresh_token_expires_at,
+            scope=scope,
+            user_info=user_info,
+            provider_email=provider_email,
+            provider_email_verified=provider_email_verified,
+            is_login_method=social_account.is_login_method,
+            extra_fields={},
+        ),
+    )
+    updated_social_account = context.accounts_storage.update_social_account(
+        social_account.id,
+        access_token=event.access_token,
+        refresh_token=event.refresh_token,
+        access_token_expires_at=event.access_token_expires_at,
+        refresh_token_expires_at=event.refresh_token_expires_at,
+        scope=event.scope,
+        user_info=event.user_info,
+        provider_email=event.provider_email,
+        provider_email_verified=event.provider_email_verified,
+        extra_fields=event.extra_fields,
+    )
+    context.hooks.run_after(
+        "social_account.update",
+        AfterSocialAccountUpdateEvent(
+            user_info=event.user_info,
+            social_account=updated_social_account,
+        ),
+    )
+    return updated_social_account
+
+
 def resolve_or_create_user(
     *,
     provider: OAuth2Provider,
@@ -811,8 +959,9 @@ def resolve_or_create_user(
             if token_response.access_token is not None
             else social_account
         )
-        social_account = context.accounts_storage.update_social_account(
-            social_account.id,
+        social_account = _update_social_account(
+            context=context,
+            social_account=social_account,
             access_token=source.access_token,
             refresh_token=source.refresh_token,
             access_token_expires_at=source.access_token_expires_at,
@@ -873,14 +1022,16 @@ def resolve_or_create_user(
                 ),
             )
 
-        user = context.accounts_storage.create_user(
+        user = _create_user(
+            context=context,
             user_info=user_info,
             email=email,
             email_verified=validated.email_verified or False,
         )
         created_user = True
 
-    created_social_account = context.accounts_storage.create_social_account(
+    created_social_account = _create_social_account(
+        context=context,
         user_id=user.id,
         provider=provider.id,
         provider_user_id=validated.provider_user_id,
@@ -934,8 +1085,9 @@ def _complete_connect(
                 ),
             )
 
-        context.accounts_storage.update_social_account(
-            social_account.id,
+        _update_social_account(
+            context=context,
+            social_account=social_account,
             access_token=token_response.access_token,
             refresh_token=token_response.refresh_token,
             access_token_expires_at=token_response.access_token_expires_at,
@@ -946,7 +1098,8 @@ def _complete_connect(
             provider_email_verified=validated.email_verified,
         )
     else:
-        context.accounts_storage.create_social_account(
+        _create_social_account(
+            context=context,
             user_id=user.id,
             provider=provider.id,
             provider_user_id=validated.provider_user_id,
@@ -1329,8 +1482,9 @@ def finalize_link(
                 "server_error", error_description="Social account already exists"
             )
 
-        social_account = context.accounts_storage.update_social_account(
-            social_account.id,
+        social_account = _update_social_account(
+            context=context,
+            social_account=social_account,
             access_token=token_response.access_token,
             refresh_token=token_response.refresh_token,
             access_token_expires_at=token_response.access_token_expires_at,
@@ -1341,7 +1495,8 @@ def finalize_link(
             provider_email_verified=validated.email_verified,
         )
     else:
-        social_account = context.accounts_storage.create_social_account(
+        social_account = _create_social_account(
+            context=context,
             user_id=user.id,
             provider=provider.id,
             provider_user_id=validated.provider_user_id,
