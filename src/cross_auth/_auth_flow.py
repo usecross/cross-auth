@@ -545,6 +545,13 @@ def handle_callback(
     The provider can short-circuit via `intercept_callback` (for non-OAuth
     callback variants) and post-process the final redirect via
     `finalize_redirect`.
+
+    The callback is a top-level browser navigation, so when the stored
+    AuthRequest is missing or expired (and no flow-specific redirect target is
+    known) errors redirect to `default_next_url` instead of returning a JSON
+    body that would strand the user on the API origin. `default_next_url` is
+    operator configuration fixed at construction time — never derived from the
+    request — so these fallback redirects cannot be attacker-controlled.
     """
     if intercepted := provider.intercept_callback(request, context):
         return intercepted
@@ -587,19 +594,24 @@ def _handle_oauth_callback(
                 error_description=f"Authorization failed: {callback_data.error}",
             )
 
-        return Response.error(
-            callback_data.error,
+        return Response.error_redirect(
+            context.default_next_url,
+            error=callback_data.error,
             error_description=f"Authorization failed: {callback_data.error}",
         )
 
     if not state:
-        return Response.error(
-            "server_error", error_description="No state found in request"
+        return Response.error_redirect(
+            context.default_next_url,
+            error="invalid_request",
+            error_description="No state found in request",
         )
 
     if auth_request is None:
-        return Response.error(
-            "server_error", error_description="Provider data not found"
+        return Response.error_redirect(
+            context.default_next_url,
+            error="session_expired",
+            error_description="The authorization request has expired. Please try again.",
         )
 
     if auth_request.provider_id != provider.id:
