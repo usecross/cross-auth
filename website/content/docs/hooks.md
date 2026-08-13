@@ -44,7 +44,8 @@ queue, or observability code.
   mutable event fields documented below.
 - Use `after` hooks for post-success work such as audit logs, metrics, welcome
   emails, or provisioning records.
-- Session hooks (`authenticate`, `login`, `logout`, `session.issue`) are
+- Session and account hooks (`authenticate`, `login`, `logout`, `session.issue`,
+  `user.create`, `social_account.create`, `social_account.update`) are
   synchronous. OAuth and token hooks may be synchronous or asynchronous.
 - Hook events use framework-neutral `cross_web` request and response objects at
   the hook boundary.
@@ -63,6 +64,9 @@ Use this as a quick guide when deciding where custom logic belongs.
 | `login`                    | Control browser session creation and the HTTP response used for session auth | Block session login for service users, remap temporary IDs, add request-scoped policy checks                | Add headers or cookies, publish "user logged in" telemetry                               |
 | `logout`                   | Control session deletion and post-logout side effects                        | Require an active session, prevent logout in special flows, capture session context before deletion         | Audit logout activity, revoke related application state, trigger notifications           |
 | `session.issue`            | Control programmatic bearer-token issuance (`issue_session_token`)           | Block issuance for suspended users, clamp requested lifetimes, enforce per-client policy                    | Audit issued sessions, emit token-issuance telemetry                                     |
+| `user.create`              | Apply policy and side effects around creation of a local user                | Enforce signup eligibility or invitation requirements                                                       | Send welcome events, create telemetry, start post-signup provisioning                    |
+| `social_account.create`    | Customize and observe creation of a provider account                         | Add app-specific storage fields, normalize provider metadata, block creation                                | Audit new linked accounts, trigger downstream provisioning                               |
+| `social_account.update`    | Customize and observe updates to an existing provider account                | Refresh app-specific storage fields, normalize provider metadata, block an update                           | Audit linked-account changes, trigger downstream metadata updates                        |
 | `oauth.authorize`          | Shape the outbound OAuth authorization request                               | Attach tenant-specific login hints, require extra app-level context, normalize provider-facing request data | Track provider redirects, record generated state values for observability                |
 | `oauth.callback`           | Inspect provider user data before Cross-Auth creates or finds a user         | Enforce email domain restrictions, reject unverified emails, apply provider-specific access rules           | Provision internal profiles, send first-login events, audit newly created users          |
 | `oauth.link`               | Control whether an already-authenticated user may start account linking      | Restrict linking by role, plan, tenant, or email domain                                                     | Track linking attempts, log provider selection, store link-start telemetry               |
@@ -175,6 +179,102 @@ def audit_logout(event: AfterLogoutEvent) -> None:
     session_id = None if event.session_record is None else event.session_record.id
     audit_log.record("session_logout", session_id=session_id)
 ```
+
+## Account Hooks
+
+### `user.create`
+
+Runs only when Cross-Auth is about to create a new local user. The `before` hook
+contains the resolved email fields, raw provider `user_info`, and app-specific
+`extra_fields`. It may abort by raising `CrossAuthException` or return a
+replacement event to add fields required by your user model. The `after` hook
+runs after the storage implementation has committed and receives the created
+user.
+
+```python
+from dataclasses import replace
+
+from cross_auth.hooks import AfterUserCreateEvent, BeforeUserCreateEvent
+
+
+@auth.before("user.create")
+def require_invite(event: BeforeUserCreateEvent) -> None:
+    if not invitations.contains(event.email):
+        raise CrossAuthException("signup_not_allowed", "Invite only", 403)
+
+
+@auth.before("user.create")
+def store_full_name(event: BeforeUserCreateEvent) -> BeforeUserCreateEvent:
+    return replace(
+        event,
+        extra_fields={**event.extra_fields, "full_name": event.user_info["name"]},
+    )
+
+
+@auth.after("user.create")
+def track_created_user(event: AfterUserCreateEvent) -> None:
+    analytics.capture("account_created", user_id=str(event.user.id))
+```
+
+`extra_fields` cannot replace `email` or `email_verified`; use the dedicated
+event field instead. Built-in SQLModel storage validates and writes extra fields
+as mapped columns. Custom `AccountsStorage` implementations receive the mapping
+on `create_user` and decide how to persist it.
+
+### `social_account.create` and `social_account.update`
+
+These hooks run around every social-account create and update, including browser
+OAuth, native ID-token sign-in, connect, and finalize-link flows. The `before`
+events contain the resolved standard fields and raw provider `user_info`; the
+update event also contains the existing social account. Return a replacement
+event to alter writable token/profile fields or add app-specific `extra_fields`.
+Identity fields on an existing account are context rather than update targets.
+The built-in SQLModel adapter validates and writes the extra columns.
+
+Stack the two decorators when the same handler applies to both operations. The
+event's literal `operation` field remains available to shared handlers.
+
+```python
+from dataclasses import replace
+
+from cross_auth.hooks import (
+    AfterSocialAccountCreateEvent,
+    AfterSocialAccountUpdateEvent,
+    BeforeSocialAccountCreateEvent,
+    BeforeSocialAccountUpdateEvent,
+)
+
+
+@auth.before("social_account.create")
+@auth.before("social_account.update")
+def store_provider_username(
+    event: BeforeSocialAccountCreateEvent | BeforeSocialAccountUpdateEvent,
+) -> BeforeSocialAccountCreateEvent | BeforeSocialAccountUpdateEvent:
+    username = (
+        event.user_info.get("login") or event.provider_email or event.provider_user_id
+    )
+    return replace(
+        event,
+        extra_fields={**event.extra_fields, "provider_username": username},
+    )
+
+
+@auth.after("social_account.create")
+@auth.after("social_account.update")
+def audit_social_account_change(
+    event: AfterSocialAccountCreateEvent | AfterSocialAccountUpdateEvent,
+) -> None:
+    audit_log.record(
+        f"social_account_{event.operation}d",
+        operation=event.operation,
+        social_account_id=str(event.social_account.id),
+    )
+```
+
+`extra_fields` cannot replace a standard field; use its dedicated event field
+when it is writable. Custom `AccountsStorage` implementations receive
+`extra_fields` on `create_social_account` and `update_social_account` and decide
+how to persist them.
 
 ## OAuth Hooks
 

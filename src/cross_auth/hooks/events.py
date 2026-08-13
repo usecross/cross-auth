@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -78,6 +79,71 @@ class AfterSessionIssueEvent:
     # everything audit and policy handlers need.
     user_id: str
     session_record: SessionRecord
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeUserCreateEvent:
+    user_info: dict[str, Any]
+    email: str
+    email_verified: bool
+    extra_fields: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class AfterUserCreateEvent:
+    user_info: dict[str, Any]
+    user: User
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeSocialAccountCreateEvent:
+    user_id: Any
+    provider: str
+    provider_user_id: str
+    access_token: str | None
+    refresh_token: str | None
+    access_token_expires_at: datetime | None
+    refresh_token_expires_at: datetime | None
+    scope: str | None
+    user_info: dict[str, Any]
+    provider_email: str | None
+    provider_email_verified: bool | None
+    is_login_method: bool
+    extra_fields: dict[str, Any]
+    operation: Literal["create"] = field(init=False, default="create")
+
+
+@dataclass(frozen=True, slots=True)
+class AfterSocialAccountCreateEvent:
+    user_info: dict[str, Any]
+    social_account: SocialAccount
+    operation: Literal["create"] = field(init=False, default="create")
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeSocialAccountUpdateEvent:
+    social_account: SocialAccount
+    user_id: Any
+    provider: str
+    provider_user_id: str
+    access_token: str | None
+    refresh_token: str | None
+    access_token_expires_at: datetime | None
+    refresh_token_expires_at: datetime | None
+    scope: str | None
+    user_info: dict[str, Any]
+    provider_email: str | None
+    provider_email_verified: bool | None
+    is_login_method: bool
+    extra_fields: dict[str, Any]
+    operation: Literal["update"] = field(init=False, default="update")
+
+
+@dataclass(frozen=True, slots=True)
+class AfterSocialAccountUpdateEvent:
+    user_info: dict[str, Any]
+    social_account: SocialAccount
+    operation: Literal["update"] = field(init=False, default="update")
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,8 +307,11 @@ __all__ = [
     "AfterOAuthIdTokenEvent",
     "AfterOAuthLinkEvent",
     "AfterSessionIssueEvent",
+    "AfterSocialAccountCreateEvent",
+    "AfterSocialAccountUpdateEvent",
     "AfterTokenAuthorizationCodeEvent",
     "AfterTokenPasswordEvent",
+    "AfterUserCreateEvent",
     "BeforeAuthenticateEvent",
     "BeforeLoginEvent",
     "BeforeLogoutEvent",
@@ -253,6 +322,9 @@ __all__ = [
     "BeforeOAuthIdTokenEvent",
     "BeforeOAuthLinkEvent",
     "BeforeSessionIssueEvent",
+    "BeforeSocialAccountCreateEvent",
+    "BeforeSocialAccountUpdateEvent",
     "BeforeTokenAuthorizationCodeEvent",
     "BeforeTokenPasswordEvent",
+    "BeforeUserCreateEvent",
 ]

@@ -20,6 +20,7 @@
       <ul>
         <li><code>before:authenticate</code> trims the email; lowercasing and +tag stripping run in normalize_email at lookup.</li>
         <li><code>after:authenticate</code> records whether password authentication succeeded.</li>
+        <li><code>after:user.create</code> records newly committed local users.</li>
         <li><code>after:login</code> records session creation and adds <code>X-Cross-Auth-Hook: login</code>.</li>
         <li><code>after:logout</code> records the cleared session ID.</li>
         <li><code>before:oauth.callback</code> blocks provider emails from a disallowed domain (unverified emails are rejected by the require_verified_email flag).</li>

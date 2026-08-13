@@ -14,8 +14,11 @@ from .events import (
     AfterOAuthIdTokenEvent,
     AfterOAuthLinkEvent,
     AfterSessionIssueEvent,
+    AfterSocialAccountCreateEvent,
+    AfterSocialAccountUpdateEvent,
     AfterTokenAuthorizationCodeEvent,
     AfterTokenPasswordEvent,
+    AfterUserCreateEvent,
     BeforeAuthenticateEvent,
     BeforeLoginEvent,
     BeforeLogoutEvent,
@@ -26,8 +29,11 @@ from .events import (
     BeforeOAuthIdTokenEvent,
     BeforeOAuthLinkEvent,
     BeforeSessionIssueEvent,
+    BeforeSocialAccountCreateEvent,
+    BeforeSocialAccountUpdateEvent,
     BeforeTokenAuthorizationCodeEvent,
     BeforeTokenPasswordEvent,
+    BeforeUserCreateEvent,
 )
 
 HookEventName: TypeAlias = Literal[
@@ -35,6 +41,9 @@ HookEventName: TypeAlias = Literal[
     "login",
     "logout",
     "session.issue",
+    "user.create",
+    "social_account.create",
+    "social_account.update",
     "oauth.authorize",
     "oauth.callback",
     "oauth.id_token",
@@ -51,6 +60,9 @@ _ALL_EVENT_NAMES: frozenset[str] = frozenset(
         "login",
         "logout",
         "session.issue",
+        "user.create",
+        "social_account.create",
+        "social_account.update",
         "oauth.authorize",
         "oauth.callback",
         "oauth.id_token",
@@ -67,6 +79,9 @@ _RETURNABLE_BEFORE_EVENT_NAMES: frozenset[str] = frozenset(
         "login",
         "logout",
         "session.issue",
+        "user.create",
+        "social_account.create",
+        "social_account.update",
         "oauth.authorize",
         "oauth.callback",
         "oauth.id_token",
@@ -85,6 +100,29 @@ BeforeSessionIssueHandler: TypeAlias = Callable[
     [BeforeSessionIssueEvent], BeforeSessionIssueEvent | None
 ]
 AfterSessionIssueHandler: TypeAlias = Callable[[AfterSessionIssueEvent], None]
+BeforeUserCreateHandler: TypeAlias = Callable[
+    [BeforeUserCreateEvent], BeforeUserCreateEvent | None
+]
+AfterUserCreateHandler: TypeAlias = Callable[[AfterUserCreateEvent], None]
+BeforeSocialAccountCreateHandler: TypeAlias = Callable[
+    [BeforeSocialAccountCreateEvent], BeforeSocialAccountCreateEvent | None
+]
+BeforeSocialAccountUpdateHandler: TypeAlias = Callable[
+    [BeforeSocialAccountUpdateEvent], BeforeSocialAccountUpdateEvent | None
+]
+_BeforeSocialAccountCreateOrUpdateHandler: TypeAlias = Callable[
+    [BeforeSocialAccountCreateEvent | BeforeSocialAccountUpdateEvent],
+    BeforeSocialAccountCreateEvent | BeforeSocialAccountUpdateEvent | None,
+]
+AfterSocialAccountCreateHandler: TypeAlias = Callable[
+    [AfterSocialAccountCreateEvent], None
+]
+AfterSocialAccountUpdateHandler: TypeAlias = Callable[
+    [AfterSocialAccountUpdateEvent], None
+]
+_AfterSocialAccountCreateOrUpdateHandler: TypeAlias = Callable[
+    [AfterSocialAccountCreateEvent | AfterSocialAccountUpdateEvent], None
+]
 AfterAuthenticateHandler: TypeAlias = Callable[[AfterAuthenticateEvent], None]
 
 BeforeLoginHandler: TypeAlias = Callable[[BeforeLoginEvent], BeforeLoginEvent | None]

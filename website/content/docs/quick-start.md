@@ -36,7 +36,6 @@ See the [Storage](/docs/storage) guide for the model definitions (`User`,
 `SocialAccount`, `UserSession`) used below.
 
 ```python
-import redis
 from sqlmodel import Session, create_engine
 
 from cross_auth.storage.redis import RedisStorage
@@ -50,7 +49,7 @@ from cross_auth.storage.sqlmodel import (
 # database driver installed (e.g. `pip install psycopg`).
 engine = create_engine("postgresql+psycopg://localhost/myapp")
 
-secondary_storage = RedisStorage(redis.Redis.from_url("redis://localhost:6379"))
+secondary_storage = RedisStorage.from_url("redis://localhost:6379")
 
 
 accounts_storage = SQLModelAccountsStorage(
@@ -61,10 +60,11 @@ session_storage = SQLModelSessionStorage(
 )
 ```
 
-Need invite checks, team creation, custom user construction, or post-signup
-telemetry? Subclass the accounts storage and override the signup hooks
-(`build_user`, `on_signup`, `after_signup`) — see the [Storage](/docs/storage)
-guide.
+Map required user-model columns with the typed `user.create` hook. Subclass the
+accounts storage only when related rows must join the signup transaction; the
+[Storage](/docs/storage) guide documents the private SQLModel escape hatch. For
+signup policy, telemetry, and social-account metadata, use the typed
+[`user.create`, `social_account.create`, and `social_account.update` hooks](/docs/hooks).
 
 Using a different ORM? The [Storage](/docs/storage) guide shows how to implement
 the protocols directly.

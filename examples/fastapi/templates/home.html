@@ -98,8 +98,8 @@
         Emails starting with <code>unverified</code> are treated as unverified by the mock
         and rejected by <code>require_verified_email</code>. Emails at
         <code>blocked.example</code> are rejected by a <code>before oauth.callback</code> hook;
-        emails at <code>banned.example</code> get past the hook but abort inside the signup
-        transaction (<code>on_signup</code>), rolling back the new user. Try
+        emails at <code>banned.example</code> are rejected by a
+        <code>before user.create</code> hook. Try
         <code>demo+anything@example.com</code> to see the custom <code>normalize_email</code>
         resolve it to the seeded demo user.
       </p>
@@ -117,8 +117,8 @@
     <div class="stack">
       <h2>Hook Activity</h2>
       <p>
-        This example registers hooks for password authentication, session login/logout,
-        OAuth callbacks, and token exchange.
+        This example registers hooks for password authentication, user creation,
+        session login/logout, OAuth callbacks, and token exchange.
       </p>
       {% if hook_events %}
         <ul>

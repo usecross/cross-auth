@@ -1,4 +1,5 @@
 from typing import cast
+from unittest.mock import Mock
 
 import pytest
 from redis import Redis
@@ -18,6 +19,7 @@ class FakeRedis:
     def __init__(self, *, decode_responses: bool = False):
         self.data: dict[str, bytes] = {}
         self.decode_responses = decode_responses
+        self.closed = False
 
     def _encode(self, value: str) -> bytes:
         return value.encode()
@@ -46,6 +48,9 @@ class FakeRedis:
                 del self.data[name]
                 removed += 1
         return removed
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _typed(client: FakeRedis) -> Redis:
@@ -165,3 +170,30 @@ def test_constructor_rejects_async_client():
 
     with pytest.raises(TypeError, match="synchronous"):
         RedisStorage(cast(Redis, AsyncRedis()))
+
+
+def test_from_url_creates_owned_client(monkeypatch: pytest.MonkeyPatch):
+    client = _typed(FakeRedis())
+    from_url = Mock(return_value=client)
+    monkeypatch.setattr(Redis, "from_url", from_url)
+
+    storage = RedisStorage.from_url("redis://localhost:6379/1", decode_responses=True)
+    storage.close()
+
+    from_url.assert_called_once_with("redis://localhost:6379/1", decode_responses=True)
+    assert cast(FakeRedis, client).closed is True
+
+
+def test_close_leaves_injected_client_open():
+    fake_client = FakeRedis()
+    client = _typed(fake_client)
+
+    RedisStorage(client).close()
+
+    assert fake_client.closed is False
+
+
+def test_client_exposes_underlying_client():
+    client = _typed(FakeRedis())
+
+    assert RedisStorage(client).client is client

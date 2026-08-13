@@ -41,14 +41,25 @@ uv add 'cross-auth[redis,sqlmodel]'
 
 ### RedisStorage
 
-`RedisStorage` implements `SecondaryStorage`. Pass it an existing redis client:
+`RedisStorage` implements `SecondaryStorage`. For the common case, create it
+from a Redis URL and close it during application shutdown:
 
 ```python
-import redis
 from cross_auth.storage.redis import RedisStorage
 
-secondary_storage = RedisStorage(redis.Redis.from_url("redis://localhost:6379"))
+secondary_storage = RedisStorage.from_url("redis://localhost:6379")
+
+# On application shutdown:
+secondary_storage.close()
 ```
+
+`from_url()` owns the synchronous redis-py client and its connection pool;
+keyword arguments are passed through to `redis.Redis.from_url()`. If you inject
+an existing client with `RedisStorage(client)`, it remains caller-owned and
+`RedisStorage.close()` leaves it open. Client injection is useful for custom
+pools, Redis Cluster or Sentinel setup, instrumentation, and tests. The
+read-only `client` property exposes the underlying redis-py client when an
+application needs commands outside the secondary-storage protocol.
 
 It requires a **synchronous** redis-py client with `GETDEL` support (redis-py >=
 4.2; the `redis` extra installs >= 5.0) against a **Redis server 6.2 or newer**.
@@ -64,9 +75,10 @@ means "already expired": the key is deleted instead of stored.
 ### SQLModelAccountsStorage
 
 Pass your models to `SQLModelAccountsStorage` — it implements all of
-`AccountsStorage`, including a working `create_user`. App-specific signup
-behaviour (invite checks, team creation, profile defaults) goes in the optional
-`on_signup` hook.
+`AccountsStorage`, including a working `create_user`. Map app-specific user
+columns with the public typed hooks described below. The adapter also has a
+private escape hatch for the rarer case where related rows must share its user
+transaction.
 
 First, your user-owned models (you control the table names, columns, and
 migrations):
@@ -127,47 +139,62 @@ and returns the user fully loaded (so it stays readable after the session
 closes), bypassing `filter_user_query` so a freshly created user is always
 returned.
 
-Real signup flows usually do more. Three hooks cover the phases of that
-transaction:
+The default user creation validates and applies mapped `extra_fields` from the
+`user.create` hook, then assigns `email_verified` through the model attribute.
+That supports either a mapped field or a writable property backed by a
+differently named column.
 
-- `build_user` **constructs** the instance. The default is
-  `UserModel(email=..., email_verified=...)` — override it when your model needs
-  more: generated fields (a unique username — the open session is provided for
-  lookups), or a differently-named column. This matters because SQLModel
-  silently ignores unknown constructor kwargs: a model that stores verification
-  under, say, `is_verified` must be constructed explicitly here or the flag is
-  silently lost.
-- `on_signup` runs **inside the transaction**, after the user is added but
-  before the commit. Raise to abort (everything rolls back), mutate `user` to
-  fill extra columns, or `session.add(...)` related rows so the whole signup
-  commits atomically. The user isn't flushed yet, so call `session.flush()` if
-  you need `user.id`.
-- `after_signup` runs **post-commit** with the final, fully-loaded user —
-  telemetry, welcome emails, queueing background work. Raising here does not
-  undo the signup.
+Use `@auth.before("user.create")` for signup policy and mapped app fields,
+`@auth.after("user.create")` for post-commit work such as telemetry or welcome
+emails. Those are public lifecycle hooks and apply regardless of the storage
+implementation.
+
+If related rows must commit atomically with the user, subclass the adapter and
+override its private `_build_user` escape hatch. Call `super()`, add your rows
+to the supplied session, and return the user. Do not commit or perform external
+I/O here; `create_user` owns the transaction boundary. Because this is a private
+method, it may change between releases.
 
 ```python
 class AccountsStore(SQLModelAccountsStorage[User, SocialAccount]):
     UserModel = User
     SocialAccountModel = SocialAccount
 
-    def build_user(self, *, session, user_info, email, email_verified):
-        username = generate_unique_username(session, email)
-        return User(email=email, is_verified=email_verified, username=username)
-
-    def on_signup(self, *, session, user, user_info, email_verified):
-        if not is_invited(user.email):
-            # Aborts the signup: the transaction rolls back,
-            # nothing is persisted.
-            raise CrossAuthException("signup_not_allowed", "Invite only")
-        user.full_name = user_info.get("name")  # set extra columns
+    def _build_user(self, *, session, **kwargs):
+        user = super()._build_user(session=session, **kwargs)
         session.add(Team(owner=user))  # joins the same commit
-
-    def after_signup(self, *, user, user_info):
-        telemetry.capture("account_created", user_id=user.id)
+        return user
 
 
 accounts_storage = AccountsStore(session_factory=lambda: Session(engine))
+```
+
+Register policy, mapped fields, and post-commit behavior on the `CrossAuth`
+instance:
+
+```python
+from dataclasses import replace
+
+from cross_auth.hooks import AfterUserCreateEvent, BeforeUserCreateEvent
+
+
+@auth.before("user.create")
+def require_invite(event: BeforeUserCreateEvent) -> None:
+    if not is_invited(event.email):
+        raise CrossAuthException("signup_not_allowed", "Invite only")
+
+
+@auth.before("user.create")
+def store_full_name(event: BeforeUserCreateEvent) -> BeforeUserCreateEvent:
+    return replace(
+        event,
+        extra_fields={**event.extra_fields, "full_name": event.user_info["name"]},
+    )
+
+
+@auth.after("user.create")
+def track_signup(event: AfterUserCreateEvent) -> None:
+    telemetry.capture("account_created", user_id=event.user.id)
 ```
 
 Everything else (`find_user_by_email`, `find_social_account`,
@@ -177,21 +204,36 @@ the rest) is handled by the base.
 Configuration is validated at construction: a missing model declaration, a model
 missing an attribute the `User`/`SocialAccount` protocols require, or a
 non-callable `session_factory` raises a `TypeError` at startup rather than on
-the first login. The token columns the default payload builders write
+the first login. The token columns the adapter writes by default
 (`access_token`, `refresh_token`, their expiries, and `scope`) are checked too,
 because SQLModel silently ignores unknown constructor kwargs — without the
-check, a missing column would silently drop OAuth tokens. If you don't want to
-store tokens, override both payload builders to drop those fields.
+check, a missing column would silently drop OAuth tokens. An app that
+deliberately does not persist provider credentials can declare those optional
+fields explicitly:
 
-#### Customization hooks
+```python
+class AccountsStore(SQLModelAccountsStorage[User, SocialAccount]):
+    excluded_social_account_fields = frozenset(
+        {
+            "access_token",
+            "refresh_token",
+            "access_token_expires_at",
+            "refresh_token_expires_at",
+            "scope",
+        }
+    )
+```
+
+Only those five optional credential fields can be excluded; identity and login
+fields remain required. The social-account model must still expose the five
+credential attributes as readable properties because Cross-Auth reads them when
+preserving credentials during a tokenless sign-in. A storage that never persists
+credentials can return `None` from those properties.
+
+#### Adapter customization
 
 Override these methods instead of reimplementing whole protocol methods:
 
-- `build_user(*, session, user_info, email, email_verified)` - construct the
-  user instance (see above).
-- `on_signup(*, session, user, user_info, email_verified)` - signup behaviour
-  inside the signup transaction (see above).
-- `after_signup(*, user, user_info)` - post-commit side effects (see above).
 - `filter_user_query(statement)` - refine user lookups, e.g. exclude
   soft-deleted users. (`create_user` deliberately skips this filter.)
 - `filter_social_account_query(statement)` - scope social accounts, e.g. by
@@ -200,13 +242,13 @@ Override these methods instead of reimplementing whole protocol methods:
   the eager-loaded `user.social_accounts` relationship on a returned user — that
   collection is always loaded unfiltered; use `list_social_accounts` for a
   filtered read.
-- `build_social_account_create_values(*, user_info, **fields)` - customize the
-  columns written when creating a social account (e.g. derive a provider
-  username from `user_info`).
-- `build_social_account_update_values(*, user_info, record, **fields)` - same,
-  for updates. `record` is the loaded row being updated, so derived columns can
-  read its current state (e.g. recompute a provider username from
-  `record.provider` and `record.provider_user_id`).
+
+For related rows that must share user creation's transaction, the private
+`_build_user` escape hatch is described above. Prefer typed hooks for everything
+that does not need the SQLModel session.
+
+`excluded_social_account_fields` is the corresponding declarative setting for
+omitting optional provider credentials from writes.
 
 ```python
 class AccountsStore(SQLModelAccountsStorage[User, SocialAccount]):
@@ -217,6 +259,37 @@ class AccountsStore(SQLModelAccountsStorage[User, SocialAccount]):
         # Assumes your User model adds a deleted_at column.
         return statement.where(User.deleted_at == None)  # noqa: E711
 ```
+
+Custom social-account columns do not require subclass methods. The
+`social_account.create` and `social_account.update` hooks can add
+`extra_fields`, which the SQLModel adapter validates and writes:
+
+```python
+from dataclasses import replace
+
+from cross_auth.hooks import (
+    BeforeSocialAccountCreateEvent,
+    BeforeSocialAccountUpdateEvent,
+)
+
+
+@auth.before("social_account.create")
+@auth.before("social_account.update")
+def store_provider_username(
+    event: BeforeSocialAccountCreateEvent | BeforeSocialAccountUpdateEvent,
+) -> BeforeSocialAccountCreateEvent | BeforeSocialAccountUpdateEvent:
+    username = (
+        event.user_info.get("login") or event.provider_email or event.provider_user_id
+    )
+    return replace(
+        event,
+        extra_fields={**event.extra_fields, "provider_username": username},
+    )
+```
+
+`extra_fields` cannot replace standard social-account fields; use the dedicated
+event field when it is writable. Unknown SQLModel column names fail at write
+time instead of being silently ignored.
 
 ### SQLModelSessionStorage
 
@@ -357,12 +430,23 @@ class AccountsStorage(Protocol):
     ) -> SocialAccount | None: ...
     def list_social_accounts(self, *, user_id: Any) -> Iterable[SocialAccount]: ...
     def create_user(
-        self, *, user_info: dict[str, Any], email: str, email_verified: bool
+        self,
+        *,
+        user_info: dict[str, Any],
+        email: str,
+        email_verified: bool,
+        extra_fields: Mapping[str, Any] | None = None,
     ) -> User: ...
     def create_social_account(self, **kwargs) -> SocialAccount: ...
     def update_social_account(self, social_account_id, **kwargs) -> SocialAccount: ...
     def delete_social_account(self, social_account_id: Any) -> None: ...
 ```
+
+The user and social-account write methods receive `extra_fields`, mappings
+populated by the corresponding `user.create`, `social_account.create`, or
+`social_account.update` hook. Built-in SQLModel storage writes those keys as
+additional mapped columns; custom storage implementations should persist the
+keys they support and reject unknown ones.
 
 Emails are normalized before they reach your storage: Cross-Auth trims and
 lowercases them ahead of every `find_user_by_email` and `create_user` call, so

@@ -1,4 +1,4 @@
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -266,6 +266,7 @@ class AccountsStorage(Protocol):
         user_info: dict[str, Any],
         email: str,
         email_verified: bool,
+        extra_fields: Mapping[str, Any] | None = None,
     ) -> User: ...
 
     def create_social_account(
@@ -283,6 +284,7 @@ class AccountsStorage(Protocol):
         provider_email: str | None,
         provider_email_verified: bool | None,
         is_login_method: bool,
+        extra_fields: Mapping[str, Any] | None = None,
     ) -> SocialAccount: ...
 
     def update_social_account(
@@ -297,6 +299,7 @@ class AccountsStorage(Protocol):
         user_info: dict[str, Any],
         provider_email: str | None,
         provider_email_verified: bool | None,
+        extra_fields: Mapping[str, Any] | None = None,
     ) -> SocialAccount: ...
 
     def delete_social_account(self, social_account_id: Any) -> None: ...

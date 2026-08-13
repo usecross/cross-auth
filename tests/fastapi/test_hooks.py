@@ -26,14 +26,20 @@ from cross_auth.hooks import (
     AfterOAuthCallbackEvent,
     AfterOAuthFinalizeLinkEvent,
     AfterOAuthLinkEvent,
+    AfterSocialAccountCreateEvent,
+    AfterSocialAccountUpdateEvent,
     AfterTokenAuthorizationCodeEvent,
+    AfterUserCreateEvent,
     BeforeAuthenticateEvent,
     BeforeLoginEvent,
     BeforeLogoutEvent,
     BeforeOAuthAuthorizeEvent,
     BeforeOAuthCallbackEvent,
     BeforeOAuthFinalizeLinkEvent,
+    BeforeSocialAccountCreateEvent,
+    BeforeSocialAccountUpdateEvent,
     BeforeTokenPasswordEvent,
+    BeforeUserCreateEvent,
     HookRegistry,
 )
 from cross_auth.social_providers.oauth import (
@@ -73,6 +79,57 @@ def _make_auth(
         get_user_from_request=get_user_from_request,
         config=config,
     )
+
+
+def test_hook_decorators_preserve_optional_keyword_parameters(
+    secondary_storage,
+    accounts_storage,
+    session_storage,
+    logged_in_user,
+):
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        session_storage=session_storage,
+    )
+    seen: list[str] = []
+
+    @auth.before("user.create")
+    def before_user_create(
+        event: BeforeUserCreateEvent,
+        *,
+        source: str = "hook",
+    ) -> BeforeUserCreateEvent:
+        seen.append(f"before:{source}")
+        return event
+
+    @auth.after("user.create")
+    def after_user_create(
+        event: AfterUserCreateEvent,
+        *,
+        source: str = "hook",
+    ) -> None:
+        seen.append(f"after:{source}:{event.user.id}")
+
+    before_event = BeforeUserCreateEvent(
+        user_info={},
+        email="test@example.com",
+        email_verified=True,
+        extra_fields={},
+    )
+    after_event = AfterUserCreateEvent(user_info={}, user=logged_in_user)
+
+    assert before_user_create(before_event) is before_event
+    after_user_create(after_event)
+    assert before_user_create(before_event, source="direct") is before_event
+    after_user_create(after_event, source="direct")
+
+    assert seen == [
+        "before:hook",
+        f"after:hook:{logged_in_user.id}",
+        "before:direct",
+        f"after:direct:{logged_in_user.id}",
+    ]
 
 
 def test_authenticate_hooks(
@@ -405,6 +462,119 @@ def test_oauth_callback_hooks(
     assert resp.status_code == 302
     assert seen == {"email": "hooked@example.com"}
     assert accounts_storage.find_user_by_email("hooked@example.com") is not None
+
+
+def test_social_account_create_and_update_hooks_can_share_handlers(
+    secondary_storage,
+    accounts_storage,
+    session_storage,
+    oauth_provider,
+    respx_mock: MockRouter,
+):
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        session_storage=session_storage,
+        providers=[oauth_provider],
+    )
+    seen: list[str] = []
+
+    @auth.before("user.create")
+    def add_display_name(event: BeforeUserCreateEvent) -> BeforeUserCreateEvent:
+        seen.append("before:user.create")
+        assert event.email == "new-user@example.com"
+        return replace(
+            event,
+            extra_fields={
+                **event.extra_fields,
+                "display_name": event.user_info["login"],
+            },
+        )
+
+    @auth.after("user.create")
+    def capture_created_user(event: AfterUserCreateEvent) -> None:
+        seen.append(f"after:user.create:{event.user.email}")
+
+    @auth.before("social_account.create")
+    @auth.before("social_account.update")
+    def add_provider_username(
+        event: BeforeSocialAccountCreateEvent | BeforeSocialAccountUpdateEvent,
+    ) -> BeforeSocialAccountCreateEvent | BeforeSocialAccountUpdateEvent:
+        seen.append(f"before:social_account.{event.operation}")
+        assert event.provider == oauth_provider.id
+        assert event.provider_user_id == "provider-user-id"
+        if isinstance(event, BeforeSocialAccountUpdateEvent):
+            assert event.social_account is not None
+        return replace(
+            event,
+            extra_fields={
+                **event.extra_fields,
+                "provider_username": event.user_info["login"],
+            },
+        )
+
+    @auth.after("social_account.create")
+    @auth.after("social_account.update")
+    def capture_social_account_change(
+        event: AfterSocialAccountCreateEvent | AfterSocialAccountUpdateEvent,
+    ) -> None:
+        seen.append(f"after:social_account.{event.operation}")
+
+    respx_mock.post(oauth_provider.token_endpoint).mock(
+        return_value=httpx.Response(
+            200,
+            json={"access_token": "access-token", "token_type": "Bearer"},
+        )
+    )
+    respx_mock.get(oauth_provider.user_info_endpoint).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "email": "New-User@example.com",
+                "email_verified": True,
+                "id": "provider-user-id",
+                "login": "octocat",
+            },
+        )
+    )
+
+    app = FastAPI()
+    app.include_router(auth.router)
+
+    with TestClient(app) as client:
+        for state in ("create-state", "update-state"):
+            secondary_storage.set(
+                f"oauth:authorization_request:{state}",
+                AuthRequest(
+                    flow="token",
+                    provider_id=oauth_provider.id,
+                    state=state,
+                    client_id="my_app_client_id",
+                    client_redirect_uri="http://valid-frontend.com/callback",
+                    client_code_challenge="test",
+                    client_code_challenge_method="S256",
+                ).model_dump_json(),
+            )
+            response = client.get(
+                "/test/callback",
+                params={"code": "oauth-code", "state": state},
+                follow_redirects=False,
+            )
+            assert response.status_code == 302
+
+    assert seen == [
+        "before:user.create",
+        "after:user.create:new-user@example.com",
+        "before:social_account.create",
+        "after:social_account.create",
+        "before:social_account.update",
+        "after:social_account.update",
+    ]
+    assert accounts_storage.social_account_extra_fields_history == [
+        {"provider_username": "octocat"},
+        {"provider_username": "octocat"},
+    ]
+    assert accounts_storage.last_user_extra_fields == {"display_name": "octocat"}
 
 
 def test_oauth_callback_hooks_run_for_session_flow(
