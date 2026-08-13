@@ -16,6 +16,9 @@ dependencies = [
 [dependency-groups]
 dev = []
 
+[tool.setuptools]
+py-modules = ["main"]
+
 [tool.cross-docs]
 content_dir = "content"
 prefix = "/docs"
