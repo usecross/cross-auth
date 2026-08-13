@@ -1,6 +1,18 @@
 CHANGELOG
 =========
 
+0.22.1 - 2026-08-13
+-------------------
+
+OAuth callback routes now use distinct OpenAPI operation IDs for GET and POST
+requests. This removes FastAPI's duplicate operation ID warning and allows
+OpenAPI client generators to produce unambiguous callback methods while
+preserving the existing operation ID for standard GET callbacks.
+
+This release was contributed by [@YuriiMotov](https://github.com/YuriiMotov) in [#52](https://github.com/usecross/cross-auth/pull/52)
+
+Additional contributors: [@patrick91](https://github.com/patrick91)
+
 0.22.0 - 2026-08-13
 -------------------
 
