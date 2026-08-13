@@ -549,7 +549,9 @@ def handle_callback(
     The callback is a top-level browser navigation, so when the stored
     AuthRequest is missing or expired (and no flow-specific redirect target is
     known) errors redirect to `default_next_url` instead of returning a JSON
-    body that would strand the user on the API origin.
+    body that would strand the user on the API origin. `default_next_url` is
+    operator configuration fixed at construction time — never derived from the
+    request — so these fallback redirects cannot be attacker-controlled.
     """
     if intercepted := provider.intercept_callback(request, context):
         return intercepted
