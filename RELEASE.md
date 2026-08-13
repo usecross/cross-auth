@@ -1,4 +1,6 @@
-Release type: minor
+---
+release type: minor
+---
 
 OAuth callback errors that occur when the stored auth request is missing or
 expired no longer return a bare JSON 400. The callback endpoint is a top-level
