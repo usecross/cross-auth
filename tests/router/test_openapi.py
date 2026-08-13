@@ -16,4 +16,6 @@ def test_callback_routes_have_unique_operation_ids(auth: CrossAuth):
     callback_operations = schema["paths"]["/fake/callback"]
 
     assert callback_operations["get"]["operationId"] == "fake_callback"
+    assert "requestBody" not in callback_operations["get"]
     assert callback_operations["post"]["operationId"] == "fake_callback_post"
+    assert "requestBody" in callback_operations["post"]

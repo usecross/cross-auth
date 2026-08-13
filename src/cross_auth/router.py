@@ -89,7 +89,6 @@ def _provider_routes(provider: OAuth2Provider, *, cookie_auth: bool) -> list[Rou
                 methods=["GET"],
                 function=bound(handle_callback),
                 operation_id=f"{provider.id}_callback",
-                read_form_data=True,
             ),
             Route(
                 path=f"{prefix}/callback",
