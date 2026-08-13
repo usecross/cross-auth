@@ -526,6 +526,25 @@ def test_social_account_model_missing_protocol_field_raises_at_construction(engi
         BadStore(session_factory=lambda: Session(engine))
 
 
+def test_social_account_model_missing_credential_property_raises_at_construction(
+    engine,
+):
+    class MissingCredentialsSocialAccount:
+        id = None
+        user_id = None
+        provider = None
+        provider_user_id = None
+        provider_email = None
+        provider_email_verified = None
+        is_login_method = None
+
+    class BadStore(AccountsStore):
+        SocialAccountModel = MissingCredentialsSocialAccount
+
+    with pytest.raises(TypeError, match="access_token"):
+        BadStore(session_factory=lambda: Session(engine))
+
+
 def test_missing_token_columns_raises_at_construction(engine):
     # SQLModel silently ignores unknown constructor kwargs, so a model missing
     # the token columns would silently drop OAuth tokens. This must fail at
@@ -578,7 +597,11 @@ def test_tokenless_model_works_with_excluded_fields(engine):
 
     assert account.provider == "google"
     assert account.provider_email == "a@example.com"
-    assert getattr(account, "access_token", None) is None
+    assert account.access_token is None
+    assert account.refresh_token is None
+    assert account.access_token_expires_at is None
+    assert account.refresh_token_expires_at is None
+    assert account.scope is None
 
     updated = store.update_social_account(
         account.id,

@@ -199,7 +199,7 @@ class SoftDeleteAccountsStore(AccountsStore):
 
 
 class LeanSocialAccount(SQLModel, table=True):
-    """Social account without the required token/scope columns."""
+    """Social account that reads credentials but does not persist them."""
 
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id")
@@ -208,6 +208,26 @@ class LeanSocialAccount(SQLModel, table=True):
     provider_email: str | None = None
     provider_email_verified: bool | None = None
     is_login_method: bool = True
+
+    @property
+    def access_token(self) -> None:
+        return None
+
+    @property
+    def refresh_token(self) -> None:
+        return None
+
+    @property
+    def access_token_expires_at(self) -> None:
+        return None
+
+    @property
+    def refresh_token_expires_at(self) -> None:
+        return None
+
+    @property
+    def scope(self) -> None:
+        return None
 
 
 class LeanAccountsStore(AccountsStore):

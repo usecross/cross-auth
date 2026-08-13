@@ -5,6 +5,7 @@ import hashlib
 from typing import Any
 
 import pytest
+from sqlmodel import Session
 
 from cross_auth import AccountsStorage, SecondaryStorage
 from cross_auth.exceptions import CrossAuthException
@@ -13,6 +14,9 @@ from cross_auth.hooks import AfterOAuthIdTokenEvent, BeforeOAuthIdTokenEvent
 from cross_auth.social_providers.github import GitHubProvider
 from cross_auth.social_providers.oauth import OAuth2Exception
 from cross_auth.social_providers.oidc import OIDCProvider
+
+from ..storage.conftest import make_sqlite_engine
+from ..storage.models import LeanAccountsStore
 
 VALID_TOKEN = "valid-id-token"  # noqa: S105
 
@@ -79,6 +83,31 @@ def test_creates_user_with_normalized_email_and_no_tokens(
     again, created_again = auth.sign_in_with_id_token("stub", VALID_TOKEN)
     assert created_again is False
     assert again.id == user.id
+
+
+def test_repeat_sign_in_works_with_tokenless_sqlmodel_storage(
+    secondary_storage: SecondaryStorage,
+):
+    provider = StubOIDCProvider(
+        {"sub": "tokenless-1", "email": "tokenless@example.com", "email_verified": True}
+    )
+    engine = make_sqlite_engine()
+    accounts_storage = LeanAccountsStore(session_factory=lambda: Session(engine))
+    auth = _make_auth(secondary_storage, accounts_storage, provider)
+
+    user, created = auth.sign_in_with_id_token("stub", VALID_TOKEN)
+    again, created_again = auth.sign_in_with_id_token("stub", VALID_TOKEN)
+
+    assert created is True
+    assert created_again is False
+    assert again.id == user.id
+    account = accounts_storage.find_social_account(
+        provider="stub", provider_user_id="tokenless-1"
+    )
+    assert account is not None
+    assert account.access_token is None
+    assert account.refresh_token is None
+    assert account.scope is None
 
 
 def test_links_to_existing_account_only_when_linking_enabled(

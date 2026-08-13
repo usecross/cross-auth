@@ -202,7 +202,10 @@ def _prepare_record(record, fields):
         return None
     for field in fields:
         if hasattr(record, field):
-            setattr(record, field, _ensure_aware_datetime(getattr(record, field)))
+            value = getattr(record, field)
+            prepared_value = _ensure_aware_datetime(value)
+            if prepared_value is not value:
+                setattr(record, field, prepared_value)
     return record
 
 
@@ -626,6 +629,11 @@ class SQLModelAccountsStorage(
                 "provider_email",
                 "provider_email_verified",
                 "is_login_method",
+                "access_token",
+                "refresh_token",
+                "access_token_expires_at",
+                "refresh_token_expires_at",
+                "scope",
             ),
         ),
     )

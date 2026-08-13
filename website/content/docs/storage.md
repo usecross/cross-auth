@@ -225,7 +225,10 @@ class AccountsStore(SQLModelAccountsStorage[User, SocialAccount]):
 ```
 
 Only those five optional credential fields can be excluded; identity and login
-fields remain required.
+fields remain required. The social-account model must still expose the five
+credential attributes as readable properties because Cross-Auth reads them when
+preserving credentials during a tokenless sign-in. A storage that never persists
+credentials can return `None` from those properties.
 
 #### Adapter customization
 
