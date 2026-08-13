@@ -81,6 +81,57 @@ def _make_auth(
     )
 
 
+def test_hook_decorators_preserve_optional_keyword_parameters(
+    secondary_storage,
+    accounts_storage,
+    session_storage,
+    logged_in_user,
+):
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        session_storage=session_storage,
+    )
+    seen: list[str] = []
+
+    @auth.before("user.create")
+    def before_user_create(
+        event: BeforeUserCreateEvent,
+        *,
+        source: str = "hook",
+    ) -> BeforeUserCreateEvent:
+        seen.append(f"before:{source}")
+        return event
+
+    @auth.after("user.create")
+    def after_user_create(
+        event: AfterUserCreateEvent,
+        *,
+        source: str = "hook",
+    ) -> None:
+        seen.append(f"after:{source}:{event.user.id}")
+
+    before_event = BeforeUserCreateEvent(
+        user_info={},
+        email="test@example.com",
+        email_verified=True,
+        extra_fields={},
+    )
+    after_event = AfterUserCreateEvent(user_info={}, user=logged_in_user)
+
+    assert before_user_create(before_event) is before_event
+    after_user_create(after_event)
+    assert before_user_create(before_event, source="direct") is before_event
+    after_user_create(after_event, source="direct")
+
+    assert seen == [
+        "before:hook",
+        f"after:hook:{logged_in_user.id}",
+        "before:direct",
+        f"after:direct:{logged_in_user.id}",
+    ]
+
+
 def test_authenticate_hooks(
     secondary_storage,
     accounts_storage,

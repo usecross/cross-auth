@@ -5,7 +5,16 @@ import secrets
 import warnings
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, Literal, Protocol, TypeVar, cast, overload
+from typing import (
+    Any,
+    Concatenate,
+    Literal,
+    ParamSpec,
+    Protocol,
+    TypeVar,
+    cast,
+    overload,
+)
 
 from cross_web import AsyncHTTPRequest, Cookie, HTTPRequest
 from cross_web import Response as CrossWebResponse
@@ -45,71 +54,93 @@ from .hooks import (
     AfterAuthenticateEvent,
     AfterLoginEvent,
     AfterLogoutEvent,
+    AfterOAuthAuthorizeEvent,
+    AfterOAuthCallbackEvent,
+    AfterOAuthDisconnectEvent,
+    AfterOAuthFinalizeLinkEvent,
     AfterOAuthIdTokenEvent,
+    AfterOAuthLinkEvent,
     AfterSessionIssueEvent,
+    AfterSocialAccountCreateEvent,
+    AfterSocialAccountUpdateEvent,
+    AfterTokenAuthorizationCodeEvent,
+    AfterTokenPasswordEvent,
+    AfterUserCreateEvent,
     BeforeAuthenticateEvent,
     BeforeLoginEvent,
     BeforeLogoutEvent,
+    BeforeOAuthAuthorizeEvent,
+    BeforeOAuthCallbackEvent,
+    BeforeOAuthDisconnectEvent,
+    BeforeOAuthFinalizeLinkEvent,
     BeforeOAuthIdTokenEvent,
+    BeforeOAuthLinkEvent,
     BeforeSessionIssueEvent,
+    BeforeSocialAccountCreateEvent,
+    BeforeSocialAccountUpdateEvent,
+    BeforeTokenAuthorizationCodeEvent,
+    BeforeTokenPasswordEvent,
+    BeforeUserCreateEvent,
     HookRegistry,
 )
-from .hooks._types import (
-    AfterAuthenticateHandler,
-    AfterLoginHandler,
-    AfterLogoutHandler,
-    AfterOAuthAuthorizeHandler,
-    AfterOAuthCallbackHandler,
-    AfterOAuthDisconnectHandler,
-    AfterOAuthFinalizeLinkHandler,
-    AfterOAuthIdTokenHandler,
-    AfterOAuthLinkHandler,
-    AfterSessionIssueHandler,
-    AfterSocialAccountCreateHandler,
-    AfterSocialAccountUpdateHandler,
-    AfterTokenAuthorizationCodeHandler,
-    AfterTokenPasswordHandler,
-    AfterUserCreateHandler,
-    BeforeAuthenticateHandler,
-    BeforeLoginHandler,
-    BeforeLogoutHandler,
-    BeforeOAuthAuthorizeHandler,
-    BeforeOAuthCallbackHandler,
-    BeforeOAuthDisconnectHandler,
-    BeforeOAuthFinalizeLinkHandler,
-    BeforeOAuthIdTokenHandler,
-    BeforeOAuthLinkHandler,
-    BeforeSessionIssueHandler,
-    BeforeSocialAccountCreateHandler,
-    BeforeSocialAccountUpdateHandler,
-    BeforeTokenAuthorizationCodeHandler,
-    BeforeTokenPasswordHandler,
-    BeforeUserCreateHandler,
-    HookEventName,
-    _AfterSocialAccountCreateOrUpdateHandler,
-    _BeforeSocialAccountCreateOrUpdateHandler,
-)
+from .hooks._types import HookEventName
 from .exceptions import CrossAuthException
 from .router import AuthRouter
 from .social_providers.oauth import OAuth2Exception, OAuth2Provider, UserInfo
 from .social_providers.oidc import OIDCProvider
 
-_SpecificSocialAccountHandlerT = TypeVar("_SpecificSocialAccountHandlerT")
-_CombinedSocialAccountHandlerT = TypeVar("_CombinedSocialAccountHandlerT")
+_P = ParamSpec("_P")
+_EventT = TypeVar("_EventT")
+_ReturnT = TypeVar("_ReturnT")
+
+
+class _HookDecorator(Protocol[_EventT, _ReturnT]):
+    def __call__(
+        self,
+        handler: Callable[Concatenate[_EventT, _P], _ReturnT],
+        /,
+    ) -> Callable[Concatenate[_EventT, _P], _ReturnT]: ...
+
+
+_SpecificSocialAccountEventT = TypeVar("_SpecificSocialAccountEventT")
+_SpecificSocialAccountReturnT = TypeVar("_SpecificSocialAccountReturnT")
+_CombinedSocialAccountEventT = TypeVar("_CombinedSocialAccountEventT")
+_CombinedSocialAccountReturnT = TypeVar("_CombinedSocialAccountReturnT")
 
 
 class _SocialAccountDecorator(
-    Protocol[_SpecificSocialAccountHandlerT, _CombinedSocialAccountHandlerT]
+    Protocol[
+        _SpecificSocialAccountEventT,
+        _SpecificSocialAccountReturnT,
+        _CombinedSocialAccountEventT,
+        _CombinedSocialAccountReturnT,
+    ]
 ):
     @overload
     def __call__(
-        self, handler: _CombinedSocialAccountHandlerT, /
-    ) -> _CombinedSocialAccountHandlerT: ...
+        self,
+        handler: Callable[
+            Concatenate[_CombinedSocialAccountEventT, _P],
+            _CombinedSocialAccountReturnT,
+        ],
+        /,
+    ) -> Callable[
+        Concatenate[_CombinedSocialAccountEventT, _P],
+        _CombinedSocialAccountReturnT,
+    ]: ...
 
     @overload
     def __call__(
-        self, handler: _SpecificSocialAccountHandlerT, /
-    ) -> _SpecificSocialAccountHandlerT: ...
+        self,
+        handler: Callable[
+            Concatenate[_SpecificSocialAccountEventT, _P],
+            _SpecificSocialAccountReturnT,
+        ],
+        /,
+    ) -> Callable[
+        Concatenate[_SpecificSocialAccountEventT, _P],
+        _SpecificSocialAccountReturnT,
+    ]: ...
 
 
 # TODO: if we add more framework integrations, extract shared storage/session
@@ -445,85 +476,91 @@ class CrossAuth:
     @overload
     def before(
         self, event: Literal["authenticate"]
-    ) -> Callable[[BeforeAuthenticateHandler], BeforeAuthenticateHandler]: ...
+    ) -> _HookDecorator[BeforeAuthenticateEvent, BeforeAuthenticateEvent | None]: ...
 
     @overload
     def before(
         self, event: Literal["login"]
-    ) -> Callable[[BeforeLoginHandler], BeforeLoginHandler]: ...
+    ) -> _HookDecorator[BeforeLoginEvent, BeforeLoginEvent | None]: ...
 
     @overload
     def before(
         self, event: Literal["session.issue"]
-    ) -> Callable[[BeforeSessionIssueHandler], BeforeSessionIssueHandler]: ...
+    ) -> _HookDecorator[BeforeSessionIssueEvent, BeforeSessionIssueEvent | None]: ...
 
     @overload
     def before(
         self, event: Literal["user.create"]
-    ) -> Callable[[BeforeUserCreateHandler], BeforeUserCreateHandler]: ...
+    ) -> _HookDecorator[BeforeUserCreateEvent, BeforeUserCreateEvent | None]: ...
 
     @overload
     def before(
         self, event: Literal["social_account.create"]
     ) -> _SocialAccountDecorator[
-        BeforeSocialAccountCreateHandler,
-        _BeforeSocialAccountCreateOrUpdateHandler,
+        BeforeSocialAccountCreateEvent,
+        BeforeSocialAccountCreateEvent | None,
+        BeforeSocialAccountCreateEvent | BeforeSocialAccountUpdateEvent,
+        BeforeSocialAccountCreateEvent | BeforeSocialAccountUpdateEvent | None,
     ]: ...
 
     @overload
     def before(
         self, event: Literal["social_account.update"]
     ) -> _SocialAccountDecorator[
-        BeforeSocialAccountUpdateHandler,
-        _BeforeSocialAccountCreateOrUpdateHandler,
+        BeforeSocialAccountUpdateEvent,
+        BeforeSocialAccountUpdateEvent | None,
+        BeforeSocialAccountCreateEvent | BeforeSocialAccountUpdateEvent,
+        BeforeSocialAccountCreateEvent | BeforeSocialAccountUpdateEvent | None,
     ]: ...
 
     @overload
     def before(
         self, event: Literal["oauth.id_token"]
-    ) -> Callable[[BeforeOAuthIdTokenHandler], BeforeOAuthIdTokenHandler]: ...
+    ) -> _HookDecorator[BeforeOAuthIdTokenEvent, BeforeOAuthIdTokenEvent | None]: ...
 
     @overload
     def before(
         self, event: Literal["logout"]
-    ) -> Callable[[BeforeLogoutHandler], BeforeLogoutHandler]: ...
+    ) -> _HookDecorator[BeforeLogoutEvent, BeforeLogoutEvent | None]: ...
 
     @overload
     def before(
         self, event: Literal["oauth.authorize"]
-    ) -> Callable[[BeforeOAuthAuthorizeHandler], BeforeOAuthAuthorizeHandler]: ...
+    ) -> _HookDecorator[
+        BeforeOAuthAuthorizeEvent, BeforeOAuthAuthorizeEvent | None
+    ]: ...
 
     @overload
     def before(
         self, event: Literal["oauth.callback"]
-    ) -> Callable[[BeforeOAuthCallbackHandler], BeforeOAuthCallbackHandler]: ...
+    ) -> _HookDecorator[BeforeOAuthCallbackEvent, BeforeOAuthCallbackEvent | None]: ...
 
     @overload
     def before(
         self, event: Literal["oauth.link"]
-    ) -> Callable[[BeforeOAuthLinkHandler], BeforeOAuthLinkHandler]: ...
+    ) -> _HookDecorator[BeforeOAuthLinkEvent, None]: ...
 
     @overload
     def before(
         self, event: Literal["oauth.finalize_link"]
-    ) -> Callable[[BeforeOAuthFinalizeLinkHandler], BeforeOAuthFinalizeLinkHandler]: ...
+    ) -> _HookDecorator[
+        BeforeOAuthFinalizeLinkEvent, BeforeOAuthFinalizeLinkEvent | None
+    ]: ...
 
     @overload
     def before(
         self, event: Literal["oauth.disconnect"]
-    ) -> Callable[[BeforeOAuthDisconnectHandler], BeforeOAuthDisconnectHandler]: ...
+    ) -> _HookDecorator[BeforeOAuthDisconnectEvent, None]: ...
 
     @overload
     def before(
         self, event: Literal["token.password"]
-    ) -> Callable[[BeforeTokenPasswordHandler], BeforeTokenPasswordHandler]: ...
+    ) -> _HookDecorator[BeforeTokenPasswordEvent, None]: ...
 
     @overload
     def before(
         self, event: Literal["token.authorization_code"]
-    ) -> Callable[
-        [BeforeTokenAuthorizationCodeHandler], BeforeTokenAuthorizationCodeHandler
-    ]: ...
+    ) -> _HookDecorator[BeforeTokenAuthorizationCodeEvent, None]: ...
 
     def before(
         self, event: HookEventName
@@ -537,85 +574,87 @@ class CrossAuth:
     @overload
     def after(
         self, event: Literal["authenticate"]
-    ) -> Callable[[AfterAuthenticateHandler], AfterAuthenticateHandler]: ...
+    ) -> _HookDecorator[AfterAuthenticateEvent, None]: ...
 
     @overload
     def after(
         self, event: Literal["login"]
-    ) -> Callable[[AfterLoginHandler], AfterLoginHandler]: ...
+    ) -> _HookDecorator[AfterLoginEvent, None]: ...
 
     @overload
     def after(
         self, event: Literal["session.issue"]
-    ) -> Callable[[AfterSessionIssueHandler], AfterSessionIssueHandler]: ...
+    ) -> _HookDecorator[AfterSessionIssueEvent, None]: ...
 
     @overload
     def after(
         self, event: Literal["user.create"]
-    ) -> Callable[[AfterUserCreateHandler], AfterUserCreateHandler]: ...
+    ) -> _HookDecorator[AfterUserCreateEvent, None]: ...
 
     @overload
     def after(
         self, event: Literal["social_account.create"]
     ) -> _SocialAccountDecorator[
-        AfterSocialAccountCreateHandler,
-        _AfterSocialAccountCreateOrUpdateHandler,
+        AfterSocialAccountCreateEvent,
+        None,
+        AfterSocialAccountCreateEvent | AfterSocialAccountUpdateEvent,
+        None,
     ]: ...
 
     @overload
     def after(
         self, event: Literal["social_account.update"]
     ) -> _SocialAccountDecorator[
-        AfterSocialAccountUpdateHandler,
-        _AfterSocialAccountCreateOrUpdateHandler,
+        AfterSocialAccountUpdateEvent,
+        None,
+        AfterSocialAccountCreateEvent | AfterSocialAccountUpdateEvent,
+        None,
     ]: ...
 
     @overload
     def after(
         self, event: Literal["oauth.id_token"]
-    ) -> Callable[[AfterOAuthIdTokenHandler], AfterOAuthIdTokenHandler]: ...
+    ) -> _HookDecorator[AfterOAuthIdTokenEvent, None]: ...
 
     @overload
     def after(
         self, event: Literal["logout"]
-    ) -> Callable[[AfterLogoutHandler], AfterLogoutHandler]: ...
+    ) -> _HookDecorator[AfterLogoutEvent, None]: ...
 
     @overload
     def after(
         self, event: Literal["oauth.authorize"]
-    ) -> Callable[[AfterOAuthAuthorizeHandler], AfterOAuthAuthorizeHandler]: ...
+    ) -> _HookDecorator[AfterOAuthAuthorizeEvent, None]: ...
 
     @overload
     def after(
         self, event: Literal["oauth.callback"]
-    ) -> Callable[[AfterOAuthCallbackHandler], AfterOAuthCallbackHandler]: ...
+    ) -> _HookDecorator[AfterOAuthCallbackEvent, None]: ...
 
     @overload
     def after(
         self, event: Literal["oauth.link"]
-    ) -> Callable[[AfterOAuthLinkHandler], AfterOAuthLinkHandler]: ...
+    ) -> _HookDecorator[AfterOAuthLinkEvent, None]: ...
 
     @overload
     def after(
         self, event: Literal["oauth.finalize_link"]
-    ) -> Callable[[AfterOAuthFinalizeLinkHandler], AfterOAuthFinalizeLinkHandler]: ...
+    ) -> _HookDecorator[AfterOAuthFinalizeLinkEvent, None]: ...
 
     @overload
     def after(
         self, event: Literal["oauth.disconnect"]
-    ) -> Callable[[AfterOAuthDisconnectHandler], AfterOAuthDisconnectHandler]: ...
+    ) -> _HookDecorator[AfterOAuthDisconnectEvent, None]: ...
 
     @overload
     def after(
         self, event: Literal["token.password"]
-    ) -> Callable[[AfterTokenPasswordHandler], AfterTokenPasswordHandler]: ...
+    ) -> _HookDecorator[AfterTokenPasswordEvent, None]: ...
 
     @overload
     def after(
         self, event: Literal["token.authorization_code"]
-    ) -> Callable[
-        [AfterTokenAuthorizationCodeHandler], AfterTokenAuthorizationCodeHandler
-    ]: ...
+    ) -> _HookDecorator[AfterTokenAuthorizationCodeEvent, None]: ...
 
     def after(
         self, event: HookEventName
