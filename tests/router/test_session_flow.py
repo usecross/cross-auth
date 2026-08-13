@@ -108,16 +108,18 @@ def test_session_callback_consumes_state(
     replay = client.get(
         "/fake/callback", params={"code": "provider-code", "state": state}
     )
-    assert replay.status_code == 400
-    assert replay.json()["error"] == "server_error"
+    assert replay.status_code == 302
+    qs = parse_qs(urlparse(replay.headers["location"]).query)
+    assert qs["error"] == ["session_expired"]
 
 
 @respx.mock
 def test_session_callback_rejects_missing_state(client: TestClient):
     mock_token_and_userinfo()
     resp = client.get("/fake/callback", params={"code": "provider-code"})
-    assert resp.status_code == 400
-    assert resp.json()["error"] == "server_error"
+    assert resp.status_code == 302
+    qs = parse_qs(urlparse(resp.headers["location"]).query)
+    assert qs["error"] == ["invalid_request"]
 
 
 @respx.mock
@@ -126,8 +128,38 @@ def test_session_callback_rejects_unknown_state(client: TestClient):
     resp = client.get(
         "/fake/callback", params={"code": "provider-code", "state": "never-seen"}
     )
-    assert resp.status_code == 400
-    assert resp.json()["error"] == "server_error"
+    assert resp.status_code == 302
+    qs = parse_qs(urlparse(resp.headers["location"]).query)
+    assert qs["error"] == ["session_expired"]
+
+
+def test_session_callback_expired_state_redirects_to_default_next_url(build_auth):
+    auth = build_auth(default_next_url="https://app.example/dashboard")
+    app = FastAPI()
+    app.include_router(auth.router)
+    with TestClient(app, follow_redirects=False) as client:
+        resp = client.get(
+            "/fake/callback", params={"code": "provider-code", "state": "never-seen"}
+        )
+    assert resp.status_code == 302
+    location = urlparse(resp.headers["location"])
+    assert (location.scheme, location.netloc, location.path) == (
+        "https",
+        "app.example",
+        "/dashboard",
+    )
+    assert parse_qs(location.query)["error"] == ["session_expired"]
+
+
+def test_session_callback_provider_error_with_unknown_state_redirects(
+    client: TestClient,
+):
+    resp = client.get(
+        "/fake/callback", params={"error": "access_denied", "state": "never-seen"}
+    )
+    assert resp.status_code == 302
+    qs = parse_qs(urlparse(resp.headers["location"]).query)
+    assert qs["error"] == ["access_denied"]
 
 
 @respx.mock
