@@ -18,6 +18,8 @@ from ..models.oauth_token_response import (
 
 logger = logging.getLogger(__name__)
 
+RECOVERABLE_TOKEN_EXCHANGE_ERRORS = {"bad_verification_code"}
+
 
 class UserInfo(TypedDict, total=True):
     email: str | None
@@ -281,7 +283,6 @@ class OAuth2Provider:
         try:
             return OAuth2TokenEndpointResponse.model_validate_json(response.text)
         except ValidationError as e:
-            logger.error("Failed to parse token response: %s", e)
             raise OAuth2Exception(
                 error="server_error",
                 error_description="Failed to parse token response",
@@ -307,9 +308,17 @@ class OAuth2Provider:
             params = self.build_token_exchange_params(code, redirect_uri, code_verifier)
 
             response = self.send_token_request(params)
-            response.raise_for_status()
+            try:
+                token_response = self.parse_token_response(response)
+            except OAuth2Exception as e:
+                if response.is_error:
+                    response.raise_for_status()
 
-            token_response = self.parse_token_response(response)
+                logger.error(
+                    "Failed to parse token response: %s",
+                    e.__cause__ or e.error_description,
+                )
+                raise
 
             if token_response.is_error():
                 if not isinstance(token_response.root, TokenErrorResponse):
@@ -318,12 +327,32 @@ class OAuth2Provider:
                         error_description="Unexpected token response format",
                     )
 
-                logger.error("Token exchange failed: %s", token_response.root.error)
+                token_error = token_response.root
+
+                if token_error.error in RECOVERABLE_TOKEN_EXCHANGE_ERRORS:
+                    logger.info(
+                        "Token exchange rejected by provider: %s",
+                        token_error.error,
+                        extra={
+                            "oauth_provider": self.id,
+                            "oauth_error": token_error.error,
+                        },
+                    )
+                    raise OAuth2Exception(
+                        error=token_error.error,
+                        error_description=token_error.error_description
+                        or "The authorization code is invalid or expired. Please try again.",
+                    )
+
+                response.raise_for_status()
+                logger.error("Token exchange failed: %s", token_error.error)
 
                 raise OAuth2Exception(
                     error="server_error",
-                    error_description=f"Token exchange failed: {token_response.root.error}",
+                    error_description=f"Token exchange failed: {token_error.error}",
                 )
+
+            response.raise_for_status()
 
             if not isinstance(token_response.root, TokenResponse):
                 raise OAuth2Exception(

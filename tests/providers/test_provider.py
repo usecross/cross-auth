@@ -1,4 +1,5 @@
 import json
+import logging
 
 import httpx
 import pytest
@@ -7,7 +8,7 @@ from cross_web import HTTPRequest, TestingHTTPRequestAdapter
 
 from cross_auth._auth_flow import handle_callback, start_token_flow
 from cross_auth._context import Context
-from cross_auth.social_providers.oauth import OAuth2Provider
+from cross_auth.social_providers.oauth import OAuth2Exception, OAuth2Provider, logger
 
 
 class ExampleProvider(OAuth2Provider):
@@ -55,18 +56,99 @@ def test_exchange_code_success(example_provider: ExampleProvider) -> None:
 
 
 @respx.mock
-def test_exchange_code_github_down(example_provider: ExampleProvider):
-    from cross_auth.social_providers.oauth import OAuth2Exception
-
+def test_exchange_code_github_down(
+    example_provider: ExampleProvider,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     respx.post("https://example.com/login/oauth/access_token").mock(
         return_value=respx.MockResponse(503)
     )
 
-    with pytest.raises(OAuth2Exception) as exc_info:
+    with (
+        caplog.at_level(logging.WARNING, logger=logger.name),
+        pytest.raises(OAuth2Exception) as exc_info,
+    ):
         example_provider.exchange_code("test_code", "https://example.com/callback")
 
     assert exc_info.value.error == "server_error"
     assert "Token exchange failed" in exc_info.value.error_description
+    provider_records = [
+        record for record in caplog.records if record.name == logger.name
+    ]
+    assert len(provider_records) == 1
+    assert provider_records[0].levelno == logging.WARNING
+    assert provider_records[0].getMessage() == (
+        "HTTP error during token exchange: 503 - "
+    )
+
+
+@respx.mock
+def test_exchange_code_logs_malformed_success_response(
+    example_provider: ExampleProvider,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    respx.post("https://example.com/login/oauth/access_token").mock(
+        return_value=respx.MockResponse(200)
+    )
+
+    with (
+        caplog.at_level(logging.ERROR, logger=logger.name),
+        pytest.raises(OAuth2Exception) as exc_info,
+    ):
+        example_provider.exchange_code("test_code", "https://example.com/callback")
+
+    assert exc_info.value.error == "server_error"
+    assert exc_info.value.error_description == "Failed to parse token response"
+    provider_records = [
+        record for record in caplog.records if record.name == logger.name
+    ]
+    assert len(provider_records) == 1
+    assert provider_records[0].levelno == logging.ERROR
+    assert (
+        provider_records[0]
+        .getMessage()
+        .startswith("Failed to parse token response: 1 validation error")
+    )
+
+
+@pytest.mark.parametrize(
+    "status_code",
+    [200, 400],
+)
+@respx.mock
+def test_exchange_code_preserves_recoverable_provider_error(
+    example_provider: ExampleProvider,
+    caplog: pytest.LogCaptureFixture,
+    status_code: int,
+) -> None:
+    error = "bad_verification_code"
+    respx.post("https://example.com/login/oauth/access_token").mock(
+        return_value=respx.MockResponse(
+            status_code,
+            json={
+                "error": error,
+                "error_description": "The code is invalid or expired.",
+            },
+        )
+    )
+
+    with (
+        caplog.at_level(logging.INFO, logger=logger.name),
+        pytest.raises(OAuth2Exception) as exc_info,
+    ):
+        example_provider.exchange_code("test_code", "https://example.com/callback")
+
+    assert exc_info.value.error == error
+    assert exc_info.value.error_description == "The code is invalid or expired."
+    assert len(caplog.records) == 1
+    assert caplog.records[0].name == logger.name
+    assert caplog.records[0].levelno == logging.INFO
+    assert getattr(caplog.records[0], "oauth_provider") == "example"
+    assert getattr(caplog.records[0], "oauth_error") == error
+    assert (
+        caplog.records[0].getMessage()
+        == f"Token exchange rejected by provider: {error}"
+    )
 
 
 @pytest.fixture
