@@ -8,7 +8,12 @@ from cross_web import HTTPRequest, TestingHTTPRequestAdapter
 
 from cross_auth._auth_flow import handle_callback, start_token_flow
 from cross_auth._context import Context
-from cross_auth.social_providers.oauth import OAuth2Exception, OAuth2Provider, logger
+from cross_auth.social_providers.oauth import (
+    OAuth2Exception,
+    OAuth2Provider,
+    OAuth2TimeoutException,
+    logger,
+)
 
 
 class ExampleProvider(OAuth2Provider):
@@ -109,6 +114,39 @@ def test_exchange_code_logs_malformed_success_response(
         .getMessage()
         .startswith("Failed to parse token response: 1 validation error")
     )
+
+
+@respx.mock
+def test_exchange_code_reports_timeout_without_retrying(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider = ExampleProvider(
+        client_id="test_client_id",
+        client_secret="test_client_secret",
+        token_exchange_timeout=15.0,
+    )
+    token_route = respx.post(provider.token_endpoint).mock(
+        side_effect=httpx.ReadTimeout("provider timed out")
+    )
+
+    with (
+        caplog.at_level(logging.WARNING, logger=logger.name),
+        pytest.raises(OAuth2TimeoutException) as exc_info,
+    ):
+        provider.exchange_code("test_code", "https://example.com/callback")
+
+    assert token_route.call_count == 1
+    assert token_route.calls[0].request.extensions["timeout"]["read"] == 15.0
+    assert exc_info.value.error == "temporarily_unavailable"
+    assert exc_info.value.error_description == (
+        "The OAuth provider timed out. Please restart the authorization flow."
+    )
+    assert str(exc_info.value) == exc_info.value.error_description
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelno == logging.WARNING
+    assert getattr(caplog.records[0], "oauth_provider") == "example"
+    assert getattr(caplog.records[0], "oauth_error") == "temporarily_unavailable"
+    assert caplog.records[0].getMessage() == "Token exchange timed out"
 
 
 @pytest.mark.parametrize(

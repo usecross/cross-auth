@@ -51,6 +51,7 @@ from cross_auth.social_providers.oauth import (
     CallbackData,
     OAuth2Exception,
     OAuth2Provider,
+    OAuth2TimeoutException,
     TokenExchangeParams,
     UserInfo,
 )
@@ -92,6 +93,7 @@ __all__ = [
     "BeforeUserCreateEvent",
     "OAuth2Exception",
     "OAuth2Provider",
+    "OAuth2TimeoutException",
     "OIDCProvider",
     "SecondaryStorage",
     "SessionConfig",

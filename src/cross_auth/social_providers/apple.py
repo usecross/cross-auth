@@ -3,12 +3,14 @@ import logging
 import time
 from typing import Annotated, Any, Literal
 
+import httpx
 import jwt
 from cross_web import HTTPRequest
 from pydantic import BaseModel, BeforeValidator, EmailStr
 
 from .oauth import (
     CallbackData,
+    DEFAULT_TOKEN_EXCHANGE_TIMEOUT,
     OAuth2Exception,
     TokenExchangeParams,
     UserInfo,
@@ -116,11 +118,17 @@ class AppleProvider(OIDCProvider):
         team_id: str,
         key_id: str,
         private_key: str,
+        token_exchange_timeout: float | httpx.Timeout | None = (
+            DEFAULT_TOKEN_EXCHANGE_TIMEOUT
+        ),
     ):
         self.team_id = team_id
         self.key_id = key_id
         self.private_key = private_key
-        super().__init__(client_id=client_id)
+        super().__init__(
+            client_id=client_id,
+            token_exchange_timeout=token_exchange_timeout,
+        )
 
     def generate_client_secret(self) -> str:
         """Generate a JWT client secret for Apple.
