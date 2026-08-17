@@ -10,7 +10,7 @@ from pydantic import AnyUrl, BaseModel, EmailStr, Field
 from cross_auth._context import Context
 from cross_auth.models.oauth_token_response import TokenResponse
 
-from .oauth import OAuth2Provider, UserInfo
+from .oauth import DEFAULT_TOKEN_EXCHANGE_TIMEOUT, OAuth2Provider, UserInfo
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +104,9 @@ class GitHubProvider(OAuth2Provider):
         authorization_endpoint: str | None = None,
         token_endpoint: str | None = None,
         api_base_url: str | None = None,
+        token_exchange_timeout: float | httpx.Timeout | None = (
+            DEFAULT_TOKEN_EXCHANGE_TIMEOUT
+        ),
     ):
         """
         Initialize the GitHub OAuth2 provider.
@@ -117,8 +120,15 @@ class GitHubProvider(OAuth2Provider):
             token_endpoint: Custom token exchange URL (for server-to-server calls).
             api_base_url: Custom API base URL for user info and emails
                 (for server-to-server calls). Should not include trailing slash.
+            token_exchange_timeout: Timeout for the provider token request. Set to
+                None to disable it.
         """
-        super().__init__(client_id, client_secret, trust_email)
+        super().__init__(
+            client_id,
+            client_secret,
+            trust_email,
+            token_exchange_timeout=token_exchange_timeout,
+        )
 
         if authorization_endpoint is not None:
             self.authorization_endpoint = authorization_endpoint

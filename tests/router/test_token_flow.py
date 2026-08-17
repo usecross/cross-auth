@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from cross_auth._auth_flow import logger as auth_flow_logger
 from cross_auth._issuer import AuthorizationCodeGrantData
 from cross_auth._storage import SecondaryStorage
+from cross_auth.social_providers.oauth import logger as oauth_provider_logger
 
 from .conftest import (
     load_auth_request,
@@ -129,6 +130,46 @@ def test_token_callback_reports_provider_error_to_client(client: TestClient, cap
     assert len(flow_records) == 1
     assert flow_records[0].levelno == logging.INFO
     assert flow_records[0].getMessage() == "OAuth error: access_denied"
+
+
+@respx.mock
+def test_token_callback_reports_expired_provider_code_to_client(
+    client: TestClient, caplog
+):
+    respx.post("https://fake.example/oauth/token").mock(
+        return_value=respx.MockResponse(
+            200,
+            json={
+                "error": "bad_verification_code",
+                "error_description": "The code passed is incorrect or expired.",
+            },
+        )
+    )
+    _, state = start_provider_auth(client, "/fake/authorize", params=_AUTHZ_PARAMS)
+
+    with caplog.at_level(logging.INFO, logger=oauth_provider_logger.name):
+        resp = client.get(
+            "/fake/callback", params={"code": "expired-code", "state": state}
+        )
+
+    assert resp.status_code == 302
+    location = urlparse(resp.headers["location"])
+    qs = parse_qs(location.query)
+    assert qs["error"] == ["bad_verification_code"]
+    assert qs["error_description"] == ["The code passed is incorrect or expired."]
+    assert qs["state"] == ["client-csrf-state"]
+
+    provider_records = [
+        record for record in caplog.records if record.name == oauth_provider_logger.name
+    ]
+    assert len(provider_records) == 1
+    assert provider_records[0].levelno == logging.INFO
+    assert getattr(provider_records[0], "oauth_provider") == "fake"
+    assert getattr(provider_records[0], "oauth_error") == "bad_verification_code"
+    assert (
+        provider_records[0].getMessage()
+        == "Token exchange rejected by provider: bad_verification_code"
+    )
 
 
 @respx.mock

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .oauth import UserInfo
+import httpx
+
+from .oauth import DEFAULT_TOKEN_EXCHANGE_TIMEOUT, UserInfo
 from .oidc import OIDCProvider
 
 
@@ -30,6 +32,9 @@ class GoogleProvider(OIDCProvider):
         authorization_endpoint: str | None = None,
         token_endpoint: str | None = None,
         jwks_uri: str | None = None,
+        token_exchange_timeout: float | httpx.Timeout | None = (
+            DEFAULT_TOKEN_EXCHANGE_TIMEOUT
+        ),
     ):
         """
         Initialize the Google OAuth2 / OIDC provider.
@@ -49,12 +54,15 @@ class GoogleProvider(OIDCProvider):
             authorization_endpoint: Custom authorization URL (for browser redirects).
             token_endpoint: Custom token exchange URL (for server-to-server calls).
             jwks_uri: Custom JWKS URL (for server-to-server ID token validation).
+            token_exchange_timeout: Timeout for the provider token request. Set to
+                None to disable it.
         """
         super().__init__(
             client_id,
             client_secret,
             trust_email,
             extra_authorization_params=extra_authorization_params,
+            token_exchange_timeout=token_exchange_timeout,
         )
 
         if authorization_endpoint is not None:
