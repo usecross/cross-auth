@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python_version="$(tr -d '[:space:]' < "$repo_root/.python-version")"
+bun_version="1.3.11"
+
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$HOME/.local/bin:$BUN_INSTALL/bin:$PATH"
+
+run_step() {
+  local label="$1"
+  shift
+  local started_at=$SECONDS
+
+  printf '\n[setup] %s\n' "$label"
+  "$@"
+  printf '[setup] Finished in %ss\n' "$((SECONDS - started_at))"
+}
+
+ensure_system_dependencies() {
+  local missing=()
+  local package
+
+  for package in ca-certificates curl unzip; do
+    if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -Fq 'install ok installed'; then
+      missing+=("$package")
+    fi
+  done
+
+  if ((${#missing[@]})); then
+    sudo apt-get update
+    sudo apt-get install -y "${missing[@]}"
+  else
+    printf '[setup] System dependencies already installed\n'
+  fi
+}
+
+ensure_uv() {
+  if ! command -v uv >/dev/null 2>&1; then
+    curl -LsSf https://astral.sh/uv/install.sh | UV_NO_MODIFY_PATH=1 sh
+    hash -r
+  fi
+  uv --version
+}
+
+ensure_bun() {
+  if ! command -v bun >/dev/null 2>&1 || [[ "$(bun --version)" != "$bun_version" ]]; then
+    curl -fsSL https://bun.com/install | bash -s -- "bun-v${bun_version}"
+    hash -r
+  fi
+  bun --version
+}
+
+persist_toolchain_path() {
+  local marker='# cross-auth orb toolchain'
+
+  touch "$HOME/.bash_profile"
+  if ! grep -Fqx "$marker" "$HOME/.bash_profile"; then
+    cat >> "$HOME/.bash_profile" <<'EOF'
+
+# cross-auth orb toolchain
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$HOME/.local/bin:$BUN_INSTALL/bin:$PATH"
+EOF
+  fi
+}
+
+sync_python_dependencies() {
+  cd "$repo_root"
+  uv python install "$python_version"
+  uv sync --frozen --all-packages --all-groups
+}
+
+sync_bun_dependencies() {
+  local directory
+
+  for directory in website examples/spa e2e; do
+    printf '[setup] Installing %s dependencies\n' "$directory"
+    (
+      cd "$repo_root/$directory"
+      bun install --frozen-lockfile
+    )
+  done
+}
+
+install_playwright_archive() {
+  local install_location="$1"
+  local download_url="$2"
+
+  if [[ -f "$install_location/INSTALLATION_COMPLETE" ]]; then
+    printf '[setup] Playwright archive already installed at %s\n' "$install_location"
+    return
+  fi
+
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+  if ! {
+    curl --fail --location --retry 3 --output "$temp_dir/archive.zip" "$download_url" &&
+      rm -rf "$install_location" &&
+      mkdir -p "$install_location" &&
+      unzip -q "$temp_dir/archive.zip" -d "$install_location"
+  }; then
+    rm -rf "$temp_dir" "$install_location"
+    return 1
+  fi
+
+  find "$install_location" -type f \
+    \( -name chrome-headless-shell -o -name ffmpeg-linux \) \
+    -exec chmod 0755 {} +
+  touch "$install_location/INSTALLATION_COMPLETE"
+  rm -rf "$temp_dir"
+}
+
+install_playwright() {
+  cd "$repo_root/e2e"
+  bun x playwright install-deps chromium
+
+  local install_plan
+  local install_location=''
+  local line
+  install_plan="$(bun x playwright install --dry-run --only-shell chromium)"
+  while IFS= read -r line; do
+    case "$line" in
+      '  Install location:    '*)
+        install_location="${line#'  Install location:    '}"
+        ;;
+      '  Download url:        '*)
+        [[ -n "$install_location" ]]
+        install_playwright_archive \
+          "$install_location" "${line#'  Download url:        '}"
+        ;;
+    esac
+  done <<< "$install_plan"
+
+  # Register the manually extracted archives and validate their host libraries.
+  bun x playwright install --only-shell chromium
+}
+
+run_step 'Checking system dependencies' ensure_system_dependencies
+run_step 'Installing uv when needed' ensure_uv
+run_step "Installing Bun ${bun_version} when needed" ensure_bun
+run_step 'Persisting toolchain paths for login shells' persist_toolchain_path
+run_step "Syncing Python ${python_version} workspace dependencies" sync_python_dependencies
+run_step 'Syncing Bun dependencies' sync_bun_dependencies
+run_step 'Installing Playwright Chromium headless shell and system libraries' install_playwright
+
+printf '\n[setup] cross-auth orb setup complete\n'

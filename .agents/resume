@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '[resume] No authentication or service repair is required\n'
