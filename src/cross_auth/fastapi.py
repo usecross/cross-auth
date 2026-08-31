@@ -215,8 +215,11 @@ class CrossAuth:
             provider.id: provider for provider in providers
         }
 
+        self._uses_default_get_user_from_request = get_user_from_request is None
         self._get_user_from_request = (
-            get_user_from_request or self._default_get_user_from_request
+            self._default_get_user_from_request
+            if get_user_from_request is None
+            else get_user_from_request
         )
 
         self._router = AuthRouter(
@@ -266,10 +269,19 @@ class CrossAuth:
         ``SessionCookieMiddleware`` so the rolled cookie also reaches the
         browser.
         """
-        # Refresh (and queue the rolled cookie) before resolving the user so
-        # the resolver re-reads the already-refreshed record.
-        self._queue_session_refresh(request)
-        return self._resolve_user(request)
+        if not self._uses_default_get_user_from_request:
+            # Preserve the custom-resolver contract: sliding sessions refresh
+            # implicitly before the callback runs, even when the callback uses
+            # another authentication mechanism.
+            self._queue_session_refresh(request)
+            return self._resolve_user(request)
+
+        if self._session_storage is None:
+            return None
+        session = self.get_current_session(request)
+        if session is None:
+            return None
+        return self._accounts_storage.find_user_by_id(session.user_id)
 
     def get_current_session(self, request: FastAPIRequest) -> SessionRecord | None:
         session_storage = self._require_session_storage()
