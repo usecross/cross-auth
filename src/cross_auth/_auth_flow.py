@@ -1003,26 +1003,23 @@ def resolve_or_create_user(
             error_description="No email provided by the identity provider",
         )
 
-    user: User | None = None
     created_user = False
     # Lookups and creation use the normalized (canonical) form; the raw
     # provider email is still stored on the social account as provider_email.
     email = context.normalize_email(validated.email)
+    user = context.accounts_storage.find_user_by_email(email)
+    can_auto_link = provider.can_auto_link(context, validated.email_verified)
 
-    if provider.can_auto_link(context, validated.email_verified):
-        user = context.accounts_storage.find_user_by_email(email)
+    if user is not None and not can_auto_link:
+        raise CrossAuthException(
+            "account_not_linked",
+            error_description=(
+                "An account with this email exists but could not be linked "
+                "automatically."
+            ),
+        )
 
-    if not user:
-        existing_user = context.accounts_storage.find_user_by_email(email)
-        if existing_user:
-            raise CrossAuthException(
-                "account_not_linked",
-                error_description=(
-                    "An account with this email exists but could not be linked "
-                    "automatically."
-                ),
-            )
-
+    if user is None:
         if (
             context.config.get("require_verified_email", False)
             and validated.email_verified is not True
