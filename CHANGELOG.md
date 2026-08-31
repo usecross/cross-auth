@@ -1,6 +1,16 @@
 CHANGELOG
 =========
 
+0.22.3 - 2026-08-31
+-------------------
+
+CrossAuth now calls `AccountsStorage.find_user_by_email` once when an OAuth
+identity has no linked social account. This removes redundant storage work for
+new sign-ins while preserving normalized-email, automatic-linking,
+account-conflict, and verified-email behavior.
+
+This release was contributed by [@patrick91](https://github.com/patrick91) in [#61](https://github.com/usecross/cross-auth/pull/61)
+
 0.22.2 - 2026-08-17
 -------------------
 
