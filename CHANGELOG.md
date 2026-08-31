@@ -1,6 +1,16 @@
 CHANGELOG
 =========
 
+0.22.5 - 2026-08-31
+-------------------
+
+FastAPI applications using sliding sessions now authenticate users and renew
+session cookies from one consistent session lookup. This prevents session
+changes between cookie renewal and user loading while preserving existing
+cookie, bearer token, and custom request resolver behavior.
+
+This release was contributed by [@patrick91](https://github.com/patrick91) in [#64](https://github.com/usecross/cross-auth/pull/64)
+
 0.22.4 - 2026-08-31
 -------------------
 
