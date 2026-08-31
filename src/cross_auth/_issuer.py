@@ -9,7 +9,7 @@ from cross_auth.models.oauth_token_response import TokenResponse
 from cross_auth.utils._pkce import validate_pkce
 
 from ._context import Context
-from ._password import DUMMY_PASSWORD_HASH, pwd_context, validate_password
+from ._password import _verify_password
 from ._route import Form, Route
 from ._tokens import TokenIssueRequest
 from .exceptions import CrossAuthException
@@ -306,16 +306,7 @@ class Issuer:
         except CrossAuthException as e:
             return self._error_response(e.error, e.error_description)
 
-        # Always perform password verification to prevent timing attacks
-        # that could be used to enumerate valid user accounts
-        if user:
-            valid = validate_password(user, request.password)
-        else:
-            # Perform dummy hash verification for non-existent users
-            # to maintain constant time and prevent user enumeration
-            pwd_context.verify(request.password, DUMMY_PASSWORD_HASH)
-            valid = False
-
+        valid = _verify_password(user, request.password)
         if not valid or user is None:
             return self._error_response("invalid_grant", "Invalid username or password")
 

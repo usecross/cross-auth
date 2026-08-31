@@ -543,7 +543,11 @@ def test_password_grant_preserves_unknown_hook_error_type(
     issuer: Issuer,
     context: Context,
 ):
+    looked_up_user = context.accounts_storage.find_user_by_email("test@example.com")
+    assert looked_up_user is not None
+
     def reject_request(event: BeforeTokenPasswordEvent) -> None:
+        assert event.user is looked_up_user
         raise CrossAuthException("forbidden", "Password grant is forbidden")
 
     context.hooks.register_before(
@@ -551,18 +555,20 @@ def test_password_grant_preserves_unknown_hook_error_type(
         reject_request,
     )
 
-    response = issuer.token(
-        HTTPRequest.from_form_data(
-            data={
-                "grant_type": "password",
-                "client_id": "test",
-                "username": "test@example.com",
-                "password": "password123",
-            }
-        ),
-        context,
-    )
+    with mock.patch("cross_auth._issuer._verify_password") as verify_password:
+        response = issuer.token(
+            HTTPRequest.from_form_data(
+                data={
+                    "grant_type": "password",
+                    "client_id": "test",
+                    "username": "test@example.com",
+                    "password": "password123",
+                }
+            ),
+            context,
+        )
 
+    verify_password.assert_not_called()
     assert response.status_code == 400
     assert response.json() == snapshot(
         {
