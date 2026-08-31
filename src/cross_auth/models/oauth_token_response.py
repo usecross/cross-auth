@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from pydantic import BaseModel, Field, HttpUrl, RootModel
+from pydantic import BaseModel, Field, HttpUrl
 
 
 class TokenResponse(BaseModel):
@@ -49,10 +49,3 @@ class TokenErrorResponse(BaseModel):
     error_uri: HttpUrl | None = Field(
         None, description="URI to a web page with more information about the error"
     )
-
-
-class OAuth2TokenEndpointResponse(RootModel):
-    root: TokenResponse | TokenErrorResponse
-
-    def is_error(self) -> bool:
-        return isinstance(self.root, TokenErrorResponse)

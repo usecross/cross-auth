@@ -6,8 +6,10 @@ import pytest
 import respx
 from cross_web import HTTPRequest, TestingHTTPRequestAdapter
 
+from cross_auth import TokenResponse
 from cross_auth._auth_flow import handle_callback, start_token_flow
 from cross_auth._context import Context
+from cross_auth.models.oauth_token_response import TokenErrorResponse
 from cross_auth.social_providers.oauth import (
     OAuth2Exception,
     OAuth2Provider,
@@ -35,6 +37,14 @@ class ExampleProviderWithPKCE(OAuth2Provider):
     supports_pkce = True
 
 
+class ExampleProviderWithCustomTokenParser(ExampleProvider):
+    def parse_token_response(
+        self, response: httpx.Response
+    ) -> TokenResponse | TokenErrorResponse:
+        data = response.json()
+        return TokenResponse.model_validate(data["tokens"])
+
+
 @pytest.fixture
 def example_provider() -> ExampleProvider:
     return ExampleProvider(
@@ -58,6 +68,70 @@ def test_exchange_code_success(example_provider: ExampleProvider) -> None:
 
     assert result.access_token == "gho_test_token_12345"
     assert result.token_type == "bearer"
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_type"),
+    [
+        (
+            {
+                "access_token": "gho_test_token_12345",
+                "token_type": "bearer",
+            },
+            TokenResponse,
+        ),
+        ({"error": "invalid_grant"}, TokenErrorResponse),
+    ],
+)
+def test_parse_token_response_returns_wire_model_directly(
+    example_provider: ExampleProvider,
+    payload: dict[str, str],
+    expected_type: type[TokenResponse] | type[TokenErrorResponse],
+) -> None:
+    result = example_provider.parse_token_response(httpx.Response(200, json=payload))
+
+    assert type(result) is expected_type
+
+
+def test_parse_token_response_preserves_success_precedence(
+    example_provider: ExampleProvider,
+) -> None:
+    response = httpx.Response(
+        200,
+        json={
+            "access_token": "gho_test_token_12345",
+            "token_type": "bearer",
+            "error": "invalid_grant",
+        },
+    )
+
+    result = example_provider.parse_token_response(response)
+
+    assert isinstance(result, TokenResponse)
+    assert result.access_token == "gho_test_token_12345"
+
+
+@respx.mock
+def test_exchange_code_supports_direct_custom_parser_response() -> None:
+    provider = ExampleProviderWithCustomTokenParser(
+        client_id="test_client_id", client_secret="test_client_secret"
+    )
+    respx.post(provider.token_endpoint).mock(
+        return_value=respx.MockResponse(
+            200,
+            json={
+                "tokens": {
+                    "access_token": "custom_token",
+                    "token_type": "bearer",
+                }
+            },
+        )
+    )
+
+    result = provider.exchange_code("test_code", "https://example.com/callback")
+
+    assert isinstance(result, TokenResponse)
+    assert result.access_token == "custom_token"
 
 
 @respx.mock
@@ -93,7 +167,10 @@ def test_exchange_code_logs_malformed_success_response(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     respx.post("https://example.com/login/oauth/access_token").mock(
-        return_value=respx.MockResponse(200)
+        return_value=respx.MockResponse(
+            200,
+            json={"access_token": "gho_test_token_12345"},
+        )
     )
 
     with (
@@ -112,7 +189,7 @@ def test_exchange_code_logs_malformed_success_response(
     assert (
         provider_records[0]
         .getMessage()
-        .startswith("Failed to parse token response: 1 validation error")
+        .startswith("Failed to parse token response: 2 validation errors")
     )
 
 
@@ -186,6 +263,66 @@ def test_exchange_code_preserves_recoverable_provider_error(
     assert (
         caplog.records[0].getMessage()
         == f"Token exchange rejected by provider: {error}"
+    )
+
+
+@respx.mock
+def test_exchange_code_rejects_nonrecoverable_provider_error(
+    example_provider: ExampleProvider,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    respx.post("https://example.com/login/oauth/access_token").mock(
+        return_value=respx.MockResponse(
+            200,
+            json={
+                "error": "invalid_grant",
+                "error_description": "The grant is invalid.",
+            },
+        )
+    )
+
+    with (
+        caplog.at_level(logging.ERROR, logger=logger.name),
+        pytest.raises(OAuth2Exception) as exc_info,
+    ):
+        example_provider.exchange_code("test_code", "https://example.com/callback")
+
+    assert exc_info.value.error == "server_error"
+    assert exc_info.value.error_description == "Token exchange failed: invalid_grant"
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelno == logging.ERROR
+    assert caplog.records[0].getMessage() == "Token exchange failed: invalid_grant"
+
+
+@respx.mock
+def test_exchange_code_preserves_nonrecoverable_http_error_handling(
+    example_provider: ExampleProvider,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    respx.post("https://example.com/login/oauth/access_token").mock(
+        return_value=respx.MockResponse(
+            400,
+            json={
+                "error": "invalid_grant",
+                "error_description": "The grant is invalid.",
+            },
+        )
+    )
+
+    with (
+        caplog.at_level(logging.WARNING, logger=logger.name),
+        pytest.raises(OAuth2Exception) as exc_info,
+    ):
+        example_provider.exchange_code("test_code", "https://example.com/callback")
+
+    assert exc_info.value.error == "server_error"
+    assert exc_info.value.error_description == "Token exchange failed"
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelno == logging.WARNING
+    assert (
+        caplog.records[0]
+        .getMessage()
+        .startswith("HTTP error during token exchange: 400 - ")
     )
 
 
