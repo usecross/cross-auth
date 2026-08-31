@@ -5,13 +5,12 @@ from urllib.parse import urlencode
 
 import httpx
 from cross_web import HTTPRequest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from cross_auth.utils._response import Response
 
 from .._context import Context
 from ..models.oauth_token_response import (
-    OAuth2TokenEndpointResponse,
     TokenErrorResponse,
     TokenResponse,
 )
@@ -20,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TOKEN_EXCHANGE_TIMEOUT = 10.0
 RECOVERABLE_TOKEN_EXCHANGE_ERRORS = {"bad_verification_code"}
+_TOKEN_RESPONSE_ADAPTER = TypeAdapter(TokenResponse | TokenErrorResponse)
 
 
 class UserInfo(TypedDict, total=True):
@@ -285,16 +285,17 @@ class OAuth2Provider:
 
     def parse_token_response(
         self, response: httpx.Response
-    ) -> OAuth2TokenEndpointResponse:
+    ) -> TokenResponse | TokenErrorResponse:
         """Parse token exchange response.
 
-        Override this method to handle different response formats.
+        Override this method to handle different response formats. Overrides must
+        return a TokenResponse or TokenErrorResponse directly.
 
         Raises:
             OAuth2Exception: If the response cannot be parsed.
         """
         try:
-            return OAuth2TokenEndpointResponse.model_validate_json(response.text)
+            return _TOKEN_RESPONSE_ADAPTER.validate_json(response.text)
         except ValidationError as e:
             raise OAuth2Exception(
                 error="server_error",
@@ -333,54 +334,40 @@ class OAuth2Provider:
                 )
                 raise
 
-            if token_response.is_error():
-                if not isinstance(token_response.root, TokenErrorResponse):
-                    raise OAuth2Exception(
-                        error="server_error",
-                        error_description="Unexpected token response format",
-                    )
-
-                token_error = token_response.root
-
-                if token_error.error in RECOVERABLE_TOKEN_EXCHANGE_ERRORS:
+            if isinstance(token_response, TokenErrorResponse):
+                if token_response.error in RECOVERABLE_TOKEN_EXCHANGE_ERRORS:
                     logger.info(
                         "Token exchange rejected by provider: %s",
-                        token_error.error,
+                        token_response.error,
                         extra={
                             "oauth_provider": self.id,
-                            "oauth_error": token_error.error,
+                            "oauth_error": token_response.error,
                         },
                     )
                     raise OAuth2Exception(
-                        error=token_error.error,
-                        error_description=token_error.error_description
+                        error=token_response.error,
+                        error_description=token_response.error_description
                         or "The authorization code is invalid or expired. Please try again.",
                     )
 
                 response.raise_for_status()
-                logger.error("Token exchange failed: %s", token_error.error)
+                logger.error("Token exchange failed: %s", token_response.error)
 
                 raise OAuth2Exception(
                     error="server_error",
-                    error_description=f"Token exchange failed: {token_error.error}",
+                    error_description=f"Token exchange failed: {token_response.error}",
                 )
 
             response.raise_for_status()
 
-            if not isinstance(token_response.root, TokenResponse):
-                raise OAuth2Exception(
-                    error="server_error",
-                    error_description="Unexpected token response format",
-                )
-
             logger.debug(
                 "Token exchange succeeded (token_type=%s, scope=%s, expires_in=%s)",
-                token_response.root.token_type,
-                token_response.root.scope,
-                token_response.root.expires_in,
+                token_response.token_type,
+                token_response.scope,
+                token_response.expires_in,
             )
 
-            return token_response.root
+            return token_response
 
         except httpx.HTTPStatusError as e:
             logger.warning(

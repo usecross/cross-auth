@@ -185,6 +185,37 @@ def build_token_exchange_params(
     return params
 ```
 
+### Custom Token Response Parsing
+
+Override `parse_token_response` when a provider returns a non-standard response
+body. Return either `TokenResponse` or `TokenErrorResponse` directly:
+
+```python
+import httpx
+
+from cross_auth import TokenResponse
+from cross_auth.models.oauth_token_response import TokenErrorResponse
+
+
+def parse_token_response(
+    self, response: httpx.Response
+) -> TokenResponse | TokenErrorResponse:
+    data = response.json()
+
+    if error := data.get("provider_error"):
+        return TokenErrorResponse(
+            error=error,
+            error_description=data.get("provider_error_description"),
+        )
+
+    return TokenResponse.model_validate(data["tokens"])
+```
+
+Custom parsers written for Cross Auth 0.22 or earlier may return an
+`OAuth2TokenEndpointResponse` wrapper. That wrapper has been removed. Update the
+override to return its `TokenResponse` or `TokenErrorResponse` value directly;
+the models and their wire formats are unchanged.
+
 ### Custom Callback Handling
 
 Override `extract_callback_params` for providers that send callback data
