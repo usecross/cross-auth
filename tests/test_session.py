@@ -1,10 +1,12 @@
 from datetime import datetime, timezone
-from unittest.mock import patch
+from typing import cast
+from unittest.mock import Mock, patch
 
+import pytest
 from cross_web import HTTPRequest, TestingHTTPRequestAdapter
 
 from cross_auth import AccountsStorage, SessionStorage
-from cross_auth._password import authenticate
+from cross_auth._password import DUMMY_PASSWORD_HASH, _verify_password, authenticate
 from cross_auth._session import (
     SessionConfig,
     create_session,
@@ -14,8 +16,43 @@ from cross_auth._session import (
     make_clear_cookie,
     make_session_cookie,
 )
+from cross_auth._storage import User
 
 TEST_PASSWORD = "password123"  # noqa: S105
+
+
+@pytest.mark.parametrize(
+    (
+        "user_exists",
+        "password_hash",
+        "verification_result",
+        "expected_hash",
+        "expected_validity",
+    ),
+    [
+        pytest.param(True, "real-hash", True, "real-hash", True, id="correct"),
+        pytest.param(True, "real-hash", False, "real-hash", False, id="incorrect"),
+        pytest.param(False, None, True, DUMMY_PASSWORD_HASH, False, id="missing-user"),
+        pytest.param(True, None, True, DUMMY_PASSWORD_HASH, False, id="passwordless"),
+    ],
+)
+def test_verify_password_once(
+    user_exists: bool,
+    password_hash: str | None,
+    verification_result: bool,
+    expected_hash: str,
+    expected_validity: bool,
+):
+    user = cast(User, Mock(hashed_password=password_hash)) if user_exists else None
+
+    with patch(
+        "cross_auth._password.pwd_context.verify",
+        return_value=verification_result,
+    ) as verify:
+        valid = _verify_password(user, TEST_PASSWORD)
+
+    assert valid is expected_validity
+    verify.assert_called_once_with(TEST_PASSWORD, expected_hash)
 
 
 def test_authenticate_success(accounts_storage: AccountsStorage):

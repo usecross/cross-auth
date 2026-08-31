@@ -11,16 +11,14 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 DUMMY_PASSWORD_HASH = "$2b$12$K6qGJzUzL5H0yQKqVZKZFuJ9aZqZ5qH0yQKqVZKZFuJ9aZqZ5qH0y"  # noqa: S105
 
 
-def validate_password(user: User, password: str) -> bool:
-    """Validate password in constant time.
-
-    Returns False if the user has no password set, but still performs
-    a dummy hash comparison to prevent timing attacks.
-    """
-    if user.hashed_password is None:
-        pwd_context.verify(password, DUMMY_PASSWORD_HASH)
-        return False
-    return pwd_context.verify(password, user.hashed_password)
+def _verify_password(user: User | None, password: str) -> bool:
+    """Verify a real or dummy hash exactly once and return credential validity."""
+    password_hash = user.hashed_password if user is not None else None
+    valid = pwd_context.verify(
+        password,
+        password_hash if password_hash is not None else DUMMY_PASSWORD_HASH,
+    )
+    return password_hash is not None and valid
 
 
 def authenticate(
@@ -30,15 +28,7 @@ def authenticate(
 ) -> User | None:
     user = accounts_storage.find_user_by_email(email)
 
-    if user is not None:
-        valid = validate_password(user, password)
-    else:
-        # Perform dummy hash verification for non-existent users
-        # to maintain constant time and prevent user enumeration
-        pwd_context.verify(password, DUMMY_PASSWORD_HASH)
-        valid = False
-
-    if not valid:
+    if not _verify_password(user, password):
         return None
 
     return user
