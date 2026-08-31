@@ -1,6 +1,17 @@
 CHANGELOG
 =========
 
+0.22.6 - 2026-08-31
+-------------------
+
+Custom OAuth providers can now return `TokenResponse` or `TokenErrorResponse`
+directly from `parse_token_response`. The `OAuth2TokenEndpointResponse` wrapper
+has been removed; providers overriding this hook should return the contained
+success or error model directly. Built-in token exchange behavior and response
+formats are unchanged.
+
+This release was contributed by [@patrick91](https://github.com/patrick91) in [#65](https://github.com/usecross/cross-auth/pull/65)
+
 0.22.5 - 2026-08-31
 -------------------
 
