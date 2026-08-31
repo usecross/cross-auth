@@ -49,6 +49,7 @@ export default function App() {
   const [status, setStatus] = useState("idle")
   const [error, setError] = useState("")
   const [tokenUser, setTokenUser] = useState(null)
+  const tokenScopeRef = useRef({ token: accessToken })
   const hasHandledAuthCallback = useRef(false)
   const hasHandledLinkCallback = useRef(false)
 
@@ -127,11 +128,7 @@ export default function App() {
         }
 
         const tokenResponse = await response.json()
-        window.localStorage.setItem(
-          STORAGE_KEYS.accessToken,
-          tokenResponse.access_token,
-        )
-        setAccessToken(tokenResponse.access_token)
+        replaceAccessToken(tokenResponse.access_token)
         setStatus("authenticated")
         window.history.replaceState({}, "", "/")
       } catch (callbackError) {
@@ -155,6 +152,7 @@ export default function App() {
     hasHandledLinkCallback.current = true
 
     const handleLinkCallback = async () => {
+      const tokenScope = tokenScopeRef.current
       setStatus("linking")
       setError("")
 
@@ -170,7 +168,7 @@ export default function App() {
       const codeVerifier = window.sessionStorage.getItem(STORAGE_KEYS.linkCodeVerifier)
       window.sessionStorage.removeItem(STORAGE_KEYS.linkCodeVerifier)
 
-      if (!accessToken) {
+      if (!tokenScope.token) {
         setStatus("error")
         setError("No bearer token available to finalize account linking.")
         return
@@ -187,7 +185,7 @@ export default function App() {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
+            Authorization: `Bearer ${tokenScope.token}`,
           },
           body: JSON.stringify({
             link_code: linkCode,
@@ -201,10 +199,17 @@ export default function App() {
           throw new Error(body || "Failed to finalize account link")
         }
 
+        if (!isCurrentTokenScope(tokenScope)) {
+          return
+        }
+
         window.history.replaceState({}, "", "/")
-        await fetchTokenUser(accessToken)
-        setStatus("authenticated")
+        await fetchTokenUser(tokenScope)
       } catch (linkError) {
+        if (!isCurrentTokenScope(tokenScope)) {
+          return
+        }
+
         setStatus("error")
         setError(
           linkError instanceof Error
@@ -222,13 +227,30 @@ export default function App() {
       return
     }
 
-    void fetchTokenUser(accessToken)
+    const controller = new AbortController()
+    void fetchTokenUser(tokenScopeRef.current, controller.signal)
+
+    return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken, isAuthCallbackRoute, isLinkCallbackRoute])
 
-  async function fetchTokenUser(token = accessToken) {
-    if (!token) {
-      setTokenUser(null)
+  function isCurrentTokenScope(tokenScope) {
+    return tokenScopeRef.current === tokenScope
+  }
+
+  function replaceAccessToken(token) {
+    tokenScopeRef.current = { token }
+    if (token) {
+      window.localStorage.setItem(STORAGE_KEYS.accessToken, token)
+    } else {
+      window.localStorage.removeItem(STORAGE_KEYS.accessToken)
+    }
+    setAccessToken(token)
+    setTokenUser(null)
+  }
+
+  async function fetchTokenUser(tokenScope = tokenScopeRef.current, signal) {
+    if (!tokenScope.token || !isCurrentTokenScope(tokenScope)) {
       return
     }
 
@@ -238,8 +260,9 @@ export default function App() {
     try {
       const response = await fetch(`${authBaseUrl}/api/me`, {
         headers: {
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${tokenScope.token}`,
         },
+        signal,
       })
 
       if (!response.ok) {
@@ -248,9 +271,17 @@ export default function App() {
       }
 
       const data = await response.json()
+      if (!isCurrentTokenScope(tokenScope)) {
+        return
+      }
+
       setTokenUser(data)
       setStatus("authenticated")
     } catch (fetchError) {
+      if (signal?.aborted || !isCurrentTokenScope(tokenScope)) {
+        return
+      }
+
       setStatus("error")
       setError(
         fetchError instanceof Error
@@ -284,11 +315,7 @@ export default function App() {
       }
 
       const tokenResponse = await response.json()
-      window.localStorage.setItem(
-        STORAGE_KEYS.accessToken,
-        tokenResponse.access_token,
-      )
-      setAccessToken(tokenResponse.access_token)
+      replaceAccessToken(tokenResponse.access_token)
       setStatus("authenticated")
     } catch (loginError) {
       setStatus("error")
@@ -370,14 +397,13 @@ export default function App() {
   }
 
   function clearToken() {
-    window.localStorage.removeItem(STORAGE_KEYS.accessToken)
-    setAccessToken("")
-    setTokenUser(null)
+    replaceAccessToken("")
     setStatus("idle")
     setError("")
   }
 
   async function disconnectAccount(account) {
+    const tokenScope = tokenScopeRef.current
     setError("")
 
     try {
@@ -385,7 +411,7 @@ export default function App() {
         `${authBaseUrl}/auth/${account.provider}/social-accounts/${account.id}`,
         {
           method: "DELETE",
-          headers: { Authorization: `Bearer ${accessToken}` },
+          headers: { Authorization: `Bearer ${tokenScope.token}` },
         },
       )
 
@@ -397,8 +423,12 @@ export default function App() {
         )
       }
 
-      await fetchTokenUser(accessToken)
+      await fetchTokenUser(tokenScope)
     } catch (disconnectError) {
+      if (!isCurrentTokenScope(tokenScope)) {
+        return
+      }
+
       setStatus("error")
       setError(
         disconnectError instanceof Error
@@ -409,7 +439,8 @@ export default function App() {
   }
 
   async function revokeAllSessions() {
-    if (!accessToken) {
+    const tokenScope = tokenScopeRef.current
+    if (!tokenScope.token) {
       return
     }
 
@@ -418,7 +449,7 @@ export default function App() {
     try {
       const response = await fetch(`${authBaseUrl}/api/sessions/revoke-all`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}` },
+        headers: { Authorization: `Bearer ${tokenScope.token}` },
       })
 
       if (!response.ok) {
@@ -427,8 +458,14 @@ export default function App() {
       }
 
       // The bearer session this token belonged to is now revoked.
-      clearToken()
+      if (isCurrentTokenScope(tokenScope)) {
+        clearToken()
+      }
     } catch (revokeError) {
+      if (!isCurrentTokenScope(tokenScope)) {
+        return
+      }
+
       setStatus("error")
       setError(
         revokeError instanceof Error
