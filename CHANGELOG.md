@@ -1,6 +1,16 @@
 CHANGELOG
 =========
 
+0.22.4 - 2026-08-31
+-------------------
+
+Password authentication now uses consistent timing-safe checks for existing,
+unknown, and passwordless accounts through both `CrossAuth.authenticate` and the
+OAuth password grant. This reduces account-enumeration risk without changing
+successful or failed authentication responses.
+
+This release was contributed by [@patrick91](https://github.com/patrick91) in [#62](https://github.com/usecross/cross-auth/pull/62)
+
 0.22.3 - 2026-08-31
 -------------------
 
