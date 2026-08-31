@@ -241,7 +241,6 @@ class MemorySessionStorage(SessionStorage):
 
 class MemoryAccountsStorage:
     def __init__(self, test_password_hash: str):
-        self.test_password_hash = test_password_hash
         self.last_user_extra_fields: dict[str, Any] = {}
         self.last_social_account_extra_fields: dict[str, Any] = {}
         self.social_account_extra_fields_history: list[dict[str, Any]] = []
@@ -284,7 +283,7 @@ class MemoryAccountsStorage:
             id=str(user_info["id"]),
             email=email,
             email_verified=email_verified,
-            hashed_password=self.test_password_hash,
+            hashed_password=None,
             social_accounts=[],
         )
 

@@ -71,6 +71,7 @@ def test_creates_user_with_normalized_email_and_no_tokens(
     assert provider.validated_tokens == [VALID_TOKEN]
     # Email normalized by the same core the web callback uses.
     assert user.email == "new.user@example.com"
+    assert user.hashed_password is None
     account = accounts_storage.find_social_account(
         provider="stub", provider_user_id="native-1"
     )
