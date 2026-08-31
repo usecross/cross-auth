@@ -461,15 +461,27 @@ def test_cookie_session_is_rolled_when_refreshed(
     client = TestClient(_sliding_app(auth))
 
     # Within update_age: no refresh, so the cookie is left untouched.
-    with time_machine.travel(NOW + timedelta(seconds=5), tick=False):
+    with (
+        mock.patch.object(
+            session_storage, "get", wraps=session_storage.get
+        ) as durable_get,
+        time_machine.travel(NOW + timedelta(seconds=5), tick=False),
+    ):
         resp = client.get("/me", cookies={"session_id": token})
+    durable_get.assert_called_once()
     assert resp.json() == {"user": "test"}
     assert "set-cookie" not in resp.headers
 
     # Past update_age: the record rolls forward AND the cookie is reissued with
     # a fresh Max-Age so the browser copy slides too.
-    with time_machine.travel(NOW + timedelta(seconds=20), tick=False):
+    with (
+        mock.patch.object(
+            session_storage, "get", wraps=session_storage.get
+        ) as durable_get,
+        time_machine.travel(NOW + timedelta(seconds=20), tick=False),
+    ):
         resp = client.get("/me", cookies={"session_id": token})
+    durable_get.assert_called_once()
     assert resp.json() == {"user": "test"}
     set_cookie = resp.headers.get("set-cookie", "")
     assert "session_id=" in set_cookie
@@ -499,10 +511,104 @@ def test_bearer_session_refreshes_without_setting_cookie(
     client = TestClient(_sliding_app(auth))
 
     # Bearer transport has no cookie to roll, but the record still slides.
-    with time_machine.travel(NOW + timedelta(seconds=20), tick=False):
+    with (
+        mock.patch.object(
+            session_storage, "get", wraps=session_storage.get
+        ) as durable_get,
+        time_machine.travel(NOW + timedelta(seconds=20), tick=False),
+    ):
         resp = client.get("/me", headers={"Authorization": f"Bearer {token}"})
+    durable_get.assert_called_once()
     assert resp.json() == {"user": "test"}
     assert "set-cookie" not in resp.headers
+    assert record.expires_at == NOW + timedelta(seconds=80)
+
+
+@time_machine.travel(NOW, tick=False)
+def test_cookie_session_precedes_bearer_when_user_is_missing(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: MemorySessionStorage,
+):
+    auth = _make_auth(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=session_storage,
+        config={
+            "session": {
+                "max_age": 60,
+                "update_age": 10,
+                "cookies": {"secure": False},
+            }
+        },
+    )
+    cookie_token, cookie_record = create_session(
+        "missing-user", session_storage, max_age=60
+    )
+    bearer_token, bearer_record = create_session("test", session_storage, max_age=60)
+    client = TestClient(_sliding_app(auth))
+
+    with (
+        mock.patch.object(
+            session_storage, "get", wraps=session_storage.get
+        ) as durable_get,
+        time_machine.travel(NOW + timedelta(seconds=20), tick=False),
+    ):
+        resp = client.get(
+            "/me",
+            cookies={"session_id": cookie_token},
+            headers={"Authorization": f"Bearer {bearer_token}"},
+        )
+
+    durable_get.assert_called_once()
+    assert resp.json() == {"user": None}
+    assert f"session_id={cookie_token}" in resp.headers.get("set-cookie", "")
+    assert cookie_record.expires_at == NOW + timedelta(seconds=80)
+    assert bearer_record.expires_at == NOW + timedelta(seconds=60)
+
+
+@time_machine.travel(NOW, tick=False)
+def test_custom_user_resolver_keeps_implicit_cookie_refresh(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: MemorySessionStorage,
+):
+    resolver_requests: list[HTTPRequest] = []
+
+    def custom_resolver(request: HTTPRequest):
+        resolver_requests.append(request)
+        return accounts_storage.find_user_by_id("test")
+
+    auth = CrossAuth(
+        providers=[],
+        storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=session_storage,
+        trusted_origins=[],
+        get_user_from_request=custom_resolver,
+        config={
+            "session": {
+                "max_age": 60,
+                "update_age": 10,
+                "cookies": {"secure": False},
+            }
+        },
+    )
+    token, record = create_session("missing-user", session_storage, max_age=60)
+    client = TestClient(_sliding_app(auth))
+
+    with (
+        mock.patch.object(
+            session_storage, "get", wraps=session_storage.get
+        ) as durable_get,
+        time_machine.travel(NOW + timedelta(seconds=20), tick=False),
+    ):
+        resp = client.get("/me", cookies={"session_id": token})
+
+    durable_get.assert_called_once()
+    assert len(resolver_requests) == 1
+    assert resp.json() == {"user": "test"}
+    assert f"session_id={token}" in resp.headers.get("set-cookie", "")
     assert record.expires_at == NOW + timedelta(seconds=80)
 
 
