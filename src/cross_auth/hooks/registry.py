@@ -44,9 +44,10 @@ class HookRegistry:
         self._after[event].append(cast(_AfterRuntimeHandler, handler))
 
     def run_before(self, event: HookEventName, payload: _EventT) -> _EventT:
+        self._validate_event_name(event)
         current = payload
 
-        for handler in self._before[event]:
+        for handler in self._before.get(event, ()):
             result = handler(current)
             if inspect.isawaitable(result):
                 raise TypeError(f"{event} hooks for sync events must be synchronous")
@@ -55,7 +56,9 @@ class HookRegistry:
         return current
 
     def run_after(self, event: HookEventName, payload: _EventT) -> None:
-        for handler in self._after[event]:
+        self._validate_event_name(event)
+
+        for handler in self._after.get(event, ()):
             try:
                 result = handler(payload)
                 if inspect.isawaitable(result):
