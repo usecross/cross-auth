@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from passlib.context import CryptContext
+from sqlalchemy import UniqueConstraint
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Field, Relationship, Session, SQLModel, create_engine
 
@@ -105,6 +106,8 @@ class MemorySecondaryStorage(SecondaryStorage):
 # validate these fields at construction (see _required_models), so a missing
 # column fails at startup rather than mid-request.
 class SocialAccount(SQLModel, table=True):
+    __table_args__ = (UniqueConstraint("provider", "provider_user_id"),)
+
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id")
     provider: str

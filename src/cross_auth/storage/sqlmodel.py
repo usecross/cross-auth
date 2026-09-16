@@ -9,6 +9,7 @@ from typing import Any, ClassVar, Generic, TypeVar, overload
 
 try:
     from sqlalchemy import BigInteger, SmallInteger, and_, inspect, or_, update
+    from sqlalchemy.exc import IntegrityError
     from sqlalchemy.orm import selectinload
     from sqlmodel import SQLModel, Session, select
     from sqlmodel.sql.expression import SelectOfScalar
@@ -19,7 +20,7 @@ except ImportError as exc:  # pragma: no cover - exercised only without the extr
     ) from exc
 
 from cross_auth._storage import SessionListOrder, SessionStatus
-from cross_auth.exceptions import InvalidCursorError
+from cross_auth.exceptions import CrossAuthException, InvalidCursorError
 from cross_auth.storage._cursor import decode_cursor, encode_cursor
 
 SessionModelT = TypeVar("SessionModelT", bound=SQLModel)
@@ -595,7 +596,9 @@ class SQLModelAccountsStorage(
     and writes alike — except the eager-loaded ``user.social_accounts``
     relationship on a returned user, which is loaded unfiltered; go through
     ``list_social_accounts`` for a filtered read. Configuration is validated
-    at construction.
+    at construction. Database uniqueness constraints define whether identities
+    are exclusive or allow shared connections. Creation translates ownership
+    conflicts on PostgreSQL and SQLite; unrelated integrity errors propagate.
     """
 
     UserModel: type[UserModelT]
@@ -758,17 +761,42 @@ class SQLModelAccountsStorage(
         model = self.SocialAccountModel
         with self._open_session() as session:
             statement = self.filter_social_account_query(select(model).where(*where))
-            record = session.exec(statement).first()
+            record = session.exec(statement).one_or_none()
         return _prepare_social_account(record)
 
     def find_social_account(
-        self, *, provider: str, provider_user_id: str
+        self,
+        *,
+        provider: str,
+        provider_user_id: str,
+        user_id: object | None = None,
+        is_login_method: bool | None = None,
     ) -> SocialAccountModelT | None:
         model = self.SocialAccountModel
-        return self._find_social_account(
+        conditions = [
             getattr(model, "provider") == provider,
             getattr(model, "provider_user_id") == provider_user_id,
-        )
+        ]
+        if user_id is not None:
+            user_id = _coerce_id(model, "user_id", user_id)
+            if user_id is _NO_MATCH:
+                return None
+            conditions.append(getattr(model, "user_id") == user_id)
+
+        if is_login_method is not None:
+            conditions.append(getattr(model, "is_login_method") == is_login_method)
+
+        return self._find_social_account(*conditions)
+
+    def has_social_account(self, *, provider: str, provider_user_id: str) -> bool:
+        """Check whether this identity exists, even if query filters hide it."""
+        model = self.SocialAccountModel
+        with self._open_session() as session:
+            statement = select(model).where(
+                getattr(model, "provider") == provider,
+                getattr(model, "provider_user_id") == provider_user_id,
+            )
+            return session.exec(statement.limit(1)).first() is not None
 
     def find_social_account_by_id(
         self, social_account_id: object
@@ -830,7 +858,27 @@ class SQLModelAccountsStorage(
         with self._open_session() as session:
             row = self.SocialAccountModel(**values)
             session.add(row)
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError as error:
+                session.rollback()
+                model = self.SocialAccountModel
+                statement = self.filter_social_account_query(
+                    select(model).where(
+                        getattr(model, "provider") == provider,
+                        getattr(model, "provider_user_id") == provider_user_id,
+                        getattr(model, "user_id") == values["user_id"],
+                    )
+                )
+                existing = session.exec(statement).one_or_none()
+                if existing is None:
+                    raise
+
+                if is_login_method and not getattr(existing, "is_login_method"):
+                    raise CrossAuthException("account_already_linked") from error
+
+                # Retrying creation must not overwrite credentials or enable login.
+                return _prepare_social_account(existing)
         return _prepare_social_account(row)
 
     def update_social_account(

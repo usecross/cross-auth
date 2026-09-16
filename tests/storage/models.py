@@ -7,7 +7,7 @@ Defined once at module level so every table is registered on
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime
+from sqlalchemy import Column, DateTime, Index, UniqueConstraint, text
 from sqlmodel import Field, Relationship, SQLModel
 from sqlmodel.sql.expression import SelectOfScalar
 
@@ -155,6 +155,8 @@ class TzAwareSessionStore(SQLModelSessionStorage[TzAwareUserSession]):
 
 
 class SocialAccount(SQLModel, table=True):
+    __table_args__ = (UniqueConstraint("provider", "provider_user_id"),)
+
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id")
     provider: str
@@ -314,3 +316,37 @@ class AliasedVerifiedUser(SQLModel, table=True):
     @property
     def social_accounts(self) -> list[SocialAccount]:
         return []
+
+
+class AttachmentAccountBase(SQLModel):
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id")
+    provider: str
+    provider_user_id: str
+    access_token: str | None = None
+    refresh_token: str | None = None
+    access_token_expires_at: datetime | None = None
+    refresh_token_expires_at: datetime | None = None
+    scope: str | None = None
+    provider_email: str | None = None
+    provider_email_verified: bool | None = None
+    is_login_method: bool = True
+    external_reference: str | None = Field(default=None, unique=True)
+
+
+class ExclusiveAttachmentAccount(AttachmentAccountBase, table=True):
+    __table_args__ = (UniqueConstraint("provider", "provider_user_id"),)
+
+
+class SharedAttachmentAccount(AttachmentAccountBase, table=True):
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider", "provider_user_id"),
+        Index(
+            "uq_sharedattachmentaccount_login_identity",
+            "provider",
+            "provider_user_id",
+            unique=True,
+            sqlite_where=text("is_login_method = true"),
+            postgresql_where=text("is_login_method = true"),
+        ),
+    )

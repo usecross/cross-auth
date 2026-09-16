@@ -14,6 +14,9 @@ class AccountLinkingConfig(TypedDict, total=False):
     # Allow manual linking of accounts with different emails?
     allow_different_emails: bool
 
+    # Defaults to False. The database schema must enforce the same policy.
+    allow_shared_connections: bool
+
 
 class Config(TypedDict, total=False):
     """Cross-auth configuration."""
