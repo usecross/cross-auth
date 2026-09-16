@@ -86,10 +86,13 @@ migrations):
 ```python
 from datetime import datetime
 
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, Relationship, SQLModel
 
 
 class SocialAccount(SQLModel, table=True):
+    __table_args__ = (UniqueConstraint("provider", "provider_user_id"),)
+
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id")
     provider: str
@@ -409,12 +412,158 @@ class SecondaryStorage(Protocol):
     def pop(self, key: str) -> str | None: ...
 ```
 
-**Implementations must honor `ttl`** (seconds until expiry). For some keys — the
-OAuth authorization-request state, in particular — the TTL is the only expiry
-mechanism: an implementation that ignores it leaves abandoned login state around
-forever. `RedisStorage` enforces it natively via Redis `EX`; a hand-rolled
-in-memory store must track and check expiry itself. The example app's
-`MemorySecondaryStorage` (`examples/fastapi/main.py`) shows the pattern.
+**Implementations must honor `ttl`** (seconds until expiry). The callback checks
+its stored authorization-request expiry too, but storage TTL is still needed to
+remove abandoned state and expire other temporary records. `RedisStorage`
+enforces it natively via Redis `EX`; a hand-rolled in-memory store must track
+and check expiry itself. The example app's `MemorySecondaryStorage`
+(`examples/fastapi/main.py`) shows the pattern.
+
+### Connection ownership and migration
+
+Match database constraints to `account_linking.allow_shared_connections`, which
+defaults to `False`. Cross-Auth checks the policy before creation; the database
+constraints enforce it when requests run concurrently. No explicit table lock is
+required. The same schema rules can be implemented by SQLModel, Django, or
+another storage adapter.
+
+There is currently no automatic check that the flag and schema agree. Setting
+`False` with a shared schema rejects observed conflicts but cannot prevent two
+concurrent first connections. Setting `True` with an exclusive schema still
+causes the database to reject sharing.
+
+#### Exclusive ownership (default example)
+
+Require unique `(provider, provider_user_id)`. Each provider identity belongs to
+one application user, whether it is connected for API access or enabled for
+login. The SQLModel example above uses this constraint:
+
+```python
+__table_args__ = (UniqueConstraint("provider", "provider_user_id"),)
+```
+
+#### Shared integration connections
+
+Replace global identity uniqueness with both of these rules:
+
+- Unique `(user_id, provider, provider_user_id)` for every connection.
+- Unique `(provider, provider_user_id)` where `is_login_method` is true.
+
+For PostgreSQL and SQLite, use the following table arguments instead:
+
+```python
+from sqlalchemy import Index, UniqueConstraint, text
+
+__table_args__ = (
+    UniqueConstraint("user_id", "provider", "provider_user_id"),
+    Index(
+        "uq_social_account_login_identity",
+        "provider",
+        "provider_user_id",
+        unique=True,
+        postgresql_where=text("is_login_method"),
+        sqlite_where=text("is_login_method = 1"),
+    ),
+)
+```
+
+The partial index applies only to login-enabled rows. Integration-only rows may
+share an identity across users, but sign-in still has exactly one owner at most.
+Both constraints are required. An adapter without these constraints cannot
+promise safe concurrent attachment. For other databases, use an equivalent
+schema that enforces both rules before supporting sharing.
+
+Provider IDs must consistently identify a provider configuration and its subject
+namespace. Do not reuse an ID for different issuers whose subjects can overlap.
+Ownership is global within the social-account table, even when an adapter
+applies query filters for tenants or soft deletion. Tenant filters do not create
+separate login ownership.
+
+#### Migrating existing tables
+
+Application-owned tables need an explicit migration. `create_all()` does not add
+constraints to existing tables. Adapt these checks to your table/column names:
+
+```sql
+-- Must be empty for exclusive ownership.
+SELECT provider, provider_user_id, COUNT(*)
+FROM socialaccount
+GROUP BY provider, provider_user_id
+HAVING COUNT(*) > 1;
+
+-- Must be empty for shared connections: duplicates for the same user.
+SELECT user_id, provider, provider_user_id, COUNT(*)
+FROM socialaccount
+GROUP BY user_id, provider, provider_user_id
+HAVING COUNT(*) > 1;
+
+-- Must be empty for shared connections: multiple login owners.
+SELECT provider, provider_user_id, COUNT(*)
+FROM socialaccount
+WHERE is_login_method = TRUE
+GROUP BY provider, provider_user_id
+HAVING COUNT(*) > 1;
+```
+
+Stop if a query required for your chosen schema returns rows. Resolve those
+records deliberately before adding constraints; do not merge users or reassign
+credentials automatically. Keep identity columns and `is_login_method` non-null.
+
+For a table named `socialaccount`, exclusive ownership uses:
+
+```sql
+CREATE UNIQUE INDEX uq_socialaccount_identity
+ON socialaccount (provider, provider_user_id);
+```
+
+Shared connections use these two indexes instead:
+
+```sql
+CREATE UNIQUE INDEX uq_socialaccount_user_identity
+ON socialaccount (user_id, provider, provider_user_id);
+
+CREATE UNIQUE INDEX uq_socialaccount_login_identity
+ON socialaccount (provider, provider_user_id)
+WHERE is_login_method = TRUE;
+```
+
+When moving from exclusive to shared ownership, add the two new constraints and
+upgrade all writers before removing global identity uniqueness and enabling
+`allow_shared_connections`. When moving back, resolve all duplicate identities
+first, then restore global uniqueness. Coordinate migrations with writers so
+duplicates cannot appear between checks and constraint creation. Older code
+assumes a single connection globally and must not run against shared identities.
+
+#### Concurrent attachment
+
+The adapter attempts an insert and lets the database enforce ownership. On an
+`IntegrityError`, it rolls back and looks for the same user's connection. If
+found, it returns that row unchanged, ignoring the supplied creation values. An
+attempt to promote that row to a login method still raises
+`CrossAuthException("account_already_linked")`.
+
+If no matching connection exists, the original `IntegrityError` propagates. The
+adapter does not inspect driver error codes or constraint names to distinguish
+ownership conflicts from other integrity failures. Applications that want a
+specific HTTP response for these failures must handle them at their boundary.
+
+Use the ordinary authenticated update flow to refresh credentials. Storage
+idempotency does not guarantee exactly-once hook delivery; creation hooks can
+run for concurrent attempts that resolve to the same connection.
+
+Supply a fresh session from `session_factory`. Concurrent SQLite requests need
+separate database connections, such as a file-backed database with a pool, or
+external serialization when sharing a single connection. Constraint enforcement
+applies to direct SQL writes as well as adapter calls.
+
+Sign-in rejects an identity when it observes connections but no login owner.
+This lookup does not lock the identity: with the shared schema, a first login
+and another user's integration connection can be created concurrently. The
+database still guarantees one login owner and one connection per user.
+Cross-Auth never promotes an existing integration-only row through creation.
+
+User creation and identity attachment remain separate transactions. Atomic
+signup is separate work.
 
 ### AccountsStorage
 
@@ -423,8 +572,14 @@ class AccountsStorage(Protocol):
     def find_user_by_email(self, email: str) -> User | None: ...
     def find_user_by_id(self, id: Any) -> User | None: ...
     def find_social_account(
-        self, *, provider: str, provider_user_id: str
+        self,
+        *,
+        provider: str,
+        provider_user_id: str,
+        user_id: Any | None = None,
+        is_login_method: bool | None = None,
     ) -> SocialAccount | None: ...
+    def has_social_account(self, *, provider: str, provider_user_id: str) -> bool: ...
     def find_social_account_by_id(
         self, social_account_id: Any
     ) -> SocialAccount | None: ...
@@ -441,6 +596,15 @@ class AccountsStorage(Protocol):
     def update_social_account(self, social_account_id, **kwargs) -> SocialAccount: ...
     def delete_social_account(self, social_account_id: Any) -> None: ...
 ```
+
+Identity lookups should specify `user_id` for a user's connection or
+`is_login_method=True` for the login owner. An unfiltered identity lookup that
+matches multiple rows raises rather than selecting an arbitrary user.
+`has_social_account` checks global existence, including rows hidden by query
+filters, so a connected-only or hidden identity cannot accidentally create a new
+login owner. Custom adapters must implement the new filters and existence
+method. Their schemas and creation methods must enforce the ownership contract
+under concurrent writes.
 
 The user and social-account write methods receive `extra_fields`, mappings
 populated by the corresponding `user.create`, `social_account.create`, or

@@ -61,6 +61,61 @@ session-management APIs.
 Cross-Auth supports social login via OAuth 2.0 providers. See the
 [Social Providers](/docs/social-providers) guide for configuration details.
 
+## Sharing provider connections
+
+Cross-Auth defaults to exclusive ownership: a provider identity belongs to one
+application user. Enable shared integration connections explicitly:
+
+```python
+config = {
+    "account_linking": {
+        "enabled": True,
+        "allow_shared_connections": True,
+    },
+}
+```
+
+The flag controls application checks; your database constraints must match it.
+Use global identity uniqueness for exclusive ownership, or per-user uniqueness
+plus a unique login-owner index for sharing. Changing the flag does not migrate
+the schema. Exclusive policy checks alone cannot prevent concurrent shared
+attachments if the database still uses the shared schema.
+
+This applies to every provider. It does not bypass the existing verified-email
+or different-email policies. Set `account_linking.allow_different_emails`
+separately when your application needs it.
+
+For example, a GitHub account can supply repositories to both a work account and
+a personal account while only identifying the personal account at sign-in:
+
+| Application user | GitHub identity | API access | Login enabled |
+| ---------------- | --------------- | ---------- | ------------- |
+| Work             | `patrick91`     | Yes        | No            |
+| Personal         | `patrick91`     | Yes        | Yes           |
+
+The connect flow creates integration-only connections. The link flow uses its
+`allow_login` setting for new connections. Reconnecting an existing connection
+refreshes its credentials without changing its login eligibility. There is no
+implicit promotion of a connection to a login method.
+
+Each user can have only one connection to a given provider identity, and that
+identity can identify at most one user for login, under either schema. Sign-in
+selects that login owner. If connections exist but none enable login, sign-in is
+rejected: Cross-Auth does not pick a user, create another user, or enable login
+automatically.
+
+Credentials are stored per connection. Updating or disconnecting the work
+connection does not update or delete the personal connection. Providers may
+reuse grants or tokens across authorizations; provider-side revocation can still
+affect other connections.
+
+To return to exclusive ownership, first resolve identities connected to multiple
+users, then add the global unique constraint. Choose which connections to retain
+explicitly; a schema migration must not merge accounts or transfer login
+ownership automatically. Use the
+[storage migration guidance](/docs/storage#connection-ownership-and-migration)
+before enabling sharing or upgrading a custom storage implementation.
+
 ## Browser binding and callback lifecycle
 
 Each OAuth attempt sets its own random, HttpOnly, host-only cookie with

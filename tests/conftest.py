@@ -240,7 +240,8 @@ class MemorySessionStorage(SessionStorage):
 
 
 class MemoryAccountsStorage:
-    def __init__(self, test_password_hash: str):
+    def __init__(self, test_password_hash: str, *, shared_connections: bool = False):
+        self.shared_connections = shared_connections
         self.last_user_extra_fields: dict[str, Any] = {}
         self.last_social_account_extra_fields: dict[str, Any] = {}
         self.social_account_extra_fields_history: list[dict[str, Any]] = []
@@ -295,15 +296,29 @@ class MemoryAccountsStorage:
         self,
         provider: str,
         provider_user_id: str,
+        user_id: Any | None = None,
+        is_login_method: bool | None = None,
     ) -> SocialAccount | None:
-        for user in self.data.values():
-            for social_account in user.social_accounts:
-                if (
-                    social_account.provider == provider
-                    and social_account.provider_user_id == provider_user_id
-                ):
-                    return social_account
-        return None
+        matches = [
+            account
+            for user in self.data.values()
+            for account in user.social_accounts
+            if account.provider == provider
+            and account.provider_user_id == provider_user_id
+            and (user_id is None or _same_id(account.user_id, user_id))
+            and (is_login_method is None or account.is_login_method == is_login_method)
+        ]
+        if len(matches) > 1:
+            raise ValueError("Multiple social accounts match; scope the lookup")
+        return matches[0] if matches else None
+
+    def has_social_account(self, *, provider: str, provider_user_id: str) -> bool:
+        return any(
+            account.provider == provider
+            and account.provider_user_id == provider_user_id
+            for user in self.data.values()
+            for account in user.social_accounts
+        )
 
     def find_social_account_by_id(
         self,
@@ -344,6 +359,27 @@ class MemoryAccountsStorage:
     ) -> SocialAccount:
         if user_id not in self.data:
             raise ValueError("User does not exist")
+
+        own_account = None
+        for user in self.data.values():
+            for account in user.social_accounts:
+                if (
+                    account.provider != provider
+                    or account.provider_user_id != provider_user_id
+                ):
+                    continue
+
+                if _same_id(account.user_id, user_id):
+                    own_account = account
+                elif not self.shared_connections or (
+                    is_login_method and account.is_login_method
+                ):
+                    raise CrossAuthException("account_already_linked")
+
+        if own_account is not None:
+            if is_login_method and not own_account.is_login_method:
+                raise CrossAuthException("account_already_linked")
+            return own_account
 
         user = self.data[user_id]
 

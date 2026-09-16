@@ -1053,6 +1053,35 @@ def _create_social_account(
             extra_fields={},
         ),
     )
+    # Database constraints enforce this policy when requests race these checks.
+    allow_shared_connections = context.config.get("account_linking", {}).get(
+        "allow_shared_connections", False
+    )
+    if not allow_shared_connections:
+        identity_exists = context.accounts_storage.has_social_account(
+            provider=event.provider, provider_user_id=event.provider_user_id
+        )
+        if (
+            identity_exists
+            and context.accounts_storage.find_social_account(
+                provider=event.provider,
+                provider_user_id=event.provider_user_id,
+                user_id=event.user_id,
+            )
+            is None
+        ):
+            raise CrossAuthException("account_already_linked")
+    elif event.is_login_method:
+        login_account = context.accounts_storage.find_social_account(
+            provider=event.provider,
+            provider_user_id=event.provider_user_id,
+            is_login_method=True,
+        )
+        if login_account is not None and not _same_id(
+            login_account.user_id, event.user_id
+        ):
+            raise CrossAuthException("account_already_linked")
+
     social_account = context.accounts_storage.create_social_account(
         user_id=event.user_id,
         provider=event.provider,
@@ -1144,10 +1173,13 @@ def resolve_user_for_sign_in(
     social_account = context.accounts_storage.find_social_account(
         provider=provider.id,
         provider_user_id=validated.provider_user_id,
+        is_login_method=True,
     )
 
-    # Reject before resolve_or_create_user updates the account's stored tokens.
-    if social_account is not None and not social_account.is_login_method:
+    # Connections grant API access without implicitly granting sign-in access.
+    if social_account is None and context.accounts_storage.has_social_account(
+        provider=provider.id, provider_user_id=validated.provider_user_id
+    ):
         raise CrossAuthException(
             "access_denied", error_description="Sign-in is not allowed"
         )
@@ -1294,17 +1326,10 @@ def _complete_connect(
     social_account = context.accounts_storage.find_social_account(
         provider=provider.id,
         provider_user_id=validated.provider_user_id,
+        user_id=user.id,
     )
 
     if social_account is not None:
-        if str(social_account.user_id) != str(user.id):
-            raise CrossAuthException(
-                "account_already_linked",
-                error_description=(
-                    "This provider account is already linked to a different user."
-                ),
-            )
-
         _update_social_account(
             context=context,
             social_account=social_account,
@@ -1707,45 +1732,48 @@ def finalize_link(
     social_account = context.accounts_storage.find_social_account(
         provider=provider.id,
         provider_user_id=validated.provider_user_id,
+        user_id=user.id,
     )
 
     created_social_account: SocialAccount | None = None
 
-    if social_account:
-        if social_account.user_id != user.id:
-            return Response.error(
-                "server_error", error_description="Social account already exists"
+    try:
+        if social_account:
+            social_account = _update_social_account(
+                context=context,
+                social_account=social_account,
+                access_token=token_response.access_token,
+                refresh_token=token_response.refresh_token,
+                access_token_expires_at=token_response.access_token_expires_at,
+                refresh_token_expires_at=token_response.refresh_token_expires_at,
+                scope=token_response.scope,
+                user_info=cast(dict[str, Any], user_info),
+                provider_email=validated.email,
+                provider_email_verified=validated.email_verified,
             )
-
-        social_account = _update_social_account(
-            context=context,
-            social_account=social_account,
-            access_token=token_response.access_token,
-            refresh_token=token_response.refresh_token,
-            access_token_expires_at=token_response.access_token_expires_at,
-            refresh_token_expires_at=token_response.refresh_token_expires_at,
-            scope=token_response.scope,
-            user_info=cast(dict[str, Any], user_info),
-            provider_email=validated.email,
-            provider_email_verified=validated.email_verified,
+        else:
+            social_account = _create_social_account(
+                context=context,
+                user_id=user.id,
+                provider=provider.id,
+                provider_user_id=validated.provider_user_id,
+                access_token=token_response.access_token,
+                refresh_token=token_response.refresh_token,
+                access_token_expires_at=token_response.access_token_expires_at,
+                refresh_token_expires_at=token_response.refresh_token_expires_at,
+                scope=token_response.scope,
+                user_info=cast(dict[str, Any], user_info),
+                provider_email=validated.email,
+                provider_email_verified=validated.email_verified,
+                is_login_method=allow_login,
+            )
+            created_social_account = social_account
+    except CrossAuthException as exc:
+        return Response.error(
+            exc.error,
+            error_description=exc.error_description,
+            status_code=exc.status_code,
         )
-    else:
-        social_account = _create_social_account(
-            context=context,
-            user_id=user.id,
-            provider=provider.id,
-            provider_user_id=validated.provider_user_id,
-            access_token=token_response.access_token,
-            refresh_token=token_response.refresh_token,
-            access_token_expires_at=token_response.access_token_expires_at,
-            refresh_token_expires_at=token_response.refresh_token_expires_at,
-            scope=token_response.scope,
-            user_info=cast(dict[str, Any], user_info),
-            provider_email=validated.email,
-            provider_email_verified=validated.email_verified,
-            is_login_method=allow_login,
-        )
-        created_social_account = social_account
 
     context.hooks.run_after(
         "oauth.finalize_link",

@@ -251,7 +251,20 @@ class AccountsStorage(Protocol):
         *,
         provider: str,
         provider_user_id: str,
-    ) -> SocialAccount | None: ...
+        user_id: Any | None = None,
+        is_login_method: bool | None = None,
+    ) -> SocialAccount | None:
+        """Find a connection using all supplied filters.
+
+        Callers resolving a user must select by user_id or is_login_method=True;
+        an unscoped identity can have multiple connections when sharing is enabled.
+        Raise on ambiguous results instead of selecting an arbitrary row.
+        """
+        ...
+
+    def has_social_account(self, *, provider: str, provider_user_id: str) -> bool:
+        """Check global existence, including connections hidden by query filters."""
+        ...
 
     def find_social_account_by_id(
         self,
@@ -285,7 +298,17 @@ class AccountsStorage(Protocol):
         provider_email_verified: bool | None,
         is_login_method: bool,
         extra_fields: Mapping[str, Any] | None = None,
-    ) -> SocialAccount: ...
+    ) -> SocialAccount:
+        """Atomically attach an identity, rejecting conflicting ownership.
+
+        A user has at most one connection per identity, and an identity has at
+        most one login owner. The database schema determines whether multiple
+        users may connect the same identity. Never reassign an existing row.
+        Failed inserts may propagate the storage backend's integrity error.
+        A same-owner retry returns the existing row without updating credentials.
+        Reject attempts to implicitly promote an existing connection to login.
+        """
+        ...
 
     def update_social_account(
         self,
