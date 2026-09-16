@@ -22,7 +22,7 @@ from fastapi import Request as FastAPIRequest
 from fastapi import Response as FastAPIResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from ._auth_flow import resolve_or_create_user
+from ._auth_flow import resolve_user_for_sign_in
 from ._config import Config
 from ._context import AccountsStorage, SecondaryStorage, User
 from ._email import normalize_email as _normalize_email
@@ -407,6 +407,12 @@ class CrossAuth:
         hooks. Returns ``(user, created)``; pair it with
         ``issue_session_token`` to hand the client a bearer token.
 
+        If the identity belongs to an existing social account with
+        ``is_login_method=False``, raises ``CrossAuthException`` with
+        ``error="access_denied"``. Authenticated connection and linking flows
+        still support these accounts; connecting an account does not enable
+        it for sign-in.
+
         ``user_info`` supplies optional display metadata: ``name``,
         ``first_name``, ``last_name``, and ``picture``. Other keys are ignored,
         including when supplied by an ``oauth.id_token`` before hook. Identity
@@ -458,7 +464,7 @@ class CrossAuth:
             if event.user_info is not None and key in event.user_info:
                 merged[key] = event.user_info[key]
 
-        resolved_user, resolved_account = resolve_or_create_user(
+        resolved_user, resolved_account = resolve_user_for_sign_in(
             provider=registered,
             context=self._router.context,
             validated=validated,

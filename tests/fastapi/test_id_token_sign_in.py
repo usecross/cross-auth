@@ -4,6 +4,7 @@ native/SDK logins (Apple ASAuthorization, Google Credential Manager)."""
 import hashlib
 from dataclasses import replace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from sqlmodel import Session
@@ -20,6 +21,42 @@ from ..storage.conftest import make_sqlite_engine
 from ..storage.models import LeanAccountsStore
 
 VALID_TOKEN = "valid-id-token"  # noqa: S105
+
+
+def test_connected_account_cannot_sign_in(
+    secondary_storage, accounts_storage, monkeypatch
+):
+    provider = StubOIDCProvider(
+        {"sub": "connected-1", "email": "test@example.com", "email_verified": True}
+    )
+    auth = _make_auth(secondary_storage, accounts_storage, provider)
+    accounts_storage.create_social_account(
+        user_id="test",
+        provider="stub",
+        provider_user_id="connected-1",
+        access_token="stored-access",
+        refresh_token="stored-refresh",
+        access_token_expires_at=None,
+        refresh_token_expires_at=None,
+        scope="email",
+        user_info={},
+        provider_email="test@example.com",
+        provider_email_verified=True,
+        is_login_method=False,
+    )
+    update = Mock(wraps=accounts_storage.update_social_account)
+    monkeypatch.setattr(accounts_storage, "update_social_account", update)
+    seen_after: list[AfterOAuthIdTokenEvent] = []
+
+    @auth.after("oauth.id_token")
+    def observe(event: AfterOAuthIdTokenEvent) -> None:
+        seen_after.append(event)
+
+    with pytest.raises(CrossAuthException, match="^access_denied$"):
+        auth.sign_in_with_id_token("stub", VALID_TOKEN)
+
+    update.assert_not_called()
+    assert not seen_after
 
 
 class StubOIDCProvider(OIDCProvider):

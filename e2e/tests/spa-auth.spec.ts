@@ -40,14 +40,17 @@ async function delayNextUserResponse(page: Page, email: string) {
 test("separate SPA completes auth-code flow and calls bearer API", async ({
   page,
 }) => {
+  // Keep this identity separate from tests that connect accounts without login.
+  const email = `spa-login-${Date.now()}-${Math.random().toString(16).slice(2)}@example.com`
+
   await page.goto("http://127.0.0.1:5173/")
 
   await page.getByRole("button", { name: "Log in with GitHub" }).click()
-  await completeGitHubMockSignIn(page, "demo@example.com")
+  await completeGitHubMockSignIn(page, email)
 
   await expect(page).toHaveURL("http://127.0.0.1:5173/")
   await expect(page.getByText("token present")).toBeVisible()
-  await expect(page.getByText('"email": "demo@example.com"')).toBeVisible()
+  await expect(page.getByText(`"email": "${email}"`)).toBeVisible()
   await expect(page.getByText('"provider": "github"')).toBeVisible()
 })
 

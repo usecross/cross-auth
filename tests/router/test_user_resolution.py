@@ -1,4 +1,5 @@
 from unittest.mock import Mock
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 import respx
@@ -6,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from cross_auth._storage import AccountsStorage, SecondaryStorage, SessionStorage
+from cross_auth.hooks import AfterOAuthCallbackEvent
 
 from .conftest import (
     FakeProvider,
@@ -13,6 +15,79 @@ from .conftest import (
     mock_token_and_userinfo,
     start_provider_auth,
 )
+
+
+@pytest.mark.parametrize("flow", ["session", "token"])
+@respx.mock
+def test_connected_account_cannot_sign_in(
+    flow,
+    client,
+    auth,
+    accounts_storage,
+    session_storage,
+    secondary_storage,
+    monkeypatch,
+):
+    accounts_storage.create_social_account(
+        user_id="test",
+        provider="fake",
+        provider_user_id="connected-1",
+        access_token="stored-access",
+        refresh_token="stored-refresh",
+        access_token_expires_at=None,
+        refresh_token_expires_at=None,
+        scope="email",
+        user_info={},
+        provider_email="test@example.com",
+        provider_email_verified=True,
+        is_login_method=False,
+    )
+    update = Mock(wraps=accounts_storage.update_social_account)
+    monkeypatch.setattr(accounts_storage, "update_social_account", update)
+    seen_after: list[AfterOAuthCallbackEvent] = []
+
+    @auth.after("oauth.callback")
+    def observe(event: AfterOAuthCallbackEvent) -> None:
+        seen_after.append(event)
+
+    mock_token_and_userinfo(email="test@example.com", provider_user_id="connected-1")
+    params = (
+        {
+            "client_id": "app-client",
+            "redirect_uri": "http://client.example/cb",
+            "state": "client-state",
+            "response_type": "code",
+            "code_challenge": "client-challenge",
+            "code_challenge_method": "S256",
+        }
+        if flow == "token"
+        else None
+    )
+    path = "/fake/authorize" if flow == "token" else "/fake/login"
+    _, state = start_provider_auth(client, path, params=params)
+    response = client.get(
+        "/fake/callback", params={"code": "provider-code", "state": state}
+    )
+
+    if flow == "token":
+        assert response.status_code == 302
+        query = parse_qs(urlparse(response.headers["location"]).query)
+        assert query == {
+            "error": ["access_denied"],
+            "error_description": ["Sign-in is not allowed"],
+            "state": ["client-state"],
+        }
+    else:
+        assert response.status_code == 400
+        assert response.json() == {
+            "error": "access_denied",
+            "error_description": "Sign-in is not allowed",
+        }
+    update.assert_not_called()
+    assert not seen_after
+    assert not session_storage.records
+    assert "session_id" not in response.cookies
+    assert not any(key.startswith("oauth:code:") for key in secondary_storage.data)
 
 
 def _recording_client(
