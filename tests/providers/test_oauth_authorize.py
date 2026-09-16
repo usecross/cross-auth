@@ -73,7 +73,7 @@ def test_authorize_redirects_to_provider(
     state = location.split("state=")[1].split("&")[0]
 
     raw_authorization_request_data = secondary_storage.get(
-        f"oauth:authorization_request:{state}"
+        f"oauth:authorization_request:v2:{state}"
     )
 
     assert raw_authorization_request_data is not None

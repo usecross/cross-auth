@@ -29,8 +29,9 @@ def _store_link_code(
     expires_at: datetime | None = None,
 ) -> str:
     secondary_storage.set(
-        f"oauth:link_request:{code}",
+        f"oauth:link_request:v2:{code}",
         LinkCodeData(
+            provider_id="fake",
             expires_at=expires_at
             or (datetime.now(tz=timezone.utc) + timedelta(minutes=10)),
             client_id="app-client",
@@ -146,7 +147,7 @@ def test_link_callback_stores_link_code(
     assert client_redirect.path == "/cb"
     link_code = parse_qs(client_redirect.query)["link_code"][0]
 
-    raw = secondary_storage.get(f"oauth:link_request:{link_code}")
+    raw = secondary_storage.get(f"oauth:link_request:v2:{link_code}")
     assert raw is not None
     link_data = LinkCodeData.model_validate_json(raw)
     assert link_data.user_id == "test"
@@ -369,3 +370,41 @@ def test_finalize_link_rejects_email_mismatch(
 
     assert resp.status_code == 400
     assert resp.json()["error"] == "email_mismatch"
+
+
+@respx.mock
+def test_finalize_link_is_single_use(build_auth, secondary_storage):
+    code = _store_link_code(secondary_storage)
+    mock_token_and_userinfo(email="test@example.com")
+    with _auth_enabled_client(build_auth) as client:
+        for expected in (200, 400):
+            response = client.post(
+                "/fake/finalize-link",
+                headers={"Authorization": "Bearer test"},
+                json={"link_code": code, "code_verifier": _LINK_CODE_VERIFIER},
+            )
+            assert response.status_code == expected
+    assert len(respx.calls) == 2
+
+
+@respx.mock
+def test_finalize_link_rejects_wrong_provider_without_consuming(
+    build_auth, secondary_storage
+):
+    from .conftest import FakeProvider
+
+    other = FakeProvider(client_id="other")
+    other.id = "other"
+    auth = build_auth(providers=[other], config={"account_linking": {"enabled": True}})
+    app = FastAPI()
+    app.include_router(auth.router)
+    code = _store_link_code(secondary_storage)
+    with TestClient(app) as client:
+        response = client.post(
+            "/other/finalize-link",
+            headers={"Authorization": "Bearer test"},
+            json={"link_code": code, "code_verifier": _LINK_CODE_VERIFIER},
+        )
+    assert response.status_code == 400
+    assert secondary_storage.get(f"oauth:link_request:v2:{code}") is not None
+    assert not respx.calls

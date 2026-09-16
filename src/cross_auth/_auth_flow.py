@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, NamedTuple, cast
 
-from cross_web import HTTPRequest
+from cross_web import Cookie, HTTPRequest
 from pydantic import BaseModel, HttpUrl, TypeAdapter, ValidationError
 
 from ._context import Context
@@ -72,7 +73,7 @@ FlowKind = Literal[
 class AuthRequest(BaseModel):
     """Stored state for an in-progress authorization at the provider.
 
-    Keyed by `oauth:authorization_request:{state}` in secondary storage.
+    Keyed by `oauth:authorization_request:v2:{state}` in secondary storage.
     Replaces the pre-refactor OAuth2AuthorizationRequestData.
     """
 
@@ -80,6 +81,8 @@ class AuthRequest(BaseModel):
     provider_id: str
     state: str
     provider_code_verifier: str | None = None
+    browser_binding: str
+    expires_at: datetime
 
     # Session + connect flows: where to redirect the user after completion.
     next_url: str | None = None
@@ -99,6 +102,7 @@ class LinkCodeData(BaseModel):
     """Stored after a successful link callback; redeemed by finalize-link."""
 
     expires_at: datetime
+    provider_id: str | None = None
     client_id: str
     redirect_uri: str
     code_challenge: str
@@ -136,8 +140,8 @@ class ResolvedSocialAccount(NamedTuple):
     created: bool
 
 
-_AUTH_REQUEST_KEY = "oauth:authorization_request:{state}"
-_LINK_CODE_KEY = "oauth:link_request:{code}"
+_AUTH_REQUEST_KEY = "oauth:authorization_request:v2:{state}"
+_LINK_CODE_KEY = "oauth:link_request:v2:{code}"
 _AUTH_CODE_KEY = "oauth:code:{code}"
 _AUTH_CODE_TTL = timedelta(minutes=10)
 _LINK_CODE_TTL = timedelta(minutes=10)
@@ -146,25 +150,51 @@ _LINK_CODE_TTL = timedelta(minutes=10)
 _AUTH_REQUEST_TTL = timedelta(minutes=10)
 
 
-def _store_auth_request(context: Context, data: AuthRequest) -> None:
+def _binding_cookie(
+    request: HTTPRequest, context: Context, state: str, value: str, *, max_age: int
+) -> Cookie:
+    secure = (context.base_url or str(request.url)).startswith("https://")
+    prefix = "__Host-" if secure else ""
+    return Cookie(
+        name=f"{prefix}cross_auth_oauth_{state}",
+        value=value,
+        secure=secure,
+        path="/",
+        max_age=max_age,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def _store_auth_request(
+    context: Context, request: HTTPRequest, data: AuthRequest, binding: str
+) -> Cookie:
     context.secondary_storage.set(
         _AUTH_REQUEST_KEY.format(state=data.state),
         data.model_dump_json(),
         ttl=int(_AUTH_REQUEST_TTL.total_seconds()),
     )
+    return _binding_cookie(
+        request,
+        context,
+        data.state,
+        binding,
+        max_age=int(_AUTH_REQUEST_TTL.total_seconds()),
+    )
 
 
 def _load_auth_request(context: Context, state: str) -> AuthRequest | None:
-    # pop, not get: the state is a single-use CSRF token, so consume it on the
-    # callback to close the replay window rather than waiting for the TTL.
-    raw = context.secondary_storage.pop(_AUTH_REQUEST_KEY.format(state=state))
+    raw = context.secondary_storage.get(_AUTH_REQUEST_KEY.format(state=state))
     if raw is None:
         return None
     try:
-        return AuthRequest.model_validate_json(raw)
-    except ValidationError as e:
-        logger.error("Invalid stored auth request for state %s: %s", state, e)
+        data = AuthRequest.model_validate_json(raw)
+    except ValidationError:
         return None
+
+    if data.expires_at <= datetime.now(tz=timezone.utc):
+        return None
+    return data
 
 
 def _generate_provider_pkce(
@@ -328,15 +358,20 @@ def start_session_flow(
     state = secrets.token_hex(16)
     verifier, challenge, challenge_method = _generate_provider_pkce(provider)
 
-    _store_auth_request(
+    binding = secrets.token_urlsafe(32)
+    binding_cookie = _store_auth_request(
         context,
+        request,
         AuthRequest(
             flow="session",
             provider_id=provider.id,
             state=state,
+            browser_binding=hashlib.sha256(binding.encode()).hexdigest(),
+            expires_at=datetime.now(tz=timezone.utc) + _AUTH_REQUEST_TTL,
             provider_code_verifier=verifier,
             next_url=next_url,
         ),
+        binding=binding,
     )
 
     authorization_url = provider.build_authorization_url(
@@ -348,7 +383,7 @@ def start_session_flow(
         login_hint=request.query_params.get("login_hint"),
     )
 
-    return Response.redirect(authorization_url)
+    return Response.redirect(authorization_url, cookies=[binding_cookie])
 
 
 def start_connect_flow(
@@ -378,16 +413,21 @@ def start_connect_flow(
     state = secrets.token_hex(16)
     verifier, challenge, challenge_method = _generate_provider_pkce(provider)
 
-    _store_auth_request(
+    binding = secrets.token_urlsafe(32)
+    binding_cookie = _store_auth_request(
         context,
+        request,
         AuthRequest(
             flow="connect",
             provider_id=provider.id,
             state=state,
+            browser_binding=hashlib.sha256(binding.encode()).hexdigest(),
+            expires_at=datetime.now(tz=timezone.utc) + _AUTH_REQUEST_TTL,
             provider_code_verifier=verifier,
             next_url=next_url,
             user_id=str(user.id),
         ),
+        binding=binding,
     )
 
     authorization_url = provider.build_authorization_url(
@@ -398,7 +438,7 @@ def start_connect_flow(
         code_challenge_method=challenge_method,
     )
 
-    return Response.redirect(authorization_url)
+    return Response.redirect(authorization_url, cookies=[binding_cookie])
 
 
 def start_token_flow(
@@ -506,12 +546,16 @@ def start_token_flow(
     state = secrets.token_hex(16)
     verifier, challenge, challenge_method = _generate_provider_pkce(provider)
 
-    _store_auth_request(
+    binding = secrets.token_urlsafe(32)
+    binding_cookie = _store_auth_request(
         context,
+        request,
         AuthRequest(
             flow="token",
             provider_id=provider.id,
             state=state,
+            browser_binding=hashlib.sha256(binding.encode()).hexdigest(),
+            expires_at=datetime.now(tz=timezone.utc) + _AUTH_REQUEST_TTL,
             provider_code_verifier=verifier,
             client_id=client_id,
             client_redirect_uri=redirect_uri,
@@ -519,6 +563,7 @@ def start_token_flow(
             client_code_challenge=code_challenge,
             client_code_challenge_method=validated_code_challenge_method,
         ),
+        binding=binding,
     )
 
     authorization_url = provider.build_authorization_url(
@@ -546,7 +591,7 @@ def start_token_flow(
         ),
     )
 
-    return Response.redirect(authorization_url)
+    return Response.redirect(authorization_url, cookies=[binding_cookie])
 
 
 def handle_callback(
@@ -579,16 +624,111 @@ def handle_callback(
     return provider.finalize_redirect(request, response)
 
 
+def _redirect_callback_to_get(
+    request: HTTPRequest,
+    context: Context,
+    callback_data: CallbackData,
+) -> Response:
+    """Resume a form-post callback with the browser's SameSite=Lax cookie.
+
+    Cross-site POSTs omit that cookie. Store the callback payload temporarily
+    and redirect with 303 so the browser follows with a GET. Only the opaque
+    resume token enters the URL; provider codes and profile data stay in storage.
+    """
+    resume = secrets.token_urlsafe(32)
+    context.secondary_storage.set(
+        f"oauth:form_post:{resume}",
+        callback_data.model_dump_json(),
+        ttl=int(_AUTH_REQUEST_TTL.total_seconds()),
+    )
+    response = Response.redirect(
+        _proxy_redirect_uri(request, context),
+        query_params={"resume": resume},
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
+    response.status_code = 303
+    return response
+
+
 def _handle_oauth_callback(
     provider: OAuth2Provider,
     request: HTTPRequest,
     context: Context,
 ) -> Response:
     """Handle the standard OAuth callback path after provider interception."""
-    callback_data = provider.extract_callback_params(request)
+    resume = request.query_params.get("resume") if request.method == "GET" else None
+    if resume:
+        raw = context.secondary_storage.get(f"oauth:form_post:{resume}")
+        if raw is None:
+            return Response.error(
+                "invalid_request", "Callback continuation has expired"
+            )
+        try:
+            callback_data = CallbackData.model_validate_json(raw)
+        except ValidationError:
+            return Response.error("invalid_request", "Invalid callback continuation")
+    else:
+        callback_data = provider.extract_callback_params(request)
+
     state = callback_data.state
     auth_request = _load_auth_request(context, state) if state else None
+    if auth_request is None:
+        return _complete_oauth_callback(provider, request, context, callback_data, None)
 
+    if auth_request.provider_id != provider.id:
+        return Response.error("server_error", "Provider mismatch")
+
+    if request.method == "POST":
+        return _redirect_callback_to_get(request, context, callback_data)
+
+    cookie = _binding_cookie(request, context, auth_request.state, "", max_age=0)
+    binding = request.cookies.get(cookie.name)
+    if not binding or not secrets.compare_digest(
+        hashlib.sha256(binding.encode()).hexdigest(), auth_request.browser_binding
+    ):
+        return Response.error(
+            "invalid_request", "OAuth callback belongs to another browser"
+        )
+
+    if auth_request.flow in {"connect", "link"}:
+        user = context.get_user_from_request(request)
+        # Bearer-only link clients authenticate again at finalize-link, since
+        # the provider's browser redirect cannot carry their bearer header.
+        if (user is None and auth_request.flow == "connect") or (
+            user is not None and not _same_id(user.id, auth_request.user_id)
+        ):
+            return Response.error(
+                "access_denied", "The account-linking user has changed", status_code=403
+            )
+
+    if resume and context.secondary_storage.pop(f"oauth:form_post:{resume}") is None:
+        return Response.error(
+            "invalid_request", "Callback continuation has already been used"
+        )
+
+    # Validate before consuming: a wrong browser/provider cannot cancel a valid
+    # attempt. Atomic pop lets only one concurrent callback complete it.
+    raw = context.secondary_storage.pop(
+        _AUTH_REQUEST_KEY.format(state=auth_request.state)
+    )
+    if raw is None:
+        return Response.error("invalid_request", "OAuth callback has already been used")
+
+    response = _complete_oauth_callback(
+        provider, request, context, callback_data, auth_request
+    )
+    response.cookies = [*(response.cookies or []), cookie]
+    return response
+
+
+def _complete_oauth_callback(
+    provider: OAuth2Provider,
+    request: HTTPRequest,
+    context: Context,
+    callback_data: CallbackData,
+    auth_request: AuthRequest | None,
+) -> Response:
+    state = callback_data.state
     if callback_data.error:
         level = (
             logging.INFO
@@ -1297,6 +1437,7 @@ def _complete_link(
 
     data = LinkCodeData(
         expires_at=datetime.now(tz=timezone.utc) + _LINK_CODE_TTL,
+        provider_id=auth_request.provider_id,
         client_id=auth_request.client_id,
         redirect_uri=auth_request.client_redirect_uri,
         code_challenge=auth_request.client_code_challenge,
@@ -1379,12 +1520,16 @@ def start_link_flow(
     state = secrets.token_hex(16)
     verifier, challenge, challenge_method = _generate_provider_pkce(provider)
 
-    _store_auth_request(
+    binding = secrets.token_urlsafe(32)
+    binding_cookie = _store_auth_request(
         context,
+        request,
         AuthRequest(
             flow="link",
             provider_id=provider.id,
             state=state,
+            browser_binding=hashlib.sha256(binding.encode()).hexdigest(),
+            expires_at=datetime.now(tz=timezone.utc) + _AUTH_REQUEST_TTL,
             provider_code_verifier=verifier,
             client_id=link_request.client_id,
             client_redirect_uri=link_request.redirect_uri,
@@ -1393,6 +1538,7 @@ def start_link_flow(
             client_code_challenge_method=link_request.code_challenge_method,
             user_id=str(user.id),
         ),
+        binding=binding,
     )
 
     authorization_url = provider.build_authorization_url(
@@ -1417,6 +1563,7 @@ def start_link_flow(
 
     return Response(
         status_code=200,
+        cookies=[binding_cookie],
         body=InitiateLinkResponse(
             authorization_url=authorization_url
         ).model_dump_json(),
@@ -1464,6 +1611,11 @@ def finalize_link(
         logger.error("Invalid link data", exc_info=e)
         return Response.error("server_error", error_description="Invalid link data")
 
+    if link_data.provider_id != provider.id:
+        return Response.error(
+            "invalid_request", "Link provider mismatch; restart linking"
+        )
+
     if link_data.expires_at < datetime.now(tz=timezone.utc):
         return Response.error("server_error", error_description="Link code has expired")
 
@@ -1491,6 +1643,9 @@ def finalize_link(
         return Response.error(
             "server_error", error_description="Invalid code challenge"
         )
+
+    if context.secondary_storage.pop(_LINK_CODE_KEY.format(code=code)) is None:
+        return Response.error("invalid_request", "Link code has already been used")
 
     proxy_redirect_uri = _proxy_redirect_uri(request, context)
 

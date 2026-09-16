@@ -510,7 +510,7 @@ app.add_middleware(SessionCookieMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=SPA_CORS_ORIGINS,
-    allow_credentials=False,
+    allow_credentials=True,
     # DELETE is required for the SPA's social-account disconnect call.
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],

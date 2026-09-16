@@ -516,8 +516,9 @@ def valid_link_code(secondary_storage: SecondaryStorage) -> str:
     code = "test"
 
     secondary_storage.set(
-        f"oauth:link_request:{code}",
+        f"oauth:link_request:v2:{code}",
         LinkCodeData(
+            provider_id="test",
             expires_at=datetime.now(tz=timezone.utc) + timedelta(seconds=10),
             client_id="test",
             redirect_uri="test",

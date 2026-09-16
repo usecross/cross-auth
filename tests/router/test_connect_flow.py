@@ -67,7 +67,9 @@ def test_connect_callback_attaches_social_account_and_redirects(
     state = parse_qs(urlparse(resp.headers["location"]).query)["state"][0]
 
     callback = client.get(
-        "/fake/callback", params={"code": "provider-code", "state": state}
+        "/fake/callback",
+        params={"code": "provider-code", "state": state},
+        headers={"Authorization": "Bearer test"},
     )
     assert callback.status_code == 302
     assert callback.headers["location"] == "/profile"
@@ -93,7 +95,11 @@ def test_connect_callback_updates_existing_account_for_same_user(
         headers={"Authorization": "Bearer test"},
     )
     state1 = parse_qs(urlparse(r1.headers["location"]).query)["state"][0]
-    client.get("/fake/callback", params={"code": "c1", "state": state1})
+    client.get(
+        "/fake/callback",
+        params={"code": "c1", "state": state1},
+        headers={"Authorization": "Bearer test"},
+    )
 
     # Second connect — should update, not error or duplicate.
     r2 = client.get(
@@ -102,7 +108,11 @@ def test_connect_callback_updates_existing_account_for_same_user(
         headers={"Authorization": "Bearer test"},
     )
     state2 = parse_qs(urlparse(r2.headers["location"]).query)["state"][0]
-    r2_cb = client.get("/fake/callback", params={"code": "c2", "state": state2})
+    r2_cb = client.get(
+        "/fake/callback",
+        params={"code": "c2", "state": state2},
+        headers={"Authorization": "Bearer test"},
+    )
 
     assert r2_cb.status_code == 302
     assert r2_cb.headers["location"] == "/profile"
@@ -143,7 +153,11 @@ def test_connect_callback_errors_if_account_belongs_to_another_user(
     )
     state = parse_qs(urlparse(resp.headers["location"]).query)["state"][0]
 
-    callback = client.get("/fake/callback", params={"code": "code", "state": state})
+    callback = client.get(
+        "/fake/callback",
+        params={"code": "code", "state": state},
+        headers={"Authorization": "Bearer test"},
+    )
     assert callback.status_code == 400
     assert callback.json()["error"] == "account_already_linked"
 
