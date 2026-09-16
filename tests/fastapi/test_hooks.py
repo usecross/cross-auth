@@ -571,8 +571,8 @@ def test_social_account_create_and_update_hooks_can_share_handlers(
 
     assert seen == [
         "before:user.create",
-        "after:user.create:new-user@example.com",
         "before:social_account.create",
+        "after:user.create:new-user@example.com",
         "after:social_account.create",
         "before:social_account.update",
         "after:social_account.update",

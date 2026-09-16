@@ -125,7 +125,7 @@ class SocialAccount(SQLModel, table=True):
 
 
 class WelcomeNote(SQLModel, table=True):
-    # AccountsStore._build_user adds one of these so the demo has a
+    # AccountsStore.build_user adds one of these so the demo has a
     # related row that joins the same commit as the new user.
     id: int | None = Field(default=None, primary_key=True)
     user_id: int | None = Field(default=None, foreign_key="user.id", nullable=False)
@@ -207,14 +207,14 @@ class AccountsStore(SQLModelAccountsStorage[User, SocialAccount]):
     UserModel = User
     SocialAccountModel = SocialAccount
 
-    def _build_user(
+    def build_user(
         self,
         *,
         session: Session,
         **kwargs: Any,
     ) -> User:
-        user = super()._build_user(session=session, **kwargs)
-        # Guarantee: this row is committed in the same transaction as the user.
+        user = super().build_user(session=session, **kwargs)
+        # Signup commits this note together with the user and provider identity.
         session.add(WelcomeNote(user=user, message=f"Welcome, {user.display_name}!"))
         return user
 

@@ -1,6 +1,6 @@
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 from pydantic import AwareDatetime
 from typing_extensions import Protocol
@@ -241,6 +241,29 @@ class SessionStorage(Protocol):
     ) -> int: ...
 
 
+class UserCreate(TypedDict):
+    user_info: dict[str, Any]
+    email: str
+    email_verified: bool
+    extra_fields: Mapping[str, Any] | None
+
+
+class SocialAccountCreate(TypedDict):
+    user_id: Any
+    provider: str
+    provider_user_id: str
+    access_token: str | None
+    refresh_token: str | None
+    access_token_expires_at: datetime | None
+    refresh_token_expires_at: datetime | None
+    scope: str | None
+    user_info: dict[str, Any]
+    provider_email: str | None
+    provider_email_verified: bool | None
+    is_login_method: bool
+    extra_fields: Mapping[str, Any] | None
+
+
 class AccountsStorage(Protocol):
     def find_user_by_email(self, email: str) -> User | None: ...
 
@@ -281,6 +304,23 @@ class AccountsStorage(Protocol):
         email_verified: bool,
         extra_fields: Mapping[str, Any] | None = None,
     ) -> User: ...
+
+    def create_user_with_identity(
+        self,
+        *,
+        user: UserCreate,
+        identity: Callable[[User], SocialAccountCreate],
+    ) -> tuple[User, SocialAccount]:
+        """Create a user and its first identity in one transaction.
+
+        Call identity once with the new user and its generated ID, before commit.
+        The returned identity must belong to that user. Roll back both records
+        if construction, validation, or persistence fails. Return only after
+        committing both records; callers then emit after-create hooks. The
+        callback must not open independent storage sessions while this
+        transaction is active.
+        """
+        ...
 
     def create_social_account(
         self,

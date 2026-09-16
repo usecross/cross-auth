@@ -62,7 +62,7 @@ session_storage = SQLModelSessionStorage(
 
 Map required user-model columns with the typed `user.create` hook. Subclass the
 accounts storage only when related rows must join the signup transaction; the
-[Storage](/docs/storage) guide documents the private SQLModel escape hatch. For
+[Storage](/docs/storage) guide documents the public `build_user` extension. For
 signup policy, telemetry, and social-account metadata, use the typed
 [`user.create`, `social_account.create`, and `social_account.update` hooks](/docs/hooks).
 

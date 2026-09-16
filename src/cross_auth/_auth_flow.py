@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import hashlib
 import json
 import logging
@@ -13,7 +15,7 @@ from pydantic import BaseModel, HttpUrl, TypeAdapter, ValidationError
 from ._context import Context
 from ._issuer import AuthorizationCodeGrantData
 from ._session import _get_header, make_session_cookie
-from ._storage import SocialAccount, User
+from ._storage import SocialAccount, SocialAccountCreate, User
 from .exceptions import CrossAuthException
 from .hooks import (
     AfterLoginEvent,
@@ -990,13 +992,14 @@ def _flow_error(
     )
 
 
-def _create_user(
+def _create_user_with_identity(
     *,
     context: Context,
     user_info: dict[str, Any],
     email: str,
     email_verified: bool,
-) -> User:
+    identity: Callable[[User], SocialAccountCreate],
+) -> tuple[User, SocialAccount]:
     event = context.hooks.run_before(
         "user.create",
         BeforeUserCreateEvent(
@@ -1006,20 +1009,38 @@ def _create_user(
             extra_fields={},
         ),
     )
-    user = context.accounts_storage.create_user(
-        user_info=event.user_info,
-        email=event.email,
-        email_verified=event.email_verified,
-        extra_fields=event.extra_fields,
+    identity_data: SocialAccountCreate | None = None
+
+    def prepare_identity(user: User) -> SocialAccountCreate:
+        nonlocal identity_data
+        identity_data = identity(user)
+        return identity_data
+
+    user, social_account = context.accounts_storage.create_user_with_identity(
+        user={
+            "user_info": event.user_info,
+            "email": event.email,
+            "email_verified": event.email_verified,
+            "extra_fields": event.extra_fields,
+        },
+        identity=prepare_identity,
     )
+    assert identity_data is not None
+
     context.hooks.run_after(
         "user.create",
         AfterUserCreateEvent(user_info=event.user_info, user=user),
     )
-    return user
+    context.hooks.run_after(
+        "social_account.create",
+        AfterSocialAccountCreateEvent(
+            user_info=identity_data["user_info"], social_account=social_account
+        ),
+    )
+    return user, social_account
 
 
-def _create_social_account(
+def _prepare_social_account(
     *,
     context: Context,
     user_id: Any,
@@ -1034,7 +1055,7 @@ def _create_social_account(
     provider_email: str | None,
     provider_email_verified: bool | None,
     is_login_method: bool,
-) -> SocialAccount:
+) -> SocialAccountCreate:
     event = context.hooks.run_before(
         "social_account.create",
         BeforeSocialAccountCreateEvent(
@@ -1053,36 +1074,7 @@ def _create_social_account(
             extra_fields={},
         ),
     )
-    # Database constraints enforce this policy when requests race these checks.
-    allow_shared_connections = context.config.get("account_linking", {}).get(
-        "allow_shared_connections", False
-    )
-    if not allow_shared_connections:
-        identity_exists = context.accounts_storage.has_social_account(
-            provider=event.provider, provider_user_id=event.provider_user_id
-        )
-        if (
-            identity_exists
-            and context.accounts_storage.find_social_account(
-                provider=event.provider,
-                provider_user_id=event.provider_user_id,
-                user_id=event.user_id,
-            )
-            is None
-        ):
-            raise CrossAuthException("account_already_linked")
-    elif event.is_login_method:
-        login_account = context.accounts_storage.find_social_account(
-            provider=event.provider,
-            provider_user_id=event.provider_user_id,
-            is_login_method=True,
-        )
-        if login_account is not None and not _same_id(
-            login_account.user_id, event.user_id
-        ):
-            raise CrossAuthException("account_already_linked")
-
-    social_account = context.accounts_storage.create_social_account(
+    return SocialAccountCreate(
         user_id=event.user_id,
         provider=event.provider,
         provider_user_id=event.provider_user_id,
@@ -1097,11 +1089,79 @@ def _create_social_account(
         is_login_method=event.is_login_method,
         extra_fields=event.extra_fields,
     )
+
+
+def _check_social_account_ownership(
+    context: Context, data: SocialAccountCreate
+) -> None:
+    # Database constraints enforce this policy when requests race these checks.
+    allow_shared_connections = context.config.get("account_linking", {}).get(
+        "allow_shared_connections", False
+    )
+    if not allow_shared_connections:
+        identity_exists = context.accounts_storage.has_social_account(
+            provider=data["provider"], provider_user_id=data["provider_user_id"]
+        )
+        if (
+            identity_exists
+            and context.accounts_storage.find_social_account(
+                provider=data["provider"],
+                provider_user_id=data["provider_user_id"],
+                user_id=data["user_id"],
+            )
+            is None
+        ):
+            raise CrossAuthException("account_already_linked")
+    elif data["is_login_method"]:
+        login_account = context.accounts_storage.find_social_account(
+            provider=data["provider"],
+            provider_user_id=data["provider_user_id"],
+            is_login_method=True,
+        )
+        if login_account is not None and not _same_id(
+            login_account.user_id, data["user_id"]
+        ):
+            raise CrossAuthException("account_already_linked")
+
+
+def _create_social_account(
+    *,
+    context: Context,
+    user_id: Any,
+    provider: str,
+    provider_user_id: str,
+    access_token: str | None,
+    refresh_token: str | None,
+    access_token_expires_at: datetime | None,
+    refresh_token_expires_at: datetime | None,
+    scope: str | None,
+    user_info: dict[str, Any],
+    provider_email: str | None,
+    provider_email_verified: bool | None,
+    is_login_method: bool,
+) -> SocialAccount:
+    data = _prepare_social_account(
+        context=context,
+        user_id=user_id,
+        provider=provider,
+        provider_user_id=provider_user_id,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        access_token_expires_at=access_token_expires_at,
+        refresh_token_expires_at=refresh_token_expires_at,
+        scope=scope,
+        user_info=user_info,
+        provider_email=provider_email,
+        provider_email_verified=provider_email_verified,
+        is_login_method=is_login_method,
+    )
+    _check_social_account_ownership(context, data)
+
+    social_account = context.accounts_storage.create_social_account(**data)
     context.hooks.run_after(
         "social_account.create",
         AfterSocialAccountCreateEvent(
-            user_info=event.user_info,
-            social_account=social_account,
+            user_info=data["user_info"], social_account=social_account
         ),
     )
     return social_account
@@ -1246,7 +1306,6 @@ def resolve_or_create_user(
             error_description="No email provided by the identity provider",
         )
 
-    created_user = False
     # Lookups and creation use the normalized (canonical) form; the raw
     # provider email is still stored on the social account as provider_email.
     email = context.normalize_email(validated.email)
@@ -1274,13 +1333,34 @@ def resolve_or_create_user(
                 ),
             )
 
-        user = _create_user(
+        def prepare_identity(created_user: User) -> SocialAccountCreate:
+            return _prepare_social_account(
+                context=context,
+                user_id=created_user.id,
+                provider=provider.id,
+                provider_user_id=validated.provider_user_id,
+                access_token=token_response.access_token,
+                refresh_token=token_response.refresh_token,
+                access_token_expires_at=token_response.access_token_expires_at,
+                refresh_token_expires_at=token_response.refresh_token_expires_at,
+                scope=token_response.scope,
+                user_info=user_info,
+                provider_email=validated.email,
+                provider_email_verified=validated.email_verified,
+                is_login_method=True,
+            )
+
+        user, account = _create_user_with_identity(
             context=context,
             user_info=user_info,
             email=email,
             email_verified=validated.email_verified or False,
+            identity=prepare_identity,
         )
-        created_user = True
+        return (
+            ResolvedUser(user=user, created=True),
+            ResolvedSocialAccount(account=account, created=True),
+        )
 
     created_social_account = _create_social_account(
         context=context,
@@ -1299,7 +1379,7 @@ def resolve_or_create_user(
     )
 
     return (
-        ResolvedUser(user=user, created=created_user),
+        ResolvedUser(user=user, created=False),
         ResolvedSocialAccount(account=created_social_account, created=True),
     )
 
