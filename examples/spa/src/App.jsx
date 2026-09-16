@@ -367,6 +367,7 @@ export default function App() {
 
       const response = await fetch(`${authBaseUrl}/auth/${DEFAULT_PROVIDER}/link`, {
         method: "POST",
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${accessToken}`,

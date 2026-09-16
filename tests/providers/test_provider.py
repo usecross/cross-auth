@@ -362,7 +362,9 @@ def test_pkce_flow_includes_code_verifier(
     location = authorize_response.headers["Location"]
     state = location.split("state=")[1].split("&")[0]
 
-    stored_data = context.secondary_storage.get(f"oauth:authorization_request:{state}")
+    stored_data = context.secondary_storage.get(
+        f"oauth:authorization_request:v2:{state}"
+    )
     assert stored_data is not None
     stored_json = json.loads(stored_data)
     assert "provider_code_verifier" in stored_json
@@ -373,6 +375,7 @@ def test_pkce_flow_includes_code_verifier(
         TestingHTTPRequestAdapter(
             method="GET",
             url="http://localhost:8000/example_pkce/callback",
+            cookies={c.name: c.value for c in authorize_response.cookies or []},
             query_params={
                 "code": "provider_auth_code",
                 "state": state,

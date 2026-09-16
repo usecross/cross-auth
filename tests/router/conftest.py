@@ -103,13 +103,14 @@ def build_auth(
     fake_provider: FakeProvider,
 ):
     def _make(**overrides: Any) -> CrossAuth:
-        return _build_auth(
-            storage=secondary_storage,
-            accounts_storage=accounts_storage,
-            session_storage=session_storage,
-            providers=[fake_provider],
+        kwargs: dict[str, Any] = {
+            "storage": secondary_storage,
+            "accounts_storage": accounts_storage,
+            "session_storage": session_storage,
+            "providers": [fake_provider],
             **overrides,
-        )
+        }
+        return _build_auth(**kwargs)
 
     return _make
 
@@ -136,7 +137,7 @@ def start_provider_auth(
 
 
 def load_auth_request(storage: SecondaryStorage, state: str) -> AuthRequest:
-    raw = storage.get(f"oauth:authorization_request:{state}")
+    raw = storage.get(f"oauth:authorization_request:v2:{state}")
     assert raw is not None, f"no auth request stored for state={state}"
     return AuthRequest.model_validate_json(raw)
 

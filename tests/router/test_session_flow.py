@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
 import respx
@@ -103,7 +105,7 @@ def test_session_callback_consumes_state(
         "/fake/callback", params={"code": "provider-code", "state": state}
     )
     assert first.status_code == 302
-    assert secondary_storage.get(f"oauth:authorization_request:{state}") is None
+    assert secondary_storage.get(f"oauth:authorization_request:v2:{state}") is None
 
     replay = client.get(
         "/fake/callback", params={"code": "provider-code", "state": state}
@@ -138,6 +140,7 @@ def test_session_callback_expired_state_redirects_to_default_next_url(build_auth
     app = FastAPI()
     app.include_router(auth.router)
     with TestClient(app, follow_redirects=False) as client:
+        client.cookies.set("cross_auth_oauth_state-1", "browser-binding")
         resp = client.get(
             "/fake/callback", params={"code": "provider-code", "state": "never-seen"}
         )
@@ -201,16 +204,19 @@ def test_session_callback_errors_without_cookie_auth(
 
     # Inject a session-flow auth request directly (no /login route to start one).
     secondary_storage.set(
-        "oauth:authorization_request:state-1",
+        "oauth:authorization_request:v2:state-1",
         AuthRequest(
             flow="session",
             provider_id="fake",
             state="state-1",
+            browser_binding=hashlib.sha256(b"browser-binding").hexdigest(),
+            expires_at=datetime.now(tz=timezone.utc) + timedelta(minutes=10),
             next_url="/dashboard",
         ).model_dump_json(),
     )
 
     with TestClient(app, follow_redirects=False) as client:
+        client.cookies.set("cross_auth_oauth_state-1", "browser-binding")
         resp = client.get(
             "/fake/callback", params={"code": "provider-code", "state": "state-1"}
         )

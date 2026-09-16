@@ -1,3 +1,4 @@
+import hashlib
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -373,7 +374,7 @@ def test_oauth_authorize_hooks(
         "hooked@example.com"
     ]
 
-    stored = secondary_storage.get(f"oauth:authorization_request:{seen['state']}")
+    stored = secondary_storage.get(f"oauth:authorization_request:v2:{seen['state']}")
     assert stored is not None
     assert json.loads(stored)["client_id"] == "original-client"
 
@@ -394,11 +395,13 @@ def test_oauth_callback_hooks(
     seen: dict[str, str | None] = {}
 
     secondary_storage.set(
-        "oauth:authorization_request:test_state",
+        "oauth:authorization_request:v2:test_state",
         AuthRequest(
             flow="token",
             provider_id=oauth_provider.id,
             state="test_state",
+            browser_binding=hashlib.sha256(b"browser-binding").hexdigest(),
+            expires_at=datetime.now(tz=timezone.utc) + timedelta(minutes=10),
             provider_code_verifier="test_provider_verifier",
             client_id="my_app_client_id",
             client_redirect_uri="http://valid-frontend.com/callback",
@@ -453,6 +456,7 @@ def test_oauth_callback_hooks(
     app.include_router(auth.router)
 
     with TestClient(app) as client:
+        client.cookies.set("cross_auth_oauth_test_state", "browser-binding")
         resp = client.get(
             "/test/callback",
             params={"code": "oauth-code", "state": "test_state"},
@@ -544,17 +548,20 @@ def test_social_account_create_and_update_hooks_can_share_handlers(
     with TestClient(app) as client:
         for state in ("create-state", "update-state"):
             secondary_storage.set(
-                f"oauth:authorization_request:{state}",
+                f"oauth:authorization_request:v2:{state}",
                 AuthRequest(
                     flow="token",
                     provider_id=oauth_provider.id,
                     state=state,
+                    browser_binding=hashlib.sha256(b"browser-binding").hexdigest(),
+                    expires_at=datetime.now(tz=timezone.utc) + timedelta(minutes=10),
                     client_id="my_app_client_id",
                     client_redirect_uri="http://valid-frontend.com/callback",
                     client_code_challenge="test",
                     client_code_challenge_method="S256",
                 ).model_dump_json(),
             )
+            client.cookies.set(f"cross_auth_oauth_{state}", "browser-binding")
             response = client.get(
                 "/test/callback",
                 params={"code": "oauth-code", "state": state},
@@ -776,7 +783,7 @@ def test_oauth_link_hooks(
     assert resp.status_code == 200
     assert resp.json()["authorization_url"] == seen["authorization_url"]
     assert (
-        secondary_storage.get(f"oauth:authorization_request:{seen['state']}")
+        secondary_storage.get(f"oauth:authorization_request:v2:{seen['state']}")
         is not None
     )
 
@@ -804,8 +811,9 @@ def test_oauth_finalize_link_hooks(
     seen: dict[str, bool] = {}
 
     secondary_storage.set(
-        "oauth:link_request:test-link-code",
+        "oauth:link_request:v2:test-link-code",
         LinkCodeData(
+            provider_id=oauth_provider.id,
             expires_at=datetime.now(tz=timezone.utc) + timedelta(minutes=10),
             client_id="test-client",
             redirect_uri="http://valid-frontend.com/callback",
