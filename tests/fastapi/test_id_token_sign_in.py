@@ -2,6 +2,7 @@
 native/SDK logins (Apple ASAuthorization, Google Credential Manager)."""
 
 import hashlib
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -111,6 +112,128 @@ def test_repeat_sign_in_works_with_tokenless_sqlmodel_storage(
     assert account.scope is None
 
 
+@pytest.mark.parametrize("via_hook", [False, True])
+def test_unsigned_metadata_cannot_select_another_identity(
+    secondary_storage: SecondaryStorage,
+    accounts_storage,
+    via_hook: bool,
+):
+    """A native login endpoint can forward both an SDK's signed ID token and
+    unsigned profile data, such as Apple's first-sign-in name. A malicious
+    client can keep its own valid token but put a victim's identity in that
+    profile data. Cover direct forwarding and forwarding through a before hook.
+    """
+    provider = StubOIDCProvider(
+        {"sub": "victim", "email": "victim@example.com", "email_verified": True}
+    )
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        provider,
+        config={"account_linking": {"enabled": True}},
+    )
+    victim, _ = auth.sign_in_with_id_token("stub", VALID_TOKEN)
+    provider.claims = {
+        "sub": "attacker",
+        "email": "attacker@example.com",
+        "email_verified": False,
+    }
+    metadata = {
+        "id": "victim",
+        "sub": "victim",
+        "email": "victim@example.com",
+        "email_verified": True,
+        "iss": "untrusted-issuer",
+        "is_superuser": True,
+        "name": "Display Name",
+        "first_name": "Display",
+        "last_name": "Name",
+        "picture": "https://example.com/avatar.png",
+    }
+    seen_user_info: list[dict[str, Any]] = []
+
+    @auth.before("user.create")
+    def observe_user_info(event):
+        seen_user_info.append(dict(event.user_info))
+
+    if via_hook:
+
+        @auth.before("oauth.id_token")
+        def supply_metadata(event: BeforeOAuthIdTokenEvent):
+            return replace(event, user_info=metadata)
+
+    user, created = auth.sign_in_with_id_token(
+        "stub", VALID_TOKEN, user_info=None if via_hook else metadata
+    )
+
+    assert created is True
+    assert user.id != victim.id
+    assert user.email == "attacker@example.com"
+    assert user.email_verified is False
+    assert seen_user_info == [
+        {
+            "id": "attacker",
+            "email": "attacker@example.com",
+            "email_verified": False,
+            "name": "Display Name",
+            "first_name": "Display",
+            "last_name": "Name",
+            "picture": "https://example.com/avatar.png",
+        }
+    ]
+    victim_account = accounts_storage.find_social_account(
+        provider="stub", provider_user_id="victim"
+    )
+    assert victim_account is not None
+    assert victim_account.user_id == victim.id
+    assert victim_account.provider_email == "victim@example.com"
+
+
+@pytest.mark.parametrize("verified", [False, None])
+def test_metadata_cannot_satisfy_verified_email_policy(
+    secondary_storage: SecondaryStorage,
+    accounts_storage,
+    verified: bool | None,
+):
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        StubOIDCProvider(
+            {
+                "sub": "unverified",
+                "email": "new@example.com",
+                "email_verified": verified,
+            }
+        ),
+        config={"require_verified_email": True},
+    )
+
+    with pytest.raises(CrossAuthException, match="^email_not_verified$"):
+        auth.sign_in_with_id_token(
+            "stub", VALID_TOKEN, user_info={"email_verified": True}
+        )
+
+    assert accounts_storage.find_user_by_email("new@example.com") is None
+
+
+def test_metadata_cannot_supply_missing_provider_email(
+    secondary_storage: SecondaryStorage,
+    accounts_storage,
+):
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        StubOIDCProvider({"sub": "missing-email"}),
+    )
+
+    with pytest.raises(OAuth2Exception, match="^No email found in user info$"):
+        auth.sign_in_with_id_token(
+            "stub",
+            VALID_TOKEN,
+            user_info={"email": "test@example.com", "email_verified": True},
+        )
+
+
 def test_links_to_existing_account_only_when_linking_enabled(
     secondary_storage: SecondaryStorage,
     accounts_storage,
@@ -156,8 +279,6 @@ def test_hooks_can_rewrite_user_info_block_and_observe(
     secondary_storage: SecondaryStorage,
     accounts_storage,
 ):
-    from dataclasses import replace
-
     provider = StubOIDCProvider(
         {"sub": "native-3", "email": "hooked@example.com", "email_verified": True}
     )

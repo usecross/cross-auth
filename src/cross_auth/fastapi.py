@@ -12,7 +12,6 @@ from typing import (
     ParamSpec,
     Protocol,
     TypeVar,
-    cast,
     overload,
 )
 
@@ -86,7 +85,7 @@ from .hooks import (
 from .hooks._types import HookEventName
 from .exceptions import CrossAuthException
 from .router import AuthRouter
-from .social_providers.oauth import OAuth2Exception, OAuth2Provider, UserInfo
+from .social_providers.oauth import OAuth2Exception, OAuth2Provider
 from .social_providers.oidc import OIDCProvider
 
 _P = ParamSpec("_P")
@@ -408,10 +407,13 @@ class CrossAuth:
         hooks. Returns ``(user, created)``; pair it with
         ``issue_session_token`` to hand the client a bearer token.
 
-        ``user_info`` overlays the token claims for data the provider delivers
-        outside the token — Apple sends the user's name only on the first
-        authorization, and only to the app. ``nonce`` is the raw value the app
-        generated for the provider request; when given, it must match the
+        ``user_info`` supplies optional display metadata: ``name``,
+        ``first_name``, ``last_name``, and ``picture``. Other keys are ignored,
+        including when supplied by an ``oauth.id_token`` before hook. Identity
+        fields come exclusively from verified provider claims. Apple sends the
+        user's name only on the first authorization, and only to the app.
+        ``nonce`` is the raw value the app generated for the provider request;
+        when given, it must match the
         token's nonce claim (raw or SHA-256, Apple hashes it). Runs the
         ``oauth.id_token`` hooks.
         """
@@ -441,11 +443,20 @@ class CrossAuth:
         if nonce is not None:
             _verify_nonce(claims, nonce)
 
-        merged: dict[str, Any] = {
-            **registered.extract_user_info_from_claims(claims),
-            **(event.user_info or {}),
-        }
-        validated = registered.validate_user_info(cast("UserInfo", merged))
+        # Validate identity before adding unsigned metadata, including for
+        # providers with custom claim mapping or validation.
+        verified_user_info = registered.extract_user_info_from_claims(claims)
+        validated = registered.validate_user_info(verified_user_info)
+        merged: dict[str, Any] = {**verified_user_info}
+        # The token's signature protects its claims, not the separate user_info
+        # dictionary. A caller could send their own valid token with someone
+        # else's ID or email in that dictionary. Merging every field would let
+        # them change which account is selected. Allow only display fields here
+        # so apps can still supply names returned separately by providers like
+        # Apple, without accepting caller-supplied identity or permission fields.
+        for key in ("name", "first_name", "last_name", "picture"):
+            if event.user_info is not None and key in event.user_info:
+                merged[key] = event.user_info[key]
 
         resolved_user, resolved_account = resolve_or_create_user(
             provider=registered,
