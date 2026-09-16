@@ -34,9 +34,12 @@ from .hooks import (
     BeforeSocialAccountUpdateEvent,
     BeforeUserCreateEvent,
 )
+from .models.oauth_token_response import TokenResponse
 from .social_providers.oauth import (
+    CallbackData,
     OAuth2Exception,
     OAuth2Provider,
+    UserInfo,
     ValidatedUserInfo,
 )
 from .utils._pkce import (
@@ -52,8 +55,18 @@ logger = logging.getLogger(__name__)
 EXPECTED_OAUTH_CALLBACK_ERRORS = {"access_denied"}
 
 
-# TODO: explain these?
-FlowKind = Literal["session", "token", "link", "connect"]
+FlowKind = Literal[
+    # Sign in and set a session cookie in the browser.
+    "session",
+    # Sign in and return an authorization code for the client to exchange.
+    "token",
+    # Add a provider account to an authenticated user after the client redeems
+    # a link code at finalize-link with its PKCE verifier.
+    "link",
+    # Add a provider account to an authenticated user during the callback,
+    # then redirect back to the app without a separate finalize-link step.
+    "connect",
+]
 
 
 class AuthRequest(BaseModel):
@@ -646,37 +659,16 @@ def _handle_oauth_callback(
             _proxy_redirect_uri(request, context),
             auth_request.provider_code_verifier,
         )
+
         user_info = provider.fetch_user_info(
             token_response, context, callback_data.extra
         )
+
         validated = provider.validate_user_info(user_info)
     except OAuth2Exception as e:
         return _flow_error(
             auth_request, error=e.error, error_description=e.error_description
         )
-
-    if auth_request.flow in {"session", "token"}:
-        callback_event = BeforeOAuthCallbackEvent(
-            provider=provider,
-            request=request,
-            user_info=user_info,
-            validated_user_info=validated,
-        )
-        try:
-            callback_event = context.hooks.run_before(
-                "oauth.callback",
-                callback_event,
-            )
-        except CrossAuthException as e:
-            return _flow_error(
-                auth_request,
-                error=e.error,
-                error_description=e.error_description,
-                status_code=e.status_code,
-            )
-
-        user_info = callback_event.user_info
-        validated = callback_event.validated_user_info
 
     if auth_request.flow == "connect":
         try:
@@ -693,8 +685,58 @@ def _handle_oauth_callback(
                 auth_request, error=e.error, error_description=e.error_description
             )
 
+    if auth_request.flow in {"session", "token"}:
+        return _complete_sign_in(
+            auth_request=auth_request,
+            provider=provider,
+            request=request,
+            context=context,
+            callback_data=callback_data,
+            token_response=token_response,
+            user_info=user_info,
+            validated=validated,
+        )
+
+    return Response.error("server_error", error_description="Unknown flow")
+
+
+def _complete_sign_in(
+    *,
+    auth_request: AuthRequest,
+    provider: OAuth2Provider,
+    request: HTTPRequest,
+    context: Context,
+    callback_data: CallbackData,
+    token_response: TokenResponse,
+    user_info: UserInfo,
+    validated: ValidatedUserInfo,
+) -> Response:
+    """Check login eligibility and complete a session or token sign-in."""
+    callback_event = BeforeOAuthCallbackEvent(
+        provider=provider,
+        request=request,
+        user_info=user_info,
+        validated_user_info=validated,
+    )
+
     try:
-        resolved_user, resolved_social_account = resolve_or_create_user(
+        callback_event = context.hooks.run_before(
+            "oauth.callback",
+            callback_event,
+        )
+    except CrossAuthException as e:
+        return _flow_error(
+            auth_request,
+            error=e.error,
+            error_description=e.error_description,
+            status_code=e.status_code,
+        )
+
+    user_info = callback_event.user_info
+    validated = callback_event.validated_user_info
+
+    try:
+        resolved_user, resolved_social_account = resolve_user_for_sign_in(
             provider=provider,
             context=context,
             validated=validated,
@@ -745,11 +787,13 @@ def _handle_oauth_callback(
                 client_state=None,
             ),
         )
+
         return response
 
     if auth_request.flow == "token":
         code, response = _complete_token(auth_request, resolved_user.user, context)
         assert auth_request.client_redirect_uri is not None
+
         context.hooks.run_after(
             "oauth.callback",
             AfterOAuthCallbackEvent(
@@ -773,6 +817,7 @@ def _handle_oauth_callback(
                 client_state=auth_request.client_state,
             ),
         )
+
         return response
 
     return Response.error("server_error", error_description="Unknown flow")
@@ -947,7 +992,7 @@ def _update_social_account(
     return updated_social_account
 
 
-def resolve_or_create_user(
+def resolve_user_for_sign_in(
     *,
     provider: OAuth2Provider,
     context: Context,
@@ -955,12 +1000,38 @@ def resolve_or_create_user(
     user_info: dict[str, Any],
     token_response: Any,
 ) -> tuple[ResolvedUser, ResolvedSocialAccount]:
-    """Find/create a user and social account for this login."""
+    """Check whether a provider identity may sign in, then resolve its user."""
     social_account = context.accounts_storage.find_social_account(
         provider=provider.id,
         provider_user_id=validated.provider_user_id,
     )
 
+    # Reject before resolve_or_create_user updates the account's stored tokens.
+    if social_account is not None and not social_account.is_login_method:
+        raise CrossAuthException(
+            "access_denied", error_description="Sign-in is not allowed"
+        )
+
+    return resolve_or_create_user(
+        social_account=social_account,
+        provider=provider,
+        context=context,
+        validated=validated,
+        user_info=user_info,
+        token_response=token_response,
+    )
+
+
+def resolve_or_create_user(
+    *,
+    provider: OAuth2Provider,
+    context: Context,
+    validated: ValidatedUserInfo,
+    user_info: dict[str, Any],
+    token_response: Any,
+    social_account: SocialAccount | None,
+) -> tuple[ResolvedUser, ResolvedSocialAccount]:
+    """Find/create a user and social account after login eligibility is checked."""
     if social_account:
         # A token-less sign-in (native id_token: no OAuth code exchange)
         # refreshes identity fields but must not clobber credentials stored by
