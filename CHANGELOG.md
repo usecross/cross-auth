@@ -1,6 +1,15 @@
 CHANGELOG
 =========
 
+0.29.0 - 2026-09-17
+-------------------
+
+Expose `get_bearer_token(request)` for applications that provide their own token
+verification. Session resolution uses the same helper. Missing headers,
+non-Bearer schemes, and whitespace-only credentials return `None`.
+
+This release was contributed by [@patrick91](https://github.com/patrick91) in [#78](https://github.com/usecross/cross-auth/pull/78)
+
 0.28.0 - 2026-09-17
 -------------------
 
