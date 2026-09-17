@@ -244,7 +244,7 @@ def resolve_current_session(
             record, refreshed = result
             return ResolvedSession(record, cookie_token, "cookie", refreshed)
 
-    bearer_token = _get_bearer_token(request)
+    bearer_token = get_bearer_token(request)
     if bearer_token is not None:
         result = _get_session(bearer_token, storage, resolved)
         if result is not None:
@@ -263,15 +263,16 @@ def get_current_session(
     return resolution.record if resolution is not None else None
 
 
-def _get_bearer_token(request: HTTPRequest) -> str | None:
+def get_bearer_token(request: HTTPRequest) -> str | None:
+    """Extract a bearer credential without validating the token or its owner."""
     authorization = _get_header(request.headers, "authorization")
     if authorization is None:
         return None
 
     scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token:
+    if scheme.lower() != "bearer":
         return None
-    return token.strip()
+    return token.strip() or None
 
 
 def _get_header(headers: Mapping[str, str], name: str) -> str | None:

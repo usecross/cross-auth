@@ -194,6 +194,19 @@ exist.
 
 ### Bearer Tokens
 
+For an application-owned token verifier, use `get_bearer_token(request)` to
+extract the credential from a Cross-Web `HTTPRequest`:
+
+```python
+from cross_auth import get_bearer_token
+
+token = get_bearer_token(request)
+```
+
+The helper accepts case-insensitive header names and the Bearer scheme, and
+returns `None` for a missing or empty bearer credential. It only extracts the
+token: your verifier must still validate it and check the user's eligibility.
+
 The built-in OAuth `/token` endpoint issues the same kind of opaque session
 token that `create_session()` returns. API clients send it with
 `Authorization: Bearer ...`, and Cross-Auth resolves it through
