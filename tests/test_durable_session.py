@@ -815,3 +815,56 @@ def test_session_issue_hooks_can_rewrite_and_block(
         auth.issue_session_token("suspended")
     assert audited == [record]  # nothing created, nothing audited
     assert len(session_storage.records) == 1
+
+
+@pytest.mark.parametrize("intervening_change", ["revoke", "expire"])
+@time_machine.travel(NOW, tick=False)
+def test_refresh_rejects_session_that_became_inactive_after_lookup(
+    secondary_storage,
+    accounts_storage,
+    session_storage,
+    monkeypatch,
+    intervening_change,
+):
+    auth = _make_auth(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=session_storage,
+        config={
+            "session": {
+                "max_age": 60,
+                "update_age": 10,
+                "cookies": {"secure": False},
+            }
+        },
+    )
+    token, record = create_session("test", session_storage, max_age=60)
+    original_get = session_storage.get
+    initial_updated_at = record.updated_at
+    initial_expires_at = record.expires_at
+    initial_last_active_at = record.last_active_at
+
+    with time_machine.travel(NOW + timedelta(seconds=20), tick=False) as clock:
+
+        def lookup_then_change(**kwargs):
+            result = original_get(**kwargs)
+            assert result is not None
+            snapshot = replace(result)
+
+            if intervening_change == "revoke":
+                session_storage.revoke(record.id, revoked_at=kwargs["now"])
+            else:
+                clock.shift(timedelta(seconds=41))
+            return snapshot
+
+        monkeypatch.setattr(session_storage, "get", lookup_then_change)
+        with TestClient(_sliding_app(auth)) as client:
+            client.cookies.set("session_id", token)
+            response = client.get("/me")
+
+    assert response.status_code == 200
+    assert response.json() == {"user": None}
+    assert "set-cookie" not in response.headers
+    assert record.updated_at == initial_updated_at
+    assert record.expires_at == initial_expires_at
+    assert record.last_active_at == initial_last_active_at

@@ -497,17 +497,28 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
         session_id = _coerce_id(model, "id", session_id)
         if session_id is _NO_MATCH:
             return None
+        values = {
+            "updated_at": _bind_datetime(model, "updated_at", updated_at),
+            "expires_at": _bind_datetime(model, "expires_at", expires_at),
+        }
+        if last_active_at is not None:
+            values["last_active_at"] = _bind_datetime(
+                model, "last_active_at", last_active_at
+            )
+
         with self._open_session() as session:
-            record = session.get(model, session_id)
-            if record is None:
-                return None
-            record.updated_at = _bind_datetime(model, "updated_at", updated_at)
-            record.expires_at = _bind_datetime(model, "expires_at", expires_at)
-            if last_active_at is not None:
-                record.last_active_at = _bind_datetime(
-                    model, "last_active_at", last_active_at
+            statement = (
+                update(model)
+                .where(
+                    getattr(model, "id") == session_id,
+                    getattr(model, "revoked_at") == None,  # noqa: E711
+                    getattr(model, "expires_at")
+                    >= _bind_datetime(model, "expires_at", updated_at),
                 )
-            session.add(record)
+                .values(**values)
+                .returning(model)
+            )
+            record = session.scalars(statement).one_or_none()
             session.commit()
         return _prepare_session_record(record)
 

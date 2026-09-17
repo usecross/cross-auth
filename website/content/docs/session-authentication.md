@@ -97,6 +97,15 @@ from cross_auth.fastapi import SessionCookieMiddleware
 app.add_middleware(SessionCookieMiddleware)
 ```
 
+A sliding refresh succeeds only while the stored session is still active. If
+revocation wins the race between lookup and refresh, Cross-Auth rejects that
+session and does not extend its cookie. Expiry is also checked at the refresh
+attempt, so time spent in the initial lookup cannot revive an expired session.
+
+Revocation does not cancel a request that has already authenticated. If refresh
+finishes first, a later revocation still invalidates the stored session for
+subsequent authentication.
+
 Without `update_age` the middleware is inert and can be omitted. If a session
 refreshes and the middleware is missing, Cross-Auth emits a warning instead of
 silently letting the browser cookie lapse. A cookie the handler already set

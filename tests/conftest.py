@@ -212,7 +212,11 @@ class MemorySessionStorage(SessionStorage):
         last_active_at: datetime | None = None,
     ) -> MemorySessionRecord | None:
         record = self.get_any(session_id)
-        if record is None:
+        if (
+            record is None
+            or record.revoked_at is not None
+            or record.expires_at < updated_at
+        ):
             return None
         record.updated_at = updated_at
         record.expires_at = expires_at
