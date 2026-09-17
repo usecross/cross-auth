@@ -222,26 +222,6 @@ def _is_safe_next_url(next_url: str) -> bool:
     return True
 
 
-def _has_alternative_login_method(
-    *,
-    user: User,
-    social_account: SocialAccount,
-    social_accounts: list[SocialAccount],
-) -> bool:
-    # if the current social account isn't a login method, it's always safe to disconnect
-    if not social_account.is_login_method:
-        return True
-
-    # if the user has a password, they can always disconnect the social account
-    if user.has_usable_password:
-        return True
-
-    return any(
-        not _same_id(account.id, social_account.id) and account.is_login_method
-        for account in social_accounts
-    )
-
-
 def _same_id(left: Any, right: Any) -> bool:
     return str(left) == str(right)
 
@@ -259,13 +239,13 @@ def disconnect_provider(
             status_code=401,
         )
 
-    social_accounts = list(
-        context.accounts_storage.list_social_accounts(user_id=user.id)
-    )
-
     if (social_account_id := request.path_params.get("social_account_id")) is None:
         provider_accounts = [
-            account for account in social_accounts if account.provider == provider.id
+            account
+            for account in context.accounts_storage.list_social_accounts(
+                user_id=user.id
+            )
+            if account.provider == provider.id
         ]
 
         if len(provider_accounts) > 1:
@@ -310,19 +290,23 @@ def disconnect_provider(
             status_code=e.status_code,
         )
 
-    if not _has_alternative_login_method(
-        user=user,
-        social_account=social_account,
-        social_accounts=social_accounts,
-    ):
+    result = context.accounts_storage.disconnect_social_account(
+        user_id=user.id,
+        provider=provider.id,
+        social_account_id=social_account.id,
+    )
+    if result == "not_found":
+        return Response.error(
+            "account_not_connected",
+            error_description=f"{provider.id} account is not connected",
+        )
+    if result == "last_login_method":
         return Response.error(
             "no_alternative_login_method",
             error_description=(
                 f"Cannot disconnect {provider.id} because it is your only login method."
             ),
         )
-
-    context.accounts_storage.delete_social_account(social_account.id)
 
     context.hooks.run_after(
         "oauth.disconnect",

@@ -34,8 +34,10 @@ has multiple accounts for the same provider, use
 `DELETE /{provider}/social-accounts/{social_account_id}` to choose the account
 explicitly. Cross-Auth verifies the selected social account belongs to the
 current user and provider, and blocks disconnecting it when it is the user's
-only login method. Use the `oauth.disconnect` hooks to add provider-specific
-cleanup such as cache invalidation, token revocation, or audit events.
+only login method. The check and deletion are atomic, so two simultaneous
+disconnects cannot remove the last two login methods. Use the `oauth.disconnect`
+hooks to add provider-specific cleanup such as cache invalidation, token
+revocation, or audit events.
 
 ## Configuration
 
