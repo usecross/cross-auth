@@ -5,13 +5,13 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Generic, TypeVar, cast, overload
+from typing import Any, ClassVar, Generic, TypeVar, overload
 
 try:
     from sqlalchemy import BigInteger, SmallInteger, and_, inspect, or_, update
     from sqlalchemy.exc import IntegrityError
     from sqlalchemy.orm import selectinload
-    from sqlmodel import SQLModel, Session, select
+    from sqlmodel import SQLModel, Session, col, select
     from sqlmodel.sql.expression import SelectOfScalar
 except ImportError as exc:  # pragma: no cover - exercised only without the extra
     raise ImportError(
@@ -23,16 +23,22 @@ from cross_auth._storage import (
     DisconnectResult,
     SessionListOrder,
     SessionStatus,
+    SocialAccountCreate,
     User,
     UserCreate,
-    SocialAccountCreate,
 )
 from cross_auth.exceptions import CrossAuthException, InvalidCursorError
 from cross_auth.storage._cursor import decode_cursor, encode_cursor
+from cross_auth.storage._sqlmodel_models import (
+    SQLModelSession as SQLModelSession,
+    SQLModelSocialAccount as SQLModelSocialAccount,
+    SQLModelUser as SQLModelUser,
+)
 
-SessionModelT = TypeVar("SessionModelT", bound=SQLModel)
-UserModelT = TypeVar("UserModelT", bound=SQLModel)
-SocialAccountModelT = TypeVar("SocialAccountModelT", bound=SQLModel)
+SessionModelT = TypeVar("SessionModelT", bound=SQLModelSession)
+UserModelT = TypeVar("UserModelT", bound=SQLModelUser)
+SocialAccountModelT = TypeVar("SocialAccountModelT", bound=SQLModelSocialAccount)
+RecordT = TypeVar("RecordT", bound=SQLModel)
 
 _ORDER_FIELDS: dict[SessionListOrder, tuple[str, bool]] = {
     # order_by -> (attribute name, descending?)
@@ -92,6 +98,11 @@ _USER_STANDARD_FIELDS = frozenset({"email", "email_verified"})
 _NO_MATCH = object()
 
 
+def _construct_record(model: type[RecordT], **values: object) -> RecordT:
+    """Construct a concrete model with application-defined fields from hooks."""
+    return model(**values)
+
+
 def _column(model: type[SQLModel], field: str) -> Any:
     # Resolve by the mapped attribute name, not ``__table__.columns`` — that
     # collection is keyed by the database column name, which diverges from the
@@ -99,6 +110,14 @@ def _column(model: type[SQLModel], field: str) -> Any:
     # collection is keyed by the attribute, so it resolves either way (and still
     # returns None for non-column attributes such as a ``status`` property).
     return inspect(model).columns.get(field)
+
+
+@overload
+def _bind_datetime(model: type[SQLModel], field: str, value: datetime) -> datetime: ...
+
+
+@overload
+def _bind_datetime(model: type[SQLModel], field: str, value: None) -> None: ...
 
 
 def _bind_datetime(
@@ -199,9 +218,7 @@ def _prepare_record(record: None, fields: tuple[str, ...]) -> None: ...
 
 
 @overload
-def _prepare_record(
-    record: SessionModelT, fields: tuple[str, ...]
-) -> SessionModelT: ...
+def _prepare_record(record: RecordT, fields: tuple[str, ...]) -> RecordT: ...
 
 
 def _prepare_record(record, fields):
@@ -222,10 +239,12 @@ class _SQLModelStorageBase:
 
     session_factory: Callable[[], Session]
 
-    # (class attribute holding the model, attributes the model must expose).
+    # (class attribute holding the model, required base, required attributes).
     # Checked at construction so misconfiguration fails at startup with a
     # clear error instead of an AttributeError on the first auth request.
-    _required_models: ClassVar[tuple[tuple[str, tuple[str, ...]], ...]] = ()
+    _required_models: ClassVar[
+        tuple[tuple[str, type[SQLModel], tuple[str, ...]], ...]
+    ] = ()
 
     # How to supply a missing model; session storage also accepts it in the
     # constructor and overrides this hint.
@@ -243,7 +262,7 @@ class _SQLModelStorageBase:
         self._validate_models()
 
     def _validate_models(self) -> None:
-        for attr, required_fields in self._required_models:
+        for attr, base, required_fields in self._required_models:
             # Instance lookup, so a model passed to the constructor (stored on
             # the instance) and one declared as a class attribute both resolve.
             model = getattr(self, attr, None)
@@ -259,6 +278,9 @@ class _SQLModelStorageBase:
                         f"required by {type(self).__name__}"
                     )
 
+            if not issubclass(model, base):
+                raise TypeError(f"{model.__name__} must inherit from {base.__name__}")
+
     @contextmanager
     def _open_session(self) -> Iterator[Session]:
         session = self.session_factory()
@@ -272,8 +294,24 @@ class _SQLModelStorageBase:
             yield session
 
 
+@overload
+def _prepare_session_record(record: None) -> None: ...
+
+
+@overload
+def _prepare_session_record(record: SessionModelT) -> SessionModelT: ...
+
+
 def _prepare_session_record(record):
     return _prepare_record(record, _SESSION_DATETIME_FIELDS)
+
+
+@overload
+def _prepare_social_account(record: None) -> None: ...
+
+
+@overload
+def _prepare_social_account(record: SocialAccountModelT) -> SocialAccountModelT: ...
 
 
 def _prepare_social_account(record):
@@ -283,7 +321,7 @@ def _prepare_social_account(record):
 class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
     """Implements cross_auth.SessionStorage for a SQLModel model.
 
-    Pass your session model to the constructor::
+    Subclass ``SQLModelSession`` for your table, then pass it to the constructor::
 
         store = SQLModelSessionStorage(
             UserSession, session_factory=lambda: Session(engine)
@@ -324,6 +362,7 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
     _required_models = (
         (
             "SessionModel",
+            SQLModelSession,
             (
                 "id",
                 "token_hash",
@@ -358,7 +397,8 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
     ) -> SessionModelT:
         model = self.SessionModel
         coerced_user_id = _coerce_id(model, "user_id", user_id)
-        record = model(
+        record = _construct_record(
+            model,
             token_hash=token_hash,
             user_id=user_id if coerced_user_id is _NO_MATCH else coerced_user_id,
             created_at=_bind_datetime(model, "created_at", created_at),
@@ -377,14 +417,15 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
 
     def get(self, *, token_hash: str, now: datetime) -> SessionModelT | None:
         model = self.SessionModel
+
         now_bound = _bind_datetime(model, "expires_at", now)
         with self._open_session() as session:
             statement = select(model).where(
-                getattr(model, "token_hash") == token_hash,
-                getattr(model, "revoked_at") == None,  # noqa: E711
+                col(model.token_hash) == token_hash,
+                col(model.revoked_at) == None,  # noqa: E711
                 # A session is active up to and including the expiry instant,
                 # matching cross_auth.session_status.
-                getattr(model, "expires_at") >= now_bound,
+                col(model.expires_at) >= now_bound,
             )
             record = session.exec(statement).first()
         return _prepare_session_record(record)
@@ -414,8 +455,13 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
         except KeyError:
             raise ValueError(f"Unsupported order_by: {order_by!r}") from None
         model = self.SessionModel
-        order_column = getattr(model, order_field)
-        id_column = getattr(model, "id")
+
+        order_column = {
+            "updated_at": col(model.updated_at),
+            "created_at": col(model.created_at),
+            "expires_at": col(model.expires_at),
+        }[order_field]
+        id_column = col(model.id)
         now_bound = _bind_datetime(model, "expires_at", now)
 
         user_id = _coerce_id(model, "user_id", user_id)
@@ -423,19 +469,19 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
             return _SessionListResult(records=[], next_cursor=None)
 
         with self._open_session() as session:
-            statement = select(model).where(getattr(model, "user_id") == user_id)
+            statement = select(model).where(col(model.user_id) == user_id)
 
             if status == "revoked":
-                statement = statement.where(getattr(model, "revoked_at") != None)  # noqa: E711
+                statement = statement.where(col(model.revoked_at) != None)  # noqa: E711
             elif status == "active":
                 statement = statement.where(
-                    getattr(model, "revoked_at") == None,  # noqa: E711
-                    getattr(model, "expires_at") >= now_bound,
+                    col(model.revoked_at) == None,  # noqa: E711
+                    col(model.expires_at) >= now_bound,
                 )
             elif status == "expired":
                 statement = statement.where(
-                    getattr(model, "revoked_at") == None,  # noqa: E711
-                    getattr(model, "expires_at") < now_bound,
+                    col(model.revoked_at) == None,  # noqa: E711
+                    col(model.expires_at) < now_bound,
                 )
 
             if cursor is not None:
@@ -479,9 +525,12 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
         next_cursor = None
         if has_more and records:
             last = records[-1]
-            next_cursor = encode_cursor(
-                order_by, getattr(last, order_field), getattr(last, "id")
-            )
+            order_value = {
+                "updated_at": last.updated_at,
+                "created_at": last.created_at,
+                "expires_at": last.expires_at,
+            }[order_field]
+            next_cursor = encode_cursor(order_by, order_value, last.id)
 
         return _SessionListResult(records=records, next_cursor=next_cursor)
 
@@ -494,6 +543,7 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
         last_active_at: datetime | None = None,
     ) -> SessionModelT | None:
         model = self.SessionModel
+
         session_id = _coerce_id(model, "id", session_id)
         if session_id is _NO_MATCH:
             return None
@@ -510,9 +560,9 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
             statement = (
                 update(model)
                 .where(
-                    getattr(model, "id") == session_id,
-                    getattr(model, "revoked_at") == None,  # noqa: E711
-                    getattr(model, "expires_at")
+                    col(model.id) == session_id,
+                    col(model.revoked_at) == None,  # noqa: E711
+                    col(model.expires_at)
                     >= _bind_datetime(model, "expires_at", updated_at),
                 )
                 .values(**values)
@@ -524,6 +574,7 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
 
     def revoke(self, session_id: object, *, revoked_at: datetime) -> None:
         model = self.SessionModel
+
         session_id = _coerce_id(model, "id", session_id)
         if session_id is _NO_MATCH:
             return
@@ -531,10 +582,10 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
             statement = (
                 update(model)
                 .where(
-                    getattr(model, "id") == session_id,
+                    col(model.id) == session_id,
                     # Don't shift the audit timestamp of an already-revoked
                     # session.
-                    getattr(model, "revoked_at") == None,  # noqa: E711
+                    col(model.revoked_at) == None,  # noqa: E711
                 )
                 .values(revoked_at=_bind_datetime(model, "revoked_at", revoked_at))
             )
@@ -549,6 +600,7 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
         except_session_id: object | None = None,
     ) -> int:
         model = self.SessionModel
+
         user_id = _coerce_id(model, "user_id", user_id)
         if user_id is _NO_MATCH:
             return 0
@@ -556,8 +608,8 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
             statement = (
                 update(model)
                 .where(
-                    getattr(model, "user_id") == user_id,
-                    getattr(model, "revoked_at") == None,  # noqa: E711
+                    col(model.user_id) == user_id,
+                    col(model.revoked_at) == None,  # noqa: E711
                 )
                 .values(revoked_at=_bind_datetime(model, "revoked_at", revoked_at))
             )
@@ -565,9 +617,7 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
                 except_session_id = _coerce_id(model, "id", except_session_id)
                 # An id that can't match any row excludes nothing.
                 if except_session_id is not _NO_MATCH:
-                    statement = statement.where(
-                        getattr(model, "id") != except_session_id
-                    )
+                    statement = statement.where(col(model.id) != except_session_id)
             result = session.exec(statement)  # type: ignore[call-overload]
             session.commit()
             return result.rowcount
@@ -585,7 +635,8 @@ class SQLModelAccountsStorage(
 ):
     """Implements cross_auth.AccountsStorage for SQLModel models.
 
-    Pass your models to the constructor::
+    Subclass ``SQLModelUser`` and ``SQLModelSocialAccount`` for your tables,
+    then pass them to the constructor::
 
         store = SQLModelAccountsStorage(
             User, SocialAccount, session_factory=lambda: Session(engine)
@@ -632,6 +683,7 @@ class SQLModelAccountsStorage(
     _required_models = (
         (
             "UserModel",
+            SQLModelUser,
             (
                 "id",
                 "email",
@@ -643,6 +695,7 @@ class SQLModelAccountsStorage(
         ),
         (
             "SocialAccountModel",
+            SQLModelSocialAccount,
             (
                 "id",
                 "user_id",
@@ -720,8 +773,13 @@ class SQLModelAccountsStorage(
         # Eager-load social_accounts only when it is a mapped relationship;
         # the User protocol also allows it to be a plain property.
         model = self.UserModel
+
         if "social_accounts" in inspect(model).relationships:
-            return (selectinload(getattr(model, "social_accounts")),)
+            return (
+                selectinload(
+                    inspect(model).relationships["social_accounts"].class_attribute
+                ),
+            )
         return ()
 
     def _find_user(self, *where: Any) -> UserModelT | None:
@@ -733,13 +791,13 @@ class SQLModelAccountsStorage(
             return session.exec(statement).first()
 
     def find_user_by_email(self, email: str) -> UserModelT | None:
-        return self._find_user(getattr(self.UserModel, "email") == email)
+        return self._find_user(col(self.UserModel.email) == email)
 
     def find_user_by_id(self, id: object) -> UserModelT | None:
         id = _coerce_id(self.UserModel, "id", id)
         if id is _NO_MATCH:
             return None
-        return self._find_user(getattr(self.UserModel, "id") == id)
+        return self._find_user(col(self.UserModel.id) == id)
 
     def create_user(
         self,
@@ -758,6 +816,7 @@ class SQLModelAccountsStorage(
         always returned.
         """
         model = self.UserModel
+
         with self._open_session() as session:
             user = self.build_user(
                 session=session,
@@ -770,7 +829,7 @@ class SQLModelAccountsStorage(
             session.commit()
             statement = (
                 select(model)
-                .where(getattr(model, "id") == getattr(user, "id"))
+                .where(col(model.id) == user.id)
                 .options(*self._user_query_options)
             )
             user = session.exec(statement).one()
@@ -793,9 +852,9 @@ class SQLModelAccountsStorage(
             session.add(new_user)
             session.flush()
 
-            identity_data = identity(cast(User, new_user))
+            identity_data = identity(new_user)
             owner_id = _coerce_id(self.UserModel, "id", identity_data["user_id"])
-            if owner_id != getattr(new_user, "id"):
+            if owner_id != new_user.id:
                 raise ValueError("Initial identity must belong to the new user")
 
             account = self._build_social_account(identity_data)
@@ -803,7 +862,7 @@ class SQLModelAccountsStorage(
             session.flush()
             statement = (
                 select(self.UserModel)
-                .where(getattr(self.UserModel, "id") == getattr(new_user, "id"))
+                .where(col(self.UserModel.id) == new_user.id)
                 .options(*self._user_query_options)
                 .execution_options(populate_existing=True)
             )
@@ -828,28 +887,30 @@ class SQLModelAccountsStorage(
         is_login_method: bool | None = None,
     ) -> SocialAccountModelT | None:
         model = self.SocialAccountModel
+
         conditions = [
-            getattr(model, "provider") == provider,
-            getattr(model, "provider_user_id") == provider_user_id,
+            col(model.provider) == provider,
+            col(model.provider_user_id) == provider_user_id,
         ]
         if user_id is not None:
             user_id = _coerce_id(model, "user_id", user_id)
             if user_id is _NO_MATCH:
                 return None
-            conditions.append(getattr(model, "user_id") == user_id)
+            conditions.append(col(model.user_id) == user_id)
 
         if is_login_method is not None:
-            conditions.append(getattr(model, "is_login_method") == is_login_method)
+            conditions.append(col(model.is_login_method) == is_login_method)
 
         return self._find_social_account(*conditions)
 
     def has_social_account(self, *, provider: str, provider_user_id: str) -> bool:
         """Check whether this identity exists, even if query filters hide it."""
         model = self.SocialAccountModel
+
         with self._open_session() as session:
             statement = select(model).where(
-                getattr(model, "provider") == provider,
-                getattr(model, "provider_user_id") == provider_user_id,
+                col(model.provider) == provider,
+                col(model.provider_user_id) == provider_user_id,
             )
             return session.exec(statement.limit(1)).first() is not None
 
@@ -857,19 +918,21 @@ class SQLModelAccountsStorage(
         self, social_account_id: object
     ) -> SocialAccountModelT | None:
         model = self.SocialAccountModel
+
         social_account_id = _coerce_id(model, "id", social_account_id)
         if social_account_id is _NO_MATCH:
             return None
-        return self._find_social_account(getattr(model, "id") == social_account_id)
+        return self._find_social_account(col(model.id) == social_account_id)
 
     def list_social_accounts(self, *, user_id: object) -> list[SocialAccountModelT]:
         model = self.SocialAccountModel
+
         user_id = _coerce_id(model, "user_id", user_id)
         if user_id is _NO_MATCH:
             return []
         with self._open_session() as session:
             statement = self.filter_social_account_query(
-                select(model).where(getattr(model, "user_id") == user_id)
+                select(model).where(col(model.user_id) == user_id)
             )
             rows = list(session.exec(statement).all())
         return [_prepare_social_account(row) for row in rows]
@@ -915,18 +978,19 @@ class SQLModelAccountsStorage(
             except IntegrityError as error:
                 session.rollback()
                 model = self.SocialAccountModel
+
                 statement = self.filter_social_account_query(
                     select(model).where(
-                        getattr(model, "provider") == provider,
-                        getattr(model, "provider_user_id") == provider_user_id,
-                        getattr(model, "user_id") == getattr(row, "user_id"),
+                        col(model.provider) == provider,
+                        col(model.provider_user_id) == provider_user_id,
+                        col(model.user_id) == row.user_id,
                     )
                 )
                 existing = session.exec(statement).one_or_none()
                 if existing is None:
                     raise
 
-                if is_login_method and not getattr(existing, "is_login_method"):
+                if is_login_method and not existing.is_login_method:
                     raise CrossAuthException("account_already_linked") from error
 
                 # Retrying creation must not overwrite credentials or enable login.
@@ -945,7 +1009,9 @@ class SQLModelAccountsStorage(
             values.pop(field)
         self._merge_social_account_extra_fields(values, extra_fields)
         self._check_social_account_values(values)
-        return self.SocialAccountModel(**self._bind_social_account_datetimes(values))
+        return _construct_record(
+            self.SocialAccountModel, **self._bind_social_account_datetimes(values)
+        )
 
     def update_social_account(
         self,
@@ -1039,28 +1105,27 @@ class SQLModelAccountsStorage(
                 return "not_found"
 
             model = self.SocialAccountModel
+
             account_user_id = _coerce_id(model, "user_id", user_id)
             account = session.exec(
                 self.filter_social_account_query(
                     select(model).where(
-                        getattr(model, "id") == account_id,
-                        getattr(model, "user_id") == account_user_id,
-                        getattr(model, "provider") == provider,
+                        col(model.id) == account_id,
+                        col(model.user_id) == account_user_id,
+                        col(model.provider) == provider,
                     )
                 )
             ).one_or_none()
             if account is None:
                 return "not_found"
 
-            if getattr(account, "is_login_method") and not getattr(
-                user, "has_usable_password"
-            ):
+            if account.is_login_method and not user.has_usable_password:
                 alternative = session.exec(
                     self.filter_social_account_query(
                         select(model).where(
-                            getattr(model, "user_id") == account_user_id,
-                            getattr(model, "id") != account_id,
-                            getattr(model, "is_login_method") == True,  # noqa: E712
+                            col(model.user_id) == account_user_id,
+                            col(model.id) != account_id,
+                            col(model.is_login_method) == True,  # noqa: E712
                         )
                     ).limit(1)
                 ).first()
@@ -1087,11 +1152,12 @@ class SQLModelAccountsStorage(
         # scopes lookups (e.g. by tenant) can't be made to mutate rows its
         # finds would never return.
         model = self.SocialAccountModel
+
         social_account_id = _coerce_id(model, "id", social_account_id)
         if social_account_id is _NO_MATCH:
             return None
         statement = self.filter_social_account_query(
-            select(model).where(getattr(model, "id") == social_account_id)
+            select(model).where(col(model.id) == social_account_id)
         )
         return session.exec(statement).first()
 
@@ -1189,9 +1255,9 @@ class SQLModelAccountsStorage(
         values: dict[str, object] = {"email": email}
         self._merge_user_extra_fields(values, extra_fields)
         self._check_user_values(values)
-        user = self.UserModel(**values)
+        user = _construct_record(self.UserModel, **values)
         try:
-            setattr(user, "email_verified", email_verified)
+            user.email_verified = email_verified
         except AttributeError as exc:
             raise TypeError(
                 f"{self.UserModel.__name__}.email_verified must be a mapped "
