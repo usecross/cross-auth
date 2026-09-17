@@ -238,7 +238,11 @@ events contain the resolved standard fields and raw provider `user_info`; the
 update event also contains the existing social account. Return a replacement
 event to alter writable token/profile fields or add app-specific `extra_fields`.
 Identity fields on an existing account are context rather than update targets.
-The built-in SQLModel adapter validates and writes the extra columns.
+The update event's `is_login_method` also describes its current stored
+eligibility; changing that field does not enable or disable login. Control a
+requested promotion through `allow_login` in the `before oauth.finalize_link`
+hook. The after-update event contains the saved account, including any
+promotion. The built-in SQLModel adapter validates and writes the extra columns.
 
 Stack the two decorators when the same handler applies to both operations. The
 event's literal `operation` field remains available to shared handlers.

@@ -1099,7 +1099,12 @@ def _prepare_social_account(
 
 
 def _check_social_account_ownership(
-    context: Context, data: SocialAccountCreate
+    context: Context,
+    *,
+    user_id: Any,
+    provider: str,
+    provider_user_id: str,
+    is_login_method: bool,
 ) -> None:
     # Database constraints enforce this policy when requests race these checks.
     allow_shared_connections = context.config.get("account_linking", {}).get(
@@ -1107,27 +1112,25 @@ def _check_social_account_ownership(
     )
     if not allow_shared_connections:
         identity_exists = context.accounts_storage.has_social_account(
-            provider=data["provider"], provider_user_id=data["provider_user_id"]
+            provider=provider, provider_user_id=provider_user_id
         )
         if (
             identity_exists
             and context.accounts_storage.find_social_account(
-                provider=data["provider"],
-                provider_user_id=data["provider_user_id"],
-                user_id=data["user_id"],
+                provider=provider,
+                provider_user_id=provider_user_id,
+                user_id=user_id,
             )
             is None
         ):
             raise CrossAuthException("account_already_linked")
-    elif data["is_login_method"]:
+    elif is_login_method:
         login_account = context.accounts_storage.find_social_account(
-            provider=data["provider"],
-            provider_user_id=data["provider_user_id"],
+            provider=provider,
+            provider_user_id=provider_user_id,
             is_login_method=True,
         )
-        if login_account is not None and not _same_id(
-            login_account.user_id, data["user_id"]
-        ):
+        if login_account is not None and not _same_id(login_account.user_id, user_id):
             raise CrossAuthException("account_already_linked")
 
 
@@ -1162,7 +1165,13 @@ def _create_social_account(
         provider_email_verified=provider_email_verified,
         is_login_method=is_login_method,
     )
-    _check_social_account_ownership(context, data)
+    _check_social_account_ownership(
+        context,
+        user_id=data["user_id"],
+        provider=data["provider"],
+        provider_user_id=data["provider_user_id"],
+        is_login_method=data["is_login_method"],
+    )
 
     social_account = context.accounts_storage.create_social_account(**data)
     context.hooks.run_after(
@@ -1186,6 +1195,7 @@ def _update_social_account(
     user_info: dict[str, Any],
     provider_email: str | None,
     provider_email_verified: bool | None,
+    enable_login: bool = False,
 ) -> SocialAccount:
     event = context.hooks.run_before(
         "social_account.update",
@@ -1206,6 +1216,15 @@ def _update_social_account(
             extra_fields={},
         ),
     )
+    if enable_login and not social_account.is_login_method:
+        _check_social_account_ownership(
+            context,
+            user_id=social_account.user_id,
+            provider=social_account.provider,
+            provider_user_id=social_account.provider_user_id,
+            is_login_method=True,
+        )
+
     updated_social_account = context.accounts_storage.update_social_account(
         social_account.id,
         access_token=event.access_token,
@@ -1216,6 +1235,7 @@ def _update_social_account(
         user_info=event.user_info,
         provider_email=event.provider_email,
         provider_email_verified=event.provider_email_verified,
+        enable_login=enable_login,
         extra_fields=event.extra_fields,
     )
     context.hooks.run_after(
@@ -1855,6 +1875,7 @@ def finalize_link(
             social_account = _update_social_account(
                 context=context,
                 social_account=social_account,
+                enable_login=allow_login,
                 access_token=token_response.access_token,
                 refresh_token=token_response.refresh_token,
                 access_token_expires_at=token_response.access_token_expires_at,

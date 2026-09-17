@@ -258,10 +258,15 @@ a personal account while only identifying the personal account at sign-in:
 | Work             | `patrick91`     | Yes        | No            |
 | Personal         | `patrick91`     | Yes        | Yes           |
 
-The connect flow creates integration-only connections. The link flow uses its
-`allow_login` setting for new connections. Reconnecting an existing connection
-refreshes its credentials without changing its login eligibility. There is no
-implicit promotion of a connection to a login method.
+The connect flow creates integration-only connections and reconnecting refreshes
+credentials without changing login eligibility. The authenticated link flow can
+also enable login: send `allow_login: true` to `finalize-link` to create a login
+method or promote the current user's existing connection after provider
+verification. If another user already owns login for that identity, Cross-Auth
+rejects the promotion with `account_already_linked` before updating credentials.
+Omitting `allow_login` or setting it to `false` preserves an existing
+connection's login eligibility; it never disables login. Ordinary sign-in cannot
+promote a connection.
 
 Each user can have only one connection to a given provider identity, and that
 identity can identify at most one user for login, under either schema. Sign-in

@@ -190,3 +190,87 @@ def test_unrelated_integrity_errors_propagate(attachment_store, violation):
 
     with pytest.raises(IntegrityError):
         create(store, second, uuid.uuid4().hex, **kwargs)
+
+
+def update(store, account, *, enable_login=False):
+    return store.update_social_account(
+        account.id,
+        access_token="updated-token",
+        refresh_token=None,
+        access_token_expires_at=None,
+        refresh_token_expires_at=None,
+        scope=None,
+        user_info={},
+        provider_email=None,
+        provider_email_verified=None,
+        enable_login=enable_login,
+    )
+
+
+@pytest.mark.parametrize("already_login", [True, False])
+@pytest.mark.parametrize("enable_login", [True, False])
+def test_update_login_eligibility_is_promotion_only(
+    attachment_store, already_login, enable_login
+):
+    store = attachment_store
+    owner, _ = owners(store)
+    account = create(store, owner, uuid.uuid4().hex, login=already_login)
+
+    updated = update(store, account, enable_login=enable_login)
+
+    assert updated.id == account.id
+    saved = store.find_social_account_by_id(account.id)
+    assert saved.is_login_method is (already_login or enable_login)
+    assert saved.access_token == "updated-token"
+
+
+def test_existing_login_owner_prevents_promotion(attachment_store):
+    store = attachment_store
+    if store.SocialAccountModel is ExclusiveAttachmentAccount:
+        pytest.skip("Shared connections require the shared schema")
+
+    personal, work = owners(store)
+    identity = uuid.uuid4().hex
+    login = create(store, personal, identity, login=True)
+    connection = create(store, work, identity)
+
+    with pytest.raises(IntegrityError):
+        update(store, connection, enable_login=True)
+
+    saved_connection = store.find_social_account_by_id(connection.id)
+    assert saved_connection.is_login_method is False
+    assert saved_connection.access_token == connection.access_token
+
+    saved_login = store.find_social_account_by_id(login.id)
+    assert saved_login.is_login_method is True
+    assert saved_login.access_token == login.access_token
+
+
+def test_concurrent_promotions_keep_one_login_owner(attachment_store):
+    store = attachment_store
+    if store.SocialAccountModel is ExclusiveAttachmentAccount:
+        pytest.skip("Shared connections require the shared schema")
+
+    first, second = owners(store)
+    identity = uuid.uuid4().hex
+    accounts = [create(store, owner, identity) for owner in (first, second)]
+    barrier = Barrier(2)
+
+    def promote(account):
+        barrier.wait(timeout=10)
+        try:
+            return update(store, account, enable_login=True)
+        except IntegrityError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(promote, accounts))
+
+    assert sum(result is not None for result in results) == 1
+
+    for original, result in zip(accounts, results):
+        saved = store.find_social_account_by_id(original.id)
+        assert saved.is_login_method is (result is not None)
+        assert saved.access_token == (
+            "updated-token" if result is not None else original.access_token
+        )

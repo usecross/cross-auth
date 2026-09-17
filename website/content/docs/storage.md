@@ -476,8 +476,11 @@ __table_args__ = (
 
 The partial index applies only to login-enabled rows. Integration-only rows may
 share an identity across users, but sign-in still has exactly one owner at most.
-Both constraints are required. An adapter without these constraints cannot
-promise safe concurrent attachment. For other databases, use an equivalent
+Both constraints must be installed in the database before enabling sharing,
+including promotion through `update_social_account(enable_login=True)`.
+Declaring indexes on a model does not migrate an existing table. Shared schemas
+without these constraints are unsupported: they cannot guarantee a single login
+owner during attachment or promotion. For other databases, use an equivalent
 schema that enforces both rules before supporting sharing.
 
 Provider IDs must consistently identify a provider configuration and its subject
@@ -665,6 +668,20 @@ filters, so a connected-only or hidden identity cannot accidentally create a new
 login owner. Custom adapters must implement the new filters and existence
 method. Their schemas and creation methods must enforce the ownership contract
 under concurrent writes.
+
+`update_social_account` also receives `enable_login: bool = False`. When true,
+enable login and update credentials in one atomic write, enforcing the same
+single-login-owner constraint as creation. When false, leave the stored login
+flag untouched so a credential refresh cannot undo a concurrent promotion.
+Failed promotions must roll back credential changes as well. Database integrity
+errors from racing promotions may propagate, as with racing attachments.
+
+The SQLModel adapter relies on the required ownership constraints above; it does
+not inspect the database schema. An existing login owner or a concurrent
+promotion causes the database to reject the update and roll back its credential
+changes. The Cross-Auth flow checks ownership before calling storage to report
+an observed conflict as `account_already_linked`, but that lookup is not a
+substitute for database uniqueness.
 
 Custom adapters must implement `create_user_with_identity` atomically; calling
 `create_user` and `create_social_account` with separate commits does not satisfy

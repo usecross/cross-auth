@@ -41,7 +41,6 @@ class SocialAccount(Protocol):
     @property
     def provider_email_verified(self) -> bool | None: ...
 
-    # TODO: Add endpoint to toggle is_login_method for existing social accounts
     @property
     def is_login_method(self) -> bool: ...
 
@@ -368,8 +367,18 @@ class AccountsStorage(Protocol):
         user_info: dict[str, Any],
         provider_email: str | None,
         provider_email_verified: bool | None,
+        enable_login: bool = False,
         extra_fields: Mapping[str, Any] | None = None,
-    ) -> SocialAccount: ...
+    ) -> SocialAccount:
+        """Update credentials and optionally enable login in one atomic write.
+
+        enable_login=True promotes an existing verified connection to a login
+        method. False preserves its current eligibility; it never disables login.
+        Enforce one login owner per identity, including concurrent promotions,
+        and roll back credentials if promotion fails. Database integrity errors
+        may propagate when concurrent writes conflict.
+        """
+        ...
 
     def disconnect_social_account(
         self,
