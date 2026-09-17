@@ -454,3 +454,54 @@ def test_token_less_sign_in_preserves_credentials_from_a_web_flow(
     assert account.scope == "calendar.readonly"
     # ...while identity fields refreshed from the new token's claims.
     assert account.provider_email == "renamed@example.com"
+
+
+@pytest.mark.parametrize(
+    ("nonce", "claim", "message"),
+    [
+        ("", "", "Expected nonce must be a non-empty string"),
+        ("expected", "", "has no nonce claim"),
+        ("expected", 42, "has no nonce claim"),
+        ("expected", "é", "nonce mismatch"),
+        ("expected", "\ud800", "Invalid nonce encoding"),
+    ],
+)
+def test_invalid_native_nonce_is_rejected_before_account_creation(
+    secondary_storage, accounts_storage, nonce, claim, message
+):
+    provider = StubOIDCProvider(
+        {
+            "sub": "nonce-user",
+            "email": "nonce@example.com",
+            "email_verified": True,
+            "nonce": claim,
+        }
+    )
+    auth = _make_auth(secondary_storage, accounts_storage, provider)
+
+    with pytest.raises(OAuth2Exception, match=message):
+        auth.sign_in_with_id_token("stub", VALID_TOKEN, nonce=nonce)
+
+    assert accounts_storage.find_user_by_email("nonce@example.com") is None
+
+
+@pytest.mark.parametrize("hashed", [False, True])
+def test_native_nonce_accepts_raw_and_sdk_hashed_unicode_values(
+    secondary_storage, accounts_storage, hashed
+):
+    nonce = "random-nonce-é"
+    claim = hashlib.sha256(nonce.encode()).hexdigest() if hashed else nonce
+    provider = StubOIDCProvider(
+        {
+            "sub": "nonce-user",
+            "email": "nonce@example.com",
+            "email_verified": True,
+            "nonce": claim,
+        }
+    )
+    auth = _make_auth(secondary_storage, accounts_storage, provider)
+
+    user, created = auth.sign_in_with_id_token("stub", VALID_TOKEN, nonce=nonce)
+
+    assert created is True
+    assert user.email == "nonce@example.com"

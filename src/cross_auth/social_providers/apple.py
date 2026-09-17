@@ -162,19 +162,20 @@ class AppleProvider(OIDCProvider):
         code_challenge: str | None = None,
         code_challenge_method: str | None = None,
         login_hint: str | None = None,
+        provider_data: dict[str, str] | None = None,
     ) -> dict[str, str]:
         """Build authorization request parameters for Apple.
 
         IMPORTANT: scope must be space-separated ("name email"), NOT plus-encoded.
         """
-        params: dict[str, str] = {
-            "client_id": self.client_id,
-            "redirect_uri": redirect_uri,
-            "response_type": "code",
-            "scope": "name email",  # Space-separated, NOT "name+email"
-            "state": state,
-            "response_mode": "form_post",  # Required for scope to work
-        }
+        params = super().build_authorization_params(
+            state,
+            redirect_uri,
+            request=request,
+            provider_data=provider_data,
+        )
+        params["scope"] = "name email"
+        params["response_mode"] = "form_post"
 
         if code_challenge:
             params["code_challenge"] = code_challenge

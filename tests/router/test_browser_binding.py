@@ -10,7 +10,12 @@ from fastapi.testclient import TestClient
 from cross_auth.models.oauth_token_response import TokenResponse
 from cross_auth.social_providers.apple import AppleProvider
 
-from .conftest import FakeProvider, mock_token_and_userinfo, start_provider_auth
+from .conftest import (
+    load_auth_request,
+    FakeProvider,
+    mock_token_and_userinfo,
+    start_provider_auth,
+)
 
 
 @respx.mock
@@ -201,7 +206,8 @@ def test_apple_form_post_waits_for_browser_cookie(
         exchanged.append(args)
         return TokenResponse(access_token="apple-access", token_type="Bearer")
 
-    def fetch(token, context, extra):
+    def fetch(token, context, extra, *, provider_data):
+        assert provider_data["nonce"] == expected_nonce
         extras.append(extra)
         return {
             "id": "apple-user",
@@ -218,6 +224,9 @@ def test_apple_form_post_waits_for_browser_cookie(
         app, base_url="https://testserver", follow_redirects=False
     ) as browser:
         _, state = start_provider_auth(browser, "/apple/login")
+        expected_nonce = load_auth_request(secondary_storage, state).provider_data[
+            "nonce"
+        ]
         # Simulate the POST arriving without the browser's SameSite=Lax cookie.
         with TestClient(
             app, base_url="https://testserver", follow_redirects=False

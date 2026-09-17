@@ -40,6 +40,7 @@ class HookedFakeProvider(FakeProvider):
         code_challenge: str | None = None,
         code_challenge_method: str | None = None,
         login_hint: str | None = None,
+        provider_data: dict[str, str] | None = None,
     ) -> str:
         url = super().build_authorization_url(
             state,
@@ -48,6 +49,7 @@ class HookedFakeProvider(FakeProvider):
             code_challenge=code_challenge,
             code_challenge_method=code_challenge_method,
             login_hint=login_hint,
+            provider_data=provider_data,
         )
         if request is None or not (audience := request.query_params.get("audience")):
             return url
