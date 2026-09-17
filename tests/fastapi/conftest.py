@@ -25,6 +25,9 @@ def test_app(
         session_storage=session_storage,
         get_user_from_request=lambda _: None,
         trusted_origins=[],
+        config={
+            "client_redirect_uris": {"test": ["http://valid-frontend.com/callback"]}
+        },
     )
 
     app.include_router(router)

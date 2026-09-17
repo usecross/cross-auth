@@ -166,7 +166,7 @@ def test_authorize_rejects_invalid_client_id(
     accounts_storage,
     logged_in_user,
 ):
-    """When allowed_client_ids is configured, reject unknown client_ids."""
+    """Unknown clients cannot redirect errors to another client's callback."""
     context_with_client_validation = Context(
         secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
@@ -174,7 +174,11 @@ def test_authorize_rejects_invalid_client_id(
             logged_in_user if r.headers.get("Authorization") == "Bearer test" else None
         ),
         trusted_origins=["valid-frontend.com"],
-        config={"allowed_client_ids": ["allowed_client"]},
+        config={
+            "client_redirect_uris": {
+                "allowed_client": ["http://valid-frontend.com/callback"]
+            }
+        },
     )
 
     request = HTTPRequest(
@@ -194,11 +198,12 @@ def test_authorize_rejects_invalid_client_id(
 
     response = start_token_flow(oauth_provider, request, context_with_client_validation)
 
-    assert response.status_code == 302
-    assert response.headers is not None
-    location = response.headers["Location"]
-    assert "error=invalid_client" in location
-    assert "error_description=Invalid+client_id" in location
+    assert response.status_code == 400
+    assert response.json() == {
+        "error": "invalid_client",
+        "error_description": "Invalid client_id",
+    }
+    assert not response.headers or "Location" not in response.headers
 
 
 def test_authorize_accepts_valid_client_id(
@@ -207,7 +212,7 @@ def test_authorize_accepts_valid_client_id(
     accounts_storage,
     logged_in_user,
 ):
-    """When allowed_client_ids is configured, accept known client_ids."""
+    """A registered client can use its exact callback URL."""
     context_with_client_validation = Context(
         secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
@@ -215,7 +220,11 @@ def test_authorize_accepts_valid_client_id(
             logged_in_user if r.headers.get("Authorization") == "Bearer test" else None
         ),
         trusted_origins=["valid-frontend.com"],
-        config={"allowed_client_ids": ["allowed_client"]},
+        config={
+            "client_redirect_uris": {
+                "allowed_client": ["http://valid-frontend.com/callback"]
+            }
+        },
     )
 
     request = HTTPRequest(

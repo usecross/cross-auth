@@ -57,10 +57,6 @@ CONNECT_DEMO_EMAIL = "connect-demo@example.com"
 GITHUB_MOCK_BASE_URL = "https://github-oauth-mock.fastapicloud.dev"
 SPA_DEMO_URL = "http://localhost:5173"
 SPA_CLIENT_ID = "spa-example"
-BACKEND_TRUSTED_REDIRECT_HOSTS = [
-    "localhost:8000",
-    "127.0.0.1:8000",
-]
 MAX_HOOK_EVENTS = 20
 # Small page size so the demo's handful of sessions paginate visibly.
 SESSIONS_PAGE_SIZE = 5
@@ -70,9 +66,13 @@ SPA_CORS_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
-SPA_TRUSTED_REDIRECT_HOSTS = [
-    "localhost:5173",
-    "127.0.0.1:5173",
+CLIENT_REDIRECT_URIS = [
+    "http://localhost:5173/callback",
+    "http://127.0.0.1:5173/callback",
+    "http://localhost:5173/link-callback",
+    "http://127.0.0.1:5173/link-callback",
+    "http://localhost:8000/link-callback",
+    "http://127.0.0.1:8000/link-callback",
 ]
 
 
@@ -394,7 +394,7 @@ auth = CrossAuth(
     storage=secondary_storage,
     accounts_storage=accounts_storage,
     session_storage=session_storage,
-    trusted_origins=[*SPA_TRUSTED_REDIRECT_HOSTS, *BACKEND_TRUSTED_REDIRECT_HOSTS],
+    trusted_origins=[],
     get_user_from_request=resolve_auth_user,
     default_next_url="/profile",
     # Explicit here; needed when redirect URIs must not be derived from the
@@ -403,7 +403,7 @@ auth = CrossAuth(
     normalize_email=normalize_login_email,
     config={
         "account_linking": {"enabled": True, "allow_different_emails": True},
-        "allowed_client_ids": [SPA_CLIENT_ID],
+        "client_redirect_uris": {SPA_CLIENT_ID: CLIENT_REDIRECT_URIS},
         "require_verified_email": True,
         "session": SESSION_CONFIG,
     },

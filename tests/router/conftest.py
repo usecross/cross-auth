@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from cross_auth._auth_flow import AuthRequest
+from cross_auth._clients import ClientResolver
 from cross_auth._config import Config
 from cross_auth._storage import AccountsStorage, SecondaryStorage, SessionStorage, User
 from cross_auth.fastapi import CrossAuth
@@ -64,9 +65,15 @@ def _build_auth(
     config: Config | None = None,
     default_next_url: str = "/",
     normalize_email: Callable[[str], str] | None = None,
+    get_client: ClientResolver | None = None,
 ) -> CrossAuth:
     if config is None:
         config = {"session": {"cookies": {"auth": True}}}
+    if get_client is None:
+        config = {
+            "client_redirect_uris": {"app-client": ["http://client.example/cb"]},
+            **config,
+        }
     return CrossAuth(
         providers=providers,
         storage=storage,
@@ -77,6 +84,7 @@ def _build_auth(
         default_next_url=default_next_url,
         get_user_from_request=_bearer_user_resolver(accounts_storage),
         normalize_email=normalize_email,
+        get_client=get_client,
     )
 
 

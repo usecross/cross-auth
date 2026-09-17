@@ -1,3 +1,4 @@
+from cross_auth._clients import ClientResolver, OAuthClient
 from cross_auth._context import Context
 from cross_auth._email import normalize_email
 from cross_auth._session import SessionConfig, SessionCookieConfig
@@ -65,6 +66,8 @@ __all__ = [
     "DisconnectResult",
     "CallbackData",
     "Context",
+    "ClientResolver",
+    "OAuthClient",
     "AfterAuthenticateEvent",
     "AfterLoginEvent",
     "AfterLogoutEvent",

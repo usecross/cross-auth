@@ -555,6 +555,13 @@ def context(
         session_storage=session_storage,
         get_user_from_request=_get_user_from_request,
         trusted_origins=["valid-frontend.com"],
+        config={
+            "client_redirect_uris": {
+                "test_client_id": ["http://valid-frontend.com/callback"],
+                "my_app_client_id": ["http://valid-frontend.com/callback"],
+                "test": ["http://valid-frontend.com/callback"],
+            }
+        },
     )
 
 
@@ -572,7 +579,7 @@ def expired_code(secondary_storage: SecondaryStorage) -> str:
             user_id="test",
             expires_at=datetime.now(tz=timezone.utc) - timedelta(seconds=1),
             client_id="test",
-            redirect_uri="test",
+            redirect_uri="http://valid-frontend.com/callback",
             code_challenge="test",
             code_challenge_method="S256",
         ).model_dump_json(),
@@ -590,7 +597,7 @@ def valid_code(secondary_storage: SecondaryStorage) -> str:
             user_id="test",
             expires_at=datetime.now(tz=timezone.utc) + timedelta(seconds=10),
             client_id="test",
-            redirect_uri="test",
+            redirect_uri="http://valid-frontend.com/callback",
             code_challenge="n4bQgYhMfWWaL-qgxVrQFaO_TxsrC4Is0V1sFbDwCgg",
             code_challenge_method="S256",
         ).model_dump_json(),
@@ -608,7 +615,7 @@ def valid_link_code(secondary_storage: SecondaryStorage) -> str:
             provider_id="test",
             expires_at=datetime.now(tz=timezone.utc) + timedelta(seconds=10),
             client_id="test",
-            redirect_uri="test",
+            redirect_uri="http://valid-frontend.com/callback",
             code_challenge="n4bQgYhMfWWaL-qgxVrQFaO_TxsrC4Is0V1sFbDwCgg",
             code_challenge_method="S256",
             user_id="test",

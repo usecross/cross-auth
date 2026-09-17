@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
+import pytest
+
 from cross_web import HTTPRequest
 from inline_snapshot import snapshot
 
@@ -106,7 +108,7 @@ def test_returns_error_response_if_code_is_invalid(issuer: Issuer, context: Cont
                 "grant_type": "authorization_code",
                 "client_id": "test",
                 "code": "test",
-                "redirect_uri": "test",
+                "redirect_uri": "http://valid-frontend.com/callback",
                 "code_verifier": "test",
             }
         ),
@@ -128,7 +130,7 @@ def test_returns_error_response_if_code_has_expired(
                 "grant_type": "authorization_code",
                 "client_id": "test",
                 "code": expired_code,
-                "redirect_uri": "test",
+                "redirect_uri": "http://valid-frontend.com/callback",
                 "code_verifier": "test",
             }
         ),
@@ -175,7 +177,7 @@ def test_returns_error_response_if_code_verifier_is_missing(
                 "grant_type": "authorization_code",
                 "client_id": "test",
                 "code": valid_code,
-                "redirect_uri": "test",
+                "redirect_uri": "http://valid-frontend.com/callback",
             }
         ),
         context,
@@ -203,7 +205,7 @@ def test_returns_error_response_if_client_id_does_not_match(
             user_id="test",
             expires_at=datetime.now(tz=timezone.utc) + timedelta(seconds=10),
             client_id="legit-client",  # Code issued to "legit-client"
-            redirect_uri="test",
+            redirect_uri="http://valid-frontend.com/callback",
             code_challenge="n4bQgYhMfWWaL-qgxVrQFaO_TxsrC4Is0V1sFbDwCgg",
             code_challenge_method="S256",
         ).model_dump_json(),
@@ -216,7 +218,7 @@ def test_returns_error_response_if_client_id_does_not_match(
                 "grant_type": "authorization_code",
                 "client_id": "attacker-client",  # Different client!
                 "code": code,
-                "redirect_uri": "test",
+                "redirect_uri": "http://valid-frontend.com/callback",
                 "code_verifier": "test",
             }
         ),
@@ -241,7 +243,7 @@ def test_returns_opaque_session_token_if_code_is_valid(
                 "grant_type": "authorization_code",
                 "client_id": "test",
                 "code": valid_code,
-                "redirect_uri": "test",
+                "redirect_uri": "http://valid-frontend.com/callback",
                 "code_verifier": "test",
             }
         ),
@@ -297,6 +299,9 @@ def test_authorization_code_grant_uses_token_issuer_without_session_storage(
         token_issuer=issue_token,
         get_user_from_request=lambda _: None,
         trusted_origins=["valid-frontend.com"],
+        config={
+            "client_redirect_uris": {"test": ["http://valid-frontend.com/callback"]}
+        },
     )
 
     http_request = HTTPRequest.from_form_data(
@@ -304,7 +309,7 @@ def test_authorization_code_grant_uses_token_issuer_without_session_storage(
             "grant_type": "authorization_code",
             "client_id": "test",
             "code": valid_code,
-            "redirect_uri": "test",
+            "redirect_uri": "http://valid-frontend.com/callback",
             "code_verifier": "test",
         }
     )
@@ -351,6 +356,9 @@ def test_password_grant_uses_token_issuer_without_session_storage(
         token_issuer=issue_token,
         get_user_from_request=lambda _: None,
         trusted_origins=["valid-frontend.com"],
+        config={
+            "client_redirect_uris": {"test": ["http://valid-frontend.com/callback"]}
+        },
     )
 
     http_request = HTTPRequest.from_form_data(
@@ -399,6 +407,9 @@ def test_token_endpoint_errors_without_token_issuer_or_session_storage(
         session_storage=None,
         get_user_from_request=lambda _: None,
         trusted_origins=["valid-frontend.com"],
+        config={
+            "client_redirect_uris": {"test": ["http://valid-frontend.com/callback"]}
+        },
     )
 
     response = issuer.token(
@@ -407,7 +418,7 @@ def test_token_endpoint_errors_without_token_issuer_or_session_storage(
                 "grant_type": "authorization_code",
                 "client_id": "test",
                 "code": valid_code,
-                "redirect_uri": "test",
+                "redirect_uri": "http://valid-frontend.com/callback",
                 "code_verifier": "test",
             }
         ),
@@ -440,7 +451,7 @@ def test_authorization_code_can_only_be_used_once(
                 "grant_type": "authorization_code",
                 "client_id": "test",
                 "code": valid_code,
-                "redirect_uri": "test",
+                "redirect_uri": "http://valid-frontend.com/callback",
                 "code_verifier": "test",
             }
         ),
@@ -456,7 +467,7 @@ def test_authorization_code_can_only_be_used_once(
                 "grant_type": "authorization_code",
                 "client_id": "test",
                 "code": valid_code,
-                "redirect_uri": "test",
+                "redirect_uri": "http://valid-frontend.com/callback",
                 "code_verifier": "test",
             }
         ),
@@ -711,3 +722,56 @@ def test_password_grant_verifies_password_hash_for_unknown_users(
         ("wrong_password", existing_user.hashed_password),
         ("wrong_password", DUMMY_PASSWORD_HASH),
     ]
+
+
+def test_authorization_code_rejects_removed_callback_registration(
+    context, issuer, valid_code
+):
+    context.config["client_redirect_uris"].clear()
+    request = HTTPRequest.from_form_data(
+        data={
+            "grant_type": "authorization_code",
+            "client_id": "test",
+            "code": valid_code,
+            "redirect_uri": "http://valid-frontend.com/callback",
+            "code_verifier": "test",
+        }
+    )
+
+    response = issuer.token(request, context)
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_grant"
+    assert (
+        response.json()["error_description"]
+        == "Redirect URI is no longer registered for this client"
+    )
+
+
+@pytest.mark.parametrize("field", ["code_challenge", "code_verifier"])
+def test_authorization_code_rejects_non_ascii_pkce(context, issuer, valid_code, field):
+    verifier = "test"
+    if field == "code_challenge":
+        key = f"oauth:code:{valid_code}"
+        grant = AuthorizationCodeGrantData.model_validate_json(
+            context.secondary_storage.get(key)
+        )
+        grant.code_challenge = "é"
+        context.secondary_storage.set(key, grant.model_dump_json())
+    else:
+        verifier = "é"
+
+    request = HTTPRequest.from_form_data(
+        data={
+            "grant_type": "authorization_code",
+            "client_id": "test",
+            "code": valid_code,
+            "redirect_uri": "http://valid-frontend.com/callback",
+            "code_verifier": verifier,
+        }
+    )
+
+    response = issuer.token(request, context)
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_grant"

@@ -280,6 +280,9 @@ def test_authorization_code_token_endpoint_creates_session_with_session_storage(
     context: Context,
 ):
     issuer = Issuer()
+    context.config["client_redirect_uris"]["ios-app"] = [
+        "https://client.example/callback"
+    ]
     code = "code-1"
     secondary_storage.set(
         f"oauth:code:{code}",
@@ -403,6 +406,9 @@ def test_token_endpoint_errors_without_token_issuer_or_session_storage(
         session_storage=None,
         get_user_from_request=lambda _: None,
         trusted_origins=["client.example"],
+        config={
+            "client_redirect_uris": {"test": ["http://valid-frontend.com/callback"]}
+        },
     )
 
     response = issuer.token(
@@ -411,7 +417,7 @@ def test_token_endpoint_errors_without_token_issuer_or_session_storage(
                 "grant_type": "authorization_code",
                 "client_id": "test",
                 "code": valid_code,
-                "redirect_uri": "test",
+                "redirect_uri": "http://valid-frontend.com/callback",
                 "code_verifier": "test",
             }
         ),

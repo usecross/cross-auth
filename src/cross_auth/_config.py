@@ -29,10 +29,9 @@ class Config(TypedDict, total=False):
     # linked accounts are not affected - they can still login.
     require_verified_email: bool
 
-    # List of allowed client_ids. If not set or empty, client_id validation
-    # is skipped (any client_id is accepted). When set, only these client_ids
-    # are allowed to initiate OAuth flows.
-    allowed_client_ids: list[str]
+    # Simple static web-client registry. For database-backed or native clients,
+    # supply get_client instead. Without either registry, broker flows reject clients.
+    client_redirect_uris: dict[str, list[str]]
 
     # Session cookie settings (cookie name, max_age, secure, etc.) plus the
     # cookie_auth flag that enables the browser /{provider}/login flow. See
