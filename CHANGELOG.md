@@ -1,6 +1,18 @@
 CHANGELOG
 =========
 
+0.26.1 - 2026-09-17
+-------------------
+
+Sliding session refresh now atomically rejects revoked or expired sessions. A
+revocation between the initial lookup and refresh no longer authenticates the
+request or extends its cookie. Custom session adapters must make `refresh`
+conditional on an unrevoked session whose stored expiry is at or after the
+supplied `updated_at`; rejected refreshes return `None` without changing
+storage.
+
+This release was contributed by [@patrick91](https://github.com/patrick91) in [#75](https://github.com/usecross/cross-auth/pull/75)
+
 0.26.0 - 2026-09-17
 -------------------
 
