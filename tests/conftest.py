@@ -447,6 +447,7 @@ class MemoryAccountsStorage:
         user_info: dict[str, Any],
         provider_email: str | None,
         provider_email_verified: bool | None,
+        enable_login: bool = False,
         extra_fields: Mapping[str, Any] | None = None,
     ) -> SocialAccount:
         social_account = next(
@@ -461,6 +462,19 @@ class MemoryAccountsStorage:
 
         if social_account is None:
             raise ValueError("Social account does not exist")
+
+        if enable_login:
+            login_owner = self.find_social_account(
+                provider=social_account.provider,
+                provider_user_id=social_account.provider_user_id,
+                is_login_method=True,
+            )
+            if login_owner is not None and not _same_id(
+                login_owner.user_id, social_account.user_id
+            ):
+                raise CrossAuthException("account_already_linked")
+
+            social_account.is_login_method = True
 
         social_account.access_token = access_token
         social_account.refresh_token = refresh_token

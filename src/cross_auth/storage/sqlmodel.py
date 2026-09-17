@@ -613,8 +613,9 @@ class SQLModelAccountsStorage(
     ``filter_social_account_query`` is applied to reads
     and writes alike — except the eager-loaded ``user.social_accounts``
     relationship on a returned user, which is loaded unfiltered; go through
-    ``list_social_accounts`` for a filtered read. Configuration is validated
-    at construction. Database uniqueness constraints define whether identities
+    ``list_social_accounts`` for a filtered read. Model attributes and writable
+    fields are validated at construction; database constraints are not inspected.
+    Required database uniqueness constraints define whether identities
     are exclusive or allow shared connections. Creation translates ownership
     conflicts on PostgreSQL and SQLite; unrelated integrity errors propagate.
     """
@@ -958,6 +959,7 @@ class SQLModelAccountsStorage(
         user_info: dict[str, object],
         provider_email: str | None,
         provider_email_verified: bool | None,
+        enable_login: bool = False,
         extra_fields: Mapping[str, object] | None = None,
     ) -> SocialAccountModelT:
         with self._open_session() as session:
@@ -973,6 +975,10 @@ class SQLModelAccountsStorage(
                 "provider_email": provider_email,
                 "provider_email_verified": provider_email_verified,
             }
+            # Required database ownership constraints also cover login promotion.
+            if enable_login:
+                values["is_login_method"] = True
+
             for field in self.excluded_social_account_fields:
                 values.pop(field)
             self._merge_social_account_extra_fields(values, extra_fields)
