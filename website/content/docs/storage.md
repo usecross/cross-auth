@@ -767,6 +767,18 @@ class SessionStorage(Protocol):
     def revoke_all_for_user(self, user_id: Any, **kwargs) -> int: ...
 ```
 
+`refresh` must atomically update only a session whose `revoked_at` is null and
+whose current `expires_at` is at or after the supplied `updated_at`. This
+matches `session_status`: a session is still active at the exact expiry instant.
+Return `None` without changing the record if it is missing, revoked, or expired.
+An omitted `last_active_at` preserves the stored value.
+
+The SQLModel adapter enforces this with a conditional database update. Custom
+adapters must provide the same guarantee: a separate active-session lookup
+followed by an unconditional update allows revocation to race the refresh.
+Callers must supply the current time as `updated_at`; core reads the clock again
+after the initial lookup before attempting a sliding refresh.
+
 If `list_for_user` supports cursor pagination, raise
 `cross_auth.exceptions.InvalidCursorError` for malformed or mismatched cursors,
 so applications can handle bad cursors the same way for every backend.

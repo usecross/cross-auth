@@ -223,8 +223,12 @@ class SessionStorage(Protocol):
         expires_at: AwareDatetime,
         last_active_at: AwareDatetime | None = None,
     ) -> SessionRecord | None:
-        """Roll a session forward. When ``last_active_at`` is omitted (None),
-        the stored value is preserved rather than cleared."""
+        """Atomically roll forward a session that is still active at updated_at.
+
+        Return None without changing the row if missing, revoked, or its current
+        expires_at is earlier than updated_at. When last_active_at is None,
+        preserve the stored value rather than clearing it.
+        """
         ...
 
     def revoke(

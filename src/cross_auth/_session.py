@@ -145,6 +145,7 @@ def _get_session(
     if now - session.updated_at < timedelta(seconds=update_age):
         return session, False
 
+    now = datetime.now(tz=timezone.utc)
     refreshed = storage.refresh(
         session.id,
         updated_at=now,
