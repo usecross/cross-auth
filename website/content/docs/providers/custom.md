@@ -134,30 +134,77 @@ class GoogleProvider(OIDCProvider):
 1. Provider returns `id_token` JWT in token response
 2. Cross Auth fetches the provider's public keys from `jwks_uri`
 3. JWT signature is verified against the public keys
-4. Claims are validated: `iss`, `aud`, `exp`
+4. Required claims are validated: `iss`, `sub`, `aud`, `exp`, and `iat`
 5. User info is extracted from the validated claims
 
 Keys are cached in secondary storage and automatically refreshed on rotation.
 
+Cross-Auth requires the standard
+[OIDC ID token claims](https://openid.net/specs/openid-connect-core-1_0.html#IDToken).
+The subject must be a nonempty string. Expiry and issued-at values must be
+finite JSON numbers, rather than numeric strings or booleans. An optional `nbf`
+must also be a valid numeric date. Existing issuer, audience, signature, expiry,
+and future-issued-token checks apply to both browser and native sign-in.
+
+The configured `client_id` must be in the audience. Cross-Auth does not
+currently apply a separate `azp` presenter allowlist: Google documents valid
+[hybrid web and mobile applications](https://developers.google.com/identity/openid-connect/openid-connect)
+whose authorized presenter differs from the audience. Applications needing a
+presenter restriction must enforce their own allowed client IDs in provider
+validation.
+
 ## Customizing Behavior
+
+### Stored Authorization Data
+
+`get_authorization_data()` returns a fresh `dict[str, str]` for each attempt.
+The base OAuth provider returns an empty dictionary; OIDC generates a nonce.
+Cross-Auth stores the result as `provider_data` on the authorization request and
+carries it through link redemption.
+
+`build_authorization_url`, `build_authorization_params`, and `fetch_user_info`
+receive it through the optional `provider_data` keyword. The provider chooses
+which values to include in the authorization URL; stored values are not
+forwarded automatically. OIDC subclasses extending the getter should include
+`super().get_authorization_data()` to retain nonce generation.
+
+Providers can validate stored data at two stages:
+
+- `validate_auth_request(auth_request)` receives the complete `AuthRequest`
+  before processing the browser callback.
+- `validate_link_data(link_data)` receives the complete `LinkCodeData` when the
+  app redeems a link code, before exchanging the provider code.
+
+Each method can inspect the nonce, expiry, client, user, and other fields on its
+record. The base OAuth provider performs no additional checks; OIDC requires a
+stored nonce at both stages. Override either method to customize provider
+requirements, raising `OAuth2Exception` on failure. OIDC subclasses should call
+`super()` to preserve the nonce requirement.
 
 ### Custom Authorization Parameters
 
 Override `build_authorization_params` to add provider-specific parameters:
 
 ```python
+from cross_web import HTTPRequest
+
+
 def build_authorization_params(
     self,
     state: str,
     redirect_uri: str,
     *,
+    request: HTTPRequest | None = None,
     code_challenge: str | None = None,
     code_challenge_method: str | None = None,
     login_hint: str | None = None,
-) -> dict:
+    provider_data: dict[str, str] | None = None,
+) -> dict[str, str]:
     params = super().build_authorization_params(
         state=state,
         redirect_uri=redirect_uri,
+        request=request,
+        provider_data=provider_data,
         code_challenge=code_challenge,
         code_challenge_method=code_challenge_method,
         login_hint=login_hint,

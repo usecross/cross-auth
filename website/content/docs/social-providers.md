@@ -66,14 +66,48 @@ token, record = auth.issue_session_token(str(user.id), metadata={"client_name": 
 ```
 
 The token is validated against the provider's JWKS (signature, issuer, audience,
-expiry), then the user is found or created by the same core the web callback
-uses: normalized email lookup, the account-linking policy gate, and your
-`user.create`, `social_account.create`, and `social_account.update` hooks. No
-OAuth token exchange happens, so no access or refresh tokens are stored on the
-social account. The `oauth.id_token` hooks also run around the outer flow.
+expiry, issued-at time, and subject), then the user is found or created by the
+same core the web callback uses: normalized email lookup, the account-linking
+policy gate, and your `user.create`, `social_account.create`, and
+`social_account.update` hooks. No OAuth token exchange happens, so no access or
+refresh tokens are stored on the social account. The `oauth.id_token` hooks also
+run around the outer flow.
 
 Only OIDC providers issue id_tokens, so this works for Apple and Google (and any
 `OIDCProvider` subclass); providers without an id_token, like GitHub, raise
 `invalid_request`. To let a native sign-in attach to an existing account with
 the same email, enable account linking (see above) — otherwise a matching email
 raises `account_not_linked`.
+
+### Nonce handling
+
+When the native SDK supports a nonce, generate a fresh unpredictable value for
+each sign-in and pass the expected raw value as `nonce=`. Cross-Auth accepts an
+exact match or its SHA-256 hexadecimal digest, for SDK integrations that hash
+the value before sending it to the provider. Empty values and missing or
+mismatched token nonce claims are rejected when `nonce=` is supplied.
+
+The application owns challenge storage, binding to the initiating client, and
+single-use consumption. Accepting both the token and its expected nonce from an
+untrusted request does not by itself prevent replay. Without `nonce=`,
+Cross-Auth validates the token but does not check a nonce or make the token
+single-use.
+
+Browser OIDC flows manage the nonce automatically. Cross-Auth generates a fresh
+value for each session login, token login, account connection, or account link.
+It saves the value with the authorization request and sends it to the provider.
+The signed ID token must contain that exact nonce before user or account storage
+is changed. Linking retains the nonce until the token exchange at finalize-link.
+Apple form-post callbacks retain it through the existing GET continuation.
+
+`nonce` is a library-controlled parameter, like `state`. A nonce in OIDC
+`extra_authorization_params` is ignored, so it cannot replace the per-attempt
+value. Browser nonces use exact matching; the raw-or-SHA-256 compatibility above
+applies only to native sign-in.
+
+Pending browser authorizations or link codes created before this upgrade have no
+stored nonce and must be restarted. Custom `build_authorization_url`,
+`build_authorization_params`, and `fetch_user_info` overrides must accept and
+forward the optional `provider_data` keyword. Core passes the stored dictionary
+returned by `get_authorization_data()`: a fresh nonce for OIDC and an empty
+dictionary for ordinary OAuth providers by default.

@@ -1,6 +1,6 @@
 import logging
 from dataclasses import dataclass
-from typing import Any, ClassVar, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Any, ClassVar, NotRequired, TypedDict
 from urllib.parse import urlencode
 
 import httpx
@@ -14,6 +14,9 @@ from ..models.oauth_token_response import (
     TokenErrorResponse,
     TokenResponse,
 )
+
+if TYPE_CHECKING:
+    from cross_auth._auth_flow import AuthRequest, LinkCodeData
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +142,14 @@ class OAuth2Provider:
         account_linking = context.config.get("account_linking", {})
         return account_linking.get("allow_different_emails", False)
 
+    def get_authorization_data(self) -> dict[str, str]:
+        """Return fresh provider data to store for one authorization attempt.
+
+        The data is passed to URL construction and user-info fetching, and is
+        retained through link redemption. Values must be strings.
+        """
+        return {}
+
     def build_authorization_params(
         self,
         state: str,
@@ -148,6 +159,7 @@ class OAuth2Provider:
         code_challenge: str | None = None,
         code_challenge_method: str | None = None,
         login_hint: str | None = None,
+        provider_data: dict[str, str] | None = None,
     ) -> dict[str, str]:
         """Build the query-string params sent to the provider's authorization endpoint.
 
@@ -183,6 +195,7 @@ class OAuth2Provider:
         code_challenge: str | None = None,
         code_challenge_method: str | None = None,
         login_hint: str | None = None,
+        provider_data: dict[str, str] | None = None,
     ) -> str:
         """Return the full URL to redirect the user to at the provider.
 
@@ -196,6 +209,7 @@ class OAuth2Provider:
             code_challenge=code_challenge,
             code_challenge_method=code_challenge_method,
             login_hint=login_hint,
+            provider_data=provider_data,
         )
 
         # Merge extras without overriding provider-controlled keys. setdefault
@@ -401,11 +415,25 @@ class OAuth2Provider:
                 error_description="Failed to exchange code for token",
             ) from e
 
+    def validate_auth_request(self, auth_request: "AuthRequest") -> None:
+        """Validate the stored request before processing a browser callback.
+
+        Raise OAuth2Exception if the authorization must be restarted.
+        """
+
+    def validate_link_data(self, link_data: "LinkCodeData") -> None:
+        """Validate the stored link data before exchanging the provider code.
+
+        Raise OAuth2Exception if linking must be restarted.
+        """
+
     def fetch_user_info(
         self,
         token_response: TokenResponse,
         context: Context,
         extra: dict[str, Any] | None = None,
+        *,
+        provider_data: dict[str, str] | None = None,
     ) -> UserInfo:
         """Fetch user info after token exchange.
 
@@ -416,6 +444,7 @@ class OAuth2Provider:
             token_response: The token response from the provider.
             context: The request context.
             extra: Optional provider-specific data from extract_callback_params.
+            provider_data: Stored data returned by get_authorization_data().
         """
         if not self.user_info_endpoint:
             raise NotImplementedError(

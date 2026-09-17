@@ -50,8 +50,12 @@ class DiscordProvider(OAuth2Provider):
         token_response: TokenResponse,
         context: Context,
         extra: dict[str, Any] | None = None,
+        *,
+        provider_data: dict[str, str] | None = None,
     ) -> UserInfo:
-        info = super().fetch_user_info(token_response, context, extra)
+        info = super().fetch_user_info(
+            token_response, context, extra, provider_data=provider_data
+        )
 
         # Map Discord's 'verified' field to our standard 'email_verified'
         info["email_verified"] = info.get("verified")

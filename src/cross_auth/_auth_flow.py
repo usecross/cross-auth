@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, NamedTuple, cast
 
 from cross_web import Cookie, HTTPRequest
-from pydantic import BaseModel, HttpUrl, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, HttpUrl, TypeAdapter, ValidationError
 
 from ._context import Context
 from ._issuer import AuthorizationCodeGrantData
@@ -83,6 +83,7 @@ class AuthRequest(BaseModel):
     provider_id: str
     state: str
     provider_code_verifier: str | None = None
+    provider_data: dict[str, str] = Field(default_factory=dict)
     browser_binding: str
     expires_at: datetime
 
@@ -112,6 +113,7 @@ class LinkCodeData(BaseModel):
     user_id: str
     provider_code: str
     provider_code_verifier: str | None = None
+    provider_data: dict[str, str] = Field(default_factory=dict)
     client_state: str | None = None
     provider_callback_extra: dict[str, Any] | None = None
 
@@ -343,6 +345,7 @@ def start_session_flow(
 
     state = secrets.token_hex(16)
     verifier, challenge, challenge_method = _generate_provider_pkce(provider)
+    provider_data = provider.get_authorization_data()
 
     binding = secrets.token_urlsafe(32)
     binding_cookie = _store_auth_request(
@@ -355,12 +358,14 @@ def start_session_flow(
             browser_binding=hashlib.sha256(binding.encode()).hexdigest(),
             expires_at=datetime.now(tz=timezone.utc) + _AUTH_REQUEST_TTL,
             provider_code_verifier=verifier,
+            provider_data=provider_data,
             next_url=next_url,
         ),
         binding=binding,
     )
 
     authorization_url = provider.build_authorization_url(
+        provider_data=provider_data,
         state=state,
         redirect_uri=_proxy_redirect_uri(request, context),
         request=request,
@@ -398,6 +403,7 @@ def start_connect_flow(
 
     state = secrets.token_hex(16)
     verifier, challenge, challenge_method = _generate_provider_pkce(provider)
+    provider_data = provider.get_authorization_data()
 
     binding = secrets.token_urlsafe(32)
     binding_cookie = _store_auth_request(
@@ -410,6 +416,7 @@ def start_connect_flow(
             browser_binding=hashlib.sha256(binding.encode()).hexdigest(),
             expires_at=datetime.now(tz=timezone.utc) + _AUTH_REQUEST_TTL,
             provider_code_verifier=verifier,
+            provider_data=provider_data,
             next_url=next_url,
             user_id=str(user.id),
         ),
@@ -417,6 +424,7 @@ def start_connect_flow(
     )
 
     authorization_url = provider.build_authorization_url(
+        provider_data=provider_data,
         state=state,
         redirect_uri=_proxy_redirect_uri(request, context),
         request=request,
@@ -531,6 +539,7 @@ def start_token_flow(
 
     state = secrets.token_hex(16)
     verifier, challenge, challenge_method = _generate_provider_pkce(provider)
+    provider_data = provider.get_authorization_data()
 
     binding = secrets.token_urlsafe(32)
     binding_cookie = _store_auth_request(
@@ -543,6 +552,7 @@ def start_token_flow(
             browser_binding=hashlib.sha256(binding.encode()).hexdigest(),
             expires_at=datetime.now(tz=timezone.utc) + _AUTH_REQUEST_TTL,
             provider_code_verifier=verifier,
+            provider_data=provider_data,
             client_id=client_id,
             client_redirect_uri=redirect_uri,
             client_state=client_state,
@@ -553,6 +563,7 @@ def start_token_flow(
     )
 
     authorization_url = provider.build_authorization_url(
+        provider_data=provider_data,
         state=state,
         redirect_uri=_proxy_redirect_uri(request, context),
         request=request,
@@ -774,6 +785,13 @@ def _complete_oauth_callback(
             error_description="No authorization code received in callback",
         )
 
+    try:
+        provider.validate_auth_request(auth_request)
+    except OAuth2Exception as e:
+        return _flow_error(
+            auth_request, error=e.error, error_description=e.error_description
+        )
+
     if auth_request.flow == "link":
         return _complete_link(
             auth_request, callback_data.code, callback_data.extra, context
@@ -787,7 +805,10 @@ def _complete_oauth_callback(
         )
 
         user_info = provider.fetch_user_info(
-            token_response, context, callback_data.extra
+            token_response,
+            context,
+            callback_data.extra,
+            provider_data=auth_request.provider_data,
         )
 
         validated = provider.validate_user_info(user_info)
@@ -1534,6 +1555,7 @@ def _complete_link(
         user_id=auth_request.user_id,
         provider_code=provider_code,
         provider_code_verifier=auth_request.provider_code_verifier,
+        provider_data=auth_request.provider_data,
         client_state=auth_request.client_state,
         provider_callback_extra=extra,
     )
@@ -1608,6 +1630,7 @@ def start_link_flow(
 
     state = secrets.token_hex(16)
     verifier, challenge, challenge_method = _generate_provider_pkce(provider)
+    provider_data = provider.get_authorization_data()
 
     binding = secrets.token_urlsafe(32)
     binding_cookie = _store_auth_request(
@@ -1620,6 +1643,7 @@ def start_link_flow(
             browser_binding=hashlib.sha256(binding.encode()).hexdigest(),
             expires_at=datetime.now(tz=timezone.utc) + _AUTH_REQUEST_TTL,
             provider_code_verifier=verifier,
+            provider_data=provider_data,
             client_id=link_request.client_id,
             client_redirect_uri=link_request.redirect_uri,
             client_state=link_request.state,
@@ -1631,6 +1655,7 @@ def start_link_flow(
     )
 
     authorization_url = provider.build_authorization_url(
+        provider_data=provider_data,
         state=state,
         redirect_uri=_proxy_redirect_uri(request, context),
         request=request,
@@ -1733,6 +1758,11 @@ def finalize_link(
             "server_error", error_description="Invalid code challenge"
         )
 
+    try:
+        provider.validate_link_data(link_data)
+    except OAuth2Exception as e:
+        return Response.error(e.error, error_description=e.error_description)
+
     if context.secondary_storage.pop(_LINK_CODE_KEY.format(code=code)) is None:
         return Response.error("invalid_request", "Link code has already been used")
 
@@ -1745,7 +1775,10 @@ def finalize_link(
             link_data.provider_code_verifier,
         )
         user_info = provider.fetch_user_info(
-            token_response, context, link_data.provider_callback_extra
+            token_response,
+            context,
+            link_data.provider_callback_extra,
+            provider_data=link_data.provider_data,
         )
         validated = provider.validate_user_info(user_info)
     except OAuth2Exception as e:

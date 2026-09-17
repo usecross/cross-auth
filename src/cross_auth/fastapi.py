@@ -161,17 +161,32 @@ _NO_TOKEN_RESPONSE = _NoTokenResponse()
 
 
 def _verify_nonce(claims: dict[str, Any], nonce: str) -> None:
-    # The app sends the raw nonce; the token carries either the raw value
-    # (Google) or its SHA-256 hex digest (Apple hashes what the app sent).
+    # Some native SDK integrations send a SHA-256 digest to the provider;
+    # the provider echoes that value rather than hashing it itself.
+    if not isinstance(nonce, str) or not nonce:
+        raise OAuth2Exception(
+            error="invalid_token",
+            error_description="Expected nonce must be a non-empty string",
+        )
+
     claim = claims.get("nonce")
-    if not isinstance(claim, str):
+    if not isinstance(claim, str) or not claim:
         raise OAuth2Exception(
             error="invalid_token",
             error_description="id_token has no nonce claim to verify",
         )
-    hashed = hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+    try:
+        expected = nonce.encode("utf-8")
+        received = claim.encode("utf-8")
+    except UnicodeError as exc:
+        raise OAuth2Exception(
+            error="invalid_token", error_description="Invalid nonce encoding"
+        ) from exc
+
+    hashed = hashlib.sha256(expected).hexdigest().encode("ascii")
     if not (
-        secrets.compare_digest(claim, nonce) or secrets.compare_digest(claim, hashed)
+        secrets.compare_digest(received, expected)
+        or secrets.compare_digest(received, hashed)
     ):
         raise OAuth2Exception(
             error="invalid_token",
@@ -420,7 +435,10 @@ class CrossAuth:
         user's name only on the first authorization, and only to the app.
         ``nonce`` is the raw value the app generated for the provider request;
         when given, it must match the
-        token's nonce claim (raw or SHA-256, Apple hashes it). Runs the
+        token's nonce claim (raw or SHA-256 for SDK integrations that send a
+        hash). The application must bind the expected nonce to the initiating
+        login attempt and prevent reuse; this comparison does not consume it.
+        Runs the
         ``oauth.id_token`` hooks.
         """
         registered = self._providers.get(provider)

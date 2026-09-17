@@ -1,11 +1,14 @@
 import json
 import logging
+import math
 import re
+import secrets
 import time
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import httpx
 import jwt
+from cross_web import HTTPRequest
 from jwt.algorithms import RSAAlgorithm
 
 from cross_auth._context import Context
@@ -16,6 +19,7 @@ from .oauth import OAuth2Exception, OAuth2Provider, UserInfo
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
+    from cross_auth._auth_flow import AuthRequest, LinkCodeData
     from cross_auth._storage import SecondaryStorage
 
 logger = logging.getLogger(__name__)
@@ -50,7 +54,42 @@ class OIDCProvider(OAuth2Provider):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
+        if self.extra_authorization_params:
+            # Browser nonces belong to individual attempts, never configuration.
+            self.extra_authorization_params = {
+                key: value
+                for key, value in self.extra_authorization_params.items()
+                if key != "nonce"
+            }
         self._jwks_last_fetch_time: float = 0.0
+
+    def get_authorization_data(self) -> dict[str, str]:
+        return {"nonce": secrets.token_urlsafe(32)}
+
+    def build_authorization_params(
+        self,
+        state: str,
+        redirect_uri: str,
+        *,
+        request: HTTPRequest | None = None,
+        code_challenge: str | None = None,
+        code_challenge_method: str | None = None,
+        login_hint: str | None = None,
+        provider_data: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        params = super().build_authorization_params(
+            state,
+            redirect_uri,
+            request=request,
+            code_challenge=code_challenge,
+            code_challenge_method=code_challenge_method,
+            login_hint=login_hint,
+            provider_data=provider_data,
+        )
+        if provider_data is not None and "nonce" in provider_data:
+            params["nonce"] = provider_data["nonce"]
+
+        return params
 
     @classmethod
     def _ttl_from_cache_control(cls, header: str | None) -> int:
@@ -127,34 +166,53 @@ class OIDCProvider(OAuth2Provider):
         - Signature against provider's public keys (JWKS)
         - Issuer matches expected issuer
         - Audience matches our client_id
-        - Token is not expired
+        - Required OIDC claims and their types
+        - Token is not expired or issued in the future
         """
-        # Decode header to get key ID
-        unverified_header = jwt.get_unverified_header(id_token)
-        kid = unverified_header.get("kid")
-
-        if not kid:
-            raise OAuth2Exception(
-                error="invalid_token",
-                error_description="id_token missing kid header",
-            )
-
         try:
-            public_key = self._get_public_key(kid, secondary_storage)
-        except ValueError as e:
-            raise OAuth2Exception(
-                error="invalid_token",
-                error_description=str(e),
-            ) from e
+            unverified_header = jwt.get_unverified_header(id_token)
+            kid = unverified_header.get("kid")
+            if not isinstance(kid, str) or not kid:
+                raise OAuth2Exception(
+                    error="invalid_token",
+                    error_description="id_token missing or invalid kid header",
+                )
 
-        try:
-            return jwt.decode(
+            try:
+                public_key = self._get_public_key(kid, secondary_storage)
+            except ValueError as error:
+                raise OAuth2Exception(
+                    error="invalid_token",
+                    error_description=str(error),
+                ) from error
+
+            claims = jwt.decode(
                 id_token,
                 public_key,
                 algorithms=["RS256"],
                 audience=self.client_id,
                 issuer=self.issuer,
+                options={"require": ["iss", "sub", "aud", "exp", "iat"]},
             )
+            if not isinstance(claims["iss"], str):
+                raise jwt.InvalidIssuerError("Issuer must be a string")
+            if not isinstance(claims["sub"], str) or not claims["sub"]:
+                raise jwt.InvalidTokenError("Subject must be a nonempty string")
+
+            # PyJWT coerces numeric strings and booleans. OIDC timestamps must
+            # be JSON numbers, including fractional seconds allowed by JWT.
+            for field in ("exp", "iat", "nbf"):
+                if field not in claims:
+                    continue
+                value = claims[field]
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or (isinstance(value, float) and not math.isfinite(value))
+                ):
+                    raise jwt.InvalidTokenError(f"{field} must be a finite number")
+
+            return claims
         except jwt.ExpiredSignatureError as e:
             raise OAuth2Exception(
                 error="invalid_token",
@@ -170,7 +228,7 @@ class OIDCProvider(OAuth2Provider):
                 error="invalid_token",
                 error_description="id_token issuer mismatch",
             ) from e
-        except jwt.PyJWTError as e:
+        except (jwt.PyJWTError, TypeError, OverflowError, UnicodeError) as e:
             raise OAuth2Exception(
                 error="invalid_token",
                 error_description=f"id_token validation failed: {e}",
@@ -196,16 +254,33 @@ class OIDCProvider(OAuth2Provider):
             "email_verified": claims.get("email_verified"),
         }
 
+    def validate_auth_request(self, auth_request: "AuthRequest") -> None:
+        if not auth_request.provider_data.get("nonce"):
+            raise OAuth2Exception(
+                error="invalid_request",
+                error_description="Missing provider nonce; restart authorization",
+            )
+
+    def validate_link_data(self, link_data: "LinkCodeData") -> None:
+        if not link_data.provider_data.get("nonce"):
+            raise OAuth2Exception(
+                error="invalid_request",
+                error_description="Missing provider nonce; restart linking",
+            )
+
     def fetch_user_info(
         self,
         token_response: TokenResponse,
         context: Context,
         extra: dict[str, Any] | None = None,
+        *,
+        provider_data: dict[str, str] | None = None,
     ) -> UserInfo:
         """Extract user info from id_token.
 
         OIDC providers return user info in the id_token JWT,
-        so we don't need to call a userinfo endpoint.
+        so we don't need to call a userinfo endpoint. Browser flows supply the
+        stored nonce, which must match the signed claim exactly.
         """
         id_token = getattr(token_response, "id_token", None)
         if not id_token:
@@ -215,4 +290,15 @@ class OIDCProvider(OAuth2Provider):
             )
 
         claims = self.validate_id_token(id_token, context.secondary_storage)
+        nonce = provider_data.get("nonce") if provider_data is not None else None
+        if provider_data is not None and (
+            not isinstance(nonce, str)
+            or not nonce
+            or not isinstance(claims.get("nonce"), str)
+            or claims["nonce"] != nonce
+        ):
+            raise OAuth2Exception(
+                error="invalid_token",
+                error_description="id_token nonce mismatch",
+            )
         return self.extract_user_info_from_claims(claims, extra)

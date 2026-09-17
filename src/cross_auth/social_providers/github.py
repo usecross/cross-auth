@@ -144,10 +144,15 @@ class GitHubProvider(OAuth2Provider):
         token_response: TokenResponse,
         context: Context,
         extra: dict[str, Any] | None = None,
+        *,
+        provider_data: dict[str, str] | None = None,
     ) -> UserInfo:
         # Cast to dict[str, Any] since GitHub API returns more fields than UserInfo
         info = cast(
-            dict[str, Any], super().fetch_user_info(token_response, context, extra)
+            dict[str, Any],
+            super().fetch_user_info(
+                token_response, context, extra, provider_data=provider_data
+            ),
         )
         fallback_email = info.get("email")
         fallback_email_verified = info.get("email_verified")
