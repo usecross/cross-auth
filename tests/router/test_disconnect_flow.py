@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import cast
+
+import pytest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -322,3 +325,97 @@ def test_disconnect_before_hook_can_block(auth: CrossAuth, accounts_storage):
     }
     assert accounts_storage.find_social_account_by_id("blocked-account") is not None
     assert seen == {"after": False}
+
+
+@pytest.mark.parametrize(
+    ("change", "expected_error"),
+    [
+        ("remove_alternative", "no_alternative_login_method"),
+        ("delete_target", "account_not_connected"),
+        ("change_owner", "account_not_connected"),
+        ("change_provider", "account_not_connected"),
+        ("delete_user", "account_not_connected"),
+    ],
+)
+def test_disconnect_rechecks_storage_after_before_hook(
+    auth, client, accounts_storage, change, expected_error
+):
+    user = accounts_storage.find_user_by_id("test")
+    user.hashed_password = None
+    target = _add_social_account(accounts_storage)
+    _add_social_account(
+        accounts_storage,
+        account_id="other-account",
+        provider="other",
+        provider_user_id="other-user",
+    )
+    after_events = []
+
+    @auth.before("oauth.disconnect")
+    def change_current_storage(event):
+        if change == "remove_alternative":
+            accounts_storage.delete_social_account("other-account")
+        elif change == "delete_target":
+            accounts_storage.delete_social_account(target.id)
+        elif change == "delete_user":
+            del accounts_storage.data[user.id]
+        else:
+            changed_target = replace(
+                target,
+                **(
+                    {"user_id": "other-owner"}
+                    if change == "change_owner"
+                    else {"provider": "other"}
+                ),
+            )
+            user.social_accounts = [
+                changed_target if account.id == target.id else account
+                for account in user.social_accounts
+            ]
+
+    @auth.after("oauth.disconnect")
+    def capture_after(event):
+        after_events.append(event)
+
+    response = client.delete(
+        "/fake/social-accounts/fake-account",
+        headers={"Authorization": "Bearer test"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == expected_error
+    assert after_events == []
+    if change not in {"delete_target", "delete_user"}:
+        assert accounts_storage.find_social_account_by_id(target.id) is not None
+
+
+def test_disconnect_accepts_login_alternative_added_by_before_hook(
+    auth, client, accounts_storage
+):
+    user = accounts_storage.find_user_by_id("test")
+    user.hashed_password = None
+    _add_social_account(accounts_storage)
+    after_events = []
+
+    @auth.before("oauth.disconnect")
+    def add_alternative(event):
+        _add_social_account(
+            accounts_storage,
+            account_id="new-alternative",
+            provider="other",
+            provider_user_id="other-user",
+        )
+
+    @auth.after("oauth.disconnect")
+    def capture_after(event):
+        after_events.append(event)
+
+    response = client.delete(
+        "/fake/social-accounts/fake-account",
+        headers={"Authorization": "Bearer test"},
+    )
+
+    assert response.status_code == 200
+    assert accounts_storage.find_social_account_by_id("fake-account") is None
+    assert accounts_storage.find_social_account_by_id("new-alternative") is not None
+    assert len(after_events) == 1

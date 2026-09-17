@@ -15,6 +15,7 @@ from cross_auth._context import Context
 from cross_auth._issuer import AuthorizationCodeGrantData, Issuer
 from cross_auth._storage import (
     AccountsStorage,
+    DisconnectResult,
     SocialAccountCreate,
     UserCreate,
     User as StorageUser,
@@ -470,6 +471,30 @@ class MemoryAccountsStorage:
         )
 
         return social_account
+
+    def disconnect_social_account(
+        self, *, user_id: Any, provider: str, social_account_id: Any
+    ) -> DisconnectResult:
+        user = self.find_user_by_id(user_id)
+        account = self.find_social_account_by_id(social_account_id)
+        if (
+            user is None
+            or account is None
+            or not _same_id(account.user_id, user_id)
+            or account.provider != provider
+        ):
+            return "not_found"
+
+        if account.is_login_method and not user.has_usable_password:
+            has_alternative = any(
+                other.is_login_method and not _same_id(other.id, account.id)
+                for other in self.list_social_accounts(user_id=user_id)
+            )
+            if not has_alternative:
+                return "last_login_method"
+
+        self.delete_social_account(account.id)
+        return "disconnected"
 
     def delete_social_account(self, social_account_id: Any) -> None:
         for user in self.data.values():

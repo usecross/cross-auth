@@ -180,6 +180,9 @@ class User(SQLModel, table=True):
     email_verified: bool = False
     hashed_password: str | None = None
     deleted: bool = False
+    updated_at: datetime = Field(
+        default_factory=datetime.now, sa_column_kwargs={"onupdate": datetime.now}
+    )
 
     social_accounts: list[SocialAccount] = Relationship(back_populates="user")
 

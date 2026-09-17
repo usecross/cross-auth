@@ -445,10 +445,16 @@ async def audit_link_complete(event: AfterOAuthFinalizeLinkEvent) -> None:
 Runs around `DELETE /{provider}/social-accounts` and
 `DELETE /{provider}/social-accounts/{social_account_id}`, after Cross-Auth has
 found the selected provider account, verified it belongs to the current user,
-and computed whether the user has a usable password or another login-enabled
-social account. Use the before hook to block app-specific cases, then perform
-cleanup after the account record has been deleted. This before hook is
-policy-only and must return `None`.
+and before the storage transaction starts. Use the before hook to block
+app-specific cases. Storage then rereads the current credentials and atomically
+checks that deleting a login-enabled account leaves a usable password or another
+login-enabled account. Changes made while the before hook runs are included in
+that check.
+
+The after hook runs only after deletion commits. It does not run when storage
+rejects the deletion or rolls back. Use it for external cleanup, such as
+provider token revocation. The before hook is policy-only and must return
+`None`.
 
 ```python
 from cross_auth.hooks import (

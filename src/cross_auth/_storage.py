@@ -5,6 +5,8 @@ from typing import Any, Literal, TypedDict
 from pydantic import AwareDatetime
 from typing_extensions import Protocol
 
+DisconnectResult = Literal["disconnected", "not_found", "last_login_method"]
+
 SessionStatus = Literal["active", "expired", "revoked"]
 SessionListOrder = Literal[
     "updated_at_desc",
@@ -365,4 +367,22 @@ class AccountsStorage(Protocol):
         extra_fields: Mapping[str, Any] | None = None,
     ) -> SocialAccount: ...
 
-    def delete_social_account(self, social_account_id: Any) -> None: ...
+    def disconnect_social_account(
+        self,
+        *,
+        user_id: Any,
+        provider: str,
+        social_account_id: Any,
+    ) -> DisconnectResult:
+        """Atomically check current login alternatives and disconnect an account.
+
+        Re-read the user and account, enforcing ownership, provider, and storage
+        visibility. Return not_found if either is missing or inaccessible.
+        Serialize same-user disconnects so they cannot remove the last login
+        method together. A connected-only account may always be disconnected.
+        """
+        ...
+
+    def delete_social_account(self, social_account_id: Any) -> None:
+        """Delete without checking login alternatives; for administrative use."""
+        ...

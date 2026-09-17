@@ -574,6 +574,48 @@ concurrent signup rolls back its user and related rows, and may propagate the
 backend integrity error. No automatic retry or account linking follows that
 failure.
 
+### Safe account disconnection
+
+User-facing disconnects call `disconnect_social_account`, which checks the
+current stored credentials and deletes the selected connection in one
+transaction. The operation returns one of three `DisconnectResult` values:
+
+- `disconnected`: the deletion committed.
+- `not_found`: the user or account is unavailable, or the account does not match
+  the supplied user and provider.
+- `last_login_method`: removing this login-enabled identity would leave no
+  usable password or other login-enabled identity.
+
+Integration-only connections can always be removed without affecting this
+policy, but they do not count as alternative login methods. Password eligibility
+comes from the user model's `has_usable_password` property; custom models must
+return false for absent or unusable credentials.
+
+Custom adapters must serialize disconnects for the same user, reread the current
+records, check the alternatives, and delete inside the same transaction. A
+separate lookup followed by deletion is unsafe: two requests can each remove the
+last remaining alternative. ORM transaction details stay inside the adapter.
+
+SQLModel requires a session with transactions enabled; engine or DBAPI
+`AUTOCOMMIT` mode is unsupported. It reserves the user row with an update before
+reading the credentials. PostgreSQL serializes concurrent updates to that row;
+SQLite serializes writers. The update preserves column values, including
+SQLAlchemy `onupdate` columns, but database UPDATE triggers still run and must
+tolerate it.
+
+SQLite can raise a lock-timeout error under contention. PostgreSQL transactions
+at repeatable-read or serializable isolation can raise serialization failures.
+Such failures roll back; the library does not retry them automatically. Retry
+the whole operation after contention clears, rather than continuing a failed
+transaction.
+
+This guarantee applies to calls through `disconnect_social_account`. The
+low-level `delete_social_account` method remains available for application-owned
+cleanup and deliberately skips the last-login check. There is no administrative
+bypass on the HTTP disconnect routes. Custom password removal, login-method
+changes, or direct database deletes must coordinate with the same user record if
+they need to preserve this guarantee across those operations too.
+
 ### AccountsStorage
 
 ```python
@@ -609,6 +651,9 @@ class AccountsStorage(Protocol):
     ) -> tuple[User, SocialAccount]: ...
     def create_social_account(self, **kwargs) -> SocialAccount: ...
     def update_social_account(self, social_account_id, **kwargs) -> SocialAccount: ...
+    def disconnect_social_account(
+        self, *, user_id: Any, provider: str, social_account_id: Any
+    ) -> DisconnectResult: ...
     def delete_social_account(self, social_account_id: Any) -> None: ...
 ```
 

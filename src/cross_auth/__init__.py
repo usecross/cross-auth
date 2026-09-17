@@ -3,6 +3,7 @@ from cross_auth._email import normalize_email
 from cross_auth._session import SessionConfig, SessionCookieConfig
 from cross_auth._storage import (
     AccountsStorage,
+    DisconnectResult,
     SecondaryStorage,
     SessionListOrder,
     SessionListResult,
@@ -61,6 +62,7 @@ from cross_auth.social_providers.oidc import OIDCProvider
 
 __all__ = [
     "AccountsStorage",
+    "DisconnectResult",
     "CallbackData",
     "Context",
     "AfterAuthenticateEvent",

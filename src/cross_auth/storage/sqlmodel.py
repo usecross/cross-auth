@@ -20,6 +20,7 @@ except ImportError as exc:  # pragma: no cover - exercised only without the extr
     ) from exc
 
 from cross_auth._storage import (
+    DisconnectResult,
     SessionListOrder,
     SessionStatus,
     User,
@@ -972,7 +973,89 @@ class SQLModelAccountsStorage(
             session.commit()
         return _prepare_social_account(row)
 
+    def disconnect_social_account(
+        self,
+        *,
+        user_id: object,
+        provider: str,
+        social_account_id: object,
+    ) -> DisconnectResult:
+        """Remove an owned connection without removing the last login method.
+
+        Updating the user row first serializes competing removals for this
+        user on PostgreSQL and SQLite. Explicitly preserving onupdate columns
+        avoids changing application timestamps; database UPDATE triggers still
+        run and must tolerate this lock acquisition.
+        """
+        user_id = _coerce_id(self.UserModel, "id", user_id)
+        account_id = _coerce_id(self.SocialAccountModel, "id", social_account_id)
+        if user_id is _NO_MATCH or account_id is _NO_MATCH:
+            return "not_found"
+
+        user_table = inspect(self.UserModel).local_table
+        user_id_column = _column(self.UserModel, "id")
+        preserved = {
+            column: column
+            for column in user_table.columns
+            if column.onupdate is not None or column is user_id_column
+        }
+        with self._open_session() as session:
+            # This must be the first statement: SQLite cannot safely upgrade
+            # a stale read transaction after another removal has committed.
+            eligible_user_ids = self.filter_user_query(
+                select(self.UserModel).where(user_id_column == user_id)
+            ).with_only_columns(user_id_column)
+            reserved = session.connection().execute(
+                update(user_table)
+                .where(user_id_column.in_(eligible_user_ids))
+                .values(preserved)
+            )
+            if reserved.rowcount == 0:
+                return "not_found"
+
+            user = session.exec(
+                self.filter_user_query(
+                    select(self.UserModel).where(user_id_column == user_id)
+                )
+            ).one_or_none()
+            if user is None:
+                return "not_found"
+
+            model = self.SocialAccountModel
+            account_user_id = _coerce_id(model, "user_id", user_id)
+            account = session.exec(
+                self.filter_social_account_query(
+                    select(model).where(
+                        getattr(model, "id") == account_id,
+                        getattr(model, "user_id") == account_user_id,
+                        getattr(model, "provider") == provider,
+                    )
+                )
+            ).one_or_none()
+            if account is None:
+                return "not_found"
+
+            if getattr(account, "is_login_method") and not getattr(
+                user, "has_usable_password"
+            ):
+                alternative = session.exec(
+                    self.filter_social_account_query(
+                        select(model).where(
+                            getattr(model, "user_id") == account_user_id,
+                            getattr(model, "id") != account_id,
+                            getattr(model, "is_login_method") == True,  # noqa: E712
+                        )
+                    ).limit(1)
+                ).first()
+                if alternative is None:
+                    return "last_login_method"
+
+            session.delete(account)
+            session.commit()
+            return "disconnected"
+
     def delete_social_account(self, social_account_id: object) -> None:
+        """Unchecked deletion for administrative callers; use disconnect for users."""
         with self._open_session() as session:
             row = self._get_social_account_for_write(session, social_account_id)
             if row is None:
