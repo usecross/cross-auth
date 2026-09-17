@@ -24,6 +24,9 @@ def validate_pkce(
     if stored_method != "S256":
         raise ValueError("Unsupported code challenge method")
 
+    if not stored_challenge.isascii() or not received_verifier.isascii():
+        return False
+
     calculated_challenge = calculate_s256_challenge(received_verifier)
 
     return secrets.compare_digest(calculated_challenge, stored_challenge)

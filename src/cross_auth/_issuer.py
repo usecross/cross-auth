@@ -155,7 +155,6 @@ class Issuer:
         except ValidationError as e:
             return self._format_validation_error(e)
 
-        # TODO: validate client_id exists in client registry
         # TODO: support confidential clients (client_secret)
 
         if isinstance(token_request, AuthorizationCodeGrantRequest):
@@ -207,6 +206,14 @@ class Issuer:
             return self._error_response(
                 "invalid_grant",
                 "Client ID does not match",
+            )
+
+        if not context.is_valid_redirect_uri(
+            request.redirect_uri, client_id=request.client_id
+        ):
+            return self._error_response(
+                "invalid_grant",
+                "Redirect URI is no longer registered for this client",
             )
 
         if authorization_data.code_challenge_method != "S256":

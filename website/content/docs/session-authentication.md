@@ -269,12 +269,16 @@ cookie = make_session_cookie(session_token, config)
 
 ## Cookie Defaults
 
-| Setting            | Default        | Notes                                  |
-| ------------------ | -------------- | -------------------------------------- |
-| `max_age`          | `86400` (24h)  | Session lifetime in seconds            |
-| `cookies.name`     | `"session_id"` | Name of the cookie                     |
-| `cookies.secure`   | `True`         | Only sent over HTTPS                   |
-| `cookies.httponly` | `True`         | Not accessible via JavaScript          |
-| `cookies.samesite` | `"lax"`        | Prevents CSRF on cross-origin requests |
-| `cookies.path`     | `"/"`          | Cookie is valid for all paths          |
-| `cookies.domain`   | `None`         | Scoped to the current domain           |
+| Setting            | Default        | Notes                                 |
+| ------------------ | -------------- | ------------------------------------- |
+| `max_age`          | `86400` (24h)  | Session lifetime in seconds           |
+| `cookies.name`     | `"session_id"` | Name of the cookie                    |
+| `cookies.secure`   | `True`         | Only sent over HTTPS                  |
+| `cookies.httponly` | `True`         | Not accessible via JavaScript         |
+| `cookies.samesite` | `"lax"`        | Limits some cross-site cookie sending |
+| `cookies.path`     | `"/"`          | Cookie is valid for all paths         |
+| `cookies.domain`   | `None`         | Scoped to the current domain          |
+
+`SameSite=Lax` is a partial mitigation, not general CSRF protection. Protect
+cookie-authenticated mutations and browser login endpoints at the HTTP boundary;
+see [Security Integration](/docs/security) for working FastAPI patterns.

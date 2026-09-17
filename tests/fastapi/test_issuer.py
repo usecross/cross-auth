@@ -53,7 +53,7 @@ def test_returns_error_response_if_code_verifier_is_missing(
             "grant_type": "authorization_code",
             "client_id": "test",
             "code": valid_code,
-            "redirect_uri": "test",
+            "redirect_uri": "http://valid-frontend.com/callback",
         },
     )
     assert response.status_code == 400
@@ -134,7 +134,7 @@ def test_returns_error_response_if_code_is_invalid(client: TestClient) -> None:
             "grant_type": "authorization_code",
             "client_id": "test",
             "code": "test",
-            "redirect_uri": "test",
+            "redirect_uri": "http://valid-frontend.com/callback",
             "code_verifier": "test",
         },
     )
@@ -154,7 +154,7 @@ def test_returns_error_response_if_code_has_expired(
             "grant_type": "authorization_code",
             "client_id": "test",
             "code": expired_code,
-            "redirect_uri": "test",
+            "redirect_uri": "http://valid-frontend.com/callback",
             "code_verifier": "test",
         },
     )
@@ -198,7 +198,7 @@ def test_returns_token_if_code_is_valid(
             "grant_type": "authorization_code",
             "client_id": "test",
             "code": valid_code,
-            "redirect_uri": "test",
+            "redirect_uri": "http://valid-frontend.com/callback",
             "code_verifier": "test",
         },
     )

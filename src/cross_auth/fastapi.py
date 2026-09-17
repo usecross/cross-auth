@@ -23,6 +23,7 @@ from fastapi import Response as FastAPIResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ._auth_flow import resolve_user_for_sign_in
+from ._clients import ClientResolver
 from ._config import Config
 from ._context import AccountsStorage, SecondaryStorage, User
 from ._email import normalize_email as _normalize_email
@@ -216,6 +217,7 @@ class CrossAuth:
         config: Config | None = None,
         default_next_url: str = "/",
         normalize_email: Callable[[str], str] | None = None,
+        get_client: ClientResolver | None = None,
     ):
         self._storage = storage
         self._accounts_storage = accounts_storage
@@ -249,6 +251,7 @@ class CrossAuth:
             default_next_url=default_next_url,
             hooks=self._hooks,
             normalize_email=normalize_email,
+            get_client=get_client,
         )
 
     @property

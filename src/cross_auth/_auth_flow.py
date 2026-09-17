@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, NamedTuple, cast
 
 from cross_web import Cookie, HTTPRequest
-from pydantic import BaseModel, Field, HttpUrl, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from ._context import Context
 from ._issuer import AuthorizationCodeGrantData
@@ -448,13 +448,20 @@ def start_token_flow(
         logger.error("No redirect URI provided")
         return Response.error("invalid_request")
 
-    try:
-        redirect_uri = str(TypeAdapter(HttpUrl).validate_python(redirect_uri))
-    except ValidationError:
-        logger.error("Invalid redirect URI")
-        return Response.error("invalid_redirect_uri")
+    client_id = request.query_params.get("client_id")
 
-    if not context.is_valid_redirect_uri(redirect_uri):
+    if not client_id:
+        return Response.error(
+            "invalid_request", error_description="No client_id provided"
+        )
+
+    client = context.get_client(client_id)
+    if client is None:
+        return Response.error("invalid_client", error_description="Invalid client_id")
+
+    # Do not normalize the URI or redirect errors until this exact client/URI
+    # pair has been checked against the registration.
+    if not client.check_redirect_uri(redirect_uri):
         logger.error("Invalid redirect URI")
         return Response.error("invalid_redirect_uri")
 
@@ -497,24 +504,6 @@ def start_token_flow(
         )
 
     validated_code_challenge_method = cast(Literal["S256"], code_challenge_method)
-
-    client_id = request.query_params.get("client_id")
-
-    if not client_id:
-        return Response.error_redirect(
-            redirect_uri,
-            error="invalid_request",
-            error_description="No client_id provided",
-            state=client_state,
-        )
-
-    if not context.is_valid_client_id(client_id):
-        return Response.error_redirect(
-            redirect_uri,
-            error="invalid_client",
-            error_description="Invalid client_id",
-            state=client_state,
-        )
 
     login_hint = request.query_params.get("login_hint")
 
@@ -725,6 +714,19 @@ def _complete_oauth_callback(
     callback_data: CallbackData,
     auth_request: AuthRequest | None,
 ) -> Response:
+    if auth_request is not None and auth_request.flow in {"token", "link"}:
+        if (
+            auth_request.client_id is None
+            or auth_request.client_redirect_uri is None
+            or not context.is_valid_redirect_uri(
+                auth_request.client_redirect_uri, client_id=auth_request.client_id
+            )
+        ):
+            return Response.error(
+                "invalid_redirect_uri",
+                "Callback is no longer registered for this client",
+            )
+
     state = callback_data.state
     if callback_data.error:
         level = (
@@ -1604,13 +1606,14 @@ def start_link_flow(
             "invalid_request", error_description="Invalid request body"
         )
 
-    if not context.is_valid_redirect_uri(link_request.redirect_uri):
+    client = context.get_client(link_request.client_id)
+    if client is None:
+        return Response.error("invalid_client", error_description="Invalid client_id")
+
+    if not client.check_redirect_uri(link_request.redirect_uri):
         return Response.error(
             "invalid_redirect_uri", error_description="Invalid redirect_uri"
         )
-
-    if not context.is_valid_client_id(link_request.client_id):
-        return Response.error("invalid_client", error_description="Invalid client_id")
 
     try:
         context.hooks.run_before(
@@ -1699,16 +1702,19 @@ def finalize_link(
 
     try:
         request_data = json.loads(request.body)
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
         logger.error("Invalid request body: %s", e)
         return Response.error(
             "invalid_request", error_description="Invalid request body"
         )
 
+    if not isinstance(request_data, dict):
+        return Response.error("invalid_request", "Request body must be an object")
+
     code = request_data.get("link_code")
     allow_login = request_data.get("allow_login", False) is True
 
-    if not code:
+    if not isinstance(code, str) or not code:
         return Response.error(
             "server_error", error_description="No link code found in request"
         )
@@ -1730,7 +1736,7 @@ def finalize_link(
             "invalid_request", "Link provider mismatch; restart linking"
         )
 
-    if link_data.expires_at < datetime.now(tz=timezone.utc):
+    if link_data.expires_at <= datetime.now(tz=timezone.utc):
         return Response.error("server_error", error_description="Link code has expired")
 
     if str(user.id) != link_data.user_id:
@@ -1740,13 +1746,20 @@ def finalize_link(
             status_code=403,
         )
 
+    client = context.get_client(link_data.client_id)
+    if client is None:
+        return Response.error("invalid_client", "Invalid client_id")
+
+    if not client.check_redirect_uri(link_data.redirect_uri):
+        return Response.error("invalid_redirect_uri", "Invalid redirect_uri")
+
     if link_data.code_challenge_method != "S256":
         return Response.error(
             "server_error", error_description="Unsupported code challenge method"
         )
 
     code_verifier = request_data.get("code_verifier")
-    if not code_verifier:
+    if not isinstance(code_verifier, str) or not code_verifier:
         return Response.error(
             "server_error", error_description="No code_verifier provided"
         )
@@ -1765,6 +1778,9 @@ def finalize_link(
 
     if context.secondary_storage.pop(_LINK_CODE_KEY.format(code=code)) is None:
         return Response.error("invalid_request", "Link code has already been used")
+
+    if link_data.expires_at <= datetime.now(tz=timezone.utc):
+        return Response.error("server_error", error_description="Link code has expired")
 
     proxy_redirect_uri = _proxy_redirect_uri(request, context)
 

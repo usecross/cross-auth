@@ -15,6 +15,7 @@ from ._auth_flow import (
     start_session_flow,
     start_token_flow,
 )
+from ._clients import ClientResolver
 from ._config import Config
 from ._context import AccountsStorage, Context, SecondaryStorage, User
 from ._issuer import Issuer
@@ -134,6 +135,7 @@ class AuthRouter(APIRouter):
         default_next_url: str = "/",
         hooks: HookRegistry | None = None,
         normalize_email: Callable[[str], str] | None = None,
+        get_client: ClientResolver | None = None,
     ):
         super().__init__()
 
@@ -152,6 +154,7 @@ class AuthRouter(APIRouter):
             default_next_url=default_next_url,
             hooks=hooks,
             normalize_email=normalize_email,
+            get_client=get_client,
         )
         self.context = context
 

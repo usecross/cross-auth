@@ -71,6 +71,15 @@ def _make_auth(
 ) -> CrossAuth:
     if config is None:
         config = {"session": {"cookies": {"auth": True}}}
+    config = {
+        "client_redirect_uris": {
+            "test": ["http://valid-frontend.com/callback"],
+            "original-client": ["http://valid-frontend.com/callback"],
+            "my_app_client_id": ["http://valid-frontend.com/callback"],
+            "test-client": ["http://valid-frontend.com/callback"],
+        },
+        **config,
+    }
     return CrossAuth(
         providers=providers if providers is not None else [],
         storage=secondary_storage,
@@ -903,7 +912,7 @@ def test_token_hooks(
             user_id="test",
             expires_at=datetime.now(tz=timezone.utc) + timedelta(minutes=10),
             client_id="test",
-            redirect_uri="test",
+            redirect_uri="http://valid-frontend.com/callback",
             code_challenge="n4bQgYhMfWWaL-qgxVrQFaO_TxsrC4Is0V1sFbDwCgg",
             code_challenge_method="S256",
         ).model_dump_json(),
@@ -928,7 +937,7 @@ def test_token_hooks(
                 "grant_type": "authorization_code",
                 "client_id": "test",
                 "code": "test-code",
-                "redirect_uri": "test",
+                "redirect_uri": "http://valid-frontend.com/callback",
                 "code_verifier": "test",
             },
         )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from urllib.parse import parse_qs, urlparse
 
+import pytest
 import respx
 from fastapi.testclient import TestClient
 
@@ -220,3 +221,20 @@ def test_token_flow_account_not_linked_when_email_conflicts(
     )
     assert resp.status_code == 302
     assert "error=account_not_linked" in resp.headers["location"]
+
+
+@pytest.mark.parametrize("provider_error", [None, "access_denied"])
+def test_pending_callback_cannot_redirect_after_registration_is_removed(
+    auth, client, provider_error
+):
+    _, state = start_provider_auth(client, "/fake/authorize", params=_AUTHZ_PARAMS)
+    auth._router.context.config["client_redirect_uris"].clear()
+    params = {"state": state, "code": "provider-code"}
+    if provider_error:
+        params["error"] = provider_error
+
+    response = client.get("/fake/callback", params=params)
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_redirect_uri"
+    assert "location" not in response.headers
