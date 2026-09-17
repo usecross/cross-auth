@@ -10,7 +10,9 @@ from cross_auth._storage import (
     SessionStatus,
     SessionStorage,
     SocialAccount,
+    SocialAccountCreate,
     User,
+    UserCreate,
     session_status,
 )
 from cross_auth._tokens import TokenIssueRequest, TokenIssuer
@@ -104,6 +106,7 @@ __all__ = [
     "SessionStatus",
     "SessionStorage",
     "SocialAccount",
+    "SocialAccountCreate",
     "normalize_email",
     "session_status",
     "TokenExchangeParams",
@@ -111,5 +114,6 @@ __all__ = [
     "TokenIssuer",
     "TokenResponse",
     "User",
+    "UserCreate",
     "UserInfo",
 ]

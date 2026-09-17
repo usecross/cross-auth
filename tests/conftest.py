@@ -1,6 +1,7 @@
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
@@ -14,6 +15,9 @@ from cross_auth._context import Context
 from cross_auth._issuer import AuthorizationCodeGrantData, Issuer
 from cross_auth._storage import (
     AccountsStorage,
+    SocialAccountCreate,
+    UserCreate,
+    User as StorageUser,
     SecondaryStorage,
     SessionListOrder,
     SessionListResult,
@@ -339,6 +343,24 @@ class MemoryAccountsStorage:
         if user is None:
             return []
         return list(user.social_accounts)
+
+    def create_user_with_identity(
+        self,
+        *,
+        user: UserCreate,
+        identity: Callable[[StorageUser], SocialAccountCreate],
+    ) -> tuple[User, SocialAccount]:
+        previous_data = deepcopy(self.data)
+        try:
+            created_user = self.create_user(**user)
+            identity_data = identity(created_user)
+            if not _same_id(identity_data["user_id"], created_user.id):
+                raise ValueError("The signup identity must belong to the new user")
+            account = self.create_social_account(**identity_data)
+        except Exception:
+            self.data = previous_data
+            raise
+        return created_user, account
 
     def create_social_account(
         self,

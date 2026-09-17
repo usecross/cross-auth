@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Generic, TypeVar, overload
+from typing import Any, ClassVar, Generic, TypeVar, cast, overload
 
 try:
     from sqlalchemy import BigInteger, SmallInteger, and_, inspect, or_, update
@@ -19,7 +19,13 @@ except ImportError as exc:  # pragma: no cover - exercised only without the extr
         "Install it with: pip install 'cross-auth[sqlmodel]'"
     ) from exc
 
-from cross_auth._storage import SessionListOrder, SessionStatus
+from cross_auth._storage import (
+    SessionListOrder,
+    SessionStatus,
+    User,
+    UserCreate,
+    SocialAccountCreate,
+)
 from cross_auth.exceptions import CrossAuthException, InvalidCursorError
 from cross_auth.storage._cursor import decode_cursor, encode_cursor
 
@@ -575,15 +581,15 @@ class SQLModelAccountsStorage(
 
     Map app-specific user columns with the typed ``user.create`` hook's
     ``extra_fields``. For the rare case where related rows must join the same
-    transaction, override the private ``_build_user`` escape hatch,
+    transaction, override ``build_user``,
     call ``super()``, add the related rows, and return the user::
 
         class AccountsStore(SQLModelAccountsStorage[User, SocialAccount]):
             UserModel = User
             SocialAccountModel = SocialAccount
 
-            def _build_user(self, *, session, **kwargs):
-                user = super()._build_user(session=session, **kwargs)
+            def build_user(self, *, session, **kwargs):
+                user = super().build_user(session=session, **kwargs)
                 session.add(Team(owner=user))      # joins the same commit
                 return user
 
@@ -740,7 +746,7 @@ class SQLModelAccountsStorage(
         """
         model = self.UserModel
         with self._open_session() as session:
-            user = self._build_user(
+            user = self.build_user(
                 session=session,
                 user_info=user_info,
                 email=email,
@@ -756,6 +762,42 @@ class SQLModelAccountsStorage(
             )
             user = session.exec(statement).one()
         return user
+
+    def create_user_with_identity(
+        self,
+        *,
+        user: UserCreate,
+        identity: Callable[[User], SocialAccountCreate],
+    ) -> tuple[UserModelT, SocialAccountModelT]:
+        """Commit the user, initial identity, and build_user rows together.
+
+        The identity factory runs after flushing the user, so its generated ID
+        is available. Exceptions from either construction or hooks roll back
+        the whole transaction. External side effects belong after this returns.
+        """
+        with self._open_session() as session:
+            new_user = self.build_user(session=session, **user)
+            session.add(new_user)
+            session.flush()
+
+            identity_data = identity(cast(User, new_user))
+            owner_id = _coerce_id(self.UserModel, "id", identity_data["user_id"])
+            if owner_id != getattr(new_user, "id"):
+                raise ValueError("Initial identity must belong to the new user")
+
+            account = self._build_social_account(identity_data)
+            session.add(account)
+            session.flush()
+            statement = (
+                select(self.UserModel)
+                .where(getattr(self.UserModel, "id") == getattr(new_user, "id"))
+                .options(*self._user_query_options)
+                .execution_options(populate_existing=True)
+            )
+            new_user = session.exec(statement).one()
+            session.commit()
+
+        return new_user, _prepare_social_account(account)
 
     def _find_social_account(self, *where: Any) -> SocialAccountModelT | None:
         model = self.SocialAccountModel
@@ -836,27 +878,24 @@ class SQLModelAccountsStorage(
         is_login_method: bool,
         extra_fields: Mapping[str, object] | None = None,
     ) -> SocialAccountModelT:
-        coerced_user_id = _coerce_id(self.SocialAccountModel, "user_id", user_id)
-        values: dict[str, object] = {
-            "user_id": user_id if coerced_user_id is _NO_MATCH else coerced_user_id,
-            "provider": provider,
-            "provider_user_id": provider_user_id,
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "access_token_expires_at": access_token_expires_at,
-            "refresh_token_expires_at": refresh_token_expires_at,
-            "scope": scope,
-            "provider_email": provider_email,
-            "provider_email_verified": provider_email_verified,
-            "is_login_method": is_login_method,
-        }
-        for field in self.excluded_social_account_fields:
-            values.pop(field)
-        self._merge_social_account_extra_fields(values, extra_fields)
-        self._check_social_account_values(values)
-        values = self._bind_social_account_datetimes(values)
+        row = self._build_social_account(
+            {
+                "user_id": user_id,
+                "provider": provider,
+                "provider_user_id": provider_user_id,
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "access_token_expires_at": access_token_expires_at,
+                "refresh_token_expires_at": refresh_token_expires_at,
+                "scope": scope,
+                "user_info": user_info,
+                "provider_email": provider_email,
+                "provider_email_verified": provider_email_verified,
+                "is_login_method": is_login_method,
+                "extra_fields": extra_fields,
+            }
+        )
         with self._open_session() as session:
-            row = self.SocialAccountModel(**values)
             session.add(row)
             try:
                 session.commit()
@@ -867,7 +906,7 @@ class SQLModelAccountsStorage(
                     select(model).where(
                         getattr(model, "provider") == provider,
                         getattr(model, "provider_user_id") == provider_user_id,
-                        getattr(model, "user_id") == values["user_id"],
+                        getattr(model, "user_id") == getattr(row, "user_id"),
                     )
                 )
                 existing = session.exec(statement).one_or_none()
@@ -880,6 +919,20 @@ class SQLModelAccountsStorage(
                 # Retrying creation must not overwrite credentials or enable login.
                 return _prepare_social_account(existing)
         return _prepare_social_account(row)
+
+    def _build_social_account(self, data: SocialAccountCreate) -> SocialAccountModelT:
+        values: dict[str, object] = {key: value for key, value in data.items()}
+        values.pop("user_info")
+        extra_fields = data["extra_fields"]
+        values.pop("extra_fields")
+        owner_id = _coerce_id(self.SocialAccountModel, "user_id", data["user_id"])
+        if owner_id is not _NO_MATCH:
+            values["user_id"] = owner_id
+        for field in self.excluded_social_account_fields:
+            values.pop(field)
+        self._merge_social_account_extra_fields(values, extra_fields)
+        self._check_social_account_values(values)
+        return self.SocialAccountModel(**self._bind_social_account_datetimes(values))
 
     def update_social_account(
         self,
@@ -994,6 +1047,30 @@ class SQLModelAccountsStorage(
             )
         values.update(extra_fields)
 
+    def build_user(
+        self,
+        *,
+        session: Session,
+        user_info: dict[str, object],
+        email: str,
+        email_verified: bool,
+        extra_fields: Mapping[str, object] | None,
+    ) -> UserModelT:
+        """Build the user and required application rows in the same transaction.
+
+        Override this method to add related rows to session and return the user.
+        Do not commit or perform external side effects here. The adapter owns
+        the transaction and adds the returned user. The default delegates to
+        _build_user to preserve existing subclass overrides.
+        """
+        return self._build_user(
+            session=session,
+            user_info=user_info,
+            email=email,
+            email_verified=email_verified,
+            extra_fields=extra_fields,
+        )
+
     def _build_user(
         self,
         *,
@@ -1003,17 +1080,11 @@ class SQLModelAccountsStorage(
         email_verified: bool,
         extra_fields: Mapping[str, object] | None,
     ) -> UserModelT:
-        """Construct the new user graph inside the adapter-owned session.
+        """Legacy extension point; new subclasses should override build_user.
 
-        The default applies hook-provided ``extra_fields`` to mapped columns,
-        constructs ``UserModel``, then assigns ``email_verified`` through the
-        model attribute. That assignment supports either a mapped field or a
-        writable property backed by a differently-named column.
-
-        This is a private escape hatch for apps that need related rows in the
-        same transaction. Overrides should call ``super()``, add their related
-        rows to ``session``, and return the user. Do not add or commit the user
-        itself or perform external I/O; ``create_user`` owns those operations.
+        The public builder forwards here so existing overrides keep their
+        application rows inside the transaction. Default construction supports
+        both mapped and property-backed email verification fields.
         """
         values: dict[str, object] = {"email": email}
         self._merge_user_extra_fields(values, extra_fields)

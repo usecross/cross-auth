@@ -134,10 +134,23 @@ def test_repeat_sign_in_works_with_tokenless_sqlmodel_storage(
     accounts_storage = LeanAccountsStore(session_factory=lambda: Session(engine))
     auth = _make_auth(secondary_storage, accounts_storage, provider)
 
+    committed_users = []
+
+    @auth.after("user.create")
+    def check_committed_identity(event):
+        persisted_user = accounts_storage.find_user_by_id(event.user.id)
+        account = accounts_storage.find_social_account(
+            provider="stub", provider_user_id="tokenless-1", user_id=event.user.id
+        )
+        assert persisted_user is not None
+        assert account is not None
+        committed_users.append(persisted_user.id)
+
     user, created = auth.sign_in_with_id_token("stub", VALID_TOKEN)
     again, created_again = auth.sign_in_with_id_token("stub", VALID_TOKEN)
 
     assert created is True
+    assert committed_users == [user.id]
     assert created_again is False
     assert again.id == user.id
     account = accounts_storage.find_social_account(

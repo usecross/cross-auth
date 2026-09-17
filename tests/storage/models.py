@@ -350,3 +350,10 @@ class SharedAttachmentAccount(AttachmentAccountBase, table=True):
             postgresql_where=text("is_login_method = true"),
         ),
     )
+
+
+class SignupApplicationRow(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id")
+    label: str
+    user: User = Relationship()

@@ -188,8 +188,16 @@ Runs only when Cross-Auth is about to create a new local user. The `before` hook
 contains the resolved email fields, raw provider `user_info`, and app-specific
 `extra_fields`. It may abort by raising `CrossAuthException` or return a
 replacement event to add fields required by your user model. The `after` hook
-runs after the storage implementation has committed and receives the created
-user.
+runs after the storage implementation has committed both the user and provider
+identity, including required application rows, and receives the created user. It
+runs before `after social_account.create`. Neither after-create hook runs if
+signup rolls back.
+
+Use after hooks for external work such as welcome emails or billing requests. If
+an after hook fails, the committed signup remains saved; the request can fail
+without undoing it. Delivery retries are application-owned. If delivery must
+survive a process crash, save an outbox row in the signup transaction and
+process it separately.
 
 ```python
 from dataclasses import replace
@@ -219,7 +227,8 @@ def track_created_user(event: AfterUserCreateEvent) -> None:
 `extra_fields` cannot replace `email` or `email_verified`; use the dedicated
 event field instead. Built-in SQLModel storage validates and writes extra fields
 as mapped columns. Custom `AccountsStorage` implementations receive the mapping
-on `create_user` and decide how to persist it.
+in the `user` argument to `create_user_with_identity` and decide how to persist
+it.
 
 ### `social_account.create` and `social_account.update`
 

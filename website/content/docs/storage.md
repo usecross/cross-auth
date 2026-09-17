@@ -75,9 +75,9 @@ means "already expired": the key is deleted instead of stored.
 ### SQLModelAccountsStorage
 
 Pass your models to `SQLModelAccountsStorage` — it implements all of
-`AccountsStorage`, including a working `create_user`. Map app-specific user
-columns with the public typed hooks described below. The adapter also has a
-private escape hatch for the rarer case where related rows must share its user
+`AccountsStorage`, including atomic user and identity creation. Map app-specific
+user columns with the public typed hooks described below. Use the public
+`build_user` extension when required application rows must share the signup
 transaction.
 
 First, your user-owned models (you control the table names, columns, and
@@ -137,10 +137,11 @@ accounts_storage = SQLModelAccountsStorage(
 )
 ```
 
-`create_user` runs the whole signup as one adapter-owned transaction, commits,
-and returns the user fully loaded (so it stays readable after the session
-closes), bypassing `filter_user_query` so a freshly created user is always
-returned.
+`create_user_with_identity` saves the new user, provider identity, and required
+application rows in one adapter-owned transaction. If any part fails, all of
+those writes roll back. It returns both records fully loaded, so they stay
+readable after the session closes. Like standalone `create_user`, it bypasses
+`filter_user_query` when returning the newly created user.
 
 The default user creation validates and applies mapped `extra_fields` from the
 `user.create` hook, then assigns `email_verified` through the model attribute.
@@ -153,24 +154,30 @@ emails. Those are public lifecycle hooks and apply regardless of the storage
 implementation.
 
 If related rows must commit atomically with the user, subclass the adapter and
-override its private `_build_user` escape hatch. Call `super()`, add your rows
+override its public `build_user` method. Existing `_build_user` overrides remain
+supported, but new code should use `build_user`. Call `super()`, add your rows
 to the supplied session, and return the user. Do not commit or perform external
-I/O here; `create_user` owns the transaction boundary. Because this is a private
-method, it may change between releases.
+I/O here; the adapter owns the transaction boundary. During signup, these rows
+commit together with the provider identity.
 
 ```python
 class AccountsStore(SQLModelAccountsStorage[User, SocialAccount]):
     UserModel = User
     SocialAccountModel = SocialAccount
 
-    def _build_user(self, *, session, **kwargs):
-        user = super()._build_user(session=session, **kwargs)
+    def build_user(self, *, session, **kwargs):
+        user = super().build_user(session=session, **kwargs)
         session.add(Team(owner=user))  # joins the same commit
         return user
 
 
 accounts_storage = AccountsStore(session_factory=lambda: Session(engine))
 ```
+
+When upgrading a SQLModel subclass, move customization from `create_user` to
+`build_user`, and from `create_social_account` to the typed social-account
+hooks. Atomic signup does not call those standalone creation methods, because
+each commits its own transaction. Existing `_build_user` overrides still run.
 
 Register policy, mapped fields, and post-commit behavior on the `CrossAuth`
 instance:
@@ -246,9 +253,9 @@ Override these methods instead of reimplementing whole protocol methods:
   collection is always loaded unfiltered; use `list_social_accounts` for a
   filtered read.
 
-For related rows that must share user creation's transaction, the private
-`_build_user` escape hatch is described above. Prefer typed hooks for everything
-that does not need the SQLModel session.
+For related rows that must share signup's transaction, the public `build_user`
+extension point is described above. Prefer typed hooks for everything that does
+not need the SQLModel session.
 
 `excluded_social_account_fields` is the corresponding declarative setting for
 omitting optional provider credentials from writes.
@@ -562,8 +569,10 @@ and another user's integration connection can be created concurrently. The
 database still guarantees one login owner and one connection per user.
 Cross-Auth never promotes an existing integration-only row through creation.
 
-User creation and identity attachment remain separate transactions. Atomic
-signup is separate work.
+New-user signup saves the user and identity in one transaction. A losing
+concurrent signup rolls back its user and related rows, and may propagate the
+backend integrity error. No automatic retry or account linking follows that
+failure.
 
 ### AccountsStorage
 
@@ -592,6 +601,12 @@ class AccountsStorage(Protocol):
         email_verified: bool,
         extra_fields: Mapping[str, Any] | None = None,
     ) -> User: ...
+    def create_user_with_identity(
+        self,
+        *,
+        user: UserCreate,
+        identity: Callable[[User], SocialAccountCreate],
+    ) -> tuple[User, SocialAccount]: ...
     def create_social_account(self, **kwargs) -> SocialAccount: ...
     def update_social_account(self, social_account_id, **kwargs) -> SocialAccount: ...
     def delete_social_account(self, social_account_id: Any) -> None: ...
@@ -605,6 +620,23 @@ filters, so a connected-only or hidden identity cannot accidentally create a new
 login owner. Custom adapters must implement the new filters and existence
 method. Their schemas and creation methods must enforce the ownership contract
 under concurrent writes.
+
+Custom adapters must implement `create_user_with_identity` atomically; calling
+`create_user` and `create_social_account` with separate commits does not satisfy
+this contract. `UserCreate` and `SocialAccountCreate` describe the write fields.
+The `identity` callback receives the new user with its assigned ID and prepares
+the identity fields, including the `before social_account.create` hook. Call it
+once inside the transaction, then save the identity for that user. If the
+callback or either write raises, roll back the whole signup.
+
+This contract does not expose a transaction object to core. SQLModel uses its
+session; a Django adapter can use `transaction.atomic()` and the same callback.
+Provider HTTP requests happen before this operation. During new-user signup,
+`before social_account.create` runs inside the transaction: the new user has an
+ID but is not yet committed. Use this hook to validate or transform the supplied
+fields; do not open another storage session to look up that user. Keep
+before-create hooks free of external side effects, since the database
+transaction can still fail.
 
 The user and social-account write methods receive `extra_fields`, mappings
 populated by the corresponding `user.create`, `social_account.create`, or
