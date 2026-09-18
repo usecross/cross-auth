@@ -10,7 +10,6 @@ from typing import Any, ClassVar, Generic, TypeVar, overload
 try:
     from sqlalchemy import BigInteger, SmallInteger, and_, inspect, or_, update
     from sqlalchemy.exc import IntegrityError
-    from sqlalchemy.orm import selectinload
     from sqlmodel import SQLModel, Session, col, select
     from sqlmodel.sql.expression import SelectOfScalar
 except ImportError as exc:  # pragma: no cover - exercised only without the extra
@@ -662,10 +661,10 @@ class SQLModelAccountsStorage(
     extension methods for behaviour such as
     excluding soft-deleted users or tenant scoping.
     ``filter_social_account_query`` is applied to reads
-    and writes alike — except the eager-loaded ``user.social_accounts``
-    relationship on a returned user, which is loaded unfiltered; go through
-    ``list_social_accounts`` for a filtered read. Model attributes and writable
-    fields are validated at construction; database constraints are not inspected.
+    and writes alike. Go through ``list_social_accounts`` for account reads;
+    relationship loading remains application-configured. Model attributes and
+    writable fields are validated at construction; database constraints are not
+    inspected.
     Required database uniqueness constraints define whether identities
     are exclusive or allow shared connections. Creation translates ownership
     conflicts on PostgreSQL and SQLite; unrelated integrity errors propagate.
@@ -690,7 +689,6 @@ class SQLModelAccountsStorage(
                 "email_verified",
                 "hashed_password",
                 "has_usable_password",
-                "social_accounts",
             ),
         ),
         (
@@ -731,7 +729,6 @@ class SQLModelAccountsStorage(
         if social_account_model is not None:
             self.SocialAccountModel = social_account_model
         super().__init__(session_factory=session_factory)
-        self._user_query_options = self._resolve_user_query_options()
         self._validate_social_account_write_fields()
 
     def _validate_social_account_write_fields(self) -> None:
@@ -769,25 +766,10 @@ class SQLModelAccountsStorage(
                 f"settable through it, so these values would be silently lost."
             )
 
-    def _resolve_user_query_options(self) -> tuple[Any, ...]:
-        # Eager-load social_accounts only when it is a mapped relationship;
-        # the User protocol also allows it to be a plain property.
-        model = self.UserModel
-
-        if "social_accounts" in inspect(model).relationships:
-            return (
-                selectinload(
-                    inspect(model).relationships["social_accounts"].class_attribute
-                ),
-            )
-        return ()
-
     def _find_user(self, *where: Any) -> UserModelT | None:
         model = self.UserModel
         with self._open_session() as session:
-            statement = self.filter_user_query(
-                select(model).where(*where).options(*self._user_query_options)
-            )
+            statement = self.filter_user_query(select(model).where(*where))
             return session.exec(statement).first()
 
     def find_user_by_email(self, email: str) -> UserModelT | None:
@@ -810,10 +792,10 @@ class SQLModelAccountsStorage(
         """Create a user in a single adapter-owned transaction.
 
         Builds and adds the user to the adapter-owned session, commits, and
-        returns the user safe to read after the session closes (scalar columns
-        loaded, ``social_accounts`` eager-loaded). Unlike ``find_user_by_id``
-        this does not apply ``filter_user_query``, so a freshly created user is
-        always returned.
+        returns the user safe to read after the session closes with scalar
+        columns loaded. Relationship loading is controlled by the application.
+        Unlike ``find_user_by_id`` this does not apply ``filter_user_query``,
+        so a freshly created user is always returned.
         """
         model = self.UserModel
 
@@ -827,11 +809,7 @@ class SQLModelAccountsStorage(
             )
             session.add(user)
             session.commit()
-            statement = (
-                select(model)
-                .where(col(model.id) == user.id)
-                .options(*self._user_query_options)
-            )
+            statement = select(model).where(col(model.id) == user.id)
             user = session.exec(statement).one()
         return user
 
@@ -863,7 +841,6 @@ class SQLModelAccountsStorage(
             statement = (
                 select(self.UserModel)
                 .where(col(self.UserModel.id) == new_user.id)
-                .options(*self._user_query_options)
                 .execution_options(populate_existing=True)
             )
             new_user = session.exec(statement).one()
@@ -1276,8 +1253,7 @@ class SQLModelAccountsStorage(
     ) -> SelectOfScalar[SocialAccountModelT]:
         """Customize social account reads and writes, e.g. tenant scoping.
 
-        Not applied to the eager-loaded ``user.social_accounts`` relationship
-        on a user returned by this store — that collection is loaded
-        unfiltered; filtered reads must go through ``list_social_accounts``.
+        This filter does not apply to application-loaded ORM relationships;
+        filtered reads must go through ``list_social_accounts``.
         """
         return statement

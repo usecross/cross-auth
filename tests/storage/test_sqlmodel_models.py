@@ -8,7 +8,7 @@ from sqlmodel import Session
 
 from cross_auth.storage.sqlmodel import SQLModelSessionStorage
 
-from .models import AliasedVerifiedUser, LeanSocialAccount, PropUser, UserSession
+from .models import AliasedVerifiedUser, LeanSocialAccount, UserSession
 
 
 def test_inherited_session_fields_roundtrip(engine):
@@ -38,7 +38,6 @@ def test_inherited_session_fields_roundtrip(engine):
 
 def test_application_properties_do_not_become_columns():
     assert "email_verified" not in AliasedVerifiedUser.model_fields
-    assert "social_accounts" not in PropUser.model_fields
     assert "access_token" not in LeanSocialAccount.model_fields
     assert "scope" not in LeanSocialAccount.model_fields
 

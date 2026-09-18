@@ -83,9 +83,10 @@ transaction.
 Define your tables by inheriting `SQLModelUser` and `SQLModelSocialAccount`. The
 bases supply common auth fields; you still control table names, primary keys,
 foreign keys, identity constraints, and migrations. User verification may be a
-column or writable property, and social accounts may be a relationship or
-property. Credential fields may be columns or properties when excluded from
-writes.
+column or writable property. Social accounts may be a relationship or property,
+or may be omitted entirely when account access goes through the adapter's
+storage queries. Credential fields may be columns or properties when excluded
+from writes.
 
 ```python
 from datetime import datetime
@@ -115,7 +116,9 @@ class User(SQLModelUser, table=True):
     email: str = Field(index=True, unique=True)
     email_verified: bool = False
 
-    social_accounts: list[SocialAccount] = Relationship(back_populates="user")
+    social_accounts: list[SocialAccount] = Relationship(
+        back_populates="user", sa_relationship_kwargs={"lazy": "selectin"}
+    )
 ```
 
 Then the adapter:
@@ -244,10 +247,9 @@ Override these methods instead of reimplementing whole protocol methods:
   soft-deleted users. (`create_user` deliberately skips this filter.)
 - `filter_social_account_query(statement)` - scope social accounts, e.g. by
   tenant. Applied to reads **and** writes, so a scoped store can't be made to
-  update or delete rows its lookups would never return. It does **not** apply to
-  the eager-loaded `user.social_accounts` relationship on a returned user — that
-  collection is always loaded unfiltered; use `list_social_accounts` for a
-  filtered read.
+  update or delete rows its lookups would never return. This filter does not
+  apply to ORM relationships loaded by the application; use
+  `list_social_accounts` for a filtered read.
 
 For related rows that must share signup's transaction, the public `build_user`
 extension point is described above. Prefer typed hooks for everything that does
@@ -331,7 +333,9 @@ filters.
 inheritance change does not require a database migration when the resulting
 columns and indexes are unchanged. The adapter checks inheritance and required
 attributes at construction. IDs, relationships, verification, and credential
-properties remain application-defined and are checked at startup.
+properties remain application-defined and are checked at startup. A user
+relationship for social accounts is optional; use `list_social_accounts` when
+the user model does not declare one.
 
 ```python
 from cross_auth.storage.sqlmodel import SQLModelSessionStorage
@@ -384,12 +388,12 @@ SQLModelSessionStorage(UserSession, session_factory=lambda: Session(engine))
 ```
 
 The adapter opens a session per operation (with `expire_on_commit=False`, so
-committed rows keep their loaded values) and closes it before returning. When
-`social_accounts` is a relationship, user queries eager-load it, so returned
-instances remain safe to read after their session closes; a plain
-`social_accounts` property works too. If your models carry additional lazy
-relationships, load them yourself (`create_user` and the finders only guarantee
-scalar columns and `social_accounts`).
+committed rows keep their loaded values) and closes it before returning. The
+adapter does not change relationship loading: configure a relationship such as
+`social_accounts` with SQLAlchemy's `lazy="selectin"` when returned users must
+read it after the session closes. A model may omit the relationship entirely;
+use `list_social_accounts` for account access in that case. If your models carry
+other lazy relationships, configure or load them yourself.
 
 ## Implementing the protocols directly
 
@@ -715,9 +719,6 @@ class User(Protocol):
 
     @property
     def has_usable_password(self) -> bool: ...
-
-    @property
-    def social_accounts(self) -> Iterable[SocialAccount]: ...
 ```
 
 ### SessionStorage

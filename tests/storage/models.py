@@ -11,7 +11,6 @@ from sqlalchemy import Column, DateTime, Index, UniqueConstraint, text
 from sqlmodel import Field, Relationship, SQLModel
 from sqlmodel.sql.expression import SelectOfScalar
 
-from cross_auth import SessionStatus, session_status
 from cross_auth.storage.sqlmodel import (
     SQLModelAccountsStorage,
     SQLModelSession,
@@ -32,21 +31,7 @@ class SessionStore(SQLModelSessionStorage[UserSession]):
 
 class UuidUserSession(SQLModelSession, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    token_hash: str = Field(index=True)
     user_id: str = Field(index=True)
-    created_at: datetime
-    updated_at: datetime
-    expires_at: datetime
-    last_active_at: datetime | None = None
-    revoked_at: datetime | None = None
-    client_id: str | None = None
-    client_name: str | None = None
-    user_agent: str | None = None
-    ip: str | None = None
-
-    @property
-    def status(self) -> SessionStatus:
-        return session_status(self)
 
 
 class UuidSessionStore(SQLModelSessionStorage[UuidUserSession]):
@@ -59,21 +44,7 @@ class IntUserIdSession(SQLModelSession, table=True):
     column type."""
 
     id: int | None = Field(default=None, primary_key=True)
-    token_hash: str = Field(index=True)
     user_id: int = Field(index=True)
-    created_at: datetime
-    updated_at: datetime
-    expires_at: datetime
-    last_active_at: datetime | None = None
-    revoked_at: datetime | None = None
-    client_id: str | None = None
-    client_name: str | None = None
-    user_agent: str | None = None
-    ip: str | None = None
-
-    @property
-    def status(self) -> SessionStatus:
-        return session_status(self)
 
 
 class IntUserIdSessionStore(SQLModelSessionStorage[IntUserIdSession]):
@@ -88,7 +59,6 @@ class RenamedColumnSession(SQLModelSession, table=True):
     id: int | None = Field(
         default=None, primary_key=True, sa_column_kwargs={"name": "session_pk"}
     )
-    token_hash: str = Field(index=True)
     user_id: str = Field(index=True)
     created_at: datetime = Field(sa_column_kwargs={"name": "created_ts"})
     updated_at: datetime = Field(sa_column_kwargs={"name": "updated_ts"})
@@ -99,14 +69,6 @@ class RenamedColumnSession(SQLModelSession, table=True):
     revoked_at: datetime | None = Field(
         default=None, sa_column_kwargs={"name": "revoked_ts"}
     )
-    client_id: str | None = None
-    client_name: str | None = None
-    user_agent: str | None = None
-    ip: str | None = None
-
-    @property
-    def status(self) -> SessionStatus:
-        return session_status(self)
 
 
 class RenamedColumnSessionStore(SQLModelSessionStorage[RenamedColumnSession]):
@@ -118,7 +80,6 @@ class TzAwareUserSession(SQLModelSession, table=True):
     alternative to the naive-column default the other models use."""
 
     id: int | None = Field(default=None, primary_key=True)
-    token_hash: str = Field(index=True)
     user_id: str = Field(index=True)
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True)))
     updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True)))
@@ -129,36 +90,26 @@ class TzAwareUserSession(SQLModelSession, table=True):
     revoked_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True))
     )
-    client_id: str | None = None
-    client_name: str | None = None
-    user_agent: str | None = None
-    ip: str | None = None
-
-    @property
-    def status(self) -> SessionStatus:
-        return session_status(self)
 
 
 class TzAwareSessionStore(SQLModelSessionStorage[TzAwareUserSession]):
     SessionModel = TzAwareUserSession
 
 
-class SocialAccount(SQLModelSocialAccount, table=True):
-    __table_args__ = (UniqueConstraint("provider", "provider_user_id"),)
-
-    id: int | None = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="user.id")
-    provider: str
-    provider_user_id: str
-    provider_username: str | None = None
+class StoredSocialAccountBase(SQLModelSocialAccount):
     access_token: str | None = None
     refresh_token: str | None = None
     access_token_expires_at: datetime | None = None
     refresh_token_expires_at: datetime | None = None
     scope: str | None = None
-    provider_email: str | None = None
-    provider_email_verified: bool | None = None
-    is_login_method: bool = True
+
+
+class SocialAccount(StoredSocialAccountBase, table=True):
+    __table_args__ = (UniqueConstraint("provider", "provider_user_id"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id")
+    provider_username: str | None = None
 
     user: "User" = Relationship(back_populates="social_accounts")
 
@@ -167,22 +118,74 @@ class User(SQLModelUser, table=True):
     id: int | None = Field(default=None, primary_key=True)
     email: str = Field(index=True)
     email_verified: bool = False
-    hashed_password: str | None = None
     deleted: bool = False
     updated_at: datetime = Field(
         default_factory=datetime.now, sa_column_kwargs={"onupdate": datetime.now}
     )
 
-    social_accounts: list[SocialAccount] = Relationship(back_populates="user")
-
-    @property
-    def has_usable_password(self) -> bool:
-        return self.hashed_password is not None
+    social_accounts: list[SocialAccount] = Relationship(
+        back_populates="user", sa_relationship_kwargs={"lazy": "selectin"}
+    )
 
 
 class AccountsStore(SQLModelAccountsStorage[User, SocialAccount]):
     UserModel = User
     SocialAccountModel = SocialAccount
+
+
+class DefaultLazySocialAccount(StoredSocialAccountBase, table=True):
+    """Relationship-backed account model with SQLAlchemy's default lazy load."""
+
+    __tablename__ = "default_lazy_social_account"
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="default_lazy_user.id")
+
+    user: "DefaultLazyUser" = Relationship(back_populates="social_accounts")
+
+
+class DefaultLazyUser(SQLModelUser, table=True):
+    """Relationship-backed user without an application eager-load setting."""
+
+    __tablename__ = "default_lazy_user"
+
+    id: int | None = Field(default=None, primary_key=True)
+    email_verified: bool = False
+
+    social_accounts: list[DefaultLazySocialAccount] = Relationship(
+        back_populates="user"
+    )
+
+
+class DefaultLazyAccountsStore(
+    SQLModelAccountsStorage[DefaultLazyUser, DefaultLazySocialAccount]
+):
+    UserModel = DefaultLazyUser
+    SocialAccountModel = DefaultLazySocialAccount
+
+
+class RelationshipFreeUser(SQLModelUser, table=True):
+    """User model that keeps account access entirely in storage queries."""
+
+    __tablename__ = "relationship_free_user"
+
+    id: int | None = Field(default=None, primary_key=True)
+    email_verified: bool = False
+
+
+class RelationshipFreeSocialAccount(StoredSocialAccountBase, table=True):
+    __tablename__ = "relationship_free_social_account"
+    __table_args__ = (UniqueConstraint("provider", "provider_user_id"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="relationship_free_user.id")
+
+
+class RelationshipFreeAccountsStore(
+    SQLModelAccountsStorage[RelationshipFreeUser, RelationshipFreeSocialAccount]
+):
+    UserModel = RelationshipFreeUser
+    SocialAccountModel = RelationshipFreeSocialAccount
 
 
 class SoftDeleteAccountsStore(AccountsStore):
@@ -197,11 +200,6 @@ class LeanSocialAccount(SQLModelSocialAccount, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id")
-    provider: str
-    provider_user_id: str
-    provider_email: str | None = None
-    provider_email_verified: bool | None = None
-    is_login_method: bool = True
 
     @property
     def access_token(self) -> None:
@@ -246,42 +244,14 @@ class PropertyScopeSocialAccount(SQLModelSocialAccount, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id")
-    provider: str
-    provider_user_id: str
     access_token: str | None = None
     refresh_token: str | None = None
     access_token_expires_at: datetime | None = None
     refresh_token_expires_at: datetime | None = None
-    provider_email: str | None = None
-    provider_email_verified: bool | None = None
-    is_login_method: bool = True
 
     @property
     def scope(self) -> str | None:
         return None
-
-
-class PropUser(SQLModelUser, table=True):
-    """A protocol-compliant user whose ``social_accounts`` is a plain property
-    rather than an ORM relationship."""
-
-    id: int | None = Field(default=None, primary_key=True)
-    email: str = Field(index=True)
-    email_verified: bool = False
-    hashed_password: str | None = None
-
-    @property
-    def has_usable_password(self) -> bool:
-        return self.hashed_password is not None
-
-    @property
-    def social_accounts(self) -> list[SocialAccount]:
-        return []
-
-
-class PropAccountsStore(SQLModelAccountsStorage[PropUser, SocialAccount]):
-    UserModel = PropUser
-    SocialAccountModel = SocialAccount
 
 
 class AliasedVerifiedUser(SQLModelUser, table=True):
@@ -291,7 +261,6 @@ class AliasedVerifiedUser(SQLModelUser, table=True):
     email: str = Field(index=True)
     full_name: str
     is_verified: bool = False
-    hashed_password: str | None = None
 
     @property
     def email_verified(self) -> bool:
@@ -301,28 +270,10 @@ class AliasedVerifiedUser(SQLModelUser, table=True):
     def email_verified(self, value: bool) -> None:
         self.is_verified = value
 
-    @property
-    def has_usable_password(self) -> bool:
-        return self.hashed_password is not None
 
-    @property
-    def social_accounts(self) -> list[SocialAccount]:
-        return []
-
-
-class AttachmentAccountBase(SQLModelSocialAccount):
+class AttachmentAccountBase(StoredSocialAccountBase):
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id")
-    provider: str
-    provider_user_id: str
-    access_token: str | None = None
-    refresh_token: str | None = None
-    access_token_expires_at: datetime | None = None
-    refresh_token_expires_at: datetime | None = None
-    scope: str | None = None
-    provider_email: str | None = None
-    provider_email_verified: bool | None = None
-    is_login_method: bool = True
     external_reference: str | None = Field(default=None, unique=True)
 
 
