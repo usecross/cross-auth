@@ -82,9 +82,6 @@ class User(Protocol):
     @property
     def has_usable_password(self) -> bool: ...
 
-    @property
-    def social_accounts(self) -> Iterable[SocialAccount]: ...
-
 
 class SecondaryStorage(Protocol):
     def set(self, key: str, value: str, ttl: int | None = None) -> None:

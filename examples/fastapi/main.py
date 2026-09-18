@@ -143,7 +143,9 @@ class User(SQLModelUser, table=True):
     # Extra demo column populated by the user.create hook.
     display_name: str | None = None
 
-    social_accounts: list[SocialAccount] = Relationship(back_populates="user")
+    social_accounts: list[SocialAccount] = Relationship(
+        back_populates="user", sa_relationship_kwargs={"lazy": "selectin"}
+    )
     welcome_notes: list[WelcomeNote] = Relationship(back_populates="user")
 
     @property

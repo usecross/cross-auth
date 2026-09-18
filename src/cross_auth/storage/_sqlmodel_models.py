@@ -1,12 +1,11 @@
 """Shared fields and application-defined attributes for SQLModel adapters."""
 
-from collections.abc import Iterable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlmodel import Field, SQLModel
 
-from cross_auth._storage import SessionStatus, SocialAccount, session_status
+from cross_auth._storage import SessionStatus, session_status
 
 
 class SQLModelSession(SQLModel):
@@ -36,10 +35,11 @@ class SQLModelSession(SQLModel):
 
 
 class SQLModelUser(SQLModel):
-    """User fields; subclasses supply ID, verification, and social accounts.
+    """User fields; subclasses supply ID and verification.
 
-    ``email_verified`` may be a column or a writable property. Declare
-    ``social_accounts`` as a relationship or a property returning accounts.
+    ``email_verified`` may be a column or a writable property. Social-account
+    access is provided by the storage adapter and does not require a user
+    relationship.
     """
 
     if TYPE_CHECKING:
@@ -50,9 +50,6 @@ class SQLModelUser(SQLModel):
 
         @email_verified.setter
         def email_verified(self, value: bool) -> None: ...
-
-        @property
-        def social_accounts(self) -> Iterable[SocialAccount]: ...
 
     email: str | None = Field(index=True)
     hashed_password: str | None = None

@@ -1,18 +1,23 @@
 from datetime import datetime, timedelta, timezone
+from typing import assert_type
 
 import pytest
+from sqlalchemy import inspect
 from sqlmodel import Session
 
+from cross_auth._storage import User as UserProtocol
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.storage.sqlmodel import SQLModelAccountsStorage
 
 from .models import (
     AccountsStore,
     AliasedVerifiedUser,
+    DefaultLazyAccountsStore,
     LeanAccountsStore,
     LeanSocialAccount,
-    PropAccountsStore,
     PropertyScopeSocialAccount,
+    RelationshipFreeAccountsStore,
+    RelationshipFreeUser,
     SocialAccount,
     SoftDeleteAccountsStore,
     User,
@@ -111,24 +116,116 @@ def test_returned_user_relationship_readable_after_close(store, engine):
 
     user = store.find_user_by_id(user_id)
 
-    # social_accounts is eager-loaded, so this works after the session closed.
+    # User configures ``lazy="selectin"``, so this works after the session
+    # closed even though the adapter adds no query option.
     accounts = list(user.social_accounts)
     assert len(accounts) == 1
     assert accounts[0].provider == "github"
 
 
-def test_user_model_with_property_social_accounts(engine):
-    # The User protocol allows social_accounts to be a plain property; the
-    # adapter must not assume a mapped relationship of that name.
-    store = PropAccountsStore(session_factory=lambda: Session(engine))
+def test_default_relationship_is_not_loaded_by_adapter(engine):
+    store = DefaultLazyAccountsStore(session_factory=lambda: Session(engine))
     user = store.create_user(
-        user_info={}, email="prop@example.com", email_verified=True
+        user_info={}, email="default-lazy@example.com", email_verified=True
+    )
+    account = store.create_social_account(
+        user_id=user.id,
+        provider="github",
+        provider_user_id="default-lazy-1",
+        access_token="secret",
+        refresh_token=None,
+        access_token_expires_at=None,
+        refresh_token_expires_at=None,
+        scope=None,
+        user_info={},
+        provider_email=user.email,
+        provider_email_verified=True,
+        is_login_method=True,
     )
 
-    assert user.id is not None
-    found = store.find_user_by_email("prop@example.com")
+    found = store.find_user_by_id(user.id)
+
     assert found is not None
-    assert list(found.social_accounts) == []
+    state = inspect(found)
+    assert state is not None
+    assert "social_accounts" in state.unloaded
+    assert store.list_social_accounts(user_id=found.id)[0].id == account.id
+
+
+def test_relationship_free_user_uses_storage_for_account_access(engine):
+    store = RelationshipFreeAccountsStore(session_factory=lambda: Session(engine))
+
+    user, first = store.create_user_with_identity(
+        user={
+            "user_info": {},
+            "email": "relationship-free@example.com",
+            "email_verified": True,
+            "extra_fields": None,
+        },
+        identity=lambda created_user: {
+            "user_id": created_user.id,
+            "provider": "github",
+            "provider_user_id": "relationship-free-1",
+            "access_token": "secret",
+            "refresh_token": None,
+            "access_token_expires_at": None,
+            "refresh_token_expires_at": None,
+            "scope": None,
+            "user_info": {},
+            "provider_email": created_user.email,
+            "provider_email_verified": True,
+            "is_login_method": True,
+            "extra_fields": None,
+        },
+    )
+
+    assert_type(user, RelationshipFreeUser)
+    auth_user: UserProtocol = user
+    assert "social_accounts" not in RelationshipFreeUser.model_fields
+    assert not hasattr(RelationshipFreeUser, "social_accounts")
+    assert first.user_id == user.id
+
+    loaded = store.find_user_by_id(user.id)
+    assert_type(loaded, RelationshipFreeUser | None)
+    assert loaded is not None
+    accounts = store.list_social_accounts(user_id=auth_user.id)
+    assert [account.provider_user_id for account in accounts] == ["relationship-free-1"]
+
+    second = store.create_social_account(
+        user_id=user.id,
+        provider="google",
+        provider_user_id="relationship-free-2",
+        access_token="second-secret",
+        refresh_token=None,
+        access_token_expires_at=None,
+        refresh_token_expires_at=None,
+        scope=None,
+        user_info={},
+        provider_email=user.email,
+        provider_email_verified=True,
+        is_login_method=True,
+    )
+
+    assert (
+        store.disconnect_social_account(
+            user_id=user.id,
+            provider=first.provider,
+            social_account_id=first.id,
+        )
+        == "disconnected"
+    )
+    assert store.find_social_account_by_id(first.id) is None
+    assert store.list_social_accounts(user_id=user.id)[0].id == second.id
+
+    assert (
+        store.disconnect_social_account(
+            user_id=user.id,
+            provider=second.provider,
+            social_account_id=second.id,
+        )
+        == "last_login_method"
+    )
+    assert store.find_social_account_by_id(second.id) is not None
 
 
 def test_soft_delete_hook_excludes_user(engine):
@@ -502,7 +599,6 @@ def test_user_model_missing_protocol_property_raises_at_construction(engine):
         email = None
         email_verified = None
         hashed_password = None
-        social_accounts = None
 
     class BadStore(AccountsStore):
         UserModel = BareUser
