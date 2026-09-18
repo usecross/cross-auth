@@ -14,34 +14,23 @@ from sqlmodel.sql.expression import SelectOfScalar
 from cross_auth import SessionStatus, session_status
 from cross_auth.storage.sqlmodel import (
     SQLModelAccountsStorage,
+    SQLModelSession,
+    SQLModelUser,
+    SQLModelSocialAccount,
     SQLModelSessionStorage,
 )
 
 
-class UserSession(SQLModel, table=True):
+class UserSession(SQLModelSession, table=True):
     id: int | None = Field(default=None, primary_key=True)
-    token_hash: str = Field(index=True)
     user_id: str = Field(index=True)
-    created_at: datetime
-    updated_at: datetime
-    expires_at: datetime
-    last_active_at: datetime | None = None
-    revoked_at: datetime | None = None
-    client_id: str | None = None
-    client_name: str | None = None
-    user_agent: str | None = None
-    ip: str | None = None
-
-    @property
-    def status(self) -> SessionStatus:
-        return session_status(self)
 
 
 class SessionStore(SQLModelSessionStorage[UserSession]):
     SessionModel = UserSession
 
 
-class UuidUserSession(SQLModel, table=True):
+class UuidUserSession(SQLModelSession, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     token_hash: str = Field(index=True)
     user_id: str = Field(index=True)
@@ -64,7 +53,7 @@ class UuidSessionStore(SQLModelSessionStorage[UuidUserSession]):
     SessionModel = UuidUserSession
 
 
-class IntUserIdSession(SQLModel, table=True):
+class IntUserIdSession(SQLModelSession, table=True):
     """Session model whose ``user_id`` is an integer foreign-key-style column.
     Cross-Auth passes user ids as strings; the adapter coerces them to the
     column type."""
@@ -91,7 +80,7 @@ class IntUserIdSessionStore(SQLModelSessionStorage[IntUserIdSession]):
     SessionModel = IntUserIdSession
 
 
-class RenamedColumnSession(SQLModel, table=True):
+class RenamedColumnSession(SQLModelSession, table=True):
     """Session model whose id and datetime columns are mapped to differently
     named database columns. The adapter must resolve columns by the Python
     attribute name, not the database column name."""
@@ -124,7 +113,7 @@ class RenamedColumnSessionStore(SQLModelSessionStorage[RenamedColumnSession]):
     SessionModel = RenamedColumnSession
 
 
-class TzAwareUserSession(SQLModel, table=True):
+class TzAwareUserSession(SQLModelSession, table=True):
     """Session model with timezone-aware (``timestamptz``) datetime columns, the
     alternative to the naive-column default the other models use."""
 
@@ -154,7 +143,7 @@ class TzAwareSessionStore(SQLModelSessionStorage[TzAwareUserSession]):
     SessionModel = TzAwareUserSession
 
 
-class SocialAccount(SQLModel, table=True):
+class SocialAccount(SQLModelSocialAccount, table=True):
     __table_args__ = (UniqueConstraint("provider", "provider_user_id"),)
 
     id: int | None = Field(default=None, primary_key=True)
@@ -174,7 +163,7 @@ class SocialAccount(SQLModel, table=True):
     user: "User" = Relationship(back_populates="social_accounts")
 
 
-class User(SQLModel, table=True):
+class User(SQLModelUser, table=True):
     id: int | None = Field(default=None, primary_key=True)
     email: str = Field(index=True)
     email_verified: bool = False
@@ -203,7 +192,7 @@ class SoftDeleteAccountsStore(AccountsStore):
         return statement.where(User.deleted == False)  # noqa: E712
 
 
-class LeanSocialAccount(SQLModel, table=True):
+class LeanSocialAccount(SQLModelSocialAccount, table=True):
     """Social account that reads credentials but does not persist them."""
 
     id: int | None = Field(default=None, primary_key=True)
@@ -248,7 +237,7 @@ class LeanAccountsStore(AccountsStore):
     )
 
 
-class PropertyScopeSocialAccount(SQLModel, table=True):
+class PropertyScopeSocialAccount(SQLModelSocialAccount, table=True):
     """A social account whose ``scope`` write field is a read-only property
     instead of a mapped column. ``hasattr(model, "scope")`` is True here, but
     SQLModel's constructor only accepts pydantic fields — a property is
@@ -272,7 +261,7 @@ class PropertyScopeSocialAccount(SQLModel, table=True):
         return None
 
 
-class PropUser(SQLModel, table=True):
+class PropUser(SQLModelUser, table=True):
     """A protocol-compliant user whose ``social_accounts`` is a plain property
     rather than an ORM relationship."""
 
@@ -295,7 +284,7 @@ class PropAccountsStore(SQLModelAccountsStorage[PropUser, SocialAccount]):
     SocialAccountModel = SocialAccount
 
 
-class AliasedVerifiedUser(SQLModel, table=True):
+class AliasedVerifiedUser(SQLModelUser, table=True):
     """Cloud-style user with required profile data and renamed verification."""
 
     id: int | None = Field(default=None, primary_key=True)
@@ -321,7 +310,7 @@ class AliasedVerifiedUser(SQLModel, table=True):
         return []
 
 
-class AttachmentAccountBase(SQLModel):
+class AttachmentAccountBase(SQLModelSocialAccount):
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id")
     provider: str

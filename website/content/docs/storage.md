@@ -80,46 +80,42 @@ user columns with the public typed hooks described below. Use the public
 `build_user` extension when required application rows must share the signup
 transaction.
 
-First, your user-owned models (you control the table names, columns, and
-migrations):
+Define your tables by inheriting `SQLModelUser` and `SQLModelSocialAccount`. The
+bases supply common auth fields; you still control table names, primary keys,
+foreign keys, identity constraints, and migrations. User verification may be a
+column or writable property, and social accounts may be a relationship or
+property. Credential fields may be columns or properties when excluded from
+writes.
 
 ```python
 from datetime import datetime
 
 from sqlalchemy import UniqueConstraint
-from sqlmodel import Field, Relationship, SQLModel
+from sqlmodel import Field, Relationship
+
+from cross_auth.storage.sqlmodel import SQLModelSocialAccount, SQLModelUser
 
 
-class SocialAccount(SQLModel, table=True):
+class SocialAccount(SQLModelSocialAccount, table=True):
     __table_args__ = (UniqueConstraint("provider", "provider_user_id"),)
 
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id")
-    provider: str
-    provider_user_id: str
     access_token: str | None = None
     refresh_token: str | None = None
     access_token_expires_at: datetime | None = None
     refresh_token_expires_at: datetime | None = None
     scope: str | None = None
-    provider_email: str | None = None
-    provider_email_verified: bool | None = None
-    is_login_method: bool = True
 
     user: "User" = Relationship(back_populates="social_accounts")
 
 
-class User(SQLModel, table=True):
+class User(SQLModelUser, table=True):
     id: int | None = Field(default=None, primary_key=True)
     email: str = Field(index=True, unique=True)
     email_verified: bool = False
-    hashed_password: str | None = None
 
     social_accounts: list[SocialAccount] = Relationship(back_populates="user")
-
-    @property
-    def has_usable_password(self) -> bool:
-        return self.hashed_password is not None
 ```
 
 Then the adapter:
@@ -305,45 +301,37 @@ time instead of being silently ignored.
 
 Pass your session model to `SQLModelSessionStorage` — it implements every
 `SessionStorage` method, including keyset cursor pagination and status
-filtering. No subclass is needed unless you want to override behaviour.
+filtering. No storage subclass is needed unless you want to override behaviour.
 
-Your session model must expose the attribute names the `SessionRecord` protocol
-reads, plus an internal `token_hash` column (only the hash is stored, never the
-raw token). Cross-Auth passes user ids to the session layer as strings
-(`login(user_id: str)`), but the adapter coerces them to your `user_id` column's
-type — declare it as `str`, `int`, or `UUID` to match your user table's primary
-key, so you keep a real foreign key:
+Inherit `SQLModelSession` to get the timestamps, client metadata, internal
+`token_hash` column, and computed `status` property. Only the hash is stored,
+never the raw token. Define your own primary key and user ID column:
 
 ```python
-from datetime import datetime
+from sqlmodel import Field
 
-from sqlmodel import Field, SQLModel
-
-from cross_auth import session_status
+from cross_auth.storage.sqlmodel import SQLModelSession
 
 
-class UserSession(SQLModel, table=True):
+class UserSession(SQLModelSession, table=True):
     id: int | None = Field(default=None, primary_key=True)
-    token_hash: str = Field(index=True)
     user_id: int = Field(foreign_key="user.id", index=True)
-    created_at: datetime
-    updated_at: datetime
-    expires_at: datetime
-    last_active_at: datetime | None = None
-    revoked_at: datetime | None = None
-    client_id: str | None = None
-    client_name: str | None = None
-    user_agent: str | None = None
-    ip: str | None = None
-
-    @property
-    def status(self):
-        return session_status(self)
 ```
 
-`session_status` is the canonical active/expired/revoked derivation — delegate
-to it rather than re-implementing the state machine, so your records always
-agree with the adapter's status filters.
+Cross-Auth passes user IDs to the session layer as strings
+(`login(user_id: str)`), but the adapter coerces them to your column's type.
+Declare `user_id` as `str`, `int`, or `UUID` to match your user table's primary
+key. Override inherited fields when you need different indexes, database column
+names, or timezone-aware types. The inherited `status` property delegates to
+`session_status`, so it agrees with the adapter's active/expired/revoked
+filters.
+
+**Migration:** existing tables must inherit the corresponding base instead of
+`SQLModel`. Existing field declarations can remain as overrides; this
+inheritance change does not require a database migration when the resulting
+columns and indexes are unchanged. The adapter checks inheritance and required
+attributes at construction. IDs, relationships, verification, and credential
+properties remain application-defined and are checked at startup.
 
 ```python
 from cross_auth.storage.sqlmodel import SQLModelSessionStorage

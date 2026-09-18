@@ -52,9 +52,11 @@ engine = create_engine("postgresql+psycopg://localhost/myapp")
 secondary_storage = RedisStorage.from_url("redis://localhost:6379")
 
 
+# User and SocialAccount inherit SQLModelUser and SQLModelSocialAccount.
 accounts_storage = SQLModelAccountsStorage(
     User, SocialAccount, session_factory=lambda: Session(engine)
 )
+# UserSession inherits SQLModelSession.
 session_storage = SQLModelSessionStorage(
     UserSession, session_factory=lambda: Session(engine)
 )

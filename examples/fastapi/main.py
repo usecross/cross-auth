@@ -21,7 +21,6 @@ from cross_auth import (
     SecondaryStorage,
     SessionConfig,
     SessionStatus,
-    session_status,
 )
 from cross_auth import User as UserProtocol
 from cross_auth._session import get_current_user as get_session_user
@@ -41,6 +40,9 @@ from cross_auth.hooks import (
 from cross_auth.social_providers.github import GitHubProvider
 from cross_auth.storage.sqlmodel import (
     SQLModelAccountsStorage,
+    SQLModelSession,
+    SQLModelUser,
+    SQLModelSocialAccount,
     SQLModelSessionStorage,
 )
 
@@ -102,10 +104,9 @@ class MemorySecondaryStorage(SecondaryStorage):
         return value
 
 
-# SQLModel table models satisfying the storage adapter protocols. The adapters
-# validate these fields at construction (see _required_models), so a missing
-# column fails at startup rather than mid-request.
-class SocialAccount(SQLModel, table=True):
+# SQLModel base classes provide the common auth fields. The application owns
+# primary keys, relationships, identity constraints, and provider credentials.
+class SocialAccount(SQLModelSocialAccount, table=True):
     __table_args__ = (UniqueConstraint("provider", "provider_user_id"),)
 
     id: int | None = Field(default=None, primary_key=True)
@@ -134,7 +135,7 @@ class WelcomeNote(SQLModel, table=True):
     user: "User" = Relationship(back_populates="welcome_notes")
 
 
-class User(SQLModel, table=True):
+class User(SQLModelUser, table=True):
     id: int | None = Field(default=None, primary_key=True)
     email: str = Field(index=True)
     email_verified: bool = False
@@ -150,23 +151,9 @@ class User(SQLModel, table=True):
         return self.hashed_password is not None
 
 
-class SessionRecord(SQLModel, table=True):
+class SessionRecord(SQLModelSession, table=True):
     id: int | None = Field(default=None, primary_key=True)
-    token_hash: str = Field(index=True)
     user_id: str = Field(index=True)
-    created_at: datetime
-    updated_at: datetime
-    expires_at: datetime
-    last_active_at: datetime | None = None
-    revoked_at: datetime | None = None
-    client_id: str | None = None
-    client_name: str | None = None
-    user_agent: str | None = None
-    ip: str | None = None
-
-    @property
-    def status(self) -> SessionStatus:
-        return session_status(self)
 
 
 # In-memory SQLite. StaticPool keeps a single shared connection (a fresh

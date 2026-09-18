@@ -282,7 +282,7 @@ class OIDCProvider(OAuth2Provider):
         so we don't need to call a userinfo endpoint. Browser flows supply the
         stored nonce, which must match the signed claim exactly.
         """
-        id_token = getattr(token_response, "id_token", None)
+        id_token = token_response.id_token
         if not id_token:
             raise OAuth2Exception(
                 error="server_error",
