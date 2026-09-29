@@ -165,8 +165,8 @@ def test_token_callback_reports_expired_provider_code_to_client(
     ]
     assert len(provider_records) == 1
     assert provider_records[0].levelno == logging.INFO
-    assert getattr(provider_records[0], "oauth_provider") == "fake"
-    assert getattr(provider_records[0], "oauth_error") == "bad_verification_code"
+    assert provider_records[0].__dict__["oauth_provider"] == "fake"
+    assert provider_records[0].__dict__["oauth_error"] == "bad_verification_code"
     assert (
         provider_records[0].getMessage()
         == "Token exchange rejected by provider: bad_verification_code"

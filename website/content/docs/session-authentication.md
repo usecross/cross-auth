@@ -33,7 +33,6 @@ auth = CrossAuth(
     storage=secondary_storage,
     accounts_storage=accounts_storage,
     session_storage=session_storage,
-    trusted_origins=["https://myapp.com"],
 )
 
 # Verify credentials

@@ -224,12 +224,13 @@ def _prepare_record(record, fields):
     """Label naive datetimes read back from the database as UTC."""
     if record is None:
         return None
+    # _validate_models guarantees these attributes exist. Credential expiries
+    # may be read-only properties, so only write a naive value that needs UTC.
     for field in fields:
-        if hasattr(record, field):
-            value = getattr(record, field)
-            prepared_value = _ensure_aware_datetime(value)
-            if prepared_value is not value:
-                setattr(record, field, prepared_value)
+        value = getattr(record, field)
+        prepared_value = _ensure_aware_datetime(value)
+        if prepared_value is not value:
+            setattr(record, field, prepared_value)
     return record
 
 
@@ -675,10 +676,11 @@ class SQLModelAccountsStorage(
     excluded_social_account_fields: ClassVar[frozenset[str]] = frozenset()
 
     # The full cross_auth.User / cross_auth.SocialAccount protocol surfaces.
-    # Core reads some of these mid-flow (e.g. has_usable_password during
-    # account linking), so checking them here surfaces a non-compliant model
-    # at startup instead of as an AttributeError halfway through an OAuth
-    # login. Properties and relationships satisfy hasattr on the class.
+    # Some are read mid-flow (e.g. this adapter's disconnect_social_account
+    # reads has_usable_password), so checking them here surfaces a
+    # non-compliant model at startup instead of as an AttributeError halfway
+    # through a request. Properties and relationships satisfy hasattr on the
+    # class.
     _required_models = (
         (
             "UserModel",

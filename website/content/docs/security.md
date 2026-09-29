@@ -16,10 +16,10 @@ revocation. `SessionCookieMiddleware` only delivers refreshed session cookies.
 Browser OAuth callbacks have their own protection: expiring, single-use state,
 an initiating-browser binding cookie, provider binding, PKCE where supported,
 and a managed nonce for OIDC. These checks do not authorize unrelated browser
-requests. `trusted_origins` does not configure CSRF or CORS. The
-`client_redirect_uris` configuration or `get_client` callback registers OAuth
-client callbacks; it does not grant permission to make cookie-authenticated
-requests.
+requests. Cross-Auth does not configure CSRF or CORS; configure both in your
+application. The `client_redirect_uris` configuration or `get_client` callback
+registers OAuth client callbacks; it does not grant permission to make
+cookie-authenticated requests.
 
 Route paths below are relative to where you include `auth.router`:
 

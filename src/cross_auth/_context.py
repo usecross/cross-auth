@@ -1,6 +1,6 @@
 from collections.abc import Callable
 
-from cross_web import HTTPRequest, Cookie
+from cross_web import HTTPRequest
 
 from ._clients import ClientResolver, OAuthClient
 from ._config import Config
@@ -10,7 +10,6 @@ from ._session import (
     SessionMetadata,
     _get_header,
     create_session,
-    make_session_cookie,
     resolve_config,
 )
 from ._storage import (
@@ -30,7 +29,6 @@ class Context:
         self,
         secondary_storage: SecondaryStorage,
         accounts_storage: AccountsStorage,
-        trusted_origins: list[str],
         get_user_from_request: Callable[[HTTPRequest], User | None],
         session_storage: SessionStorage | None = None,
         token_issuer: TokenIssuer | None = None,
@@ -44,7 +42,6 @@ class Context:
         self.secondary_storage = secondary_storage
         self.accounts_storage = accounts_storage
         self.session_storage = session_storage
-        self.trusted_origins = trusted_origins
         self.get_user_from_request = get_user_from_request
         self.token_issuer = token_issuer
         self.base_url = base_url
@@ -101,14 +98,6 @@ class Context:
             metadata=metadata,
             token_hasher=resolved["token_hasher"],
         )
-
-    def create_session_cookie(
-        self,
-        user_id: str,
-        metadata: SessionMetadata | None = None,
-    ) -> Cookie:
-        session_token, _ = self.create_session(user_id, metadata)
-        return make_session_cookie(session_token, self.session_config)
 
     def issue_token(self, request: TokenIssueRequest) -> tuple[str, int]:
         if self.token_issuer is not None:

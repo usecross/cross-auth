@@ -173,7 +173,6 @@ def test_authorize_rejects_invalid_client_id(
         get_user_from_request=lambda r: (
             logged_in_user if r.headers.get("Authorization") == "Bearer test" else None
         ),
-        trusted_origins=["valid-frontend.com"],
         config={
             "client_redirect_uris": {
                 "allowed_client": ["http://valid-frontend.com/callback"]
@@ -219,7 +218,6 @@ def test_authorize_accepts_valid_client_id(
         get_user_from_request=lambda r: (
             logged_in_user if r.headers.get("Authorization") == "Bearer test" else None
         ),
-        trusted_origins=["valid-frontend.com"],
         config={
             "client_redirect_uris": {
                 "allowed_client": ["http://valid-frontend.com/callback"]

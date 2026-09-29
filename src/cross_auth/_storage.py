@@ -298,15 +298,6 @@ class AccountsStorage(Protocol):
 
     def list_social_accounts(self, *, user_id: Any) -> Iterable[SocialAccount]: ...
 
-    def create_user(
-        self,
-        *,
-        user_info: dict[str, Any],
-        email: str,
-        email_verified: bool,
-        extra_fields: Mapping[str, Any] | None = None,
-    ) -> User: ...
-
     def create_user_with_identity(
         self,
         *,
@@ -391,8 +382,4 @@ class AccountsStorage(Protocol):
         Serialize same-user disconnects so they cannot remove the last login
         method together. A connected-only account may always be disconnected.
         """
-        ...
-
-    def delete_social_account(self, social_account_id: Any) -> None:
-        """Delete without checking login alternatives; for administrative use."""
         ...

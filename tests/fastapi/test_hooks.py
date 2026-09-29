@@ -85,7 +85,6 @@ def _make_auth(
         storage=secondary_storage,
         accounts_storage=accounts_storage,
         session_storage=session_storage,
-        trusted_origins=["valid-frontend.com"],
         get_user_from_request=get_user_from_request,
         config=config,
     )

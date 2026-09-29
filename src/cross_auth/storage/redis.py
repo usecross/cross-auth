@@ -41,8 +41,7 @@ class RedisStorage:
 
     Requires a synchronous client (not ``redis.asyncio.Redis`` — every method
     would silently return an unawaited coroutine instead of doing anything)
-    with ``GETDEL`` support: a Redis server >= 6.2 and redis-py >= 4.2
-    (``pop`` uses the ``GETDEL`` command).
+    and a Redis server >= 6.2 (``pop`` uses the ``GETDEL`` command).
 
     An injected client remains owned by its caller, so ``close()`` leaves it
     open. The client is fixed at construction. To point tests elsewhere,
@@ -68,22 +67,13 @@ class RedisStorage:
         return storage
 
     def _set_client(self, client: Redis) -> None:
-        if not callable(getattr(client, "getdel", None)):
-            raise TypeError(
-                f"{type(self).__name__} requires a Redis client with GETDEL "
-                f"support (redis-py 4.2 or newer) — pop() calls "
-                f"client.getdel(), which {type(client).__name__!r} does not "
-                f"have."
-            )
         # A synchronous client's `get` returns a value directly; an async
         # client's does too (it just hands back the coroutine created by its
         # own async execute_command), so `get` itself doesn't look like a
         # coroutine function. Check execute_command as well, since that one
         # is genuinely `async def` on an async client.
-        get = getattr(client, "get", None)
-        execute_command = getattr(client, "execute_command", None)
-        if inspect.iscoroutinefunction(get) or inspect.iscoroutinefunction(
-            execute_command
+        if inspect.iscoroutinefunction(client.get) or inspect.iscoroutinefunction(
+            client.execute_command
         ):
             raise TypeError(
                 f"{type(self).__name__} requires a synchronous Redis client "
