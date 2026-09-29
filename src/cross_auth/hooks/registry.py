@@ -4,19 +4,19 @@ import inspect
 import logging
 from collections import defaultdict
 from collections.abc import Callable
-from typing import TypeAlias, TypeVar, cast
+from typing import TypeVar, cast
 
 from ..exceptions import CrossAuthException
 from ._types import (
     _ALL_EVENT_NAMES,
     _RETURNABLE_BEFORE_EVENT_NAMES,
     HookEventName,
+    _AfterRuntimeHandler,
+    _BeforeRuntimeHandler,
 )
 
 logger = logging.getLogger(__name__)
 
-_BeforeRuntimeHandler: TypeAlias = Callable[[object], object | None]
-_AfterRuntimeHandler: TypeAlias = Callable[[object], None]
 _EventT = TypeVar("_EventT")
 
 

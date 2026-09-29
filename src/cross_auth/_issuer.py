@@ -10,7 +10,7 @@ from cross_auth.utils._pkce import validate_pkce
 
 from ._context import Context
 from ._password import _verify_password
-from ._route import Form, Route
+from ._route import Route
 from ._tokens import TokenIssueRequest
 from .exceptions import CrossAuthException
 from .hooks import (
@@ -53,7 +53,6 @@ class PasswordGrantRequest(BaseModel):
 TokenRequest = Annotated[
     AuthorizationCodeGrantRequest | PasswordGrantRequest,
     Discriminator("grant_type"),
-    Form(),
 ]
 TokenRequestAdapter: TypeAdapter[TokenRequest] = TypeAdapter(TokenRequest)
 
@@ -374,7 +373,6 @@ class Issuer:
                 function=self.token,
                 response_model=TokenResponse,
                 operation_id="token",
-                request_type=TokenRequest,
                 read_form_data=True,
                 summary="OAuth 2.0 token endpoint",
                 openapi={

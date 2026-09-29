@@ -298,7 +298,6 @@ def test_authorization_code_grant_uses_token_issuer_without_session_storage(
         session_storage=None,
         token_issuer=issue_token,
         get_user_from_request=lambda _: None,
-        trusted_origins=["valid-frontend.com"],
         config={
             "client_redirect_uris": {"test": ["http://valid-frontend.com/callback"]}
         },
@@ -355,7 +354,6 @@ def test_password_grant_uses_token_issuer_without_session_storage(
         session_storage=None,
         token_issuer=issue_token,
         get_user_from_request=lambda _: None,
-        trusted_origins=["valid-frontend.com"],
         config={
             "client_redirect_uris": {"test": ["http://valid-frontend.com/callback"]}
         },
@@ -406,7 +404,6 @@ def test_token_endpoint_errors_without_token_issuer_or_session_storage(
         accounts_storage=accounts_storage,
         session_storage=None,
         get_user_from_request=lambda _: None,
-        trusted_origins=["valid-frontend.com"],
         config={
             "client_redirect_uris": {"test": ["http://valid-frontend.com/callback"]}
         },

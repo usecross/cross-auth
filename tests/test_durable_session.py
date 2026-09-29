@@ -62,7 +62,6 @@ def _make_auth(
         storage=secondary_storage,
         accounts_storage=accounts_storage,
         session_storage=session_storage,
-        trusted_origins=[],
         config=config,
     )
 
@@ -405,7 +404,6 @@ def test_token_endpoint_errors_without_token_issuer_or_session_storage(
         accounts_storage=accounts_storage,
         session_storage=None,
         get_user_from_request=lambda _: None,
-        trusted_origins=["client.example"],
         config={
             "client_redirect_uris": {"test": ["http://valid-frontend.com/callback"]}
         },
@@ -590,7 +588,6 @@ def test_custom_user_resolver_keeps_implicit_cookie_refresh(
         storage=secondary_storage,
         accounts_storage=accounts_storage,
         session_storage=session_storage,
-        trusted_origins=[],
         get_user_from_request=custom_resolver,
         config={
             "session": {

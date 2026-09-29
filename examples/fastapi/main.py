@@ -383,7 +383,6 @@ auth = CrossAuth(
     storage=secondary_storage,
     accounts_storage=accounts_storage,
     session_storage=session_storage,
-    trusted_origins=[],
     get_user_from_request=resolve_auth_user,
     default_next_url="/profile",
     # Explicit here; needed when redirect URIs must not be derived from the

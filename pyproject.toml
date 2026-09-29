@@ -15,8 +15,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# pop() uses getdel(), which needs redis-py >= 4.2 and a Redis server >= 6.2;
-# 5.0 is the current baseline we test against.
+# 5.0 is the current baseline we test against; pop() uses GETDEL, which needs a
+# Redis server >= 6.2.
 redis = ["redis>=5.0"]
 # 0.0.28 is the oldest release that works across our supported Python range;
 # earlier releases cannot define table models on Python 3.14.

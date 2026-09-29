@@ -123,6 +123,20 @@ class MemorySessionListResult:
     next_cursor: str | None = None
 
 
+# order_by -> (sort key, descending?), mirroring the SQLModel adapter's
+# _ORDER_FIELDS.
+_SESSION_ORDER: dict[
+    SessionListOrder, tuple[Callable[[MemorySessionRecord], datetime], bool]
+] = {
+    "updated_at_desc": (lambda record: record.updated_at, True),
+    "updated_at_asc": (lambda record: record.updated_at, False),
+    "created_at_desc": (lambda record: record.created_at, True),
+    "created_at_asc": (lambda record: record.created_at, False),
+    "expires_at_desc": (lambda record: record.expires_at, True),
+    "expires_at_asc": (lambda record: record.expires_at, False),
+}
+
+
 class MemorySessionStorage(SessionStorage):
     def __init__(self):
         self.records: dict[str, MemorySessionRecord] = {}
@@ -193,11 +207,8 @@ class MemorySessionStorage(SessionStorage):
                 if session_status(record, now=now) == status
             ]
 
-        field, direction = order_by.rsplit("_", 1)
-        records.sort(
-            key=lambda record: getattr(record, field),
-            reverse=direction == "desc",
-        )
+        sort_key, descending = _SESSION_ORDER[order_by]
+        records.sort(key=sort_key, reverse=descending)
         return cast(
             SessionListResult,
             MemorySessionListResult(records=records[:limit]),
@@ -568,7 +579,6 @@ def context(
         accounts_storage=accounts_storage,
         session_storage=session_storage,
         get_user_from_request=_get_user_from_request,
-        trusted_origins=["valid-frontend.com"],
         config={
             "client_redirect_uris": {
                 "test_client_id": ["http://valid-frontend.com/callback"],

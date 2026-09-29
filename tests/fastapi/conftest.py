@@ -24,7 +24,6 @@ def test_app(
         accounts_storage=accounts_storage,
         session_storage=session_storage,
         get_user_from_request=lambda _: None,
-        trusted_origins=[],
         config={
             "client_redirect_uris": {"test": ["http://valid-frontend.com/callback"]}
         },

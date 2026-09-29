@@ -221,8 +221,8 @@ def test_exchange_code_reports_timeout_without_retrying(
     assert str(exc_info.value) == exc_info.value.error_description
     assert len(caplog.records) == 1
     assert caplog.records[0].levelno == logging.WARNING
-    assert getattr(caplog.records[0], "oauth_provider") == "example"
-    assert getattr(caplog.records[0], "oauth_error") == "temporarily_unavailable"
+    assert caplog.records[0].__dict__["oauth_provider"] == "example"
+    assert caplog.records[0].__dict__["oauth_error"] == "temporarily_unavailable"
     assert caplog.records[0].getMessage() == "Token exchange timed out"
 
 
@@ -258,8 +258,8 @@ def test_exchange_code_preserves_recoverable_provider_error(
     assert len(caplog.records) == 1
     assert caplog.records[0].name == logger.name
     assert caplog.records[0].levelno == logging.INFO
-    assert getattr(caplog.records[0], "oauth_provider") == "example"
-    assert getattr(caplog.records[0], "oauth_error") == error
+    assert caplog.records[0].__dict__["oauth_provider"] == "example"
+    assert caplog.records[0].__dict__["oauth_error"] == error
     assert (
         caplog.records[0].getMessage()
         == f"Token exchange rejected by provider: {error}"

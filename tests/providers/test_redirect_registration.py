@@ -147,7 +147,6 @@ def test_invalid_callback_registration_fails_at_startup(context, uri):
             secondary_storage=context.secondary_storage,
             accounts_storage=context.accounts_storage,
             get_user_from_request=context.get_user_from_request,
-            trusted_origins=[],
             config={"client_redirect_uris": {"dashboard": [uri]}},
         )
 
@@ -160,7 +159,6 @@ def test_client_id_allowlist_requires_migration(context):
             secondary_storage=context.secondary_storage,
             accounts_storage=context.accounts_storage,
             get_user_from_request=context.get_user_from_request,
-            trusted_origins=[],
             config=cast(Config, {"allowed_client_ids": ["dashboard"]}),
         )
 
@@ -171,7 +169,6 @@ def test_static_registry_and_client_lookup_cannot_compete(context):
             secondary_storage=context.secondary_storage,
             accounts_storage=context.accounts_storage,
             get_user_from_request=context.get_user_from_request,
-            trusted_origins=[],
             get_client=lambda client_id: None,
             config={"client_redirect_uris": {"dashboard": [CALLBACK]}},
         )

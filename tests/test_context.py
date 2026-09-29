@@ -1,38 +1,19 @@
 import pytest
 
 from cross_auth._context import Context
-from cross_auth._session import get_session
 
 
-def test_create_session_cookie_rejects_without_session_storage(
+def test_create_session_rejects_without_session_storage(
     secondary_storage, accounts_storage
 ):
     context = Context(
         secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
-        trusted_origins=[],
         get_user_from_request=lambda _: None,
     )
 
     with pytest.raises(RuntimeError, match="Session flow not configured"):
-        context.create_session_cookie("test")
-
-
-def test_create_session_cookie_uses_session_storage(
-    secondary_storage, accounts_storage, session_storage
-):
-    context = Context(
-        secondary_storage=secondary_storage,
-        accounts_storage=accounts_storage,
-        session_storage=session_storage,
-        trusted_origins=[],
-        get_user_from_request=lambda _: None,
-    )
-
-    cookie = context.create_session_cookie("test-user")
-    session = get_session(cookie.value, session_storage)
-    assert session is not None
-    assert session.user_id == "test-user"
+        context.create_session("test")
 
 
 def test_cookie_auth_enabled_reflects_config(
@@ -42,7 +23,6 @@ def test_cookie_auth_enabled_reflects_config(
         secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
         session_storage=session_storage,
-        trusted_origins=[],
         get_user_from_request=lambda _: None,
         config={"session": {"cookies": {"auth": True}}},
     )
@@ -50,7 +30,6 @@ def test_cookie_auth_enabled_reflects_config(
         secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
         session_storage=session_storage,
-        trusted_origins=[],
         get_user_from_request=lambda _: None,
     )
 
@@ -65,7 +44,6 @@ def test_cookie_auth_without_session_storage_raises(
         Context(
             secondary_storage=secondary_storage,
             accounts_storage=accounts_storage,
-            trusted_origins=[],
             get_user_from_request=lambda _: None,
             config={"session": {"cookies": {"auth": True}}},
         )

@@ -84,7 +84,6 @@ auth = CrossAuth(
     storage=secondary_storage,
     accounts_storage=accounts_storage,
     session_storage=session_storage,
-    trusted_origins=[],
     get_client=clients.get,
 )
 ```
@@ -170,11 +169,10 @@ Expand each intended client and host into explicit callback URLs, including the
 scheme, port, and path. Deploy the registrations with the updated library before
 starting new authorization or link attempts.
 
-The `trusted_origins` constructor argument remains accepted for compatibility,
-but it no longer authorizes client redirects. It does not configure CORS or CSRF
-protection; configure those separately in the hosting application. Relative
-`next` destinations in the session `/login` and `/connect` flows are unaffected
-by client redirect registration.
+Client redirect registration does not configure CORS or CSRF protection;
+configure those separately in the hosting application. Relative `next`
+destinations in the session `/login` and `/connect` flows are unaffected by
+client redirect registration.
 
 ## Supported Grant Types
 

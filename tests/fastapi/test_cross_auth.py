@@ -21,7 +21,6 @@ def test_token_only_mode_without_session_storage(
         providers=[],
         storage=secondary_storage,
         accounts_storage=accounts_storage,
-        trusted_origins=[],
     )
     assert auth.router is not None
 
@@ -41,7 +40,6 @@ def test_token_endpoint_uses_token_issuer_without_session_storage(
         storage=secondary_storage,
         accounts_storage=accounts_storage,
         token_issuer=issue_token,
-        trusted_origins=[],
     )
     app = FastAPI()
     app.include_router(auth.router)
@@ -76,11 +74,36 @@ def test_get_current_session_requires_session_storage(
         providers=[],
         storage=secondary_storage,
         accounts_storage=accounts_storage,
-        trusted_origins=[],
     )
     request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
     with pytest.raises(RuntimeError, match="session_storage is required"):
         auth.get_current_session(request)
+
+
+def test_trusted_origins_is_deprecated(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+):
+    message = "trusted_origins has no effect"
+    with pytest.warns(DeprecationWarning, match=message) as auth_warnings:
+        CrossAuth(
+            providers=[],
+            storage=secondary_storage,
+            accounts_storage=accounts_storage,
+            trusted_origins=[],
+        )
+    with pytest.warns(DeprecationWarning, match=message) as router_warnings:
+        AuthRouter(
+            providers=[],
+            secondary_storage=secondary_storage,
+            accounts_storage=accounts_storage,
+            get_user_from_request=lambda _: None,
+            trusted_origins=[],
+        )
+
+    # Attributed to the caller's code rather than to Cross-Auth.
+    recorded = [*auth_warnings, *router_warnings]
+    assert [warning.filename for warning in recorded] == [__file__, __file__]
 
 
 def _make_auth(
@@ -94,7 +117,6 @@ def _make_auth(
         storage=secondary_storage,
         accounts_storage=accounts_storage,
         session_storage=session_storage,
-        trusted_origins=[],
         **kwargs,
     )
 

@@ -2,37 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, EmailStr, Field
-
 from cross_auth._context import Context
 from cross_auth.models.oauth_token_response import TokenResponse
 
 from .oauth import OAuth2Provider, UserInfo
-
-
-class DiscordUser(BaseModel):
-    """Discord user object.
-
-    See: https://discord.com/developers/docs/resources/user#user-object
-    """
-
-    id: str = Field(examples=["123456789012345678"])
-    username: str = Field(examples=["username"])
-    discriminator: str | None = Field(default=None, examples=["0000"])
-    avatar: str | None = Field(default=None, examples=["a_1234567890abcdef"])
-    avatar_decoration: str | None = None
-    email: EmailStr = Field(examples=["user@example.com"])
-    verified: bool = Field(examples=[True])
-    locale: str | None = Field(default=None, examples=["en-US"])
-    mfa_enabled: bool | None = Field(default=None, examples=[False])
-    premium_type: int | None = Field(default=None, examples=[0])
-    public_flags: int | None = Field(default=None, examples=[0])
-    flags: int | None = Field(default=None, examples=[0])
-    banner: str | None = Field(default=None, examples=["a_1234567890abcdef"])
-    accent_color: int | None = Field(default=None, examples=[16711680])
-    global_name: str | None = Field(default=None, examples=["Global Username"])
-    avatar_url: str | None = None
-    banner_url: str | None = None
 
 
 class DiscordProvider(OAuth2Provider):

@@ -89,7 +89,6 @@ def _make_auth(
         providers=[provider],
         storage=secondary_storage,
         accounts_storage=accounts_storage,
-        trusted_origins=[],
         **kwargs,
     )
 

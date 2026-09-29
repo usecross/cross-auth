@@ -1,4 +1,5 @@
 import logging
+import warnings
 from collections.abc import Callable
 from functools import partial
 from typing import Any
@@ -26,6 +27,12 @@ from .hooks import HookRegistry
 from .social_providers.oauth import OAuth2Provider
 
 logger = logging.getLogger(__name__)
+
+_TRUSTED_ORIGINS_DEPRECATION = (
+    "trusted_origins has no effect and will be removed in a future release. "
+    "It does not configure CORS or CSRF protection; configure those in your "
+    "application."
+)
 
 
 FlowHandler = Callable[..., Response]
@@ -127,7 +134,7 @@ class AuthRouter(APIRouter):
         secondary_storage: SecondaryStorage,
         accounts_storage: AccountsStorage,
         get_user_from_request: Callable[[HTTPRequest], User | None],
-        trusted_origins: list[str],
+        trusted_origins: list[str] | None = None,
         session_storage: SessionStorage | None = None,
         token_issuer: TokenIssuer | None = None,
         base_url: str | None = None,
@@ -137,6 +144,10 @@ class AuthRouter(APIRouter):
         normalize_email: Callable[[str], str] | None = None,
         get_client: ClientResolver | None = None,
     ):
+        if trusted_origins is not None:
+            warnings.warn(
+                _TRUSTED_ORIGINS_DEPRECATION, DeprecationWarning, stacklevel=2
+            )
         super().__init__()
 
         self.issuer = Issuer()
@@ -147,7 +158,6 @@ class AuthRouter(APIRouter):
             accounts_storage=accounts_storage,
             session_storage=session_storage,
             token_issuer=token_issuer,
-            trusted_origins=trusted_origins,
             get_user_from_request=get_user_from_request,
             base_url=base_url,
             config=config,

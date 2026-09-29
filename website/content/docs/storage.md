@@ -61,12 +61,12 @@ pools, Redis Cluster or Sentinel setup, instrumentation, and tests. The
 read-only `client` property exposes the underlying redis-py client when an
 application needs commands outside the secondary-storage protocol.
 
-It requires a **synchronous** redis-py client with `GETDEL` support (redis-py >=
-4.2; the `redis` extra installs >= 5.0) against a **Redis server 6.2 or newer**.
-`RedisStorage` raises `TypeError` at construction for a client without `getdel`
-and for an async client (e.g. `redis.asyncio.Redis`) — an async client's methods
-would silently return an unawaited coroutine instead of doing anything, so it's
-rejected up front rather than failing on the first call.
+It requires a **synchronous** redis-py client (the `redis` extra installs
+redis-py >= 5.0) against a **Redis server 6.2 or newer**. `RedisStorage` raises
+`TypeError` at construction for an async client (e.g. `redis.asyncio.Redis`) —
+an async client's methods would silently return an unawaited coroutine instead
+of doing anything, so it's rejected up front rather than failing on the first
+call.
 
 It stores values with optional TTL, normalizes byte and string responses to
 `str | None`, and uses Redis `GETDEL` for atomic `pop`. A `ttl` of zero or less
@@ -605,11 +605,12 @@ the whole operation after contention clears, rather than continuing a failed
 transaction.
 
 This guarantee applies to calls through `disconnect_social_account`. The
-low-level `delete_social_account` method remains available for application-owned
-cleanup and deliberately skips the last-login check. There is no administrative
-bypass on the HTTP disconnect routes. Custom password removal, login-method
-changes, or direct database deletes must coordinate with the same user record if
-they need to preserve this guarantee across those operations too.
+SQLModel adapter's low-level `delete_social_account` method remains available
+for application-owned cleanup and deliberately skips the last-login check. There
+is no administrative bypass on the HTTP disconnect routes. Custom password
+removal, login-method changes, or direct database deletes must coordinate with
+the same user record if they need to preserve this guarantee across those
+operations too.
 
 ### AccountsStorage
 
@@ -630,14 +631,6 @@ class AccountsStorage(Protocol):
         self, social_account_id: Any
     ) -> SocialAccount | None: ...
     def list_social_accounts(self, *, user_id: Any) -> Iterable[SocialAccount]: ...
-    def create_user(
-        self,
-        *,
-        user_info: dict[str, Any],
-        email: str,
-        email_verified: bool,
-        extra_fields: Mapping[str, Any] | None = None,
-    ) -> User: ...
     def create_user_with_identity(
         self,
         *,
@@ -649,7 +642,6 @@ class AccountsStorage(Protocol):
     def disconnect_social_account(
         self, *, user_id: Any, provider: str, social_account_id: Any
     ) -> DisconnectResult: ...
-    def delete_social_account(self, social_account_id: Any) -> None: ...
 ```
 
 Identity lookups should specify `user_id` for a user's connection or
@@ -675,13 +667,13 @@ changes. The Cross-Auth flow checks ownership before calling storage to report
 an observed conflict as `account_already_linked`, but that lookup is not a
 substitute for database uniqueness.
 
-Custom adapters must implement `create_user_with_identity` atomically; calling
-`create_user` and `create_social_account` with separate commits does not satisfy
-this contract. `UserCreate` and `SocialAccountCreate` describe the write fields.
-The `identity` callback receives the new user with its assigned ID and prepares
-the identity fields, including the `before social_account.create` hook. Call it
-once inside the transaction, then save the identity for that user. If the
-callback or either write raises, roll back the whole signup.
+Custom adapters must implement `create_user_with_identity` atomically; creating
+the user and its social account in separate commits does not satisfy this
+contract. `UserCreate` and `SocialAccountCreate` describe the write fields. The
+`identity` callback receives the new user with its assigned ID and prepares the
+identity fields, including the `before social_account.create` hook. Call it once
+inside the transaction, then save the identity for that user. If the callback or
+either write raises, roll back the whole signup.
 
 This contract does not expose a transaction object to core. SQLModel uses its
 session; a Django adapter can use `transaction.atomic()` and the same callback.
@@ -699,10 +691,10 @@ additional mapped columns; custom storage implementations should persist the
 keys they support and reject unknown ones.
 
 Emails are normalized before they reach your storage: Cross-Auth trims and
-lowercases them ahead of every `find_user_by_email` and `create_user` call, so
-implementations can compare exactly against the stored (lowercase) value. Pass
-`normalize_email=` to `CrossAuth` to customize this — e.g. to also collapse
-Gmail dot-aliases.
+lowercases them ahead of every `find_user_by_email` and
+`create_user_with_identity` call, so implementations can compare exactly against
+the stored (lowercase) value. Pass `normalize_email=` to `CrossAuth` to
+customize this — e.g. to also collapse Gmail dot-aliases.
 
 Your user model must expose these attributes. Cross-Auth only ever reads them
 (the protocols declare read-only properties), so your model may narrow an

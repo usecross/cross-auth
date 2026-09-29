@@ -736,16 +736,6 @@ def _complete_oauth_callback(
         )
         logger.log(level, "OAuth error: %s", callback_data.error)
         if auth_request is not None:
-            if auth_request.provider_id != provider.id:
-                logger.error(
-                    "Provider mismatch on callback: expected %s, got %s",
-                    auth_request.provider_id,
-                    provider.id,
-                )
-                return Response.error(
-                    "server_error", error_description="Provider mismatch"
-                )
-
             return _flow_error(
                 auth_request,
                 error=callback_data.error,
@@ -771,14 +761,6 @@ def _complete_oauth_callback(
             error="session_expired",
             error_description="The authorization request has expired. Please try again.",
         )
-
-    if auth_request.provider_id != provider.id:
-        logger.error(
-            "Provider mismatch on callback: expected %s, got %s",
-            auth_request.provider_id,
-            provider.id,
-        )
-        return Response.error("server_error", error_description="Provider mismatch")
 
     if not callback_data.code:
         return _flow_error(

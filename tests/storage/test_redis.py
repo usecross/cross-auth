@@ -49,6 +49,10 @@ class FakeRedis:
                 removed += 1
         return removed
 
+    def execute_command(self, *args: object, **options: object) -> object:
+        # Inspected to reject async clients; storage never sends raw commands.
+        raise NotImplementedError
+
     def close(self) -> None:
         self.closed = True
 
@@ -145,26 +149,11 @@ def test_pop_handles_already_decoded_str():
     assert storage.get("k") is None
 
 
-def test_constructor_rejects_client_without_getdel():
-    # redis-py < 4.2 (or any client that doesn't expose GETDEL) would raise
-    # AttributeError on the first pop() call, mid-OAuth-callback — catch it
-    # at construction instead.
-    class NoGetDel:
-        def get(self, name: str) -> RedisValue:
-            return None
-
-    with pytest.raises(TypeError, match="getdel"):
-        RedisStorage(cast(Redis, NoGetDel()))
-
-
 def test_constructor_rejects_async_client():
     # An async client (e.g. redis.asyncio.Redis) would make every method
     # return an unawaited coroutine instead of doing anything — set() would
     # silently store nothing.
     class AsyncRedis:
-        def getdel(self, name: str) -> RedisValue:
-            return None
-
         async def get(self, name: str) -> RedisValue:
             return None
 

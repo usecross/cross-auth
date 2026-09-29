@@ -1,6 +1,6 @@
 import json
 from collections.abc import Callable
-from typing import Annotated, Any, Literal, TypedDict, get_args
+from typing import Annotated, Any, Literal, TypedDict
 from urllib.parse import parse_qsl
 
 from cross_web import AsyncHTTPRequest, FormData, Response
@@ -8,10 +8,6 @@ from pydantic import BaseModel
 
 from ._context import Context
 from ._request import make_http_request
-
-
-class Form:
-    pass
 
 
 PathParameter = TypedDict(
@@ -23,23 +19,6 @@ PathParameter = TypedDict(
         "schema": dict[str, Any],
     },
 )
-
-
-def _get_fastapi_request_type(route: "Route") -> Any:
-    from fastapi import Request as FastAPIRequest
-    from fastapi.params import Form as FastAPIForm
-
-    RequestType: Any = FastAPIRequest
-
-    if route.request_type is not None:
-        RequestType = route.request_type
-
-        args = get_args(RequestType)
-
-        if any(isinstance(arg, Form) for arg in args):
-            RequestType = Annotated[RequestType, FastAPIForm()]
-
-    return RequestType
 
 
 def _body_to_bytes(body: Any) -> bytes:
@@ -96,7 +75,6 @@ class Route:
         function: Callable[..., Response],
         response_model: type[BaseModel] | None = None,
         operation_id: str | None = None,
-        request_type: Any | None = None,
         read_body: bool = False,
         read_form_data: bool = False,
         summary: str | None = None,
@@ -109,7 +87,6 @@ class Route:
         self.function = function
         self.response_model = response_model
         self.operation_id = operation_id
-        self.request_type = request_type
         self.read_body = read_body
         self.read_form_data = read_form_data
         self.summary = summary

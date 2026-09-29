@@ -85,7 +85,7 @@ from .hooks import (
 )
 from .hooks._types import HookEventName
 from .exceptions import CrossAuthException
-from .router import AuthRouter
+from .router import _TRUSTED_ORIGINS_DEPRECATION, AuthRouter
 from .social_providers.oauth import OAuth2Exception, OAuth2Provider
 from .social_providers.oidc import OIDCProvider
 
@@ -209,7 +209,7 @@ class CrossAuth:
         providers: list[OAuth2Provider],
         storage: SecondaryStorage,
         accounts_storage: AccountsStorage,
-        trusted_origins: list[str],
+        trusted_origins: list[str] | None = None,
         session_storage: SessionStorage | None = None,
         token_issuer: TokenIssuer | None = None,
         get_user_from_request: Callable[[HTTPRequest], User | None] | None = None,
@@ -219,6 +219,10 @@ class CrossAuth:
         normalize_email: Callable[[str], str] | None = None,
         get_client: ClientResolver | None = None,
     ):
+        if trusted_origins is not None:
+            warnings.warn(
+                _TRUSTED_ORIGINS_DEPRECATION, DeprecationWarning, stacklevel=2
+            )
         self._storage = storage
         self._accounts_storage = accounts_storage
         self._session_storage = session_storage
@@ -245,7 +249,6 @@ class CrossAuth:
             session_storage=session_storage,
             token_issuer=token_issuer,
             get_user_from_request=self._get_user_from_request,
-            trusted_origins=trusted_origins,
             base_url=base_url,
             config=config,
             default_next_url=default_next_url,
