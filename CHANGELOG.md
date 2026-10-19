@@ -1,6 +1,16 @@
 CHANGELOG
 =========
 
+0.33.2 - 2026-10-19
+-------------------
+
+Share the internal session-login implementation between browser OAuth callbacks
+and programmatic FastAPI login, preserving their existing hook, cookie, and
+metadata behavior. Add regression coverage for both login paths and execution
+without FastAPI or Starlette imports.
+
+This release was contributed by [@patrick91](https://github.com/patrick91) in [#84](https://github.com/usecross/cross-auth/pull/84)
+
 0.33.1 - 2026-10-19
 -------------------
 
