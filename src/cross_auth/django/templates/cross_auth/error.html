@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Sign-in problem</title>
+  </head>
+  <body>
+    <h1>Sign-in problem</h1>
+    <p>{{ error_description|default:"The request could not be completed." }}</p>
+    <p><code>{{ error }}</code></p>
+    <p><a href="{{ return_url }}">Continue</a></p>
+  </body>
+</html>

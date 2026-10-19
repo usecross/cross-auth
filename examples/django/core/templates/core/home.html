@@ -1,0 +1,19 @@
+{% extends "core/base.html" %}
+
+{% block content %}
+  {% if user.is_authenticated %}
+    <p>Signed in as {{ user.get_username }}.</p>
+    <p><a href="{% url 'profile' %}">Your profile</a></p>
+    <form method="post" action="{% url 'logout' %}">
+      {% csrf_token %}
+      <button type="submit">Sign out</button>
+    </form>
+  {% else %}
+    <form method="post" action="{% url 'cross_auth:login' 'google' %}">
+      {% csrf_token %}
+      <input type="hidden" name="next" value="{% url 'profile' %}">
+      <button type="submit">Sign in with Google</button>
+    </form>
+    <p><a href="{% url 'login' %}">Sign in with a password</a></p>
+  {% endif %}
+{% endblock %}

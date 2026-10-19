@@ -37,8 +37,8 @@ Cross-Auth separates concerns into three layers:
    sessions are persisted. You implement these for your database.
 2. **Core functions** -- Plain Python functions for authentication, session
    management, and token issuance.
-3. **Framework integration** -- Optional route handlers and middleware for your
-   web framework of choice.
+3. **Framework integration** -- Optional route handlers for FastAPI, and a
+   native Django app for Google sign-in with Django's own users and sessions.
 
 ```python
 from cross_auth.fastapi import CrossAuth
@@ -72,4 +72,5 @@ async def logout_endpoint(request: Request):
 
 - [Installation](/docs/installation) -- Add Cross-Auth to your project.
 - [Quick Start](/docs/quick-start) -- Build a login flow in minutes.
+- [Django](/docs/django) -- Add Sign in with Google to a Django project.
 - [Hooks](/docs/hooks) -- Extend auth flows with typed lifecycle callbacks.

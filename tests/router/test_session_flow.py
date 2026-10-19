@@ -53,7 +53,13 @@ def test_login_stores_next_param_when_safe(
 def test_login_rejects_unsafe_next(
     client: TestClient, secondary_storage: SecondaryStorage
 ):
-    for unsafe in ["https://evil.example/path", "//evil.example", "evil.com"]:
+    for unsafe in [
+        "https://evil.example/path",
+        "//evil.example",
+        "evil.com",
+        "/\\evil.example",
+        "/\t/evil.example",
+    ]:
         _, state = start_provider_auth(client, "/fake/login", params={"next": unsafe})
         assert load_auth_request(secondary_storage, state).next_url == "/"
 

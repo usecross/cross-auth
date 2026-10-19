@@ -10,6 +10,15 @@ import atexit
 import os
 import tempfile
 
+from cross_auth.social_providers.google import GoogleProvider
+
+
+class WorkspaceProvider(GoogleProvider):
+    """A second provider, to test callbacks reaching the wrong one."""
+
+    id = "workspace"
+
+
 DATABASE = os.environ.get("CROSS_AUTH_TEST_DATABASE", "sqlite")
 USER_MODEL = os.environ.get("CROSS_AUTH_TEST_USER_MODEL", "default")
 
@@ -27,10 +36,26 @@ INSTALLED_APPS = [
     "tests.django.testapp",
 ]
 
+AUTHENTICATION_BACKENDS = [
+    "django.contrib.auth.backends.ModelBackend",
+    "cross_auth.django.backends.CrossAuthBackend",
+]
+LOGIN_REDIRECT_URL = "/"
+LOGIN_URL = "/accounts/login/"
+LOGOUT_REDIRECT_URL = "/"
+
+CROSS_AUTH = {
+    "PROVIDERS": [
+        GoogleProvider(client_id="test-client-id", client_secret="test-secret"),
+        WorkspaceProvider(client_id="test-client-id", client_secret="test-secret"),
+    ],
+    "HOOKS": "tests.django.hooks.hooks",
+}
+
 if USER_MODEL == "custom":
     INSTALLED_APPS.append("tests.django.custom_user")
     AUTH_USER_MODEL = "custom_user.User"
-    CROSS_AUTH = {"CREATE_USER": "tests.django.custom_user.models.create_user"}
+    CROSS_AUTH["CREATE_USER"] = "tests.django.custom_user.models.create_user"
 elif USER_MODEL != "default":
     raise ValueError(f"Unknown CROSS_AUTH_TEST_USER_MODEL {USER_MODEL!r}")
 

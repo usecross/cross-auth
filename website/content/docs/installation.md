@@ -32,6 +32,17 @@ Without the extras, the core library does not depend on Redis or SQLModel. The
 Redis adapter needs a Redis server 6.2 or newer. See the
 [Storage](/docs/storage) guide for usage.
 
+## Django
+
+The native Django integration is behind the `django` extra, which installs
+Django 5.2 LTS:
+
+```bash
+uv add 'cross-auth[django]'
+```
+
+It needs no other extras. See the [Django](/docs/django) guide to set it up.
+
 ## Requirements
 
 - Python 3.11 or higher

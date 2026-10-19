@@ -92,7 +92,8 @@ class AfterAuthenticateEvent:
     user: User | None
 
 
-LoginCredential = Literal["cookie", "bearer"]
+# "django_session" is a native Django session started by django.contrib.auth.
+LoginCredential = Literal["cookie", "bearer", "django_session"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,9 +103,9 @@ class BeforeLoginEvent:
     ``user_id`` is the verified identity being logged in; hooks may deny the
     login by raising but cannot change who is logged in. ``max_age`` and
     ``metadata`` describe the Cross Auth session that will be created and may
-    be adjusted; both are ``None`` when an application ``token_issuer`` mints
-    the credential. ``response`` is the HTTP response of a cookie login and
-    ``None`` for bearer logins.
+    be adjusted; both are ``None`` when an application ``token_issuer`` or the
+    web framework (``django_session``) creates the credential. ``response`` is
+    the HTTP response of a browser login and ``None`` for bearer logins.
     """
 
     user_id: str
@@ -117,7 +118,7 @@ class BeforeLoginEvent:
 @dataclass(frozen=True, slots=True)
 class AfterLoginEvent:
     # The raw token is deliberately not exposed to hooks. ``session_record`` is
-    # ``None`` when an application ``token_issuer`` minted the credential.
+    # ``None`` when a ``token_issuer`` or the web framework created it.
     user_id: str
     credential: LoginCredential
     session_record: SessionRecord | None

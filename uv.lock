@@ -10,6 +10,7 @@ resolution-markers = [
 [manifest]
 members = [
     "cross-auth",
+    "cross-auth-django-example",
     "cross-auth-fastapi-example",
     "cross-auth-website",
 ]
@@ -527,6 +528,17 @@ dev = [
     { name = "time-machine", specifier = ">=2.16.0" },
     { name = "ty", specifier = ">=0.0.29" },
 ]
+
+[[package]]
+name = "cross-auth-django-example"
+version = "0.1.0"
+source = { virtual = "examples/django" }
+dependencies = [
+    { name = "cross-auth", extra = ["django"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "cross-auth", extras = ["django"], editable = "." }]
 
 [[package]]
 name = "cross-auth-fastapi-example"

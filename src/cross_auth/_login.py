@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Protocol, TypeVar
 
 from cross_web import Response
 
@@ -12,7 +12,7 @@ from ._session import (
     create_session,
     resolve_config,
 )
-from ._storage import CommitCallback, SessionRecord, SessionStorage
+from ._storage import CommitCallback, SessionRecord, SessionStorage, User
 from .hooks import AfterLoginEvent, BeforeLoginEvent, HookRegistry
 
 _IssuedT = TypeVar("_IssuedT")
@@ -46,6 +46,26 @@ def run_login(
     )
     on_commit(lambda: hooks.run_after("login", after_event))
     return issued, approved
+
+
+class BrowserLogin(Protocol):
+    """Logs a browser in with a session the web framework owns.
+
+    Browser sign-in uses this in place of a Cross Auth cookie session once the
+    provider identity is verified and the user's account changes committed.
+    """
+
+    def login(self, user: User, *, response: Response) -> Response:
+        """Log ``user`` in through ``run_login`` and return the response.
+
+        Raise ``CrossAuthException`` to refuse a user the framework does not
+        allow to sign in.
+        """
+        ...
+
+    def on_commit(self, callback: CommitCallback) -> None:
+        """Run callback once the login's session write is committed."""
+        ...
 
 
 def run_now(callback: CommitCallback) -> None:
@@ -94,7 +114,7 @@ def _check_login_rewrite(
         if approved.max_age is not None or approved.metadata is not None:
             raise ValueError(
                 "login before hooks cannot set max_age or metadata for "
-                "credentials minted by a token_issuer"
+                "credentials minted by a token_issuer or the web framework"
             )
     elif approved.max_age is None:
         raise ValueError("login before hooks must keep a session max_age")
