@@ -254,7 +254,8 @@ _IMPORT_ISOLATION_SCRIPT = textwrap.dedent(
     import cross_auth.hooks
     import cross_auth.storage.sqlmodel
     from cross_web import HTTPRequest, Response
-    from cross_auth._login import login_with_session
+    from cross_auth._login import issue_bearer_session, login_with_session
+    from cross_auth._tokens import TokenIssueRequest
     from cross_auth._native import sign_in_with_id_token
     from cross_auth._setup import build_auth_setup
     from tests.conftest import (
@@ -286,14 +287,38 @@ _IMPORT_ISOLATION_SCRIPT = textwrap.dedent(
     )
     assert token_response.status_code == 400
 
+    logins = []
+    hooks = cross_auth.hooks.HookRegistry()
+    hooks.register_after("login", logins.append)
+    session_storage = MemorySessionStorage()
     response = login_with_session(
         str(user.user.id),
         response=Response(status_code=200),
-        hooks=cross_auth.hooks.HookRegistry(),
-        session_storage=MemorySessionStorage(),
+        hooks=hooks,
+        session_storage=session_storage,
         session_config=None,
     )
     assert [cookie.name for cookie in response.cookies or []] == ["session_id"]
+
+    issue_bearer_session(
+        str(user.user.id),
+        hooks=hooks,
+        session_storage=session_storage,
+        session_config=None,
+    )
+    setup.context.hooks = hooks
+    setup.context.token_issuer = lambda request: ("app-token", 60)
+    assert setup.context.issue_token(
+        TokenIssueRequest(
+            user_id=str(user.user.id),
+            client_id="web",
+            grant_type="password",
+            scope=None,
+            http_request=HTTPRequest.from_form_data(data={}),
+        )
+    ) == ("app-token", 60)
+    assert [login.credential for login in logins] == ["cookie", "bearer", "bearer"]
+    assert len(session_storage.records) == 2
     assert not {"fastapi", "starlette"} & set(sys.modules)
     """
 )

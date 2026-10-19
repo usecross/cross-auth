@@ -23,13 +23,12 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from ._clients import ClientResolver
 from ._config import Config
 from ._context import AccountsStorage, SecondaryStorage, User
-from ._login import login_with_session
+from ._login import issue_bearer_session, login_with_session
 from ._native import sign_in_with_id_token as _sign_in_with_id_token
 from ._password import authenticate
 from ._request import make_http_request
 from ._session import (
     SessionMetadata,
-    create_session,
     get_current_user,
     make_clear_cookie,
     make_session_cookie,
@@ -58,7 +57,6 @@ from .hooks import (
     AfterOAuthFinalizeLinkEvent,
     AfterOAuthIdTokenEvent,
     AfterOAuthLinkEvent,
-    AfterSessionIssueEvent,
     AfterSocialAccountCreateEvent,
     AfterSocialAccountUpdateEvent,
     AfterTokenAuthorizationCodeEvent,
@@ -73,7 +71,6 @@ from .hooks import (
     BeforeOAuthFinalizeLinkEvent,
     BeforeOAuthIdTokenEvent,
     BeforeOAuthLinkEvent,
-    BeforeSessionIssueEvent,
     BeforeSocialAccountCreateEvent,
     BeforeSocialAccountUpdateEvent,
     BeforeTokenAuthorizationCodeEvent,
@@ -428,11 +425,6 @@ class CrossAuth:
 
     @overload
     def before(
-        self, event: Literal["session.issue"]
-    ) -> _HookDecorator[BeforeSessionIssueEvent, BeforeSessionIssueEvent | None]: ...
-
-    @overload
-    def before(
         self, event: Literal["user.create"]
     ) -> _HookDecorator[BeforeUserCreateEvent, BeforeUserCreateEvent | None]: ...
 
@@ -523,11 +515,6 @@ class CrossAuth:
     def after(
         self, event: Literal["login"]
     ) -> _HookDecorator[AfterLoginEvent, None]: ...
-
-    @overload
-    def after(
-        self, event: Literal["session.issue"]
-    ) -> _HookDecorator[AfterSessionIssueEvent, None]: ...
 
     @overload
     def after(
@@ -669,29 +656,19 @@ class CrossAuth:
         issues: clients send it as ``Authorization: Bearer ...`` and
         ``get_current_user`` resolves it. ``max_age`` overrides the configured
         session lifetime (e.g. longer-lived mobile sessions than browser
-        cookies). No cookie is set; the ``session.issue`` hooks run around the
-        creation, and the raw token is never exposed to them.
+        cookies). No cookie is set; the ``login`` hooks run around the
+        creation with ``credential="bearer"``, and the raw token is never
+        exposed to them.
         """
-        session_storage = self._require_session_storage()
-        event = self._context.hooks.run_before(
-            "session.issue",
-            BeforeSessionIssueEvent(
-                user_id=user_id, max_age=max_age, metadata=metadata
-            ),
+        token, record, _ = issue_bearer_session(
+            user_id,
+            hooks=self._context.hooks,
+            session_storage=self._require_session_storage(),
+            session_config=self._context.session_config,
+            max_age=max_age,
+            metadata=metadata,
         )
-        resolved = resolve_config(self._context.session_config)
-        session_token, record = create_session(
-            event.user_id,
-            session_storage,
-            max_age=event.max_age if event.max_age is not None else resolved["max_age"],
-            metadata=event.metadata,
-            token_hasher=resolved["token_hasher"],
-        )
-        self._context.hooks.run_after(
-            "session.issue",
-            AfterSessionIssueEvent(user_id=event.user_id, session_record=record),
-        )
-        return session_token, record
+        return token, record
 
     def login(
         self,

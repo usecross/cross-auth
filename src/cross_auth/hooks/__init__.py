@@ -8,7 +8,6 @@ from .events import (
     AfterOAuthFinalizeLinkEvent,
     AfterOAuthIdTokenEvent,
     AfterOAuthLinkEvent,
-    AfterSessionIssueEvent,
     AfterSocialAccountCreateEvent,
     AfterSocialAccountUpdateEvent,
     AfterTokenAuthorizationCodeEvent,
@@ -23,12 +22,12 @@ from .events import (
     BeforeOAuthFinalizeLinkEvent,
     BeforeOAuthIdTokenEvent,
     BeforeOAuthLinkEvent,
-    BeforeSessionIssueEvent,
     BeforeSocialAccountCreateEvent,
     BeforeSocialAccountUpdateEvent,
     BeforeTokenAuthorizationCodeEvent,
     BeforeTokenPasswordEvent,
     BeforeUserCreateEvent,
+    LoginCredential,
 )
 from .registry import HookRegistry
 
@@ -42,7 +41,6 @@ __all__ = [
     "AfterOAuthFinalizeLinkEvent",
     "AfterOAuthIdTokenEvent",
     "AfterOAuthLinkEvent",
-    "AfterSessionIssueEvent",
     "AfterSocialAccountCreateEvent",
     "AfterSocialAccountUpdateEvent",
     "AfterTokenAuthorizationCodeEvent",
@@ -57,11 +55,11 @@ __all__ = [
     "BeforeOAuthFinalizeLinkEvent",
     "BeforeOAuthIdTokenEvent",
     "BeforeOAuthLinkEvent",
-    "BeforeSessionIssueEvent",
     "BeforeSocialAccountCreateEvent",
     "BeforeSocialAccountUpdateEvent",
     "BeforeTokenAuthorizationCodeEvent",
     "BeforeTokenPasswordEvent",
     "BeforeUserCreateEvent",
     "HookRegistry",
+    "LoginCredential",
 ]

@@ -26,9 +26,7 @@ from cross_auth._session import (
     hash_session_token,
 )
 from cross_auth._storage import AccountsStorage, SecondaryStorage
-from cross_auth.exceptions import CrossAuthException
 from cross_auth.fastapi import CrossAuth, SessionCookieMiddleware
-from cross_auth.hooks import AfterSessionIssueEvent, BeforeSessionIssueEvent
 
 from .conftest import MemorySessionStorage
 
@@ -229,7 +227,7 @@ def test_cookie_auth_without_session_storage_fails_fast(
         )
 
 
-def test_after_login_event_exposes_only_session_record_and_cookie(
+def test_after_login_event_exposes_session_record_but_not_raw_token(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
     session_storage: MemorySessionStorage,
@@ -263,10 +261,10 @@ def test_after_login_event_exposes_only_session_record_and_cookie(
     session_token = response.cookies["session_id"]
     assert len(seen) == 1
     event = seen[0]
-    assert event.cookie.value == session_token
     assert event.session_record.user_agent == "test-browser"
     assert event.session_record.token_hash == hash_session_token(session_token)
     assert not hasattr(event, "session_token")
+    assert not hasattr(event, "cookie")
     assert not hasattr(event, "session_id")
     assert not hasattr(event, "session_data")
     assert not hasattr(event, "session_record_id")
@@ -778,46 +776,6 @@ def test_issue_session_token_creates_revocable_bearer_session(
 
     resp = client.get("/me", headers=headers)
     assert resp.json() == {"user": None}
-
-
-@time_machine.travel(NOW, tick=False)
-def test_session_issue_hooks_can_rewrite_and_block(
-    secondary_storage: SecondaryStorage,
-    accounts_storage: AccountsStorage,
-    session_storage: MemorySessionStorage,
-):
-    """session.issue hooks close the policy gap between the three ways a
-    session comes to exist: before-hooks can rewrite the request (clamp
-    max_age) or block it entirely, and after-hooks see the created record but
-    never the raw token."""
-    auth = _make_auth(
-        secondary_storage=secondary_storage,
-        accounts_storage=accounts_storage,
-        session_storage=session_storage,
-        config={"session": {"max_age": 60, "cookies": {"secure": False}}},
-    )
-    audited: list[Any] = []
-
-    @auth.before("session.issue")
-    def clamp_and_screen(event: BeforeSessionIssueEvent):
-        if event.user_id == "suspended":
-            raise CrossAuthException("access_denied")
-        if event.max_age is not None and event.max_age > 3600:
-            return replace(event, max_age=3600)
-        return None
-
-    @auth.after("session.issue")
-    def audit(event: AfterSessionIssueEvent) -> None:
-        audited.append(event.session_record)
-
-    token, record = auth.issue_session_token("test", max_age=86400)
-    assert record.expires_at == NOW + timedelta(seconds=3600)  # clamped
-    assert audited == [record]
-
-    with pytest.raises(CrossAuthException):
-        auth.issue_session_token("suspended")
-    assert audited == [record]  # nothing created, nothing audited
-    assert len(session_storage.records) == 1
 
 
 @pytest.mark.parametrize("intervening_change", ["revoke", "expire"])

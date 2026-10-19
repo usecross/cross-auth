@@ -168,7 +168,7 @@ def test_authenticate_hooks(
     assert seen == {"user_id": "test"}
 
 
-def test_login_hooks_mutate_user_id_and_response(
+def test_login_hooks_adjust_lifetime_and_response(
     secondary_storage,
     accounts_storage,
     session_storage,
@@ -181,8 +181,8 @@ def test_login_hooks_mutate_user_id_and_response(
     app = FastAPI()
 
     @auth.before("login")
-    def map_service_user(event: BeforeLoginEvent) -> BeforeLoginEvent:
-        return replace(event, user_id="test")
+    def shorten_session(event: BeforeLoginEvent) -> BeforeLoginEvent:
+        return replace(event, max_age=600)
 
     @auth.after("login")
     def add_session_header(event: AfterLoginEvent) -> None:
@@ -195,7 +195,7 @@ def test_login_hooks_mutate_user_id_and_response(
     @app.post("/login")
     def login() -> JSONResponse:
         response = JSONResponse({"ok": True})
-        auth.login("svc_test", response=response)
+        auth.login("test", response=response)
         return response
 
     with TestClient(app) as client:
@@ -208,6 +208,7 @@ def test_login_hooks_mutate_user_id_and_response(
     session = get_session(session_id, session_storage)
     assert session is not None
     assert session.user_id == "test"
+    assert "Max-Age=600" in resp.headers["set-cookie"]
 
 
 def test_logout_hooks(
@@ -695,6 +696,7 @@ def test_login_hooks_run_for_oauth_session_flow(
     @auth.after("login")
     def add_oauth_login_header(event: AfterLoginEvent) -> None:
         seen["after_user_id"] = event.user_id
+        assert event.response is not None
         event.response.headers = {
             **(event.response.headers or {}),
             "X-OAuth-Session-User": event.user_id,
@@ -903,7 +905,7 @@ def test_token_hooks(
     @auth.after("token.authorization_code")
     def capture_auth_code_token(event: AfterTokenAuthorizationCodeEvent) -> None:
         seen["access_token"] = event.token_response.access_token
-        raise CrossAuthException("invalid_grant", "ignored after hook failure")
+        raise CrossAuthException("server_error", "after hook failure")
 
     secondary_storage.set(
         "oauth:code:test-code",
@@ -930,16 +932,18 @@ def test_token_hooks(
                 "password": TEST_PASSWORD,
             },
         )
-        success_resp = client.post(
-            "/token",
-            data={
-                "grant_type": "authorization_code",
-                "client_id": "test",
-                "code": "test-code",
-                "redirect_uri": "http://valid-frontend.com/callback",
-                "code_verifier": "test",
-            },
-        )
+        # After-hook failures propagate; the issued session is not undone.
+        with pytest.raises(CrossAuthException, match="server_error"):
+            client.post(
+                "/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "client_id": "test",
+                    "code": "test-code",
+                    "redirect_uri": "http://valid-frontend.com/callback",
+                    "code_verifier": "test",
+                },
+            )
 
     assert blocked is True
     assert blocked_resp.status_code == 400
@@ -947,6 +951,5 @@ def test_token_hooks(
         "error": "unauthorized_client",
         "error_description": "Password grant disabled",
     }
-    assert success_resp.status_code == 200
     assert seen["access_token"] != "token-test"
     assert get_session(seen["access_token"], session_storage) is not None

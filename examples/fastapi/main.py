@@ -446,12 +446,13 @@ def reject_banned_signup(event: BeforeUserCreateEvent) -> None:
 
 
 @auth.after("login")
-def audit_session_login(event: AfterLoginEvent) -> None:
-    event.response.headers = {
-        **(event.response.headers or {}),
-        "X-Cross-Auth-Hook": "login",
-    }
-    record_hook_event("after:login", user_id=event.user_id)
+def audit_login(event: AfterLoginEvent) -> None:
+    if event.response is not None:
+        event.response.headers = {
+            **(event.response.headers or {}),
+            "X-Cross-Auth-Hook": "login",
+        }
+    record_hook_event("after:login", user_id=event.user_id, credential=event.credential)
 
 
 @auth.after("logout")

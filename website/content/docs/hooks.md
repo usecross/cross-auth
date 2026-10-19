@@ -43,13 +43,20 @@ queue, or observability code.
   mutable event fields documented below.
 - Use `after` hooks for post-success work such as audit logs, metrics, welcome
   emails, or provisioning records.
-- Session and account hooks (`authenticate`, `login`, `logout`, `session.issue`,
-  `user.create`, `social_account.create`, `social_account.update`) are
-  synchronous. OAuth and token hooks may be synchronous or asynchronous.
+- Session and account hooks (`authenticate`, `login`, `logout`, `user.create`,
+  `social_account.create`, `social_account.update`) are synchronous. OAuth and
+  token hooks may be synchronous or asynchronous.
 - Hook events use framework-neutral `cross_web` request and response objects at
   the hook boundary.
 - Do not enforce security policy in an `after` hook. If an operation should be
   blocked, raise `CrossAuthException` from the matching `before` hook.
+- Hook exceptions propagate, including exceptions from `after` hooks. An `after`
+  hook runs once the operation has succeeded, so its failure cannot undo it: a
+  session that was already saved stays saved. Catch and report errors from
+  non-critical work (notifications, analytics) yourself, or enqueue that work.
+- `after` hooks currently run when Cross-Auth finishes the operation, not after
+  your application's outermost database transaction commits. Delivery after
+  commit is planned but not implemented yet.
 - Keep slow side effects out of the request path. Queue email, analytics, and
   webhook work from the hook when possible.
 
@@ -57,22 +64,21 @@ queue, or observability code.
 
 Use this as a quick guide when deciding where custom logic belongs.
 
-| Hook                       | Use it when you need to...                                                   | Common `before` work                                                                                        | Common `after` work                                                                      |
-| -------------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `authenticate`             | Customize password-based sign-in checks before a session is created          | Normalize email addresses, block specific accounts, enforce tenant-specific password login rules            | Audit successful and failed password authentication attempts                             |
-| `login`                    | Control browser session creation and the HTTP response used for session auth | Block session login for service users, remap temporary IDs, add request-scoped policy checks                | Add headers or cookies, publish "user logged in" telemetry                               |
-| `logout`                   | Control session deletion and post-logout side effects                        | Require an active session, prevent logout in special flows, capture session context before deletion         | Audit logout activity, revoke related application state, trigger notifications           |
-| `session.issue`            | Control programmatic bearer-token issuance (`issue_session_token`)           | Block issuance for suspended users, clamp requested lifetimes, enforce per-client policy                    | Audit issued sessions, emit token-issuance telemetry                                     |
-| `user.create`              | Apply policy and side effects around creation of a local user                | Enforce signup eligibility or invitation requirements                                                       | Send welcome events, create telemetry, start post-signup provisioning                    |
-| `social_account.create`    | Customize and observe creation of a provider account                         | Add app-specific storage fields, normalize provider metadata, block creation                                | Audit new linked accounts, trigger downstream provisioning                               |
-| `social_account.update`    | Customize and observe updates to an existing provider account                | Refresh app-specific storage fields, normalize provider metadata, block an update                           | Audit linked-account changes, trigger downstream metadata updates                        |
-| `oauth.authorize`          | Shape the outbound OAuth authorization request                               | Attach tenant-specific login hints, require extra app-level context, normalize provider-facing request data | Track provider redirects, record generated state values for observability                |
-| `oauth.callback`           | Inspect provider user data before Cross-Auth creates or finds a user         | Enforce email domain restrictions, reject unverified emails, apply provider-specific access rules           | Provision internal profiles, send first-login events, audit newly created users          |
-| `oauth.link`               | Control whether an already-authenticated user may start account linking      | Restrict linking by role, plan, tenant, or email domain                                                     | Track linking attempts, log provider selection, store link-start telemetry               |
-| `oauth.finalize_link`      | Validate the provider account before it is attached to the current user      | Disallow login-on-link, reject conflicting identities, require extra provider claims                        | Audit successful links, sync linked account metadata, trigger downstream account updates |
-| `oauth.disconnect`         | Control provider-account disconnection for an authenticated user             | Block disconnects for policy reasons, enforce plan or tenant rules                                          | Revoke provider tokens, clear provider caches, audit disconnected accounts               |
-| `token.password`           | Control OAuth password grant issuance for API clients                        | Disable password grant for some clients, enforce API client policy, reject risky usernames                  | Audit token issuance, increment metrics, notify legacy-client usage                      |
-| `token.authorization_code` | Control authorization-code token exchange for OAuth clients                  | Check user entitlement or requested scope, add final policy checks before issuing tokens                    | Audit code exchanges, record user/client pairs, emit token issuance telemetry            |
+| Hook                       | Use it when you need to...                                              | Common `before` work                                                                                        | Common `after` work                                                                      |
+| -------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `authenticate`             | Customize password-based sign-in checks before a session is created     | Normalize email addresses, block specific accounts, enforce tenant-specific password login rules            | Audit successful and failed password authentication attempts                             |
+| `login`                    | Control every cookie or bearer login before its credential is issued    | Block login for service or suspended users, clamp session lifetimes, adjust the cookie login response       | Audit logins, add headers or cookies, publish "user logged in" telemetry                 |
+| `logout`                   | Control session deletion and post-logout side effects                   | Require an active session, prevent logout in special flows, capture session context before deletion         | Audit logout activity, revoke related application state, trigger notifications           |
+| `user.create`              | Apply policy and side effects around creation of a local user           | Enforce signup eligibility or invitation requirements                                                       | Send welcome events, create telemetry, start post-signup provisioning                    |
+| `social_account.create`    | Customize and observe creation of a provider account                    | Add app-specific storage fields, normalize provider metadata, block creation                                | Audit new linked accounts, trigger downstream provisioning                               |
+| `social_account.update`    | Customize and observe updates to an existing provider account           | Refresh app-specific storage fields, normalize provider metadata, block an update                           | Audit linked-account changes, trigger downstream metadata updates                        |
+| `oauth.authorize`          | Shape the outbound OAuth authorization request                          | Attach tenant-specific login hints, require extra app-level context, normalize provider-facing request data | Track provider redirects, record generated state values for observability                |
+| `oauth.callback`           | Inspect provider user data before Cross-Auth creates or finds a user    | Enforce email domain restrictions, reject unverified emails, apply provider-specific access rules           | Provision internal profiles, send first-login events, audit newly created users          |
+| `oauth.link`               | Control whether an already-authenticated user may start account linking | Restrict linking by role, plan, tenant, or email domain                                                     | Track linking attempts, log provider selection, store link-start telemetry               |
+| `oauth.finalize_link`      | Validate the provider account before it is attached to the current user | Disallow login-on-link, reject conflicting identities, require extra provider claims                        | Audit successful links, sync linked account metadata, trigger downstream account updates |
+| `oauth.disconnect`         | Control provider-account disconnection for an authenticated user        | Block disconnects for policy reasons, enforce plan or tenant rules                                          | Revoke provider tokens, clear provider caches, audit disconnected accounts               |
+| `token.password`           | Control OAuth password grant issuance for API clients                   | Disable password grant for some clients, enforce API client policy, reject risky usernames                  | Audit token issuance, increment metrics, notify legacy-client usage                      |
+| `token.authorization_code` | Control authorization-code token exchange for OAuth clients             | Check user entitlement or requested scope, add final policy checks before issuing tokens                    | Audit code exchanges, record user/client pairs, emit token issuance telemetry            |
 
 ## Session Hooks
 
@@ -103,58 +109,58 @@ def audit_authenticate(event: AfterAuthenticateEvent) -> None:
 
 ### `login`
 
-Runs around browser session creation after you already know which user should be
-signed in. Use it to enforce session-specific policy, adjust the login response,
-and emit successful login telemetry.
+Runs once around every login that issues a credential, after Cross-Auth already
+knows which user is being signed in:
 
-```python
-from cross_auth.hooks import AfterLoginEvent, BeforeLoginEvent
+| Entry point                                     | `credential` | Credential issued                                 |
+| ----------------------------------------------- | ------------ | ------------------------------------------------- |
+| Browser OAuth session callback, `auth.login()`  | `"cookie"`   | A session and its cookie on `response`            |
+| `auth.issue_session_token()`                    | `"bearer"`   | A session; its token is returned to your code     |
+| `/token` password and authorization-code grants | `"bearer"`   | A session, or the token your `token_issuer` mints |
 
+For `/token`, the `login` hooks run inside the `token.password` or
+`token.authorization_code` hooks. Creating an authorization code in the browser
+callback is not a login; redeeming it at `/token` is. Verifying a native
+`id_token` (`sign_in_with_id_token`), connecting or linking an account, and
+refreshing a sliding session are not logins either.
 
-@auth.before("login")
-def block_service_user_login(event: BeforeLoginEvent) -> None:
-    if event.user_id.startswith("svc_"):
-        raise CrossAuthException(
-            "forbidden",
-            "Service users cannot create browser sessions",
-            403,
-        )
+`BeforeLoginEvent` carries `user_id`, `credential`, `max_age`, `metadata`, and
+`response`. A `before` hook can deny the login by raising, or return an updated
+event to change `max_age`, `metadata`, or the cookie login `response`. It cannot
+change who logs in: returning a different `user_id` (or `credential`, or
+adding/removing `response`) raises `ValueError` and nothing is issued. When a
+`token_issuer` mints the credential, Cross-Auth creates no session: `max_age`
+and `metadata` are `None`, and setting either raises `ValueError` because
+Cross-Auth cannot apply them. Your issuer decides its token's lifetime and
+claims; the hooks can still deny the login before the issuer is called.
 
-
-@auth.after("login")
-def add_login_header(event: AfterLoginEvent) -> None:
-    event.response.headers = {
-        **(event.response.headers or {}),
-        "X-Session-User": event.user_id,
-    }
-    metrics.increment("session.login.created")
-```
-
-### `session.issue`
-
-Runs around `issue_session_token`, so bearer tokens minted programmatically (a
-GraphQL sign-in mutation, a CLI) go through the same policy surface as cookie
-logins and `/token` grants. The `before` event carries `user_id`, `max_age`, and
-`metadata` and can be replaced to rewrite them; the `after` event carries the
-created session record — never the raw token.
+`AfterLoginEvent` carries `user_id`, `credential`, `response` (cookie logins
+only), and `session_record`, which is `None` when a `token_issuer` minted the
+credential. The raw session token is never exposed to hooks.
 
 ```python
 from dataclasses import replace
 
-from cross_auth.hooks import AfterSessionIssueEvent, BeforeSessionIssueEvent
+from cross_auth.hooks import AfterLoginEvent, BeforeLoginEvent
 
 
-@auth.before("session.issue")
-def clamp_mobile_lifetime(event: BeforeSessionIssueEvent):
+@auth.before("login")
+def apply_login_policy(event: BeforeLoginEvent) -> BeforeLoginEvent | None:
     if event.user_id in suspended_users:
-        raise CrossAuthException("access_denied")
-    if event.max_age is not None and event.max_age > MAX_MOBILE_TTL:
-        return replace(event, max_age=MAX_MOBILE_TTL)
+        raise CrossAuthException("access_denied", "Account suspended", 403)
+    if event.max_age is not None and event.max_age > MAX_SESSION_TTL:
+        return replace(event, max_age=MAX_SESSION_TTL)
+    return None
 
 
-@auth.after("session.issue")
-def audit_issued_session(event: AfterSessionIssueEvent) -> None:
-    audit_log.record("session.issued", session_id=event.session_record.id)
+@auth.after("login")
+def audit_login(event: AfterLoginEvent) -> None:
+    if event.response is not None:
+        event.response.headers = {
+            **(event.response.headers or {}),
+            "X-Session-User": event.user_id,
+        }
+    metrics.increment("login", tags={"credential": event.credential})
 ```
 
 ### `logout`
