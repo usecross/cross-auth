@@ -24,6 +24,7 @@ from ._clients import ClientResolver
 from ._config import Config
 from ._context import AccountsStorage, SecondaryStorage, User
 from ._email import normalize_email as _normalize_email
+from ._login import login_with_session
 from ._native import sign_in_with_id_token as _sign_in_with_id_token
 from ._password import authenticate
 from ._request import make_http_request
@@ -705,32 +706,15 @@ class CrossAuth:
         metadata: SessionMetadata | None = None,
     ) -> None:
         session_storage = self._require_session_storage()
-        hook_response = self._make_hook_response(response)
-        event = self._hooks.run_before(
-            "login",
-            BeforeLoginEvent(user_id=user_id, response=hook_response),
-        )
-        resolved = resolve_config(self._session_config)
-        max_age = resolved["max_age"]
-        session_token, session_record = create_session(
-            event.user_id,
-            session_storage,
-            max_age=max_age,
+        hook_response = login_with_session(
+            user_id,
+            response=self._make_hook_response(response),
+            hooks=self._hooks,
+            session_storage=session_storage,
+            session_config=self._session_config,
             metadata=metadata,
-            token_hasher=resolved["token_hasher"],
         )
-        cookie = make_session_cookie(session_token, self._session_config)
-        self._add_cookie_to_hook_response(event.response, cookie)
-        self._hooks.run_after(
-            "login",
-            AfterLoginEvent(
-                user_id=event.user_id,
-                response=event.response,
-                session_record=session_record,
-                cookie=cookie,
-            ),
-        )
-        self._apply_hook_response(event.response, response)
+        self._apply_hook_response(hook_response, response)
 
     def logout(self, request: FastAPIRequest, *, response: FastAPIResponse) -> None:
         session_storage = self._require_session_storage()

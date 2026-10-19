@@ -14,11 +14,11 @@ from pydantic import BaseModel, Field, ValidationError
 
 from ._context import Context
 from ._issuer import AuthorizationCodeGrantData
-from ._session import _get_header, make_session_cookie
+from ._login import login_with_session
+from ._session import _get_header
 from ._storage import SocialAccount, SocialAccountCreate, User
 from .exceptions import CrossAuthException
 from .hooks import (
-    AfterLoginEvent,
     AfterOAuthAuthorizeEvent,
     AfterOAuthCallbackEvent,
     AfterOAuthDisconnectEvent,
@@ -27,7 +27,6 @@ from .hooks import (
     AfterSocialAccountCreateEvent,
     AfterSocialAccountUpdateEvent,
     AfterUserCreateEvent,
-    BeforeLoginEvent,
     BeforeOAuthAuthorizeEvent,
     BeforeOAuthCallbackEvent,
     BeforeOAuthDisconnectEvent,
@@ -1467,35 +1466,20 @@ def _complete_session(
             ),
         )
 
+    session_storage = context.session_storage
+    if session_storage is None:
+        raise RuntimeError("Session flow not configured for this deployment")
+
     next_url = auth_request.next_url or context.default_next_url
-    response = Response.redirect(next_url)
-
-    event = context.hooks.run_before(
-        "login",
-        BeforeLoginEvent(user_id=str(user.id), response=response),
+    response = login_with_session(
+        str(user.id),
+        response=Response.redirect(next_url),
+        hooks=context.hooks,
+        session_storage=session_storage,
+        session_config=context.session_config,
+        metadata={"user_agent": _get_header(request.headers, "user-agent")},
     )
-
-    session_token, session_record = context.create_session(
-        event.user_id,
-        {"user_agent": _get_header(request.headers, "user-agent")},
-    )
-    cookie = make_session_cookie(session_token, context.session_config)
-
-    if event.response.cookies is None:
-        event.response.cookies = []
-    event.response.cookies.append(cookie)
-
-    context.hooks.run_after(
-        "login",
-        AfterLoginEvent(
-            user_id=event.user_id,
-            response=event.response,
-            session_record=session_record,
-            cookie=cookie,
-        ),
-    )
-
-    return cast(Response, event.response)
+    return cast(Response, response)
 
 
 def _complete_token(
