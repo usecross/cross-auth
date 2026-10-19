@@ -1,6 +1,17 @@
 CHANGELOG
 =========
 
+0.33.3 - 2026-10-19
+-------------------
+
+Extract framework-independent authentication setup so the FastAPI facade and
+router share one context, provider registry, and token issuer. Preserve public
+constructor signatures and existing routes. Facade operations now read the
+shared context directly, so later context-attribute reassignment also affects
+those operations instead of leaving construction-time copies behind.
+
+This release was contributed by [@patrick91](https://github.com/patrick91) in [#85](https://github.com/usecross/cross-auth/pull/85)
+
 0.33.2 - 2026-10-19
 -------------------
 
