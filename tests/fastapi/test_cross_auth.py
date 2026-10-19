@@ -3,12 +3,21 @@ from typing import Annotated
 import pytest
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-from cross_auth import AccountsStorage, SecondaryStorage, SessionStorage, User
+from cross_auth import (
+    AccountsStorage,
+    OAuth2Provider,
+    SecondaryStorage,
+    SessionStorage,
+    User,
+)
+from cross_auth._config import Config
 from cross_auth._session import create_session, get_session
 from cross_auth.fastapi import CrossAuth
 from cross_auth.router import AuthRouter
+from cross_auth.social_providers.github import GitHubProvider
 
 TEST_PASSWORD = "password123"  # noqa: S105
 
@@ -507,3 +516,122 @@ def test_logout_custom_cookie_name(
 
     # Session should be deleted
     assert get_session(session_id, session_storage) is None
+
+
+# --- Shared setup between CrossAuth and AuthRouter ---
+
+
+def _route_table(router: AuthRouter) -> list[tuple[str, list[str], str | None]]:
+    return [
+        (route.path, sorted(route.methods), route.operation_id)
+        for route in router.routes
+        if isinstance(route, APIRoute)
+    ]
+
+
+def _openapi(router: AuthRouter) -> dict:
+    app = FastAPI()
+    app.include_router(router)
+    return app.openapi()
+
+
+def test_cross_auth_and_router_share_one_setup(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    def lower(email: str) -> str:
+        return email.lower()
+
+    config: Config = {"session": {"max_age": 60}}
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        session_storage,
+        config=config,
+        normalize_email=lower,
+    )
+    context = auth.router.context
+
+    assert context.secondary_storage is secondary_storage
+    assert context.accounts_storage is accounts_storage
+    assert context.session_storage is session_storage
+    assert context.session_config is config["session"]
+    assert context.normalize_email is lower
+    assert auth.router.issuer is auth._setup.issuer
+    assert context is auth._setup.context
+
+    seen: list[object] = []
+
+    @auth.after("login")
+    def after_login(event) -> None:
+        seen.append(event)
+
+    payload = object()
+    context.hooks.run_after("login", payload)
+    assert seen == [payload]
+
+
+def test_custom_user_resolver_reaches_router_and_facade(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    user = accounts_storage.find_user_by_id("test")
+
+    def resolver(request) -> User | None:
+        return user if request.headers.get("x-user") == "test" else None
+
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        session_storage,
+        get_user_from_request=resolver,
+    )
+    assert auth.router.context.get_user_from_request is resolver
+
+    app = FastAPI()
+
+    @app.get("/me")
+    def me(request: Request):
+        current = auth.get_current_user(request)
+        return {"user": current.id if current else None}
+
+    with TestClient(app) as client:
+        assert client.get("/me", headers={"x-user": "test"}).json() == {"user": "test"}
+        assert client.get("/me").json() == {"user": None}
+
+
+@pytest.mark.parametrize("cookie_auth", [False, True])
+def test_direct_router_matches_cross_auth_router(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+    cookie_auth: bool,
+):
+    config: Config = {"session": {"cookies": {"auth": cookie_auth}}}
+    providers: list[OAuth2Provider] = [
+        GitHubProvider(client_id="id", client_secret="secret")
+    ]
+    direct = AuthRouter(
+        providers=providers,
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=session_storage,
+        get_user_from_request=lambda _: None,
+        config=config,
+    )
+    facade = CrossAuth(
+        providers=providers,
+        storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=session_storage,
+        config=config,
+    ).router
+
+    assert type(facade) is AuthRouter
+    assert _route_table(facade) == _route_table(direct)
+    paths = {path for path, _, _ in _route_table(direct)}
+    assert ("/github/login" in paths) is cookie_auth
+    assert _openapi(facade) == _openapi(direct)
+    assert facade.extra_schemas == direct.extra_schemas
