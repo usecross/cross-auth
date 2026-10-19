@@ -73,6 +73,11 @@ policy gate, and your `user.create`, `social_account.create`, and
 refresh tokens are stored on the social account. The `oauth.id_token` hooks also
 run around the outer flow.
 
+`sign_in_with_id_token` only verifies the token and resolves the user; it does
+not log anyone in. If your accounts storage joins an application transaction,
+the returned records may not be committed yet, so commit before calling
+`issue_session_token`, `login`, or your own token issuance.
+
 Only OIDC providers issue id_tokens, so this works for Apple and Google (and any
 `OIDCProvider` subclass); providers without an id_token, like GitHub, raise
 `invalid_request`. To let a native sign-in attach to an existing account with

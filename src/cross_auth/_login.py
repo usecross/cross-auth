@@ -12,7 +12,7 @@ from ._session import (
     create_session,
     resolve_config,
 )
-from ._storage import SessionRecord, SessionStorage
+from ._storage import CommitCallback, SessionRecord, SessionStorage
 from .hooks import AfterLoginEvent, BeforeLoginEvent, HookRegistry
 
 _IssuedT = TypeVar("_IssuedT")
@@ -23,29 +23,62 @@ def run_login(
     *,
     hooks: HookRegistry,
     issue: Callable[[BeforeLoginEvent], tuple[_IssuedT, SessionRecord | None]],
+    on_commit: Callable[[CommitCallback], None],
 ) -> tuple[_IssuedT, BeforeLoginEvent]:
     """Run one ``login`` lifecycle around issuing a credential.
 
     ``issue`` creates the credential from the approved event and returns it
-    with the Cross Auth session it created, if any. Hook exceptions propagate:
-    a before-hook failure issues nothing; an after-hook failure leaves the
-    issued credential in place.
+    with the Cross Auth session it created, if any. ``on_commit`` belongs to
+    whatever stores the credential and schedules the after hook once it is
+    committed. Hook exceptions propagate: a before-hook failure issues nothing;
+    an after-hook failure leaves the issued credential in place.
     """
     approved = hooks.run_before("login", event)
     _check_login_rewrite(event, approved)
 
     issued, session_record = issue(approved)
 
-    hooks.run_after(
-        "login",
-        AfterLoginEvent(
-            user_id=approved.user_id,
-            credential=approved.credential,
-            session_record=session_record,
-            response=approved.response,
-        ),
+    after_event = AfterLoginEvent(
+        user_id=approved.user_id,
+        credential=approved.credential,
+        session_record=session_record,
+        response=approved.response,
     )
+    on_commit(lambda: hooks.run_after("login", after_event))
     return issued, approved
+
+
+def run_now(callback: CommitCallback) -> None:
+    """Commit scheduler for work that is already durable when it returns."""
+    callback()
+
+
+def require_immediate_commit(
+    on_commit: Callable[[CommitCallback], None], message: str
+) -> None:
+    """Raise unless ``on_commit`` runs callbacks at once.
+
+    A storage that defers them has joined an application transaction, so its
+    writes are not committed yet. Flows whose credential or response cannot
+    wait for that commit call this before writing anything.
+    """
+    committed = False
+
+    def mark_committed() -> None:
+        nonlocal committed
+        committed = True
+
+    on_commit(mark_committed)
+    if not committed:
+        raise RuntimeError(message)
+
+
+# Cookie login and logout hand their after hooks the response, which the
+# framework adapter copies before an application transaction could commit.
+COOKIE_SESSION_COMMIT_ERROR = (
+    "{action} needs a session storage whose writes commit before it returns; "
+    "do not run it inside an application transaction"
+)
 
 
 def _check_login_rewrite(
@@ -81,6 +114,10 @@ def login_with_session(
     Returns the hook response; adapters decide how to send it and how to
     surface hook exceptions.
     """
+    require_immediate_commit(
+        session_storage.on_commit,
+        COOKIE_SESSION_COMMIT_ERROR.format(action="Cookie login"),
+    )
     resolved = resolve_config(session_config)
 
     def issue(event: BeforeLoginEvent) -> tuple[Response, SessionRecord]:
@@ -110,6 +147,7 @@ def login_with_session(
         ),
         hooks=hooks,
         issue=issue,
+        on_commit=session_storage.on_commit,
     )
     return hook_response
 
@@ -148,6 +186,7 @@ def issue_bearer_session(
         ),
         hooks=hooks,
         issue=issue,
+        on_commit=session_storage.on_commit,
     )
     assert approved.max_age is not None
     return session_token, session_record, approved.max_age

@@ -267,14 +267,14 @@ class Issuer:
             scope="",
         )
 
-        context.hooks.run_after(
-            "token.authorization_code",
-            AfterTokenAuthorizationCodeEvent(
-                request=request,
-                code=code,
-                authorization_data=authorization_data,
-                token_response=token_data,
-            ),
+        after_event = AfterTokenAuthorizationCodeEvent(
+            request=request,
+            code=code,
+            authorization_data=authorization_data,
+            token_response=token_data,
+        )
+        context._on_token_commit(
+            lambda: context.hooks.run_after("token.authorization_code", after_event)
         )
 
         headers = {
@@ -341,15 +341,15 @@ class Issuer:
             scope="",
         )
 
-        context.hooks.run_after(
-            "token.password",
-            AfterTokenPasswordEvent(
-                request=request,
-                client_id=request.client_id,
-                username=request.username,
-                user=user,
-                token_response=token_data,
-            ),
+        after_event = AfterTokenPasswordEvent(
+            request=request,
+            client_id=request.client_id,
+            username=request.username,
+            user=user,
+            token_response=token_data,
+        )
+        context._on_token_commit(
+            lambda: context.hooks.run_after("token.password", after_event)
         )
 
         headers = {

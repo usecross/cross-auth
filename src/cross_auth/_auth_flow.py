@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from ._context import Context
 from ._issuer import AuthorizationCodeGrantData
-from ._login import login_with_session
+from ._login import login_with_session, require_immediate_commit, run_now
 from ._session import _get_header
 from ._storage import SocialAccount, SocialAccountCreate, User
 from .exceptions import CrossAuthException
@@ -312,14 +312,14 @@ def disconnect_provider(
             ),
         )
 
-    context.hooks.run_after(
-        "oauth.disconnect",
-        AfterOAuthDisconnectEvent(
-            provider=provider,
-            request=request,
-            user=user,
-            social_account=social_account,
-        ),
+    disconnect_event = AfterOAuthDisconnectEvent(
+        provider=provider,
+        request=request,
+        user=user,
+        social_account=social_account,
+    )
+    context.accounts_storage.on_commit(
+        lambda: context.hooks.run_after("oauth.disconnect", disconnect_event)
     )
 
     return Response(
@@ -889,6 +889,8 @@ def _complete_sign_in(
             auth_request, error=e.error, error_description=e.error_description
         )
 
+    _require_committed_accounts(context)
+
     if auth_request.flow == "session":
         try:
             response = _complete_session(
@@ -905,29 +907,33 @@ def _complete_sign_in(
                 status_code=e.status_code,
             )
 
-        context.hooks.run_after(
-            "oauth.callback",
-            AfterOAuthCallbackEvent(
-                provider=provider,
-                request=request,
-                auth_request=auth_request,
-                callback_data=callback_data,
-                token_response=token_response,
-                user_info=user_info,
-                validated_user_info=validated,
-                user=resolved_user.user,
-                social_account=resolved_social_account.account,
-                created_user=resolved_user.user if resolved_user.created else None,
-                created_social_account=(
-                    resolved_social_account.account
-                    if resolved_social_account.created
-                    else None
-                ),
-                authorization_code=None,
-                redirect_uri=None,
-                client_state=None,
+        session_event = AfterOAuthCallbackEvent(
+            provider=provider,
+            request=request,
+            auth_request=auth_request,
+            callback_data=callback_data,
+            token_response=token_response,
+            user_info=user_info,
+            validated_user_info=validated,
+            user=resolved_user.user,
+            social_account=resolved_social_account.account,
+            created_user=resolved_user.user if resolved_user.created else None,
+            created_social_account=(
+                resolved_social_account.account
+                if resolved_social_account.created
+                else None
             ),
+            authorization_code=None,
+            redirect_uri=None,
+            client_state=None,
         )
+        # The login's session is the last write; follow its commit.
+        on_commit = (
+            context.session_storage.on_commit
+            if context.session_storage is not None
+            else run_now
+        )
+        on_commit(lambda: context.hooks.run_after("oauth.callback", session_event))
 
         return response
 
@@ -935,6 +941,8 @@ def _complete_sign_in(
         code, response = _complete_token(auth_request, resolved_user.user, context)
         assert auth_request.client_redirect_uri is not None
 
+        # Account changes are committed (checked above) and secondary storage
+        # has no transactions, so the code is already durable.
         context.hooks.run_after(
             "oauth.callback",
             AfterOAuthCallbackEvent(
@@ -962,6 +970,20 @@ def _complete_sign_in(
         return response
 
     return Response.error("server_error", error_description="Unknown flow")
+
+
+def _require_committed_accounts(context: Context) -> None:
+    """Refuse to issue a credential or code for uncommitted account changes.
+
+    Raises while an accounts storage defers its commit callbacks, as one that
+    joined an application transaction does. Built-in sign-in does not support
+    that: the login could outlive a rolled-back user.
+    """
+    require_immediate_commit(
+        context.accounts_storage.on_commit,
+        "Sign-in cannot issue a login while account changes are uncommitted; "
+        "do not run the sign-in flow inside an application transaction",
+    )
 
 
 def _flow_error(
@@ -1037,16 +1059,17 @@ def _create_user_with_identity(
     )
     assert identity_data is not None
 
-    context.hooks.run_after(
-        "user.create",
-        AfterUserCreateEvent(user_info=event.user_info, user=user),
+    user_event = AfterUserCreateEvent(user_info=event.user_info, user=user)
+    account_event = AfterSocialAccountCreateEvent(
+        user_info=identity_data["user_info"], social_account=social_account
     )
-    context.hooks.run_after(
-        "social_account.create",
-        AfterSocialAccountCreateEvent(
-            user_info=identity_data["user_info"], social_account=social_account
-        ),
-    )
+
+    # One callback, so a failing user.create hook still skips the next one.
+    def run_after_hooks() -> None:
+        context.hooks.run_after("user.create", user_event)
+        context.hooks.run_after("social_account.create", account_event)
+
+    context.accounts_storage.on_commit(run_after_hooks)
     return user, social_account
 
 
@@ -1192,11 +1215,11 @@ def _create_social_account(
     )
 
     social_account = context.accounts_storage.create_social_account(**data)
-    context.hooks.run_after(
-        "social_account.create",
-        AfterSocialAccountCreateEvent(
-            user_info=data["user_info"], social_account=social_account
-        ),
+    after_event = AfterSocialAccountCreateEvent(
+        user_info=data["user_info"], social_account=social_account
+    )
+    context.accounts_storage.on_commit(
+        lambda: context.hooks.run_after("social_account.create", after_event)
     )
     return social_account
 
@@ -1275,12 +1298,12 @@ def _update_social_account(
         enable_login=enable_login,
         extra_fields=event.extra_fields,
     )
-    context.hooks.run_after(
-        "social_account.update",
-        AfterSocialAccountUpdateEvent(
-            user_info=event.user_info,
-            social_account=updated_social_account,
-        ),
+    after_event = AfterSocialAccountUpdateEvent(
+        user_info=event.user_info,
+        social_account=updated_social_account,
+    )
+    context.accounts_storage.on_commit(
+        lambda: context.hooks.run_after("social_account.update", after_event)
     )
     return updated_social_account
 
@@ -1974,20 +1997,20 @@ def finalize_link(
             status_code=exc.status_code,
         )
 
-    context.hooks.run_after(
-        "oauth.finalize_link",
-        AfterOAuthFinalizeLinkEvent(
-            provider=provider,
-            request=request,
-            user=user,
-            link_data=link_data,
-            allow_login=allow_login,
-            token_response=token_response,
-            user_info=user_info,
-            validated_user_info=validated,
-            social_account=social_account,
-            created_social_account=created_social_account,
-        ),
+    after_event = AfterOAuthFinalizeLinkEvent(
+        provider=provider,
+        request=request,
+        user=user,
+        link_data=link_data,
+        allow_login=allow_login,
+        token_response=token_response,
+        user_info=user_info,
+        validated_user_info=validated,
+        social_account=social_account,
+        created_social_account=created_social_account,
+    )
+    context.accounts_storage.on_commit(
+        lambda: context.hooks.run_after("oauth.finalize_link", after_event)
     )
 
     return Response(status_code=200, body='{"message": "Link finalized"}')

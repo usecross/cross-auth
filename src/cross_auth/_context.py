@@ -5,7 +5,7 @@ from cross_web import HTTPRequest
 from ._clients import ClientResolver, OAuthClient
 from ._config import Config
 from ._email import normalize_email as _default_normalize_email
-from ._login import issue_bearer_session, run_login
+from ._login import issue_bearer_session, run_login, run_now
 from ._session import (
     SessionConfig,
     SessionMetadata,
@@ -15,6 +15,7 @@ from ._session import (
 )
 from ._storage import (
     AccountsStorage,
+    CommitCallback,
     SecondaryStorage,
     SessionRecord,
     SessionStorage,
@@ -117,6 +118,9 @@ class Context:
                 ),
                 hooks=self.hooks,
                 issue=lambda _event: (token_issuer(request), None),
+                # A token_issuer's successful return is its commit point; core
+                # cannot see any transaction behind it.
+                on_commit=run_now,
             )
             return issued
 
@@ -137,6 +141,13 @@ class Context:
             },
         )
         return session_token, expires_in
+
+    def _on_token_commit(self, callback: CommitCallback) -> None:
+        """Schedule callback after the credential ``issue_token`` stored commits."""
+        if self.token_issuer is None and self.session_storage is not None:
+            self.session_storage.on_commit(callback)
+        else:
+            callback()
 
     def get_client(self, client_id: str) -> OAuthClient | None:
         """Look up the current registration without caching application results."""

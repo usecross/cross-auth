@@ -388,8 +388,20 @@ SQLModelSessionStorage(UserSession, session_factory=lambda: Session(engine))
 ```
 
 The adapter opens a session per operation (with `expire_on_commit=False`, so
-committed rows keep their loaded values) and closes it before returning. The
-adapter does not change relationship loading: configure a relationship such as
+committed rows keep their loaded values), commits, and closes it before
+returning, so its `on_commit` runs after hooks immediately. Each session must
+own its transaction: the adapter raises `RuntimeError` before writing when the
+factory returns a session that is already in a transaction, or whose models are
+bound to a `Connection` with an open transaction, because committing it would
+not commit the application's transaction. The adapter checks the session's
+`bind` and, through `Session.get_bind`, the bind of each of its models, so
+per-model `binds` and `get_bind` overrides are covered; a `get_bind` that
+answers differently from one call to the next is not supported. A `Connection`
+with no open transaction is fine: the adapter's session begins and commits its
+own. Joining an application-owned SQLAlchemy session or transaction is not
+supported; an unrelated transaction on another connection does not affect the
+adapter. Use `build_user` for rows that must commit with signup. The adapter
+does not change relationship loading: configure a relationship such as
 `social_accounts` with SQLAlchemy's `lazy="selectin"` when returned users must
 read it after the session closes. A model may omit the relationship entirely;
 use `list_social_accounts` for account access in that case. If your models carry
@@ -642,7 +654,40 @@ class AccountsStorage(Protocol):
     def disconnect_social_account(
         self, *, user_id: Any, provider: str, social_account_id: Any
     ) -> DisconnectResult: ...
+    def on_commit(self, callback: CommitCallback) -> None: ...
 ```
+
+#### Commit callbacks
+
+Cross-Auth calls `on_commit(callback)` after a write succeeds, with a
+`CommitCallback` (`Callable[[], None]`) that runs the write's after hooks. When
+your operations commit before returning, call `callback()` immediately. When
+they join an application transaction, run it once the outermost transaction
+commits (not when a savepoint is released) and discard it if that transaction or
+the savepoint holding the write rolls back. Run callbacks in the order they were
+registered, and let their exceptions propagate: a failure means the write is
+committed but its hooks did not finish. A Django adapter, for example, would use
+`transaction.on_commit(callback, using=alias, robust=False)` for the database
+alias it writes to. Keep callbacks out of your error handling for the write
+itself, so that a hook raising `IntegrityError` is not mistaken for a conflict
+or retried.
+
+The browser sign-in flow refuses to issue a credential while accounts storage
+defers callbacks, so an adapter that joins application transactions supports
+account changes made inside them, not a full sign-in. `sign_in_with_id_token`
+only verifies and resolves the user, so with such an adapter it may return
+records that are not committed yet: commit before you call `auth.login()`,
+`auth.issue_session_token()`, or your own token issuance for that user.
+
+With a session storage that defers callbacks, cookie logins and a `logout` that
+revokes a session raise `RuntimeError` before writing, because their after hooks
+may change a response that is built before the commit. Bearer sessions are still
+issued before the commit: commit before delivering the token. A rollback leaves
+the token unusable and runs no success hooks.
+
+Secondary storage has no commit callbacks: each `set`, `get`, `pop`, and
+`delete` completes on its own, and rolling back accounts or sessions does not
+restore a consumed authorization or link code.
 
 Identity lookups should specify `user_id` for a user's connection or
 `is_login_method=True` for the login owner. An unfiltered identity lookup that
@@ -763,7 +808,11 @@ class SessionStorage(Protocol):
     def revoke(self, session_id: Any, *, revoked_at: AwareDatetime) -> None: ...
     def list_for_user(self, user_id: Any, **kwargs) -> SessionListResult: ...
     def revoke_all_for_user(self, user_id: Any, **kwargs) -> int: ...
+    def on_commit(self, callback: CommitCallback) -> None: ...
 ```
+
+Both storage protocols use `on_commit` as described in
+[Commit callbacks](#commit-callbacks).
 
 `refresh` must atomically update only a session whose `revoked_at` is null and
 whose current `expires_at` is at or after the supplied `updated_at`. This
