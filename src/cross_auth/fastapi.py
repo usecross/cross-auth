@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import secrets
 import warnings
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -22,11 +20,11 @@ from fastapi import Request as FastAPIRequest
 from fastapi import Response as FastAPIResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from ._auth_flow import resolve_user_for_sign_in
 from ._clients import ClientResolver
 from ._config import Config
 from ._context import AccountsStorage, SecondaryStorage, User
 from ._email import normalize_email as _normalize_email
+from ._native import sign_in_with_id_token as _sign_in_with_id_token
 from ._password import authenticate
 from ._request import make_http_request
 from ._session import (
@@ -84,10 +82,8 @@ from .hooks import (
     HookRegistry,
 )
 from .hooks._types import HookEventName
-from .exceptions import CrossAuthException
 from .router import _TRUSTED_ORIGINS_DEPRECATION, AuthRouter
-from .social_providers.oauth import OAuth2Exception, OAuth2Provider
-from .social_providers.oidc import OIDCProvider
+from .social_providers.oauth import OAuth2Provider
 
 _P = ParamSpec("_P")
 _EventT = TypeVar("_EventT")
@@ -141,58 +137,6 @@ class _SocialAccountDecorator(
         Concatenate[_SpecificSocialAccountEventT, _P],
         _SpecificSocialAccountReturnT,
     ]: ...
-
-
-# TODO: if we add more framework integrations, extract shared storage/session
-# logic into a private _BaseCrossAuth class that framework classes inherit from.
-
-
-class _NoTokenResponse:
-    """Native id_token sign-ins have no OAuth token exchange: there is no
-    access or refresh token to store on the social account."""
-
-    access_token = None
-    refresh_token = None
-    access_token_expires_at = None
-    refresh_token_expires_at = None
-    scope = None
-
-
-_NO_TOKEN_RESPONSE = _NoTokenResponse()
-
-
-def _verify_nonce(claims: dict[str, Any], nonce: str) -> None:
-    # Some native SDK integrations send a SHA-256 digest to the provider;
-    # the provider echoes that value rather than hashing it itself.
-    if not isinstance(nonce, str) or not nonce:
-        raise OAuth2Exception(
-            error="invalid_token",
-            error_description="Expected nonce must be a non-empty string",
-        )
-
-    claim = claims.get("nonce")
-    if not isinstance(claim, str) or not claim:
-        raise OAuth2Exception(
-            error="invalid_token",
-            error_description="id_token has no nonce claim to verify",
-        )
-    try:
-        expected = nonce.encode("utf-8")
-        received = claim.encode("utf-8")
-    except UnicodeError as exc:
-        raise OAuth2Exception(
-            error="invalid_token", error_description="Invalid nonce encoding"
-        ) from exc
-
-    hashed = hashlib.sha256(expected).hexdigest().encode("ascii")
-    if not (
-        secrets.compare_digest(received, expected)
-        or secrets.compare_digest(received, hashed)
-    ):
-        raise OAuth2Exception(
-            error="invalid_token",
-            error_description="id_token nonce mismatch",
-        )
 
 
 # request.state slots shared between CrossAuth and SessionCookieMiddleware. The
@@ -447,63 +391,13 @@ class CrossAuth:
         Runs the
         ``oauth.id_token`` hooks.
         """
-        registered = self._providers.get(provider)
-        if registered is None:
-            raise CrossAuthException(
-                "invalid_request",
-                error_description=f"Unknown provider: {provider!r}",
-            )
-        if not isinstance(registered, OIDCProvider):
-            raise CrossAuthException(
-                "invalid_request",
-                error_description=(
-                    f"Provider {provider!r} does not issue id_tokens; only "
-                    "OIDC providers support id_token sign-in"
-                ),
-            )
-
-        event = self._hooks.run_before(
-            "oauth.id_token",
-            BeforeOAuthIdTokenEvent(
-                provider=provider, id_token=id_token, user_info=user_info
-            ),
-        )
-
-        claims = registered.validate_id_token(event.id_token, self._storage)
-        if nonce is not None:
-            _verify_nonce(claims, nonce)
-
-        # Validate identity before adding unsigned metadata, including for
-        # providers with custom claim mapping or validation.
-        verified_user_info = registered.extract_user_info_from_claims(claims)
-        validated = registered.validate_user_info(verified_user_info)
-        merged: dict[str, Any] = {**verified_user_info}
-        # The token's signature protects its claims, not the separate user_info
-        # dictionary. A caller could send their own valid token with someone
-        # else's ID or email in that dictionary. Merging every field would let
-        # them change which account is selected. Allow only display fields here
-        # so apps can still supply names returned separately by providers like
-        # Apple, without accepting caller-supplied identity or permission fields.
-        for key in ("name", "first_name", "last_name", "picture"):
-            if event.user_info is not None and key in event.user_info:
-                merged[key] = event.user_info[key]
-
-        resolved_user, resolved_account = resolve_user_for_sign_in(
-            provider=registered,
+        resolved_user, _ = _sign_in_with_id_token(
             context=self._router.context,
-            validated=validated,
-            user_info=merged,
-            token_response=_NO_TOKEN_RESPONSE,
-        )
-
-        self._hooks.run_after(
-            "oauth.id_token",
-            AfterOAuthIdTokenEvent(
-                provider=provider,
-                user=resolved_user.user,
-                created=resolved_user.created,
-                social_account=resolved_account.account,
-            ),
+            providers=self._providers,
+            provider=provider,
+            id_token=id_token,
+            user_info=user_info,
+            nonce=nonce,
         )
         return resolved_user.user, resolved_user.created
 
