@@ -5,6 +5,7 @@ from cross_web import HTTPRequest
 from ._clients import ClientResolver, OAuthClient
 from ._config import Config
 from ._email import normalize_email as _default_normalize_email
+from ._login import issue_bearer_session, run_login
 from ._session import (
     SessionConfig,
     SessionMetadata,
@@ -21,7 +22,7 @@ from ._storage import (
 )
 from ._tokens import TokenIssueRequest, TokenIssuer
 from .exceptions import CrossAuthException
-from .hooks import HookRegistry
+from .hooks import BeforeLoginEvent, HookRegistry
 
 
 class Context:
@@ -100,8 +101,24 @@ class Context:
         )
 
     def issue_token(self, request: TokenIssueRequest) -> tuple[str, int]:
-        if self.token_issuer is not None:
-            return self.token_issuer(request)
+        """Log ``request.user_id`` in with a bearer token for the token endpoint.
+
+        Runs the ``login`` hooks around a ``token_issuer`` call or, without
+        one, around a new session.
+        """
+        token_issuer = self.token_issuer
+        if token_issuer is not None:
+            issued, _ = run_login(
+                BeforeLoginEvent(
+                    user_id=request.user_id,
+                    credential="bearer",
+                    max_age=None,
+                    metadata=None,
+                ),
+                hooks=self.hooks,
+                issue=lambda _event: (token_issuer(request), None),
+            )
+            return issued
 
         if self.session_storage is None:
             raise CrossAuthException(
@@ -109,15 +126,17 @@ class Context:
                 "The token endpoint requires token_issuer or session_storage",
             )
 
-        resolved = resolve_config(self.session_config)
-        session_token, _ = self.create_session(
+        session_token, _, expires_in = issue_bearer_session(
             request.user_id,
-            {
+            hooks=self.hooks,
+            session_storage=self.session_storage,
+            session_config=self.session_config,
+            metadata={
                 "client_id": request.client_id,
                 "user_agent": _get_header(request.http_request.headers, "user-agent"),
             },
         )
-        return session_token, resolved["max_age"]
+        return session_token, expires_in
 
     def get_client(self, client_id: str) -> OAuthClient | None:
         """Look up the current registration without caching application results."""

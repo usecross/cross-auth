@@ -14,6 +14,7 @@ from cross_auth._auth_flow import AuthRequest
 from cross_auth._clients import ClientResolver
 from cross_auth._config import Config
 from cross_auth._storage import AccountsStorage, SecondaryStorage, SessionStorage, User
+from cross_auth._tokens import TokenIssuer
 from cross_auth.fastapi import CrossAuth
 from cross_auth.social_providers.oauth import OAuth2Provider
 
@@ -65,6 +66,7 @@ def _build_auth(
     default_next_url: str = "/",
     normalize_email: Callable[[str], str] | None = None,
     get_client: ClientResolver | None = None,
+    token_issuer: TokenIssuer | None = None,
 ) -> CrossAuth:
     if config is None:
         config = {"session": {"cookies": {"auth": True}}}
@@ -83,6 +85,7 @@ def _build_auth(
         get_user_from_request=_bearer_user_resolver(accounts_storage),
         normalize_email=normalize_email,
         get_client=get_client,
+        token_issuer=token_issuer,
     )
 
 

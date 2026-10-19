@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from cross_web import HTTPRequest, Cookie, Response
+    from cross_web import HTTPRequest, Response
 
     from .._auth_flow import AuthRequest, InitiateLinkRequest, LinkCodeData
     from .._issuer import (
@@ -37,18 +37,36 @@ class AfterAuthenticateEvent:
     user: User | None
 
 
+LoginCredential = Literal["cookie", "bearer"]
+
+
 @dataclass(frozen=True, slots=True)
 class BeforeLoginEvent:
+    """A login that is about to issue a credential.
+
+    ``user_id`` is the verified identity being logged in; hooks may deny the
+    login by raising but cannot change who is logged in. ``max_age`` and
+    ``metadata`` describe the Cross Auth session that will be created and may
+    be adjusted; both are ``None`` when an application ``token_issuer`` mints
+    the credential. ``response`` is the HTTP response of a cookie login and
+    ``None`` for bearer logins.
+    """
+
     user_id: str
-    response: Response
+    credential: LoginCredential
+    max_age: int | None
+    metadata: SessionMetadata | None
+    response: Response | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class AfterLoginEvent:
+    # The raw token is deliberately not exposed to hooks. ``session_record`` is
+    # ``None`` when an application ``token_issuer`` minted the credential.
     user_id: str
-    response: Response
-    session_record: SessionRecord
-    cookie: Cookie
+    credential: LoginCredential
+    session_record: SessionRecord | None
+    response: Response | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,21 +82,6 @@ class AfterOAuthIdTokenEvent:
     user: User
     created: bool
     social_account: SocialAccount
-
-
-@dataclass(frozen=True, slots=True)
-class BeforeSessionIssueEvent:
-    user_id: str
-    max_age: int | None
-    metadata: SessionMetadata | None
-
-
-@dataclass(frozen=True, slots=True)
-class AfterSessionIssueEvent:
-    # The raw token is deliberately not exposed to hooks; the record carries
-    # everything audit and policy handlers need.
-    user_id: str
-    session_record: SessionRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,7 +309,6 @@ __all__ = [
     "AfterOAuthFinalizeLinkEvent",
     "AfterOAuthIdTokenEvent",
     "AfterOAuthLinkEvent",
-    "AfterSessionIssueEvent",
     "AfterSocialAccountCreateEvent",
     "AfterSocialAccountUpdateEvent",
     "AfterTokenAuthorizationCodeEvent",
@@ -321,10 +323,10 @@ __all__ = [
     "BeforeOAuthFinalizeLinkEvent",
     "BeforeOAuthIdTokenEvent",
     "BeforeOAuthLinkEvent",
-    "BeforeSessionIssueEvent",
     "BeforeSocialAccountCreateEvent",
     "BeforeSocialAccountUpdateEvent",
     "BeforeTokenAuthorizationCodeEvent",
     "BeforeTokenPasswordEvent",
     "BeforeUserCreateEvent",
+    "LoginCredential",
 ]

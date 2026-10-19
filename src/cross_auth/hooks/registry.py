@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import inspect
-import logging
 from collections import defaultdict
 from collections.abc import Callable
 from typing import TypeVar, cast
 
-from ..exceptions import CrossAuthException
 from ._types import (
     _ALL_EVENT_NAMES,
     _RETURNABLE_BEFORE_EVENT_NAMES,
@@ -14,8 +12,6 @@ from ._types import (
     _AfterRuntimeHandler,
     _BeforeRuntimeHandler,
 )
-
-logger = logging.getLogger(__name__)
 
 _EventT = TypeVar("_EventT")
 
@@ -59,20 +55,11 @@ class HookRegistry:
         self._validate_event_name(event)
 
         for handler in self._after.get(event, ()):
-            try:
-                result = handler(payload)
-                if inspect.isawaitable(result):
-                    raise TypeError(
-                        f"{event} hooks for sync events must be synchronous"
-                    )
-                if result is not None:
-                    raise TypeError(f"{event} after hooks must return None")
-            except CrossAuthException:
-                logger.warning(
-                    "Ignoring CrossAuthException raised by after hook for %s",
-                    event,
-                    exc_info=True,
-                )
+            result = handler(payload)
+            if inspect.isawaitable(result):
+                raise TypeError(f"{event} hooks for sync events must be synchronous")
+            if result is not None:
+                raise TypeError(f"{event} after hooks must return None")
 
     @staticmethod
     def _validate_sync_registration(

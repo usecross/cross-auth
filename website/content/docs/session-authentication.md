@@ -223,8 +223,9 @@ token, record = auth.issue_session_token(
 ```
 
 The client sends it as `Authorization: Bearer ...` and `get_current_user`
-resolves it like any other session. No cookie is set; the `session.issue` hooks
-run around the creation, so policy and audit handlers cover this path too.
+resolves it like any other session. No cookie is set; the `login` hooks run
+around the creation with `credential="bearer"`, so the same policy and audit
+handlers cover cookie logins, `/token` grants, and this path.
 
 Because bearer tokens are session records, they are revocable with the same
 session-management APIs. Cross-Auth does not issue JWT access tokens by default.
