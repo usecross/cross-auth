@@ -250,11 +250,13 @@ _IMPORT_ISOLATION_SCRIPT = textwrap.dedent(
     import cross_auth._auth_flow
     import cross_auth._context
     import cross_auth._issuer
+    import cross_auth._setup
     import cross_auth.hooks
     import cross_auth.storage.sqlmodel
-    from cross_web import Response
+    from cross_web import HTTPRequest, Response
     from cross_auth._login import login_with_session
     from cross_auth._native import sign_in_with_id_token
+    from cross_auth._setup import build_auth_setup
     from tests.conftest import (
         MemoryAccountsStorage,
         MemorySessionStorage,
@@ -262,21 +264,27 @@ _IMPORT_ISOLATION_SCRIPT = textwrap.dedent(
     )
     from tests.test_native import VALID_TOKEN, StubOIDCProvider
 
-    context = cross_auth._context.Context(
+    provider = StubOIDCProvider(
+        {"sub": "isolated", "email": "isolated@example.com", "email_verified": True}
+    )
+    setup = build_auth_setup(
+        providers=[provider],
         secondary_storage=MemoryStorage(),
         accounts_storage=MemoryAccountsStorage("unused-hash"),
         get_user_from_request=lambda request: None,
     )
-    provider = StubOIDCProvider(
-        {"sub": "isolated", "email": "isolated@example.com", "email_verified": True}
-    )
     user, _ = sign_in_with_id_token(
-        context=context,
-        providers={provider.id: provider},
+        context=setup.context,
+        providers=setup.providers_by_id,
         provider=provider.id,
         id_token=VALID_TOKEN,
     )
     assert user.created
+
+    token_response = setup.issuer.token(
+        HTTPRequest.from_form_data(data={"client_id": "web"}), setup.context
+    )
+    assert token_response.status_code == 400
 
     response = login_with_session(
         str(user.user.id),
@@ -291,7 +299,7 @@ _IMPORT_ISOLATION_SCRIPT = textwrap.dedent(
 )
 
 
-def test_core_sign_in_does_not_import_fastapi_or_starlette():
+def test_core_setup_and_sign_in_do_not_import_fastapi_or_starlette():
     root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
         [sys.executable, "-c", _IMPORT_ISOLATION_SCRIPT],

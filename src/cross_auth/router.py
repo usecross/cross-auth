@@ -2,7 +2,7 @@ import logging
 import warnings
 from collections.abc import Callable
 from functools import partial
-from typing import Any
+from typing import Any, Self
 
 from cross_web import HTTPRequest, Response
 from fastapi import APIRouter
@@ -21,6 +21,7 @@ from ._config import Config
 from ._context import AccountsStorage, Context, SecondaryStorage, User
 from ._issuer import Issuer
 from ._route import Route
+from ._setup import AuthSetup, build_auth_setup
 from ._storage import SessionStorage
 from ._tokens import TokenIssuer
 from .hooks import HookRegistry
@@ -126,6 +127,8 @@ def _provider_routes(provider: OAuth2Provider, *, cookie_auth: bool) -> list[Rou
 
 
 class AuthRouter(APIRouter):
+    context: Context
+    issuer: Issuer
     extra_schemas: dict[str, Any]
 
     def __init__(
@@ -148,12 +151,8 @@ class AuthRouter(APIRouter):
             warnings.warn(
                 _TRUSTED_ORIGINS_DEPRECATION, DeprecationWarning, stacklevel=2
             )
-        super().__init__()
-
-        self.issuer = Issuer()
-        self.extra_schemas = {}
-
-        context = Context(
+        setup = build_auth_setup(
+            providers=providers,
             secondary_storage=secondary_storage,
             accounts_storage=accounts_storage,
             session_storage=session_storage,
@@ -166,18 +165,34 @@ class AuthRouter(APIRouter):
             normalize_email=normalize_email,
             get_client=get_client,
         )
-        self.context = context
+        self._mount(setup)
+
+    @classmethod
+    def _from_setup(cls, setup: AuthSetup) -> Self:
+        """Route against a setup that was already built (by ``CrossAuth``)."""
+        router = cls.__new__(cls)
+        router._mount(setup)
+        return router
+
+    def _mount(self, setup: AuthSetup) -> None:
+        super().__init__()
+
+        self.issuer = setup.issuer
+        self.extra_schemas = {}
+        self.context = setup.context
 
         provider_routes: list[Route] = []
-        for provider in providers:
+        for provider in setup.providers:
             provider_routes.extend(
-                _provider_routes(provider, cookie_auth=context.cookie_auth_enabled)
+                _provider_routes(
+                    provider, cookie_auth=setup.context.cookie_auth_enabled
+                )
             )
 
         for route in provider_routes + self.issuer.routes:
             self.add_api_route(
                 route.path,
-                route.to_fastapi_endpoint(context),
+                route.to_fastapi_endpoint(setup.context),
                 methods=route.methods,
                 response_model=route.response_model,
                 operation_id=route.operation_id,
