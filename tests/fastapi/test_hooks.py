@@ -43,10 +43,7 @@ from cross_auth.hooks import (
     BeforeUserCreateEvent,
     HookRegistry,
 )
-from cross_auth.social_providers.oauth import (
-    OAuth2Provider,
-    ValidatedUserInfo,
-)
+from cross_auth.social_providers.oauth import OAuth2Provider
 
 from ..conftest import TEST_PASSWORD
 from ..providers.conftest import TestOAuth2Provider
@@ -421,22 +418,14 @@ def test_oauth_callback_hooks(
     )
 
     @auth.before("oauth.callback")
-    def rewrite_email(
+    def add_display_name(
         event: BeforeOAuthCallbackEvent,
     ) -> BeforeOAuthCallbackEvent:
-        user_info = {
-            **event.user_info,
-            "email": "hooked@example.com",
-        }
-        validated = ValidatedUserInfo(
-            email="hooked@example.com",
-            provider_user_id=event.validated_user_info.provider_user_id,
-            email_verified=event.validated_user_info.email_verified,
-        )
-        return replace(event, user_info=user_info, validated_user_info=validated)
+        return replace(event, user_info={**event.user_info, "name": "Hooked"})
 
     @auth.after("oauth.callback")
     def capture_created_user(event: AfterOAuthCallbackEvent) -> None:
+        seen["name"] = event.user_info.get("name")
         if event.created_user is not None:
             seen["email"] = event.created_user.email
 
@@ -473,8 +462,8 @@ def test_oauth_callback_hooks(
         )
 
     assert resp.status_code == 302
-    assert seen == {"email": "hooked@example.com"}
-    assert accounts_storage.find_user_by_email("hooked@example.com") is not None
+    assert seen == {"name": "Hooked", "email": "new-user@example.com"}
+    assert accounts_storage.find_user_by_email("new-user@example.com") is not None
 
 
 def test_social_account_create_and_update_hooks_can_share_handlers(
@@ -609,24 +598,16 @@ def test_oauth_callback_hooks_run_for_session_flow(
     seen: dict[str, str | None] = {}
 
     @auth.before("oauth.callback")
-    def rewrite_session_email(
+    def add_session_display_name(
         event: BeforeOAuthCallbackEvent,
     ) -> BeforeOAuthCallbackEvent:
-        user_info = {
-            **event.user_info,
-            "email": "session-hooked@example.com",
-        }
-        validated = ValidatedUserInfo(
-            email="session-hooked@example.com",
-            provider_user_id=event.validated_user_info.provider_user_id,
-            email_verified=event.validated_user_info.email_verified,
-        )
-        return replace(event, user_info=user_info, validated_user_info=validated)
+        return replace(event, user_info={**event.user_info, "name": "Session"})
 
     @auth.after("oauth.callback")
     def capture_session_callback(event: AfterOAuthCallbackEvent) -> None:
         assert event.authorization_code is None
         assert event.redirect_uri is None
+        seen["name"] = event.user_info.get("name")
         if event.created_user is not None:
             seen["email"] = event.created_user.email
 
@@ -666,8 +647,10 @@ def test_oauth_callback_hooks_run_for_session_flow(
     session_id = resp.cookies.get("session_id")
     assert resp.status_code == 302
     assert session_id is not None
-    assert seen == {"email": "session-hooked@example.com"}
-    assert accounts_storage.find_user_by_email("session-hooked@example.com") is not None
+    assert seen == {"name": "Session", "email": "new-session-user@example.com"}
+    assert (
+        accounts_storage.find_user_by_email("new-session-user@example.com") is not None
+    )
 
     session = get_session(session_id, session_storage)
     assert session is not None

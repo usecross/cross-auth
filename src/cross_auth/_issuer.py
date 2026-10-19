@@ -18,6 +18,7 @@ from .hooks import (
     AfterTokenPasswordEvent,
     BeforeTokenAuthorizationCodeEvent,
     BeforeTokenPasswordEvent,
+    UserSnapshot,
 )
 
 
@@ -305,7 +306,7 @@ class Issuer:
                 BeforeTokenPasswordEvent(
                     client_id=request.client_id,
                     username=request.username,
-                    user=user,
+                    user=None if user is None else UserSnapshot.of(user),
                     scope=request.scope,
                 ),
             )

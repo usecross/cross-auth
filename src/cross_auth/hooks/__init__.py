@@ -28,6 +28,9 @@ from .events import (
     BeforeTokenPasswordEvent,
     BeforeUserCreateEvent,
     LoginCredential,
+    ProviderSnapshot,
+    SocialAccountSnapshot,
+    UserSnapshot,
 )
 from .registry import HookRegistry
 
@@ -62,4 +65,7 @@ __all__ = [
     "BeforeUserCreateEvent",
     "HookRegistry",
     "LoginCredential",
+    "ProviderSnapshot",
+    "SocialAccountSnapshot",
+    "UserSnapshot",
 ]

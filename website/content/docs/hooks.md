@@ -50,6 +50,31 @@ queue, or observability code.
   the hook boundary.
 - Do not enforce security policy in an `after` hook. If an operation should be
   blocked, raise `CrossAuthException` from the matching `before` hook.
+- `before` hooks cannot change an identity Cross-Auth has already established:
+  the provider, the verified `provider_user_id`, `email`, and `email_verified`
+  claims, and the raw `id`, `email`, and `email_verified` keys of `user_info` in
+  OAuth callback and finalize-link hooks; the resolved `email`,
+  `email_verified`, and those raw `user_info` keys in `user.create`; the
+  signed-in user in link, finalize-link, password-grant, and `login` hooks; and
+  a social account's owner, provider identity, `is_login_method`,
+  `provider_email`, `provider_email_verified`, and raw `user_info` keys. Hooks
+  can read these values to deny an operation. Canonicalize emails with the
+  `normalize_email` callback passed to `CrossAuth`.
+- `before` hooks receive read-only records from `cross_auth.hooks` instead of
+  the live provider and stored objects: `ProviderSnapshot` (`id`,
+  `trust_email`), `UserSnapshot` (`id`, `email`, `email_verified`), and
+  `SocialAccountSnapshot` (`id`, `user_id`, `provider`, `provider_user_id`,
+  `provider_email`, `provider_email_verified`, `is_login_method`).
+  `validated_user_info` is a frozen `ValidatedUserInfo`. Assigning to any of
+  them raises `dataclasses.FrozenInstanceError`. Returning an event that changes
+  an established identity raises `ValueError` before anything is resolved or
+  saved, and policy-only before hooks (`oauth.link`, `oauth.disconnect`,
+  `token.password`, `token.authorization_code`) raise `TypeError` for any
+  returned event. `after` hooks still receive the stored objects.
+- These rules cover the data Cross-Auth passes to hooks. Hooks are trusted
+  application code: Cross-Auth does not sandbox or undo a hook that changes
+  global state, writes to storage directly, or calls an external service, even
+  when the hook then raises.
 - Hook exceptions propagate, including exceptions from `after` hooks. An `after`
   hook runs once the operation has succeeded, so its failure cannot undo it: a
   session that was already saved stays saved. Catch and report errors from
@@ -192,11 +217,14 @@ def audit_logout(event: AfterLogoutEvent) -> None:
 Runs only when Cross-Auth is about to create a new local user. The `before` hook
 contains the resolved email fields, raw provider `user_info`, and app-specific
 `extra_fields`. It may abort by raising `CrossAuthException` or return a
-replacement event to add fields required by your user model. The `after` hook
-runs after the storage implementation has committed both the user and provider
-identity, including required application rows, and receives the created user. It
-runs before `after social_account.create`. Neither after-create hook runs if
-signup rolls back.
+replacement event to add fields required by your user model. `email` (already
+canonicalized by `normalize_email`), `email_verified`, and the `id`, `email`,
+and `email_verified` keys of `user_info` are read-only; other `user_info` keys
+are profile metadata. The `after` hook runs after the storage implementation has
+committed both the user and provider identity, including required application
+rows, and receives the created user. It runs before
+`after social_account.create`. Neither after-create hook runs if signup rolls
+back.
 
 Use after hooks for external work such as welcome emails or billing requests. If
 an after hook fails, the committed signup remains saved; the request can fail
@@ -229,25 +257,28 @@ def track_created_user(event: AfterUserCreateEvent) -> None:
     analytics.capture("account_created", user_id=str(event.user.id))
 ```
 
-`extra_fields` cannot replace `email` or `email_verified`; use the dedicated
-event field instead. Built-in SQLModel storage validates and writes extra fields
-as mapped columns. Custom `AccountsStorage` implementations receive the mapping
-in the `user` argument to `create_user_with_identity` and decide how to persist
-it.
+`extra_fields` cannot replace `email` or `email_verified`. Built-in SQLModel
+storage validates and writes extra fields as mapped columns. Custom
+`AccountsStorage` implementations receive the mapping in the `user` argument to
+`create_user_with_identity` and decide how to persist it.
 
 ### `social_account.create` and `social_account.update`
 
 These hooks run around every social-account create and update, including browser
 OAuth, native ID-token sign-in, connect, and finalize-link flows. The `before`
 events contain the resolved standard fields and raw provider `user_info`; the
-update event also contains the existing social account. Return a replacement
-event to alter writable token/profile fields or add app-specific `extra_fields`.
-Identity fields on an existing account are context rather than update targets.
-The update event's `is_login_method` also describes its current stored
-eligibility; changing that field does not enable or disable login. Control a
-requested promotion through `allow_login` in the `before oauth.finalize_link`
-hook. The after-update event contains the saved account, including any
-promotion. The built-in SQLModel adapter validates and writes the extra columns.
+update event also contains a `SocialAccountSnapshot` of the existing account.
+Return a replacement event to alter writable token/profile fields or add
+app-specific `extra_fields`. `user_id`, `provider`, `provider_user_id`,
+`is_login_method`, `provider_email`, `provider_email_verified`, the `id`,
+`email`, and `email_verified` keys of `user_info`, and, for updates, the
+`social_account` snapshot are read-only: changing them raises `ValueError` and
+nothing is written. On update, `provider_email` and `provider_email_verified`
+carry the provider's current claims, so a provider-verified email change still
+refreshes the stored account. Control a requested promotion through
+`allow_login` in the `before oauth.finalize_link` hook. The after-update event
+contains the saved account, including any promotion. The built-in SQLModel
+adapter validates and writes the extra columns.
 
 Stack the two decorators when the same handler applies to both operations. The
 event's literal `operation` field remains available to shared handlers.
@@ -334,10 +365,13 @@ async def track_authorize(event: AfterOAuthAuthorizeEvent) -> None:
 ### `oauth.callback`
 
 Runs after the OAuth provider returns user information and before Cross-Auth
-creates or finds the local user. Use it to enforce provider-claim policy, or to
-replace `user_info` / `validated_user_info` for provider claim normalization,
-then provision profiles or audit newly connected provider accounts after
-success.
+creates or finds the local user. Use it to enforce provider-claim policy or to
+adjust raw `user_info` profile data, then provision profiles or audit newly
+connected provider accounts after success. The provider (a `ProviderSnapshot`)
+and `validated_user_info` (`provider_user_id`, `email`, `email_verified`) select
+and link the account and cannot be changed. Nor can the raw `id`, `email`, and
+`email_verified` keys of `user_info`, which storage adapters may read when
+creating users; other `user_info` keys are profile metadata.
 
 ```python
 from cross_auth.hooks import AfterOAuthCallbackEvent, BeforeOAuthCallbackEvent
@@ -382,8 +416,9 @@ authorization-code client flows.
 
 Runs when an authenticated user starts linking another OAuth provider account.
 Use it to decide whether the current user is allowed to begin linking, then
-record link-start telemetry once Cross-Auth creates the linking state. This
-before hook is policy-only and must return `None`.
+record link-start telemetry once Cross-Auth creates the linking state. The
+before event carries a `UserSnapshot` and a `ProviderSnapshot`. This before hook
+is policy-only and must return `None`.
 
 ```python
 from cross_auth.hooks import AfterOAuthLinkEvent, BeforeOAuthLinkEvent
@@ -413,8 +448,10 @@ async def audit_link_start(event: AfterOAuthLinkEvent) -> None:
 
 Runs after the provider returns account data for a link flow and before that
 provider account is attached to the signed-in user. Use it to reject conflicting
-identities, replace provider claim data, or disable login-on-link, then sync
-metadata after the link succeeds.
+identities, adjust raw `user_info` profile data, or disable login-on-link, then
+sync metadata after the link succeeds. The signed-in `user` (a `UserSnapshot`),
+the provider (a `ProviderSnapshot`), `validated_user_info`, and the raw `id`,
+`email`, and `email_verified` keys of `user_info` cannot be changed.
 
 ```python
 from cross_auth.hooks import (
@@ -462,8 +499,9 @@ that check.
 
 The after hook runs only after deletion commits. It does not run when storage
 rejects the deletion or rolls back. Use it for external cleanup, such as
-provider token revocation. The before hook is policy-only and must return
-`None`.
+provider token revocation. The before event carries `ProviderSnapshot`,
+`UserSnapshot`, and `SocialAccountSnapshot` records. The before hook is
+policy-only and must return `None`.
 
 ```python
 from cross_auth.hooks import (
@@ -498,8 +536,9 @@ async def cleanup_provider_state(event: AfterOAuthDisconnectEvent) -> None:
 
 Runs around OAuth password-grant token issuance. Use it to restrict which
 clients may exchange usernames and passwords for tokens, then audit or measure
-successful token issuance. This before hook is policy-only and must return
-`None`.
+successful token issuance. The before event's `user` is a `UserSnapshot`, or
+`None` when no user matches the username. This before hook is policy-only and
+must return `None`.
 
 ```python
 from cross_auth.hooks import AfterTokenPasswordEvent, BeforeTokenPasswordEvent

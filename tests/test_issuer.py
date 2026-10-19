@@ -11,7 +11,7 @@ from cross_auth._issuer import AuthorizationCodeGrantData, Issuer
 from cross_auth._password import DUMMY_PASSWORD_HASH
 from cross_auth._storage import SecondaryStorage
 from cross_auth.exceptions import CrossAuthException
-from cross_auth.hooks import BeforeTokenPasswordEvent
+from cross_auth.hooks import BeforeTokenPasswordEvent, UserSnapshot
 
 from .conftest import MemorySessionStorage
 
@@ -555,7 +555,7 @@ def test_password_grant_preserves_unknown_hook_error_type(
     assert looked_up_user is not None
 
     def reject_request(event: BeforeTokenPasswordEvent) -> None:
-        assert event.user is looked_up_user
+        assert event.user == UserSnapshot.of(looked_up_user)
         raise CrossAuthException("forbidden", "Password grant is forbidden")
 
     context.hooks.register_before(

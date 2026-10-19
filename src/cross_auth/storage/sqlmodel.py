@@ -1162,7 +1162,7 @@ class SQLModelAccountsStorage(
             fields = sorted(conflicts)
             raise ValueError(
                 "user.create extra_fields cannot replace standard "
-                f"field(s) {fields!r}; use the dedicated event field"
+                f"field(s) {fields!r}"
             )
         values.update(extra_fields)
 

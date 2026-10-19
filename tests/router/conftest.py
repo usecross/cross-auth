@@ -153,9 +153,10 @@ def load_auth_request(storage: SecondaryStorage, state: str) -> AuthRequest:
 
 def mock_token_and_userinfo(
     *,
-    email: str = "alice@example.com",
+    email: str | None = "alice@example.com",
     provider_user_id: str = "fake-user-1",
-    email_verified: bool = True,
+    email_verified: bool | None = True,
+    name: str | None = None,
 ) -> None:
     """Register respx mocks for token + userinfo. Call inside @respx.mock context."""
     respx.post("https://fake.example/oauth/token").mock(
@@ -175,6 +176,7 @@ def mock_token_and_userinfo(
                 "id": provider_user_id,
                 "email": email,
                 "email_verified": email_verified,
+                **({} if name is None else {"name": name}),
             },
         )
     )

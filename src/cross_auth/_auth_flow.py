@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 import hashlib
 import json
@@ -35,6 +35,9 @@ from .hooks import (
     BeforeSocialAccountCreateEvent,
     BeforeSocialAccountUpdateEvent,
     BeforeUserCreateEvent,
+    ProviderSnapshot,
+    SocialAccountSnapshot,
+    UserSnapshot,
 )
 from .models.oauth_token_response import TokenResponse
 from .social_providers.oauth import (
@@ -278,10 +281,10 @@ def disconnect_provider(
         context.hooks.run_before(
             "oauth.disconnect",
             BeforeOAuthDisconnectEvent(
-                provider=provider,
+                provider=ProviderSnapshot.of(provider),
                 request=request,
-                user=user,
-                social_account=social_account,
+                user=UserSnapshot.of(user),
+                social_account=SocialAccountSnapshot.of(social_account),
             ),
         )
     except CrossAuthException as e:
@@ -507,7 +510,7 @@ def start_token_flow(
     login_hint = request.query_params.get("login_hint")
 
     authorize_event = BeforeOAuthAuthorizeEvent(
-        provider=provider,
+        provider=ProviderSnapshot.of(provider),
         request=request,
         login_hint=login_hint,
     )
@@ -842,8 +845,10 @@ def _complete_sign_in(
     validated: ValidatedUserInfo,
 ) -> Response:
     """Check login eligibility and complete a session or token sign-in."""
+    provider_snapshot = ProviderSnapshot.of(provider)
+    raw_claims = _raw_identity_claims(user_info)
     callback_event = BeforeOAuthCallbackEvent(
-        provider=provider,
+        provider=provider_snapshot,
         request=request,
         user_info=user_info,
         validated_user_info=validated,
@@ -862,8 +867,14 @@ def _complete_sign_in(
             status_code=e.status_code,
         )
 
+    _check_verified_identity(
+        "oauth.callback",
+        callback_event,
+        provider=provider_snapshot,
+        validated=validated,
+        raw_claims=raw_claims,
+    )
     user_info = callback_event.user_info
-    validated = callback_event.validated_user_info
 
     try:
         resolved_user, resolved_social_account = resolve_user_for_sign_in(
@@ -988,6 +999,7 @@ def _create_user_with_identity(
     email_verified: bool,
     identity: Callable[[User], SocialAccountCreate],
 ) -> tuple[User, SocialAccount]:
+    raw_claims = _raw_identity_claims(user_info)
     event = context.hooks.run_before(
         "user.create",
         BeforeUserCreateEvent(
@@ -997,6 +1009,16 @@ def _create_user_with_identity(
             extra_fields={},
         ),
     )
+    if (
+        event.email != email
+        or event.email_verified != email_verified
+        or _raw_identity_claims(event.user_info) != raw_claims
+    ):
+        raise ValueError(
+            "user.create before hooks cannot change email, email_verified or "
+            f"{_RAW_IDENTITY_CLAIMS_TEXT}; configure normalize_email to "
+            "canonicalize emails"
+        )
     identity_data: SocialAccountCreate | None = None
 
     def prepare_identity(user: User) -> SocialAccountCreate:
@@ -1007,8 +1029,8 @@ def _create_user_with_identity(
     user, social_account = context.accounts_storage.create_user_with_identity(
         user={
             "user_info": event.user_info,
-            "email": event.email,
-            "email_verified": event.email_verified,
+            "email": email,
+            "email_verified": email_verified,
             "extra_fields": event.extra_fields,
         },
         identity=prepare_identity,
@@ -1044,6 +1066,7 @@ def _prepare_social_account(
     provider_email_verified: bool | None,
     is_login_method: bool,
 ) -> SocialAccountCreate:
+    raw_claims = _raw_identity_claims(user_info)
     event = context.hooks.run_before(
         "social_account.create",
         BeforeSocialAccountCreateEvent(
@@ -1062,19 +1085,33 @@ def _prepare_social_account(
             extra_fields={},
         ),
     )
+    if (
+        event.user_id != user_id
+        or event.provider != provider
+        or event.provider_user_id != provider_user_id
+        or event.is_login_method != is_login_method
+        or event.provider_email != provider_email
+        or event.provider_email_verified != provider_email_verified
+        or _raw_identity_claims(event.user_info) != raw_claims
+    ):
+        raise ValueError(
+            "social_account.create before hooks cannot change user_id, provider, "
+            "provider_user_id, is_login_method, provider_email, "
+            f"provider_email_verified or {_RAW_IDENTITY_CLAIMS_TEXT}"
+        )
     return SocialAccountCreate(
-        user_id=event.user_id,
-        provider=event.provider,
-        provider_user_id=event.provider_user_id,
+        user_id=user_id,
+        provider=provider,
+        provider_user_id=provider_user_id,
         access_token=event.access_token,
         refresh_token=event.refresh_token,
         access_token_expires_at=event.access_token_expires_at,
         refresh_token_expires_at=event.refresh_token_expires_at,
         scope=event.scope,
         user_info=event.user_info,
-        provider_email=event.provider_email,
-        provider_email_verified=event.provider_email_verified,
-        is_login_method=event.is_login_method,
+        provider_email=provider_email,
+        provider_email_verified=provider_email_verified,
+        is_login_method=is_login_method,
         extra_fields=event.extra_fields,
     )
 
@@ -1178,13 +1215,15 @@ def _update_social_account(
     provider_email_verified: bool | None,
     enable_login: bool = False,
 ) -> SocialAccount:
+    snapshot = SocialAccountSnapshot.of(social_account)
+    raw_claims = _raw_identity_claims(user_info)
     event = context.hooks.run_before(
         "social_account.update",
         BeforeSocialAccountUpdateEvent(
-            social_account=social_account,
-            user_id=social_account.user_id,
-            provider=social_account.provider,
-            provider_user_id=social_account.provider_user_id,
+            social_account=snapshot,
+            user_id=snapshot.user_id,
+            provider=snapshot.provider,
+            provider_user_id=snapshot.provider_user_id,
             access_token=access_token,
             refresh_token=refresh_token,
             access_token_expires_at=access_token_expires_at,
@@ -1193,10 +1232,27 @@ def _update_social_account(
             user_info=user_info,
             provider_email=provider_email,
             provider_email_verified=provider_email_verified,
-            is_login_method=social_account.is_login_method,
+            is_login_method=snapshot.is_login_method,
             extra_fields={},
         ),
     )
+    if (
+        event.social_account != snapshot
+        or event.user_id != snapshot.user_id
+        or event.provider != snapshot.provider
+        or event.provider_user_id != snapshot.provider_user_id
+        or event.is_login_method != snapshot.is_login_method
+        # Compared with the incoming provider claims, not the stored ones, so a
+        # provider-verified email change still refreshes the account.
+        or event.provider_email != provider_email
+        or event.provider_email_verified != provider_email_verified
+        or _raw_identity_claims(event.user_info) != raw_claims
+    ):
+        raise ValueError(
+            "social_account.update before hooks cannot change the account, its "
+            "user_id, provider, provider_user_id, is_login_method, "
+            f"provider_email, provider_email_verified or {_RAW_IDENTITY_CLAIMS_TEXT}"
+        )
     if enable_login and not social_account.is_login_method:
         _check_social_account_ownership(
             context,
@@ -1214,8 +1270,8 @@ def _update_social_account(
         refresh_token_expires_at=event.refresh_token_expires_at,
         scope=event.scope,
         user_info=event.user_info,
-        provider_email=event.provider_email,
-        provider_email_verified=event.provider_email_verified,
+        provider_email=provider_email,
+        provider_email_verified=provider_email_verified,
         enable_login=enable_login,
         extra_fields=event.extra_fields,
     )
@@ -1227,6 +1283,38 @@ def _update_social_account(
         ),
     )
     return updated_social_account
+
+
+# The standard identity claims of ``UserInfo``. The rest of ``user_info`` is
+# profile metadata hooks may adjust, but storage adapters may read these keys.
+_RAW_IDENTITY_CLAIMS = ("id", "email", "email_verified")
+_RAW_IDENTITY_CLAIMS_TEXT = "the user_info id, email or email_verified"
+
+
+def _raw_identity_claims(user_info: Mapping[str, object]) -> dict[str, object]:
+    return {key: user_info[key] for key in _RAW_IDENTITY_CLAIMS if key in user_info}
+
+
+def _check_verified_identity(
+    event_name: str,
+    event: BeforeOAuthCallbackEvent | BeforeOAuthFinalizeLinkEvent,
+    *,
+    provider: ProviderSnapshot,
+    validated: ValidatedUserInfo,
+    raw_claims: dict[str, object],
+) -> None:
+    # The verified claims select the account and decide auto-linking, signup
+    # and link checks, so hooks may read them but not change them. Callers keep
+    # using the original provider and claims; this only rejects the attempt.
+    if (
+        event.provider != provider
+        or event.validated_user_info != validated
+        or _raw_identity_claims(event.user_info) != raw_claims
+    ):
+        raise ValueError(
+            f"{event_name} before hooks cannot change the provider, the verified "
+            f"provider_user_id, email or email_verified, or {_RAW_IDENTITY_CLAIMS_TEXT}"
+        )
 
 
 def resolve_user_for_sign_in(
@@ -1605,9 +1693,9 @@ def start_link_flow(
         context.hooks.run_before(
             "oauth.link",
             BeforeOAuthLinkEvent(
-                provider=provider,
+                provider=ProviderSnapshot.of(provider),
                 request=request,
-                user=user,
+                user=UserSnapshot.of(user),
             ),
         )
     except CrossAuthException as e:
@@ -1786,10 +1874,13 @@ def finalize_link(
     except OAuth2Exception as e:
         return Response.error(e.error, error_description=e.error_description)
 
+    provider_snapshot = ProviderSnapshot.of(provider)
+    user_snapshot = UserSnapshot.of(user)
+    raw_claims = _raw_identity_claims(user_info)
     finalize_event = BeforeOAuthFinalizeLinkEvent(
-        provider=provider,
+        provider=provider_snapshot,
         request=request,
-        user=user,
+        user=user_snapshot,
         allow_login=allow_login,
         user_info=user_info,
         validated_user_info=validated,
@@ -1806,9 +1897,17 @@ def finalize_link(
             status_code=e.status_code,
         )
 
+    if finalize_event.user != user_snapshot:
+        raise ValueError("oauth.finalize_link before hooks cannot change the user")
+    _check_verified_identity(
+        "oauth.finalize_link",
+        finalize_event,
+        provider=provider_snapshot,
+        validated=validated,
+        raw_claims=raw_claims,
+    )
     allow_login = finalize_event.allow_login
     user_info = finalize_event.user_info
-    validated = finalize_event.validated_user_info
 
     account_linking = context.config.get("account_linking", {})
     if not account_linking.get("enabled", False):

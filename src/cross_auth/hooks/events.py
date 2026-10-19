@@ -25,6 +25,61 @@ if TYPE_CHECKING:
     )
 
 
+# Before hooks receive these read-only views instead of the live provider and
+# storage-backed records, so a hook cannot change an identity in place. They
+# hold only immutable values; credentials and provider configuration stay out.
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderSnapshot:
+    """Read-only view of an OAuth provider given to before hooks."""
+
+    id: str
+    trust_email: bool
+
+    @classmethod
+    def of(cls, provider: OAuth2Provider) -> ProviderSnapshot:
+        return cls(id=provider.id, trust_email=provider.trust_email)
+
+
+@dataclass(frozen=True, slots=True)
+class UserSnapshot:
+    """Read-only view of a stored user given to before hooks."""
+
+    id: Any
+    email: str | None
+    email_verified: bool
+
+    @classmethod
+    def of(cls, user: User) -> UserSnapshot:
+        return cls(id=user.id, email=user.email, email_verified=user.email_verified)
+
+
+@dataclass(frozen=True, slots=True)
+class SocialAccountSnapshot:
+    """Read-only view of a stored social account given to before hooks."""
+
+    id: Any
+    user_id: Any
+    provider: str
+    provider_user_id: str
+    provider_email: str | None
+    provider_email_verified: bool | None
+    is_login_method: bool
+
+    @classmethod
+    def of(cls, social_account: SocialAccount) -> SocialAccountSnapshot:
+        return cls(
+            id=social_account.id,
+            user_id=social_account.user_id,
+            provider=social_account.provider,
+            provider_user_id=social_account.provider_user_id,
+            provider_email=social_account.provider_email,
+            provider_email_verified=social_account.provider_email_verified,
+            is_login_method=social_account.is_login_method,
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class BeforeAuthenticateEvent:
     email: str
@@ -86,6 +141,14 @@ class AfterOAuthIdTokenEvent:
 
 @dataclass(frozen=True, slots=True)
 class BeforeUserCreateEvent:
+    """A user about to be created.
+
+    ``email`` is already canonicalized by ``normalize_email``. ``email``,
+    ``email_verified`` and the ``id``, ``email`` and ``email_verified`` keys of
+    ``user_info`` are read-only; hooks may adjust ``extra_fields`` and other
+    ``user_info`` profile metadata.
+    """
+
     user_info: dict[str, Any]
     email: str
     email_verified: bool
@@ -125,7 +188,7 @@ class AfterSocialAccountCreateEvent:
 
 @dataclass(frozen=True, slots=True)
 class BeforeSocialAccountUpdateEvent:
-    social_account: SocialAccount
+    social_account: SocialAccountSnapshot
     user_id: Any
     provider: str
     provider_user_id: str
@@ -165,7 +228,7 @@ class AfterLogoutEvent:
 
 @dataclass(frozen=True, slots=True)
 class BeforeOAuthAuthorizeEvent:
-    provider: OAuth2Provider
+    provider: ProviderSnapshot
     request: HTTPRequest
     login_hint: str | None
 
@@ -186,7 +249,15 @@ class AfterOAuthAuthorizeEvent:
 
 @dataclass(frozen=True, slots=True)
 class BeforeOAuthCallbackEvent:
-    provider: OAuth2Provider
+    """Provider data about to sign a user in.
+
+    ``provider`` and the verified ``validated_user_info`` claims select,
+    auto-link or create the account; hooks may read them but not change them.
+    ``user_info`` profile metadata may be adjusted, except its ``id``, ``email``
+    and ``email_verified`` keys.
+    """
+
+    provider: ProviderSnapshot
     request: HTTPRequest
     user_info: UserInfo
     validated_user_info: ValidatedUserInfo
@@ -212,9 +283,9 @@ class AfterOAuthCallbackEvent:
 
 @dataclass(frozen=True, slots=True)
 class BeforeOAuthLinkEvent:
-    provider: OAuth2Provider
+    provider: ProviderSnapshot
     request: HTTPRequest
-    user: User
+    user: UserSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,9 +300,16 @@ class AfterOAuthLinkEvent:
 
 @dataclass(frozen=True, slots=True)
 class BeforeOAuthFinalizeLinkEvent:
-    provider: OAuth2Provider
+    """Provider data about to be linked to the signed-in ``user``.
+
+    ``provider``, ``user`` and the verified ``validated_user_info`` claims are
+    read-only; ``allow_login`` and the ``user_info`` profile metadata may be
+    adjusted, except its ``id``, ``email`` and ``email_verified`` keys.
+    """
+
+    provider: ProviderSnapshot
     request: HTTPRequest
-    user: User
+    user: UserSnapshot
     allow_login: bool
     user_info: UserInfo
     validated_user_info: ValidatedUserInfo
@@ -253,10 +331,10 @@ class AfterOAuthFinalizeLinkEvent:
 
 @dataclass(frozen=True, slots=True)
 class BeforeOAuthDisconnectEvent:
-    provider: OAuth2Provider
+    provider: ProviderSnapshot
     request: HTTPRequest
-    user: User
-    social_account: SocialAccount
+    user: UserSnapshot
+    social_account: SocialAccountSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,7 +349,7 @@ class AfterOAuthDisconnectEvent:
 class BeforeTokenPasswordEvent:
     client_id: str
     username: str
-    user: User | None
+    user: UserSnapshot | None
     scope: str | None
 
 
@@ -329,4 +407,7 @@ __all__ = [
     "BeforeTokenPasswordEvent",
     "BeforeUserCreateEvent",
     "LoginCredential",
+    "ProviderSnapshot",
+    "SocialAccountSnapshot",
+    "UserSnapshot",
 ]

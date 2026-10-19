@@ -1,11 +1,13 @@
 """Contracts for the shared model bases and application-owned schema fields."""
 
+from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
 from typing import assert_type
 
 import pytest
 from sqlmodel import Session
 
+from cross_auth.hooks import SocialAccountSnapshot, UserSnapshot
 from cross_auth.storage.sqlmodel import SQLModelSessionStorage
 
 from .models import AliasedVerifiedUser, LeanSocialAccount, UserSession
@@ -60,3 +62,45 @@ def test_session_model_requires_base_even_if_attributes_exist(engine):
 
     with pytest.raises(TypeError, match="must inherit from SQLModelSession"):
         LegacyStorage(session_factory=lambda: Session(engine))
+
+
+def test_hook_snapshots_read_models_through_the_record_protocols(engine):
+    # Hook snapshots use only the read-only protocol properties, so property
+    # verification and credential-less accounts work, and integer keys keep
+    # their type.
+    with Session(engine) as session:
+        user = AliasedVerifiedUser(
+            email="ada@example.com", full_name="Ada", is_verified=True
+        )
+        session.add(user)
+        session.flush()
+        assert user.id is not None
+        account = LeanSocialAccount(
+            user_id=user.id,
+            provider="github",
+            provider_user_id="42",
+            provider_email="ada@example.com",
+            provider_email_verified=True,
+        )
+        session.add(account)
+        session.flush()
+
+        user_snapshot = UserSnapshot.of(user)
+        account_snapshot = SocialAccountSnapshot.of(account)
+
+    assert user_snapshot == UserSnapshot(
+        id=user.id, email="ada@example.com", email_verified=True
+    )
+    assert type(user_snapshot.id) is int
+    assert account_snapshot == SocialAccountSnapshot(
+        id=account.id,
+        user_id=user.id,
+        provider="github",
+        provider_user_id="42",
+        provider_email="ada@example.com",
+        provider_email_verified=True,
+        is_login_method=True,
+    )
+    assert type(account_snapshot.user_id) is int
+    with pytest.raises(FrozenInstanceError):
+        user_snapshot.id = "1"  # ty: ignore[invalid-assignment]
