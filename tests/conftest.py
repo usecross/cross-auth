@@ -15,6 +15,7 @@ from cross_auth._context import Context
 from cross_auth._issuer import AuthorizationCodeGrantData, Issuer
 from cross_auth._storage import (
     AccountsStorage,
+    CommitCallback,
     DisconnectResult,
     SocialAccountCreate,
     UserCreate,
@@ -140,6 +141,9 @@ _SESSION_ORDER: dict[
 class MemorySessionStorage(SessionStorage):
     def __init__(self):
         self.records: dict[str, MemorySessionRecord] = {}
+
+    def on_commit(self, callback: CommitCallback) -> None:
+        callback()
 
     def create(
         self,
@@ -532,6 +536,9 @@ class MemoryAccountsStorage:
                 for account in user.social_accounts
                 if not _same_id(account.id, social_account_id)
             ]
+
+    def on_commit(self, callback: CommitCallback) -> None:
+        callback()
 
 
 @pytest.fixture(scope="session")

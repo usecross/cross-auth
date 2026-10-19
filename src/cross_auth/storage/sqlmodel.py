@@ -9,6 +9,7 @@ from typing import Any, ClassVar, Generic, TypeVar, overload
 
 try:
     from sqlalchemy import BigInteger, SmallInteger, and_, inspect, or_, update
+    from sqlalchemy.engine import Connection
     from sqlalchemy.exc import IntegrityError
     from sqlmodel import SQLModel, Session, col, select
     from sqlmodel.sql.expression import SelectOfScalar
@@ -19,6 +20,7 @@ except ImportError as exc:  # pragma: no cover - exercised only without the extr
     ) from exc
 
 from cross_auth._storage import (
+    CommitCallback,
     DisconnectResult,
     SessionListOrder,
     SessionStatus,
@@ -281,9 +283,26 @@ class _SQLModelStorageBase:
             if not issubclass(model, base):
                 raise TypeError(f"{model.__name__} must inherit from {base.__name__}")
 
+    def on_commit(self, callback: CommitCallback) -> None:
+        """Run callback now: every operation commits before it returns."""
+        callback()
+
     @contextmanager
     def _open_session(self) -> Iterator[Session]:
         session = self.session_factory()
+        # Each operation must own its transaction so that it has committed when
+        # it returns and on_commit can run after hooks immediately. A session
+        # joined to an application transaction would only release a savepoint
+        # or leave the commit to the application, which could still roll back.
+        bind = session.bind
+        if session.in_transaction() or (
+            isinstance(bind, Connection) and bind.in_transaction()
+        ):
+            raise RuntimeError(
+                f"{type(self).__name__} session_factory returned a Session that "
+                "is already in a transaction; return a new Session that owns "
+                "its transaction, e.g. lambda: Session(engine)"
+            )
         # Keep loaded values after commit so returned instances stay readable
         # once the session closes. Only columns that were set in Python (or
         # eager-loaded) are guaranteed readable: a column populated purely by a

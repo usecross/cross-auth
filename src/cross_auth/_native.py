@@ -129,13 +129,13 @@ def sign_in_with_id_token(
         token_response=_NO_TOKEN_RESPONSE,
     )
 
-    context.hooks.run_after(
-        "oauth.id_token",
-        AfterOAuthIdTokenEvent(
-            provider=provider,
-            user=resolved_user.user,
-            created=resolved_user.created,
-            social_account=resolved_account.account,
-        ),
+    after_event = AfterOAuthIdTokenEvent(
+        provider=provider,
+        user=resolved_user.user,
+        created=resolved_user.created,
+        social_account=resolved_account.account,
+    )
+    context.accounts_storage.on_commit(
+        lambda: context.hooks.run_after("oauth.id_token", after_event)
     )
     return resolved_user, resolved_account

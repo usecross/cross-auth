@@ -721,13 +721,13 @@ class CrossAuth:
 
         cookie = make_clear_cookie(self._context.session_config)
         self._add_cookie_to_hook_response(event.response, cookie)
-        self._context.hooks.run_after(
-            "logout",
-            AfterLogoutEvent(
-                request=event.request,
-                response=event.response,
-                session_record=event.session_record,
-            ),
+        after_event = AfterLogoutEvent(
+            request=event.request,
+            response=event.response,
+            session_record=event.session_record,
+        )
+        session_storage.on_commit(
+            lambda: self._context.hooks.run_after("logout", after_event)
         )
         self._apply_hook_response(event.response, response)
 

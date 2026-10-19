@@ -8,6 +8,9 @@ from typing_extensions import Protocol
 DisconnectResult = Literal["disconnected", "not_found", "last_login_method"]
 
 SessionStatus = Literal["active", "expired", "revoked"]
+
+CommitCallback = Callable[[], None]
+"""Work to run once a storage write is durable, such as after hooks."""
 SessionListOrder = Literal[
     "updated_at_desc",
     "updated_at_asc",
@@ -242,6 +245,18 @@ class SessionStorage(Protocol):
         except_session_id: Any | None = None,
     ) -> int: ...
 
+    def on_commit(self, callback: CommitCallback) -> None:
+        """Run callback once the writes this storage just returned are committed.
+
+        Core calls this after a successful write to deliver its after hooks.
+        An adapter whose operations commit before returning calls callback
+        immediately. An adapter whose writes join an application transaction
+        calls it after the outermost transaction commits (not after an inner
+        savepoint) and drops it if that transaction rolls back. Let callback
+        exceptions propagate; they cannot undo the committed write.
+        """
+        ...
+
 
 class UserCreate(TypedDict):
     user_info: dict[str, Any]
@@ -308,10 +323,11 @@ class AccountsStorage(Protocol):
 
         Call identity once with the new user and its generated ID, before commit.
         The returned identity must belong to that user. Roll back both records
-        if construction, validation, or persistence fails. Return only after
-        committing both records; callers then emit after-create hooks. The
-        callback must not open independent storage sessions while this
-        transaction is active.
+        if construction, validation, or persistence fails. Return after
+        committing both records, or after writing both in the application
+        transaction that on_commit follows; callers then schedule after-create
+        hooks with on_commit. The callback must not open independent storage
+        sessions while this transaction is active.
         """
         ...
 
@@ -381,5 +397,17 @@ class AccountsStorage(Protocol):
         visibility. Return not_found if either is missing or inaccessible.
         Serialize same-user disconnects so they cannot remove the last login
         method together. A connected-only account may always be disconnected.
+        """
+        ...
+
+    def on_commit(self, callback: CommitCallback) -> None:
+        """Run callback once the writes this storage just returned are committed.
+
+        Core calls this after a successful write to deliver its after hooks.
+        An adapter whose operations commit before returning calls callback
+        immediately. An adapter whose writes join an application transaction
+        calls it after the outermost transaction commits (not after an inner
+        savepoint) and drops it if that transaction rolls back. Let callback
+        exceptions propagate; they cannot undo the committed write.
         """
         ...
