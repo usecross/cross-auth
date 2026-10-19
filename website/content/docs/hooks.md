@@ -50,6 +50,12 @@ queue, or observability code.
   the hook boundary.
 - Do not enforce security policy in an `after` hook. If an operation should be
   blocked, raise `CrossAuthException` from the matching `before` hook.
+- `before` hooks cannot change an identity Cross-Auth has already established:
+  the provider and `provider_user_id` in OAuth callback and finalize-link hooks,
+  the signed-in user in link, finalize-link, password-grant, and `login` hooks,
+  and a social account's owner, provider identity, and `is_login_method`.
+  Changing one, in place or in a returned event, raises `ValueError` before
+  anything is saved.
 - Hook exceptions propagate, including exceptions from `after` hooks. An `after`
   hook runs once the operation has succeeded, so its failure cannot undo it: a
   session that was already saved stays saved. Catch and report errors from
@@ -242,12 +248,12 @@ OAuth, native ID-token sign-in, connect, and finalize-link flows. The `before`
 events contain the resolved standard fields and raw provider `user_info`; the
 update event also contains the existing social account. Return a replacement
 event to alter writable token/profile fields or add app-specific `extra_fields`.
-Identity fields on an existing account are context rather than update targets.
-The update event's `is_login_method` also describes its current stored
-eligibility; changing that field does not enable or disable login. Control a
-requested promotion through `allow_login` in the `before oauth.finalize_link`
-hook. The after-update event contains the saved account, including any
-promotion. The built-in SQLModel adapter validates and writes the extra columns.
+`user_id`, `provider`, `provider_user_id`, and `is_login_method` (and, for
+updates, the existing `social_account`) are read-only: changing them raises
+`ValueError` and nothing is written. Control a requested promotion through
+`allow_login` in the `before oauth.finalize_link` hook. The after-update event
+contains the saved account, including any promotion. The built-in SQLModel
+adapter validates and writes the extra columns.
 
 Stack the two decorators when the same handler applies to both operations. The
 event's literal `operation` field remains available to shared handlers.
@@ -337,7 +343,8 @@ Runs after the OAuth provider returns user information and before Cross-Auth
 creates or finds the local user. Use it to enforce provider-claim policy, or to
 replace `user_info` / `validated_user_info` for provider claim normalization,
 then provision profiles or audit newly connected provider accounts after
-success.
+success. The provider and `validated_user_info.provider_user_id` select the
+account and cannot be changed.
 
 ```python
 from cross_auth.hooks import AfterOAuthCallbackEvent, BeforeOAuthCallbackEvent
@@ -414,7 +421,8 @@ async def audit_link_start(event: AfterOAuthLinkEvent) -> None:
 Runs after the provider returns account data for a link flow and before that
 provider account is attached to the signed-in user. Use it to reject conflicting
 identities, replace provider claim data, or disable login-on-link, then sync
-metadata after the link succeeds.
+metadata after the link succeeds. The signed-in `user`, the provider, and
+`validated_user_info.provider_user_id` cannot be changed.
 
 ```python
 from cross_auth.hooks import (

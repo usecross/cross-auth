@@ -299,6 +299,7 @@ class Issuer:
             context.normalize_email(request.username)
         )
 
+        user_id = None if user is None else user.id
         try:
             context.hooks.run_before(
                 "token.password",
@@ -311,6 +312,9 @@ class Issuer:
             )
         except CrossAuthException as e:
             return self._error_response(e.error, e.error_description)
+
+        if user is not None and user.id != user_id:
+            raise ValueError("token.password before hooks cannot change the user")
 
         valid = _verify_password(user, request.password)
         if not valid or user is None:

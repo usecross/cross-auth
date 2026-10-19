@@ -53,7 +53,9 @@ def test_signup_failure_rolls_back_user_and_emits_no_after_hooks(
     _, state = start_provider_auth(client, "/fake/login")
 
     if failure == "ownership":
-        with pytest.raises(ValueError, match="must belong to the new user"):
+        with pytest.raises(
+            ValueError, match="social_account.create before hooks cannot change user_id"
+        ):
             client.get("/fake/callback", params={"code": "code", "state": state})
     else:
         response = client.get("/fake/callback", params={"code": "code", "state": state})

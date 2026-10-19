@@ -842,6 +842,7 @@ def _complete_sign_in(
     validated: ValidatedUserInfo,
 ) -> Response:
     """Check login eligibility and complete a session or token sign-in."""
+    provider_user_id = validated.provider_user_id
     callback_event = BeforeOAuthCallbackEvent(
         provider=provider,
         request=request,
@@ -862,6 +863,13 @@ def _complete_sign_in(
             status_code=e.status_code,
         )
 
+    _check_provider_identity(
+        "oauth.callback",
+        provider=provider,
+        provider_user_id=provider_user_id,
+        approved_provider=callback_event.provider,
+        approved=callback_event.validated_user_info,
+    )
     user_info = callback_event.user_info
     validated = callback_event.validated_user_info
 
@@ -1062,6 +1070,16 @@ def _prepare_social_account(
             extra_fields={},
         ),
     )
+    if (
+        event.user_id != user_id
+        or event.provider != provider
+        or event.provider_user_id != provider_user_id
+        or event.is_login_method != is_login_method
+    ):
+        raise ValueError(
+            "social_account.create before hooks cannot change user_id, provider, "
+            "provider_user_id or is_login_method"
+        )
     return SocialAccountCreate(
         user_id=event.user_id,
         provider=event.provider,
@@ -1178,6 +1196,7 @@ def _update_social_account(
     provider_email_verified: bool | None,
     enable_login: bool = False,
 ) -> SocialAccount:
+    identity = _social_account_identity(social_account)
     event = context.hooks.run_before(
         "social_account.update",
         BeforeSocialAccountUpdateEvent(
@@ -1197,6 +1216,21 @@ def _update_social_account(
             extra_fields={},
         ),
     )
+    if (
+        _social_account_identity(social_account) != identity
+        or _social_account_identity(event.social_account) != identity
+        or (
+            event.user_id,
+            event.provider,
+            event.provider_user_id,
+            event.is_login_method,
+        )
+        != identity[1:]
+    ):
+        raise ValueError(
+            "social_account.update before hooks cannot change the account, its "
+            "user_id, provider, provider_user_id or is_login_method"
+        )
     if enable_login and not social_account.is_login_method:
         _check_social_account_ownership(
             context,
@@ -1227,6 +1261,38 @@ def _update_social_account(
         ),
     )
     return updated_social_account
+
+
+def _social_account_identity(
+    social_account: SocialAccount,
+) -> tuple[Any, Any, str, str, bool]:
+    return (
+        social_account.id,
+        social_account.user_id,
+        social_account.provider,
+        social_account.provider_user_id,
+        social_account.is_login_method,
+    )
+
+
+def _check_provider_identity(
+    event_name: str,
+    *,
+    provider: OAuth2Provider,
+    provider_user_id: str,
+    approved_provider: OAuth2Provider,
+    approved: ValidatedUserInfo,
+) -> None:
+    # ``provider_user_id`` is captured before the hooks run because
+    # ``ValidatedUserInfo`` is mutable and hooks may change it in place.
+    if (
+        approved_provider is not provider
+        or approved.provider_user_id != provider_user_id
+    ):
+        raise ValueError(
+            f"{event_name} before hooks cannot change the provider or "
+            "provider_user_id"
+        )
 
 
 def resolve_user_for_sign_in(
@@ -1601,6 +1667,7 @@ def start_link_flow(
             "invalid_redirect_uri", error_description="Invalid redirect_uri"
         )
 
+    user_id = str(user.id)
     try:
         context.hooks.run_before(
             "oauth.link",
@@ -1616,6 +1683,8 @@ def start_link_flow(
             error_description=e.error_description,
             status_code=e.status_code,
         )
+    if str(user.id) != user_id:
+        raise ValueError("oauth.link before hooks cannot change the user")
 
     state = secrets.token_hex(16)
     verifier, challenge, challenge_method = _generate_provider_pkce(provider)
@@ -1786,6 +1855,8 @@ def finalize_link(
     except OAuth2Exception as e:
         return Response.error(e.error, error_description=e.error_description)
 
+    user_id = user.id
+    provider_user_id = validated.provider_user_id
     finalize_event = BeforeOAuthFinalizeLinkEvent(
         provider=provider,
         request=request,
@@ -1806,6 +1877,15 @@ def finalize_link(
             status_code=e.status_code,
         )
 
+    if user.id != user_id or finalize_event.user.id != user_id:
+        raise ValueError("oauth.finalize_link before hooks cannot change the user")
+    _check_provider_identity(
+        "oauth.finalize_link",
+        provider=provider,
+        provider_user_id=provider_user_id,
+        approved_provider=finalize_event.provider,
+        approved=finalize_event.validated_user_info,
+    )
     allow_login = finalize_event.allow_login
     user_info = finalize_event.user_info
     validated = finalize_event.validated_user_info
