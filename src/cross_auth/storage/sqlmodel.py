@@ -283,6 +283,9 @@ class _SQLModelStorageBase:
             if not issubclass(model, base):
                 raise TypeError(f"{model.__name__} must inherit from {base.__name__}")
 
+    def _models(self) -> list[type[SQLModel]]:
+        return [getattr(self, attr) for attr, _, _ in self._required_models]
+
     def on_commit(self, callback: CommitCallback) -> None:
         """Run callback now: every operation commits before it returns."""
         callback()
@@ -294,14 +297,17 @@ class _SQLModelStorageBase:
         # it returns and on_commit can run after hooks immediately. A session
         # joined to an application transaction would only release a savepoint
         # or leave the commit to the application, which could still roll back.
-        bind = session.bind
-        if session.in_transaction() or (
-            isinstance(bind, Connection) and bind.in_transaction()
+        # get_bind resolves per-model binds and routing overrides, so check
+        # the bind each configured model actually writes through.
+        binds = [session.bind, *map(session.get_bind, self._models())]
+        if session.in_transaction() or any(
+            isinstance(bind, Connection) and bind.in_transaction() for bind in binds
         ):
             raise RuntimeError(
                 f"{type(self).__name__} session_factory returned a Session that "
-                "is already in a transaction; return a new Session that owns "
-                "its transaction, e.g. lambda: Session(engine)"
+                "is already in a transaction or bound to a Connection that is; "
+                "return a new Session that owns its transaction, e.g. "
+                "lambda: Session(engine)"
             )
         # Keep loaded values after commit so returned instances stay readable
         # once the session closes. Only columns that were set in Python (or

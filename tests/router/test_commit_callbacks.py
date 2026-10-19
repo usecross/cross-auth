@@ -16,13 +16,18 @@ from typing import get_args
 
 import pytest
 import respx
-from fastapi import FastAPI
+from cross_web import Cookie, Response as CrossWebResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError
 
 from cross_auth._auth_flow import _create_user_with_identity, _update_social_account
+from cross_auth._session import create_session, get_session
 from cross_auth._storage import CommitCallback
 from cross_auth._tokens import TokenIssueRequest
 from cross_auth.fastapi import CrossAuth
+from cross_auth.hooks import AfterLoginEvent, AfterLogoutEvent, BeforeLogoutEvent
 from cross_auth.hooks._types import HookEventName
 from tests.conftest import (
     TEST_PASSWORD,
@@ -66,19 +71,25 @@ class TransactionalAccountsStorage(MemoryAccountsStorage):
 
 
 class DeferredSessionStorage(MemorySessionStorage):
-    """Holds commit callbacks until the test commits the session store."""
+    """Holds commit callbacks until the test commits or rolls back the store."""
 
     def __init__(self):
         super().__init__()
         self.pending: list[CommitCallback] = []
+        self._committed = deepcopy(self.records)
 
     def on_commit(self, callback: CommitCallback) -> None:
         self.pending.append(callback)
 
     def commit(self) -> None:
+        self._committed = deepcopy(self.records)
         pending, self.pending = self.pending, []
         for callback in pending:
             callback()
+
+    def rollback(self) -> None:
+        self.records = deepcopy(self._committed)
+        self.pending = []
 
 
 @pytest.fixture
@@ -276,3 +287,170 @@ def test_token_issuer_logins_complete_when_the_issuer_returns(build_auth):
     assert response.json()["access_token"] == "jwt-for-test"
     assert trace == ["login", "token.password"]
     assert session_storage.pending == []
+
+
+def _customize_response(event: AfterLoginEvent | AfterLogoutEvent) -> None:
+    assert isinstance(event.response, CrossWebResponse)
+    event.response.headers = {**(event.response.headers or {}), "X-After": "1"}
+    event.response.cookies = [
+        *(event.response.cookies or []),
+        Cookie(name="after", value="1", secure=False),
+    ]
+
+
+def _cookie_app(auth: CrossAuth, session_storage: DeferredSessionStorage) -> TestClient:
+    """Endpoints that commit the session store before returning the response."""
+    app = FastAPI()
+
+    @app.post("/login")
+    def login() -> JSONResponse:
+        response = JSONResponse({"ok": True})
+        auth.login("test", response=response)
+        session_storage.commit()
+        return response
+
+    @app.post("/logout")
+    def logout(request: Request) -> JSONResponse:
+        response = JSONResponse({"ok": True})
+        auth.logout(request, response=response)
+        session_storage.commit()
+        return response
+
+    return TestClient(app)
+
+
+def test_cookie_login_refuses_a_deferring_session_store(build_auth):
+    session_storage = DeferredSessionStorage()
+    auth = build_auth(session_storage=session_storage)
+    trace = _trace_after_hooks(auth)
+    auth.after("login")(_customize_response)
+
+    with pytest.raises(RuntimeError, match="commit before it returns"):
+        _cookie_app(auth, session_storage).post("/login")
+
+    session_storage.commit()
+    assert session_storage.records == {}
+    assert trace == []
+
+
+@respx.mock
+def test_browser_sign_in_refuses_a_deferring_session_store(
+    build_auth, accounts_storage: TransactionalAccountsStorage
+):
+    session_storage = DeferredSessionStorage()
+    auth = build_auth(session_storage=session_storage)
+    trace = _trace_after_hooks(auth)
+    app = FastAPI()
+    app.include_router(auth.router)
+    client = TestClient(app, follow_redirects=False)
+    mock_token_and_userinfo(email="new@example.com", provider_user_id="new")
+    _, state = start_provider_auth(client, "/fake/login")
+
+    with pytest.raises(RuntimeError, match="commit before it returns"):
+        client.get("/fake/callback", params={"code": "code", "state": state})
+
+    session_storage.commit()
+    assert session_storage.records == {}
+    # The account was committed on its own; no login was issued for it.
+    assert trace == ["user.create", "social_account.create"]
+    assert accounts_storage.find_user_by_email("new@example.com") is not None
+
+
+def test_logout_refuses_to_revoke_through_a_deferring_session_store(build_auth):
+    session_storage = DeferredSessionStorage()
+    auth = build_auth(session_storage=session_storage)
+    token, record = create_session("test", session_storage)
+    session_storage.commit()
+    trace = _trace_after_hooks(auth)
+    auth.after("logout")(_customize_response)
+
+    with pytest.raises(RuntimeError, match="commit before it returns"):
+        _cookie_app(auth, session_storage).post(
+            "/logout", headers={"cookie": f"session_id={token}"}
+        )
+
+    session_storage.commit()
+    assert get_session(token, session_storage) is not None
+    assert session_storage.records[record.id].revoked_at is None
+    assert trace == []
+
+
+def test_logout_refuses_a_session_record_injected_by_a_before_hook(build_auth):
+    session_storage = DeferredSessionStorage()
+    auth = build_auth(session_storage=session_storage)
+    token, record = create_session("test", session_storage)
+    session_storage.commit()
+    trace = _trace_after_hooks(auth)
+
+    @auth.before("logout")
+    def inject(event: BeforeLogoutEvent) -> BeforeLogoutEvent:
+        return BeforeLogoutEvent(
+            request=event.request, response=event.response, session_record=record
+        )
+
+    with pytest.raises(RuntimeError, match="commit before it returns"):
+        _cookie_app(auth, session_storage).post("/logout")
+
+    assert get_session(token, session_storage) is not None
+    assert trace == []
+
+
+def test_logout_without_a_session_runs_its_hooks_at_once(build_auth):
+    session_storage = DeferredSessionStorage()
+    auth = build_auth(session_storage=session_storage)
+    trace = _trace_after_hooks(auth)
+    auth.after("logout")(_customize_response)
+
+    response = _cookie_app(auth, session_storage).post("/logout")
+
+    # Nothing was written, so nothing waits for the store to commit.
+    assert trace == ["logout"]
+    assert response.headers["x-after"] == "1"
+    cookies = response.headers.get_list("set-cookie")
+    assert any(cookie.startswith("after=1") for cookie in cookies)
+    assert any(cookie.startswith('session_id=""') for cookie in cookies)
+
+
+def test_rolled_back_bearer_session_runs_no_hooks_and_cannot_be_used(build_auth):
+    session_storage = DeferredSessionStorage()
+    auth = build_auth(session_storage=session_storage)
+    trace = _trace_after_hooks(auth)
+
+    token, _ = auth.issue_session_token("test")
+    session_storage.rollback()
+
+    assert trace == []
+    assert get_session(token, session_storage) is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("audit failed"),
+        IntegrityError("INSERT INTO audit", {}, Exception("duplicate")),
+    ],
+    ids=["runtime", "integrity"],
+)
+@pytest.mark.parametrize("deferred", [False, True], ids=["immediate", "deferred"])
+def test_bearer_login_hook_errors_propagate_when_they_run(build_auth, error, deferred):
+    session_storage = DeferredSessionStorage() if deferred else MemorySessionStorage()
+    auth = build_auth(session_storage=session_storage)
+
+    @auth.after("login")
+    def fail(event: AfterLoginEvent) -> None:
+        raise error
+
+    if deferred:
+        assert isinstance(session_storage, DeferredSessionStorage)
+        token, _ = auth.issue_session_token("test")
+        with pytest.raises(type(error)) as raised:
+            session_storage.commit()
+    else:
+        with pytest.raises(type(error)) as raised:
+            auth.issue_session_token("test")
+
+    # Raised as is, once, and the committed session stays.
+    assert raised.value is error
+    assert len(session_storage.records) == 1
+    if deferred:
+        assert get_session(token, session_storage) is not None

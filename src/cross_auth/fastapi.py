@@ -23,7 +23,13 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from ._clients import ClientResolver
 from ._config import Config
 from ._context import AccountsStorage, SecondaryStorage, User
-from ._login import issue_bearer_session, login_with_session
+from ._login import (
+    COOKIE_SESSION_COMMIT_ERROR,
+    issue_bearer_session,
+    login_with_session,
+    require_immediate_commit,
+    run_now,
+)
 from ._native import sign_in_with_id_token as _sign_in_with_id_token
 from ._password import authenticate
 from ._request import make_http_request
@@ -713,11 +719,19 @@ class CrossAuth:
             ),
         )
 
+        # Without a session to revoke nothing is written, so the after hook
+        # has no commit to wait for.
+        on_commit = run_now
         if event.session_record is not None:
+            require_immediate_commit(
+                session_storage.on_commit,
+                COOKIE_SESSION_COMMIT_ERROR.format(action="Logout"),
+            )
             session_storage.revoke(
                 event.session_record.id,
                 revoked_at=datetime.now(tz=timezone.utc),
             )
+            on_commit = session_storage.on_commit
 
         cookie = make_clear_cookie(self._context.session_config)
         self._add_cookie_to_hook_response(event.response, cookie)
@@ -726,9 +740,7 @@ class CrossAuth:
             response=event.response,
             session_record=event.session_record,
         )
-        session_storage.on_commit(
-            lambda: self._context.hooks.run_after("logout", after_event)
-        )
+        on_commit(lambda: self._context.hooks.run_after("logout", after_event))
         self._apply_hook_response(event.response, response)
 
 

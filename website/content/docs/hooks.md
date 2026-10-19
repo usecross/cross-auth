@@ -89,8 +89,9 @@ queue, or observability code.
   immediately, in the order shown on this page. An adapter whose writes join
   your application's transaction runs them after the outermost transaction
   commits and drops them on rollback. Hooks after a custom `token_issuer` run
-  when the issuer returns. Hooks for work that writes nothing durable
-  (`authenticate`, `oauth.authorize`, `oauth.link`) run immediately.
+  when the issuer returns. `authenticate` writes nothing, and `oauth.authorize`
+  and `oauth.link` follow secondary-storage writes that have already completed,
+  so their hooks run immediately.
 - Accounts, sessions, secondary storage, and a custom `token_issuer` commit
   separately; a login is not one transaction across them. `user.create` and
   `social_account.create` run as one callback after signup, so a failing
@@ -98,13 +99,23 @@ queue, or observability code.
   the hooks after it but does not undo the commit, and nothing retries it. Hooks
   run in the request process: a crash after commit loses them, so use an outbox
   written in the same transaction when delivery must be reliable.
+- Secondary storage (OAuth state, authorization codes, link codes) completes
+  each operation before returning. Rolling back accounts or sessions does not
+  restore a code that was already consumed.
 - The browser sign-in flow raises `RuntimeError` instead of issuing a session or
   authorization code while account changes are uncommitted (an accounts storage
   that deferred `on_commit` callbacks). Do not run it inside an application
   transaction.
-- `login` and `logout` after hooks can change the response only while it is
-  still being built. Built-in adapters run them before the response is sent; a
-  session storage that defers its callbacks runs them too late to change it.
+- Cookie logins (`auth.login()` and browser sign-in) and a `logout` that revokes
+  a session raise `RuntimeError` before writing anything, or changing the
+  response, when the session storage defers `on_commit` callbacks: their after
+  hooks may change the response, which is built before an application
+  transaction could commit. A `logout` without a session writes nothing, so its
+  after hook runs immediately.
+- A bearer session (`auth.issue_session_token()`, `/token`) from a session
+  storage that defers callbacks is issued before it is committed. Commit before
+  you deliver the token; after a rollback the token does not work and no success
+  hooks run.
 - Keep slow side effects out of the request path. Queue email, analytics, and
   webhook work from the hook when possible.
 

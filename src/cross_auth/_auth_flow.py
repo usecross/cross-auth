@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from ._context import Context
 from ._issuer import AuthorizationCodeGrantData
-from ._login import login_with_session, run_now
+from ._login import login_with_session, require_immediate_commit, run_now
 from ._session import _get_header
 from ._storage import SocialAccount, SocialAccountCreate, User
 from .exceptions import CrossAuthException
@@ -979,18 +979,11 @@ def _require_committed_accounts(context: Context) -> None:
     joined an application transaction does. Built-in sign-in does not support
     that: the login could outlive a rolled-back user.
     """
-    committed = False
-
-    def mark_committed() -> None:
-        nonlocal committed
-        committed = True
-
-    context.accounts_storage.on_commit(mark_committed)
-    if not committed:
-        raise RuntimeError(
-            "Sign-in cannot issue a login while account changes are uncommitted; "
-            "do not run the sign-in flow inside an application transaction"
-        )
+    require_immediate_commit(
+        context.accounts_storage.on_commit,
+        "Sign-in cannot issue a login while account changes are uncommitted; "
+        "do not run the sign-in flow inside an application transaction",
+    )
 
 
 def _flow_error(

@@ -142,7 +142,7 @@ class Context:
         )
         return session_token, expires_in
 
-    def on_token_commit(self, callback: CommitCallback) -> None:
+    def _on_token_commit(self, callback: CommitCallback) -> None:
         """Schedule callback after the credential ``issue_token`` stored commits."""
         if self.token_issuer is None and self.session_storage is not None:
             self.session_storage.on_commit(callback)

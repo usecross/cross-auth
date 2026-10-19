@@ -273,7 +273,7 @@ class Issuer:
             authorization_data=authorization_data,
             token_response=token_data,
         )
-        context.on_token_commit(
+        context._on_token_commit(
             lambda: context.hooks.run_after("token.authorization_code", after_event)
         )
 
@@ -348,7 +348,7 @@ class Issuer:
             user=user,
             token_response=token_data,
         )
-        context.on_token_commit(
+        context._on_token_commit(
             lambda: context.hooks.run_after("token.password", after_event)
         )
 

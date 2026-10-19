@@ -53,6 +53,34 @@ def run_now(callback: CommitCallback) -> None:
     callback()
 
 
+def require_immediate_commit(
+    on_commit: Callable[[CommitCallback], None], message: str
+) -> None:
+    """Raise unless ``on_commit`` runs callbacks at once.
+
+    A storage that defers them has joined an application transaction, so its
+    writes are not committed yet. Flows whose credential or response cannot
+    wait for that commit call this before writing anything.
+    """
+    committed = False
+
+    def mark_committed() -> None:
+        nonlocal committed
+        committed = True
+
+    on_commit(mark_committed)
+    if not committed:
+        raise RuntimeError(message)
+
+
+# Cookie login and logout hand their after hooks the response, which the
+# framework adapter copies before an application transaction could commit.
+COOKIE_SESSION_COMMIT_ERROR = (
+    "{action} needs a session storage whose writes commit before it returns; "
+    "do not run it inside an application transaction"
+)
+
+
 def _check_login_rewrite(
     original: BeforeLoginEvent, approved: BeforeLoginEvent
 ) -> None:
@@ -86,6 +114,10 @@ def login_with_session(
     Returns the hook response; adapters decide how to send it and how to
     surface hook exceptions.
     """
+    require_immediate_commit(
+        session_storage.on_commit,
+        COOKIE_SESSION_COMMIT_ERROR.format(action="Cookie login"),
+    )
     resolved = resolve_config(session_config)
 
     def issue(event: BeforeLoginEvent) -> tuple[Response, SessionRecord]:

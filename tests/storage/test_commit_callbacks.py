@@ -13,10 +13,18 @@ from sqlmodel import Session, select
 
 from cross_auth._auth_flow import _create_social_account, _create_user_with_identity
 from cross_auth._context import Context
+from cross_auth._login import issue_bearer_session
 from cross_auth.hooks import HookRegistry
 from tests.conftest import MemoryStorage
 
-from .models import AccountsStore, SignupApplicationRow, SocialAccount, User
+from .models import (
+    AccountsStore,
+    SessionStore,
+    SignupApplicationRow,
+    SocialAccount,
+    User,
+    UserSession,
+)
 from . import test_atomic_signup
 from .test_atomic_signup import identity_data, make_store, row_counts
 
@@ -191,4 +199,131 @@ def test_after_hook_errors_propagate_without_rollback_or_retry(
             select(SocialAccount).where(
                 SocialAccount.provider_user_id == f"{label}-second"
             )
+        ).one()
+
+
+class RoutedSession(Session):
+    """Routes every model to one connection, as a custom get_bind may."""
+
+    def __init__(self, engine, connection):
+        super().__init__(engine)
+        self.connection = connection
+
+    def get_bind(self, mapper=None, **kwargs):
+        return self.connection
+
+
+def _external_bindings(engine, connection):
+    return {
+        "mapped": lambda: Session(binds={User: connection, SocialAccount: connection}),
+        "engine_with_mapped_overrides": lambda: Session(
+            engine, binds={User: connection, SocialAccount: connection}
+        ),
+        "routed": lambda: RoutedSession(engine, connection),
+    }
+
+
+@pytest.mark.parametrize(
+    "binding", ["mapped", "engine_with_mapped_overrides", "routed"]
+)
+def test_models_bound_to_an_application_transaction_are_rejected(
+    signup_engine, binding
+):
+    label = uuid.uuid4().hex
+    before = row_counts(signup_engine)
+    after_events = []
+
+    with signup_engine.connect() as connection:
+        outer = connection.begin()
+        factory = _external_bindings(signup_engine, connection)[binding]
+        context, hooks = make_context(AccountsStore(session_factory=factory))
+        hooks.register_after("user.create", after_events.append)
+        hooks.register_after("social_account.create", after_events.append)
+
+        with pytest.raises(RuntimeError, match="already in a transaction"):
+            signup(context, label)
+
+        assert outer.is_active
+        outer.rollback()
+
+    assert after_events == []
+    assert row_counts(signup_engine) == before
+
+
+def test_every_configured_model_binding_is_checked(signup_engine):
+    with signup_engine.connect() as connection:
+        outer = connection.begin()
+        # Only the second model joins the application's transaction.
+        store = AccountsStore(
+            session_factory=lambda: Session(
+                signup_engine, binds={SocialAccount: connection}
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="already in a transaction"):
+            store.find_user_by_email(f"{uuid.uuid4().hex}@example.com")
+
+        assert outer.is_active
+        outer.rollback()
+
+
+@pytest.mark.parametrize("binding", ["mapped", "routed"])
+def test_session_store_bound_to_an_application_transaction_is_rejected(
+    signup_engine, binding
+):
+    user_id = uuid.uuid4().hex
+    hooks = HookRegistry()
+    logins = []
+    hooks.register_after("login", logins.append)
+
+    with signup_engine.connect() as connection:
+        outer = connection.begin()
+        factory = {
+            "mapped": lambda: Session(binds={UserSession: connection}),
+            "routed": lambda: RoutedSession(signup_engine, connection),
+        }[binding]
+
+        with pytest.raises(RuntimeError, match="already in a transaction"):
+            issue_bearer_session(
+                user_id,
+                hooks=hooks,
+                session_storage=SessionStore(session_factory=factory),
+                session_config=None,
+            )
+
+        assert outer.is_active
+        outer.rollback()
+
+    assert logins == []
+    with Session(signup_engine) as session:
+        assert (
+            session.exec(
+                select(UserSession).where(UserSession.user_id == user_id)
+            ).all()
+            == []
+        )
+
+
+def test_connection_without_a_transaction_is_supported(signup_engine):
+    label = uuid.uuid4().hex
+    after_events = []
+
+    with signup_engine.connect() as connection:
+        context, hooks = make_context(
+            AccountsStore(
+                session_factory=lambda: Session(
+                    binds={User: connection, SocialAccount: connection}
+                )
+            )
+        )
+        hooks.register_after("user.create", lambda event: after_events.append("user"))
+
+        signup(context, label)
+
+        assert not connection.in_transaction()
+
+    assert after_events == ["user"]
+    with Session(signup_engine) as session:
+        assert session.exec(
+            select(User).where(User.email == f"{label}@example.com")
         ).one()

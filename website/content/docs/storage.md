@@ -391,17 +391,21 @@ The adapter opens a session per operation (with `expire_on_commit=False`, so
 committed rows keep their loaded values), commits, and closes it before
 returning, so its `on_commit` runs after hooks immediately. Each session must
 own its transaction: the adapter raises `RuntimeError` before writing when the
-factory returns a session that is already in a transaction, or one bound to a
-`Connection` with an open transaction, because committing it would not commit
-the application's transaction. Joining an application-owned SQLAlchemy session
-or transaction is not supported; an unrelated transaction on another connection
-does not affect the adapter. Use `build_user` for rows that must commit with
-signup. The adapter does not change relationship loading: configure a
-relationship such as `social_accounts` with SQLAlchemy's `lazy="selectin"` when
-returned users must read it after the session closes. A model may omit the
-relationship entirely; use `list_social_accounts` for account access in that
-case. If your models carry other lazy relationships, configure or load them
-yourself.
+factory returns a session that is already in a transaction, or whose models are
+bound to a `Connection` with an open transaction, because committing it would
+not commit the application's transaction. The adapter checks the session's
+`bind` and, through `Session.get_bind`, the bind of each of its models, so
+per-model `binds` and `get_bind` overrides are covered; a `get_bind` that
+answers differently from one call to the next is not supported. A `Connection`
+with no open transaction is fine: the adapter's session begins and commits its
+own. Joining an application-owned SQLAlchemy session or transaction is not
+supported; an unrelated transaction on another connection does not affect the
+adapter. Use `build_user` for rows that must commit with signup. The adapter
+does not change relationship loading: configure a relationship such as
+`social_accounts` with SQLAlchemy's `lazy="selectin"` when returned users must
+read it after the session closes. A model may omit the relationship entirely;
+use `list_social_accounts` for account access in that case. If your models carry
+other lazy relationships, configure or load them yourself.
 
 ## Implementing the protocols directly
 
@@ -670,9 +674,20 @@ or retried.
 
 The browser sign-in flow refuses to issue a credential while accounts storage
 defers callbacks, so an adapter that joins application transactions supports
-account changes made inside them, not a full sign-in. A session storage that
-defers callbacks still issues the cookie or token before the commit; its `login`
-and `logout` after hooks then run too late to change the response.
+account changes made inside them, not a full sign-in. `sign_in_with_id_token`
+only verifies and resolves the user, so with such an adapter it may return
+records that are not committed yet: commit before you call `auth.login()`,
+`auth.issue_session_token()`, or your own token issuance for that user.
+
+With a session storage that defers callbacks, cookie logins and a `logout` that
+revokes a session raise `RuntimeError` before writing, because their after hooks
+may change a response that is built before the commit. Bearer sessions are still
+issued before the commit: commit before delivering the token. A rollback leaves
+the token unusable and runs no success hooks.
+
+Secondary storage has no commit callbacks: each `set`, `get`, `pop`, and
+`delete` completes on its own, and rolling back accounts or sessions does not
+restore a consumed authorization or link code.
 
 Identity lookups should specify `user_id` for a user's connection or
 `is_login_method=True` for the login owner. An unfiltered identity lookup that
