@@ -18,6 +18,7 @@ from .hooks import (
     AfterTokenPasswordEvent,
     BeforeTokenAuthorizationCodeEvent,
     BeforeTokenPasswordEvent,
+    UserSnapshot,
 )
 
 
@@ -299,22 +300,18 @@ class Issuer:
             context.normalize_email(request.username)
         )
 
-        user_id = None if user is None else user.id
         try:
             context.hooks.run_before(
                 "token.password",
                 BeforeTokenPasswordEvent(
                     client_id=request.client_id,
                     username=request.username,
-                    user=user,
+                    user=None if user is None else UserSnapshot.of(user),
                     scope=request.scope,
                 ),
             )
         except CrossAuthException as e:
             return self._error_response(e.error, e.error_description)
-
-        if user is not None and user.id != user_id:
-            raise ValueError("token.password before hooks cannot change the user")
 
         valid = _verify_password(user, request.password)
         if not valid or user is None:

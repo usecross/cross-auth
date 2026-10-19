@@ -32,7 +32,7 @@ class UserInfo(TypedDict, total=True):
     name: NotRequired[str | None]
 
 
-@dataclass
+@dataclass(frozen=True)
 class ValidatedUserInfo:
     email: str | None
     provider_user_id: str

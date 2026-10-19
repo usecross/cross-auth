@@ -1,15 +1,16 @@
 """Before hooks cannot change an identity Cross-Auth has already verified.
 
 Hooks may deny an operation or adjust display data, provider tokens, and
-``extra_fields``. Changing the provider identity, the verified email claims,
-the signed-in user, or a social account's owner or login eligibility raises
-``ValueError`` before anything is resolved or saved. This holds whether a hook
-mutates the event in place or returns a replacement.
+``extra_fields``. They cannot change the provider identity, the verified email
+claims, the signed-in user, or a social account's owner or login eligibility.
+Those values reach hooks as frozen records, so assigning to them raises
+``FrozenInstanceError``; returning an event that changes them raises
+``ValueError`` before anything is resolved or saved.
 """
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from typing import Any, Callable, TypedDict
 from urllib.parse import parse_qs, urlparse
 
@@ -29,6 +30,7 @@ from cross_auth.hooks import (
     BeforeSocialAccountUpdateEvent,
     BeforeTokenPasswordEvent,
     BeforeUserCreateEvent,
+    UserSnapshot,
 )
 from cross_auth.social_providers.oauth import UserInfo, ValidatedUserInfo
 from tests.conftest import (
@@ -75,7 +77,8 @@ def _add_other_user(accounts_storage: MemoryAccountsStorage) -> User:
 def _rewrite_provider_user_id_in_place(
     event: BeforeOAuthCallbackEvent | BeforeOAuthFinalizeLinkEvent,
 ) -> None:
-    event.validated_user_info.provider_user_id = "victim-id"
+    validated = event.validated_user_info
+    validated.provider_user_id = "victim-id"  # ty: ignore[invalid-assignment]
 
 
 def _rewrite_provider_user_id_by_replacement(
@@ -94,10 +97,24 @@ def _rewrite_provider_user_id_by_replacement(
 
 
 _PROVIDER_IDENTITY_REWRITES = pytest.mark.parametrize(
-    "rewrite",
-    [_rewrite_provider_user_id_in_place, _rewrite_provider_user_id_by_replacement],
-    ids=["in_place", "replacement"],
+    ("rewrite", "error"),
+    [
+        pytest.param(
+            _rewrite_provider_user_id_in_place, FrozenInstanceError, id="in_place"
+        ),
+        pytest.param(
+            _rewrite_provider_user_id_by_replacement, ValueError, id="replacement"
+        ),
+    ],
 )
+
+
+def _rejected(error: type[Exception], match: str):
+    # In-place assignment fails inside the hook; a returned event is checked
+    # after the hook.
+    if error is FrozenInstanceError:
+        return pytest.raises(FrozenInstanceError)
+    return pytest.raises(error, match=match)
 
 
 # --- oauth.callback -------------------------------------------------------
@@ -110,6 +127,7 @@ def test_callback_cannot_sign_in_as_another_provider_identity(
     accounts_storage: MemoryAccountsStorage,
     session_storage: MemorySessionStorage,
     rewrite,
+    error: type[Exception],
 ):
     accounts_storage.data["test"].social_accounts.append(
         SocialAccount(
@@ -127,7 +145,7 @@ def test_callback_cannot_sign_in_as_another_provider_identity(
     mock_token_and_userinfo(email="attacker@example.com", provider_user_id="attacker")
     with _client(auth) as client:
         _, state = start_provider_auth(client, "/fake/login")
-        with pytest.raises(ValueError, match="cannot change the provider"):
+        with _rejected(error, "cannot change the provider"):
             client.get("/fake/callback", params={"code": "code", "state": state})
 
     assert logins == []
@@ -162,8 +180,10 @@ def test_callback_hooks_can_still_adjust_claim_data(
 
 
 @respx.mock
-def test_raw_user_info_email_is_metadata_not_a_verified_claim(
-    build_auth, accounts_storage: MemoryAccountsStorage
+def test_raw_user_info_email_claims_cannot_steer_auto_link(
+    build_auth,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
 ):
     auth = build_auth(
         config={
@@ -186,14 +206,12 @@ def test_raw_user_info_email_is_metadata_not_a_verified_claim(
     mock_token_and_userinfo(email="alice@example.com", provider_user_id="alice-id")
     with _client(auth) as client:
         _, state = start_provider_auth(client, "/fake/login")
-        resp = client.get("/fake/callback", params={"code": "code", "state": state})
+        with pytest.raises(ValueError, match="user_info id, email or email_verified"):
+            client.get("/fake/callback", params={"code": "code", "state": state})
 
-    assert resp.status_code == 302
     assert accounts_storage.data["test"].social_accounts == []
-    user = accounts_storage.data["alice-id"]
-    assert user.email == "alice@example.com"
-    [account] = user.social_accounts
-    assert account.provider_email == "alice@example.com"
+    assert list(accounts_storage.data) == ["test"]
+    assert session_storage.records == {}
 
 
 # --- oauth.link and oauth.finalize_link -------------------------------------
@@ -242,11 +260,13 @@ def test_link_cannot_change_the_signed_in_user(
 
     @auth.before("oauth.link")
     def change_user(event: BeforeOAuthLinkEvent) -> None:
-        assert event.user is test_user
-        test_user.id = "other"
+        assert event.user == UserSnapshot(
+            id="test", email="test@example.com", email_verified=True
+        )
+        event.user.id = "other"  # ty: ignore[invalid-assignment]
 
     with _client(auth) as client:
-        with pytest.raises(ValueError, match="oauth.link before hooks cannot"):
+        with pytest.raises(FrozenInstanceError):
             client.post(
                 "/fake/link",
                 headers={"Authorization": "Bearer test"},
@@ -258,13 +278,14 @@ def test_link_cannot_change_the_signed_in_user(
                 },
             )
 
+    assert test_user.id == "test"
     assert not any(key.startswith("oauth:") for key in secondary_storage.data)
 
 
 @_PROVIDER_IDENTITY_REWRITES
 @respx.mock
 def test_finalize_link_cannot_attach_another_provider_identity(
-    build_auth, accounts_storage: MemoryAccountsStorage, rewrite
+    build_auth, accounts_storage: MemoryAccountsStorage, rewrite, error
 ):
     auth = _linking_auth(build_auth)
     auth.before("oauth.finalize_link")(rewrite)
@@ -274,7 +295,7 @@ def test_finalize_link_cannot_attach_another_provider_identity(
     mock_token_and_userinfo(email="test@example.com", provider_user_id="linked-id")
     with _client(auth) as client:
         link_code = _link_code(client)
-        with pytest.raises(ValueError, match="cannot change the provider"):
+        with _rejected(error, "cannot change the provider"):
             _finalize_link(client, link_code)
 
     assert creates == []
@@ -282,37 +303,48 @@ def test_finalize_link_cannot_attach_another_provider_identity(
 
 
 def _replace_user(
-    event: BeforeOAuthFinalizeLinkEvent, test_user: User, other: User
+    event: BeforeOAuthFinalizeLinkEvent, other: User
 ) -> BeforeOAuthFinalizeLinkEvent | None:
-    return replace(event, user=other)
+    return replace(event, user=UserSnapshot.of(other))
+
+
+def _replace_user_id(
+    event: BeforeOAuthFinalizeLinkEvent, other: User
+) -> BeforeOAuthFinalizeLinkEvent | None:
+    return replace(event, user=replace(event.user, id=other.id))
 
 
 def _change_user_in_place(
-    event: BeforeOAuthFinalizeLinkEvent, test_user: User, other: User
+    event: BeforeOAuthFinalizeLinkEvent, other: User
 ) -> BeforeOAuthFinalizeLinkEvent | None:
-    assert event.user is test_user
-    test_user.id = other.id
+    event.user.id = other.id  # ty: ignore[invalid-assignment]
     return None
 
 
 @pytest.mark.parametrize(
-    "rewrite", [_change_user_in_place, _replace_user], ids=["in_place", "replacement"]
+    ("rewrite", "error"),
+    [
+        pytest.param(_change_user_in_place, FrozenInstanceError, id="in_place"),
+        pytest.param(_replace_user, ValueError, id="replacement"),
+        pytest.param(_replace_user_id, ValueError, id="replacement_id"),
+    ],
 )
 @respx.mock
 def test_finalize_link_cannot_attach_to_another_user(
-    build_auth, accounts_storage: MemoryAccountsStorage, rewrite
+    build_auth, accounts_storage: MemoryAccountsStorage, rewrite, error
 ):
     test_user = accounts_storage.data["test"]
     other = _add_other_user(accounts_storage)
     auth = _linking_auth(build_auth)
-    auth.before("oauth.finalize_link")(lambda event: rewrite(event, test_user, other))
+    auth.before("oauth.finalize_link")(lambda event: rewrite(event, other))
 
     mock_token_and_userinfo(email="test@example.com", provider_user_id="linked-id")
     with _client(auth) as client:
         link_code = _link_code(client)
-        with pytest.raises(ValueError, match="cannot change the user"):
+        with _rejected(error, "cannot change the user"):
             _finalize_link(client, link_code)
 
+    assert test_user.id == "test"
     assert _all_social_accounts(accounts_storage) == []
 
 
@@ -414,37 +446,46 @@ def test_social_account_create_hooks_can_still_adjust_tokens_and_extra_fields(
     }
 
 
-def _update_user_id(event: BeforeSocialAccountUpdateEvent, account: SocialAccount):
+def _update_user_id(event: BeforeSocialAccountUpdateEvent):
     return replace(event, user_id="other")
 
 
-def _update_login_method(event: BeforeSocialAccountUpdateEvent, account: SocialAccount):
+def _update_login_method(event: BeforeSocialAccountUpdateEvent):
     return replace(event, is_login_method=True)
 
 
-def _update_account_owner_in_place(
-    event: BeforeSocialAccountUpdateEvent, account: SocialAccount
-):
-    assert event.social_account is account
-    account.user_id = "other"
+def _replace_account_owner(event: BeforeSocialAccountUpdateEvent):
+    return replace(event, social_account=replace(event.social_account, user_id="other"))
 
 
-def _update_account_id_in_place(
-    event: BeforeSocialAccountUpdateEvent, account: SocialAccount
-):
-    assert event.social_account is account
-    account.id = "other-account"
+def _replace_account_id(event: BeforeSocialAccountUpdateEvent):
+    return replace(
+        event, social_account=replace(event.social_account, id="other-account")
+    )
+
+
+def _update_account_owner_in_place(event: BeforeSocialAccountUpdateEvent):
+    event.social_account.user_id = "other"  # ty: ignore[invalid-assignment]
+
+
+def _update_account_id_in_place(event: BeforeSocialAccountUpdateEvent):
+    event.social_account.id = "other-account"  # ty: ignore[invalid-assignment]
 
 
 @pytest.mark.parametrize(
-    "rewrite",
+    ("rewrite", "error"),
     [
-        _update_user_id,
-        _update_login_method,
-        _update_account_owner_in_place,
-        _update_account_id_in_place,
+        pytest.param(_update_user_id, ValueError, id="user_id"),
+        pytest.param(_update_login_method, ValueError, id="is_login_method"),
+        pytest.param(_replace_account_owner, ValueError, id="owner"),
+        pytest.param(_replace_account_id, ValueError, id="account"),
+        pytest.param(
+            _update_account_owner_in_place, FrozenInstanceError, id="owner_in_place"
+        ),
+        pytest.param(
+            _update_account_id_in_place, FrozenInstanceError, id="account_in_place"
+        ),
     ],
-    ids=["user_id", "is_login_method", "owner_in_place", "account_in_place"],
 )
 @respx.mock
 def test_social_account_update_cannot_change_target_owner_or_identity(
@@ -452,6 +493,7 @@ def test_social_account_update_cannot_change_target_owner_or_identity(
     accounts_storage: MemoryAccountsStorage,
     monkeypatch: pytest.MonkeyPatch,
     rewrite,
+    error: type[Exception],
 ):
     _add_other_user(accounts_storage)
     mock_token_and_userinfo(email="test@example.com", provider_user_id="connect-id")
@@ -465,11 +507,13 @@ def test_social_account_update_cannot_change_target_owner_or_identity(
             lambda *args, **kwargs: updates.append(args),
         )
         [account] = accounts_storage.data["test"].social_accounts
-        auth.before("social_account.update")(lambda event: rewrite(event, account))
-        with pytest.raises(ValueError, match="social_account.update before hooks"):
+        original = (account.id, account.user_id, account.is_login_method)
+        auth.before("social_account.update")(rewrite)
+        with _rejected(error, "social_account.update before hooks"):
             _connect(client)
 
     assert updates == []
+    assert (account.id, account.user_id, account.is_login_method) == original
 
 
 @respx.mock
@@ -507,11 +551,11 @@ def test_password_grant_cannot_change_the_user(
 
     @auth.before("token.password")
     def change_user(event: BeforeTokenPasswordEvent) -> None:
-        assert event.user is test_user
-        test_user.id = other.id
+        assert event.user == UserSnapshot.of(test_user)
+        event.user.id = other.id  # ty: ignore[invalid-assignment]
 
     with _client(auth) as client:
-        with pytest.raises(ValueError, match="token.password before hooks cannot"):
+        with pytest.raises(FrozenInstanceError):
             client.post(
                 "/token",
                 data={
@@ -522,6 +566,7 @@ def test_password_grant_cannot_change_the_user(
                 },
             )
 
+    assert test_user.id == "test"
     assert logins == []
     assert session_storage.records == {}
 
@@ -557,9 +602,10 @@ def _change_claims_in_place(changes: _ClaimChanges) -> ClaimHook:
     def hook(event: BeforeOAuthCallbackEvent | BeforeOAuthFinalizeLinkEvent) -> None:
         validated = event.validated_user_info
         if "email" in changes:
-            validated.email = changes["email"]
+            validated.email = changes["email"]  # ty: ignore[invalid-assignment]
         if "email_verified" in changes:
-            validated.email_verified = changes["email_verified"]
+            verified = changes["email_verified"]
+            validated.email_verified = verified  # ty: ignore[invalid-assignment]
 
     return hook
 
@@ -576,9 +622,11 @@ def _change_claims_by_replacement(changes: _ClaimChanges) -> ClaimHook:
 
 
 _CLAIM_REWRITE_MODES = pytest.mark.parametrize(
-    "rewrite",
-    [_change_claims_in_place, _change_claims_by_replacement],
-    ids=["in_place", "replacement"],
+    ("rewrite", "error"),
+    [
+        pytest.param(_change_claims_in_place, FrozenInstanceError, id="in_place"),
+        pytest.param(_change_claims_by_replacement, ValueError, id="replacement"),
+    ],
 )
 
 
@@ -639,6 +687,7 @@ def test_callback_cannot_change_verified_email_claims(
     accounts_storage: MemoryAccountsStorage,
     session_storage: MemorySessionStorage,
     rewrite,
+    error: type[Exception],
     email: str | None,
     email_verified: bool | None,
     changes: _ClaimChanges,
@@ -657,7 +706,7 @@ def test_callback_cannot_change_verified_email_claims(
     )
     with _client(auth) as client:
         _, state = start_provider_auth(client, "/fake/login")
-        with pytest.raises(ValueError, match="email or email_verified"):
+        with _rejected(error, "email or email_verified"):
             client.get("/fake/callback", params={"code": "code", "state": state})
 
     assert effects == []
@@ -702,6 +751,7 @@ def test_finalize_link_cannot_change_verified_email_claims(
     build_auth,
     accounts_storage: MemoryAccountsStorage,
     rewrite,
+    error: type[Exception],
     email: str | None,
     email_verified: bool | None,
     changes: _ClaimChanges,
@@ -718,7 +768,7 @@ def test_finalize_link_cannot_change_verified_email_claims(
     )
     with _client(auth) as client:
         link_code = _link_code(client)
-        with pytest.raises(ValueError, match="email or email_verified"):
+        with _rejected(error, "email or email_verified"):
             _finalize_link(client, link_code)
 
     assert effects == []
