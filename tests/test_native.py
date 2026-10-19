@@ -252,8 +252,14 @@ _IMPORT_ISOLATION_SCRIPT = textwrap.dedent(
     import cross_auth._issuer
     import cross_auth.hooks
     import cross_auth.storage.sqlmodel
+    from cross_web import Response
+    from cross_auth._login import login_with_session
     from cross_auth._native import sign_in_with_id_token
-    from tests.conftest import MemoryAccountsStorage, MemoryStorage
+    from tests.conftest import (
+        MemoryAccountsStorage,
+        MemorySessionStorage,
+        MemoryStorage,
+    )
     from tests.test_native import VALID_TOKEN, StubOIDCProvider
 
     context = cross_auth._context.Context(
@@ -271,6 +277,15 @@ _IMPORT_ISOLATION_SCRIPT = textwrap.dedent(
         id_token=VALID_TOKEN,
     )
     assert user.created
+
+    response = login_with_session(
+        str(user.user.id),
+        response=Response(status_code=200),
+        hooks=cross_auth.hooks.HookRegistry(),
+        session_storage=MemorySessionStorage(),
+        session_config=None,
+    )
+    assert [cookie.name for cookie in response.cookies or []] == ["session_id"]
     assert not {"fastapi", "starlette"} & set(sys.modules)
     """
 )
