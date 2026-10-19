@@ -1,6 +1,14 @@
 CHANGELOG
 =========
 
+0.33.4 - 2026-10-19
+-------------------
+
+Hook dispatch now consistently rejects unsupported event names with a clear
+`ValueError`, whether the event is being registered or run.
+
+This release was contributed by [@patrick91](https://github.com/patrick91) in [#66](https://github.com/usecross/cross-auth/pull/66)
+
 0.33.3 - 2026-10-19
 -------------------
 
