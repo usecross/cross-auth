@@ -842,7 +842,7 @@ def _complete_sign_in(
     validated: ValidatedUserInfo,
 ) -> Response:
     """Check login eligibility and complete a session or token sign-in."""
-    provider_user_id = validated.provider_user_id
+    claims = _verified_claims(validated)
     callback_event = BeforeOAuthCallbackEvent(
         provider=provider,
         request=request,
@@ -866,7 +866,7 @@ def _complete_sign_in(
     _check_provider_identity(
         "oauth.callback",
         provider=provider,
-        provider_user_id=provider_user_id,
+        claims=claims,
         approved_provider=callback_event.provider,
         approved=callback_event.validated_user_info,
     )
@@ -1005,6 +1005,11 @@ def _create_user_with_identity(
             extra_fields={},
         ),
     )
+    if event.email != email or event.email_verified != email_verified:
+        raise ValueError(
+            "user.create before hooks cannot change email or email_verified; "
+            "configure normalize_email to canonicalize emails"
+        )
     identity_data: SocialAccountCreate | None = None
 
     def prepare_identity(user: User) -> SocialAccountCreate:
@@ -1075,10 +1080,13 @@ def _prepare_social_account(
         or event.provider != provider
         or event.provider_user_id != provider_user_id
         or event.is_login_method != is_login_method
+        or event.provider_email != provider_email
+        or event.provider_email_verified != provider_email_verified
     ):
         raise ValueError(
             "social_account.create before hooks cannot change user_id, provider, "
-            "provider_user_id or is_login_method"
+            "provider_user_id, is_login_method, provider_email or "
+            "provider_email_verified"
         )
     return SocialAccountCreate(
         user_id=event.user_id,
@@ -1226,10 +1234,15 @@ def _update_social_account(
             event.is_login_method,
         )
         != identity[1:]
+        # Compared with the incoming provider claims, not the stored ones, so a
+        # provider-verified email change still refreshes the account.
+        or event.provider_email != provider_email
+        or event.provider_email_verified != provider_email_verified
     ):
         raise ValueError(
             "social_account.update before hooks cannot change the account, its "
-            "user_id, provider, provider_user_id or is_login_method"
+            "user_id, provider, provider_user_id, is_login_method, "
+            "provider_email or provider_email_verified"
         )
     if enable_login and not social_account.is_login_method:
         _check_social_account_ownership(
@@ -1275,23 +1288,28 @@ def _social_account_identity(
     )
 
 
+def _verified_claims(
+    validated: ValidatedUserInfo,
+) -> tuple[str, str | None, bool | None]:
+    # Captured before the hooks run because ``ValidatedUserInfo`` is mutable
+    # and hooks may change it in place.
+    return (validated.provider_user_id, validated.email, validated.email_verified)
+
+
 def _check_provider_identity(
     event_name: str,
     *,
     provider: OAuth2Provider,
-    provider_user_id: str,
+    claims: tuple[str, str | None, bool | None],
     approved_provider: OAuth2Provider,
     approved: ValidatedUserInfo,
 ) -> None:
-    # ``provider_user_id`` is captured before the hooks run because
-    # ``ValidatedUserInfo`` is mutable and hooks may change it in place.
-    if (
-        approved_provider is not provider
-        or approved.provider_user_id != provider_user_id
-    ):
+    # The verified claims select the account and decide auto-linking, signup
+    # and link checks, so hooks may read them but not change them.
+    if approved_provider is not provider or _verified_claims(approved) != claims:
         raise ValueError(
-            f"{event_name} before hooks cannot change the provider or "
-            "provider_user_id"
+            f"{event_name} before hooks cannot change the provider, "
+            "provider_user_id, email or email_verified"
         )
 
 
@@ -1856,7 +1874,7 @@ def finalize_link(
         return Response.error(e.error, error_description=e.error_description)
 
     user_id = user.id
-    provider_user_id = validated.provider_user_id
+    claims = _verified_claims(validated)
     finalize_event = BeforeOAuthFinalizeLinkEvent(
         provider=provider,
         request=request,
@@ -1882,7 +1900,7 @@ def finalize_link(
     _check_provider_identity(
         "oauth.finalize_link",
         provider=provider,
-        provider_user_id=provider_user_id,
+        claims=claims,
         approved_provider=finalize_event.provider,
         approved=finalize_event.validated_user_info,
     )

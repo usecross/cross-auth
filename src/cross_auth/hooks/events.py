@@ -86,6 +86,12 @@ class AfterOAuthIdTokenEvent:
 
 @dataclass(frozen=True, slots=True)
 class BeforeUserCreateEvent:
+    """A user about to be created.
+
+    ``email`` is already canonicalized by ``normalize_email``. ``email`` and
+    ``email_verified`` are read-only; hooks may adjust ``extra_fields``.
+    """
+
     user_info: dict[str, Any]
     email: str
     email_verified: bool
@@ -186,6 +192,13 @@ class AfterOAuthAuthorizeEvent:
 
 @dataclass(frozen=True, slots=True)
 class BeforeOAuthCallbackEvent:
+    """Provider data about to sign a user in.
+
+    ``validated_user_info`` holds the verified claims that select, auto-link or
+    create the account; hooks may read them but not change them. ``user_info``
+    is profile metadata and may be adjusted.
+    """
+
     provider: OAuth2Provider
     request: HTTPRequest
     user_info: UserInfo
@@ -229,6 +242,12 @@ class AfterOAuthLinkEvent:
 
 @dataclass(frozen=True, slots=True)
 class BeforeOAuthFinalizeLinkEvent:
+    """Provider data about to be linked to the signed-in ``user``.
+
+    ``user`` and the verified ``validated_user_info`` claims are read-only;
+    ``allow_login`` and the ``user_info`` profile metadata may be adjusted.
+    """
+
     provider: OAuth2Provider
     request: HTTPRequest
     user: User

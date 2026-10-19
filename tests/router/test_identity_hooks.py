@@ -1,16 +1,16 @@
 """Before hooks cannot change an identity Cross-Auth has already verified.
 
 Hooks may deny an operation or adjust display data, provider tokens, and
-``extra_fields``. Changing the provider identity, the signed-in user, or a
-social account's owner or login eligibility raises ``ValueError`` before
-anything is resolved or saved. This holds whether a hook mutates the event in
-place or returns a replacement.
+``extra_fields``. Changing the provider identity, the verified email claims,
+the signed-in user, or a social account's owner or login eligibility raises
+``ValueError`` before anything is resolved or saved. This holds whether a hook
+mutates the event in place or returns a replacement.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any
+from typing import Any, Callable, TypedDict
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -19,15 +19,18 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from cross_auth.fastapi import CrossAuth
+from cross_auth.exceptions import CrossAuthException
 from cross_auth.hooks import (
+    AfterOAuthCallbackEvent,
     BeforeOAuthCallbackEvent,
     BeforeOAuthFinalizeLinkEvent,
     BeforeOAuthLinkEvent,
     BeforeSocialAccountCreateEvent,
     BeforeSocialAccountUpdateEvent,
     BeforeTokenPasswordEvent,
+    BeforeUserCreateEvent,
 )
-from cross_auth.social_providers.oauth import ValidatedUserInfo
+from cross_auth.social_providers.oauth import UserInfo, ValidatedUserInfo
 from tests.conftest import (
     TEST_PASSWORD,
     MemoryAccountsStorage,
@@ -36,7 +39,7 @@ from tests.conftest import (
     User,
 )
 
-from .conftest import mock_token_and_userinfo, start_provider_auth
+from .conftest import FakeProvider, mock_token_and_userinfo, start_provider_auth
 
 # S256 challenge for the code verifier "test".
 _CODE_CHALLENGE = "n4bQgYhMfWWaL-qgxVrQFaO_TxsrC4Is0V1sFbDwCgg"
@@ -156,6 +159,41 @@ def test_callback_hooks_can_still_adjust_claim_data(
     [account] = accounts_storage.data["alice-id"].social_accounts
     assert account.provider_user_id == "alice-id"
     assert len(session_storage.records) == 1
+
+
+@respx.mock
+def test_raw_user_info_email_is_metadata_not_a_verified_claim(
+    build_auth, accounts_storage: MemoryAccountsStorage
+):
+    auth = build_auth(
+        config={
+            "session": {"cookies": {"auth": True}},
+            "account_linking": {"enabled": True},
+        }
+    )
+
+    @auth.before("oauth.callback")
+    def rewrite_raw_email(event: BeforeOAuthCallbackEvent) -> BeforeOAuthCallbackEvent:
+        return replace(
+            event,
+            user_info={
+                **event.user_info,
+                "email": "test@example.com",
+                "email_verified": True,
+            },
+        )
+
+    mock_token_and_userinfo(email="alice@example.com", provider_user_id="alice-id")
+    with _client(auth) as client:
+        _, state = start_provider_auth(client, "/fake/login")
+        resp = client.get("/fake/callback", params={"code": "code", "state": state})
+
+    assert resp.status_code == 302
+    assert accounts_storage.data["test"].social_accounts == []
+    user = accounts_storage.data["alice-id"]
+    assert user.email == "alice@example.com"
+    [account] = user.social_accounts
+    assert account.provider_email == "alice@example.com"
 
 
 # --- oauth.link and oauth.finalize_link -------------------------------------
@@ -486,3 +524,449 @@ def test_password_grant_cannot_change_the_user(
 
     assert logins == []
     assert session_storage.records == {}
+
+
+# --- verified email claims ------------------------------------------------
+#
+# Hooks may read the provider's email claims to deny an operation, but cannot
+# change them: they decide auto-linking, ``require_verified_email``, link
+# validation, and the email stored on users and social accounts. Canonical
+# forms come from the configured ``normalize_email`` callback.
+
+
+class _OptionalEmailProvider(FakeProvider):
+    """A custom provider whose identities may arrive without an email."""
+
+    def validate_user_info(self, user_info: UserInfo) -> ValidatedUserInfo:
+        return ValidatedUserInfo(
+            email=user_info["email"],
+            provider_user_id=str(user_info["id"]),
+            email_verified=user_info["email_verified"],
+        )
+
+
+class _ClaimChanges(TypedDict, total=False):
+    email: str | None
+    email_verified: bool | None
+
+
+ClaimHook = Callable[[BeforeOAuthCallbackEvent | BeforeOAuthFinalizeLinkEvent], Any]
+
+
+def _change_claims_in_place(changes: _ClaimChanges) -> ClaimHook:
+    def hook(event: BeforeOAuthCallbackEvent | BeforeOAuthFinalizeLinkEvent) -> None:
+        validated = event.validated_user_info
+        if "email" in changes:
+            validated.email = changes["email"]
+        if "email_verified" in changes:
+            validated.email_verified = changes["email_verified"]
+
+    return hook
+
+
+def _change_claims_by_replacement(changes: _ClaimChanges) -> ClaimHook:
+    def hook(
+        event: BeforeOAuthCallbackEvent | BeforeOAuthFinalizeLinkEvent,
+    ) -> BeforeOAuthCallbackEvent | BeforeOAuthFinalizeLinkEvent:
+        validated = replace(event.validated_user_info, **changes)
+        user_info = {**event.user_info, **changes}
+        return replace(event, user_info=user_info, validated_user_info=validated)
+
+    return hook
+
+
+_CLAIM_REWRITE_MODES = pytest.mark.parametrize(
+    "rewrite",
+    [_change_claims_in_place, _change_claims_by_replacement],
+    ids=["in_place", "replacement"],
+)
+
+
+def _email_policy_auth(build_auth) -> CrossAuth:
+    # The provider does not vouch for emails, so ``email_verified`` alone
+    # decides auto-linking, signup, and linking.
+    provider = _OptionalEmailProvider(
+        client_id="fake-client-id", client_secret="fake-secret", trust_email=False
+    )
+    return build_auth(
+        providers=[provider],
+        config={
+            "session": {"cookies": {"auth": True}},
+            "account_linking": {"enabled": True},
+            "require_verified_email": True,
+        },
+    )
+
+
+@_CLAIM_REWRITE_MODES
+@pytest.mark.parametrize(
+    ("email", "email_verified", "changes"),
+    [
+        pytest.param(
+            "attacker@example.com",
+            True,
+            {"email": "test@example.com"},
+            id="email_into_existing_user",
+        ),
+        pytest.param(
+            "test@example.com",
+            False,
+            {"email_verified": True},
+            id="verify_into_existing_user",
+        ),
+        pytest.param(
+            "new@example.com",
+            False,
+            {"email_verified": True},
+            id="verify_past_require_verified_email",
+        ),
+        pytest.param(
+            "new@example.com", None, {"email_verified": True}, id="verify_absent"
+        ),
+        pytest.param("new@example.com", True, {"email_verified": False}, id="unverify"),
+        pytest.param(
+            None,
+            None,
+            {"email": "test@example.com", "email_verified": True},
+            id="add_absent_email",
+        ),
+        pytest.param("new@example.com", True, {"email": None}, id="remove_email"),
+    ],
+)
+@respx.mock
+def test_callback_cannot_change_verified_email_claims(
+    build_auth,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    rewrite,
+    email: str | None,
+    email_verified: bool | None,
+    changes: _ClaimChanges,
+):
+    auth = _email_policy_auth(build_auth)
+    auth.before("oauth.callback")(rewrite(changes))
+    effects: list[object] = []
+    auth.before("user.create")(effects.append)
+    auth.before("social_account.create")(effects.append)
+    auth.before("social_account.update")(effects.append)
+    auth.before("login")(effects.append)
+    auth.after("oauth.callback")(effects.append)
+
+    mock_token_and_userinfo(
+        email=email, email_verified=email_verified, provider_user_id="attacker-id"
+    )
+    with _client(auth) as client:
+        _, state = start_provider_auth(client, "/fake/login")
+        with pytest.raises(ValueError, match="email or email_verified"):
+            client.get("/fake/callback", params={"code": "code", "state": state})
+
+    assert effects == []
+    assert session_storage.records == {}
+    assert list(accounts_storage.data) == ["test"]
+    assert _all_social_accounts(accounts_storage) == []
+
+
+@_CLAIM_REWRITE_MODES
+@pytest.mark.parametrize(
+    ("email", "email_verified", "changes"),
+    [
+        pytest.param(
+            "test@example.com",
+            False,
+            {"email_verified": True},
+            id="verify_past_link_check",
+        ),
+        pytest.param(
+            "test@example.com", None, {"email_verified": True}, id="verify_absent"
+        ),
+        pytest.param(
+            "other@example.com",
+            True,
+            {"email": "test@example.com"},
+            id="email_past_mismatch_check",
+        ),
+        pytest.param(
+            None,
+            None,
+            {"email": "test@example.com", "email_verified": True},
+            id="add_absent_email",
+        ),
+        pytest.param(
+            "test@example.com", True, {"email_verified": False}, id="unverify"
+        ),
+        pytest.param("test@example.com", True, {"email": None}, id="remove_email"),
+    ],
+)
+@respx.mock
+def test_finalize_link_cannot_change_verified_email_claims(
+    build_auth,
+    accounts_storage: MemoryAccountsStorage,
+    rewrite,
+    email: str | None,
+    email_verified: bool | None,
+    changes: _ClaimChanges,
+):
+    auth = _email_policy_auth(build_auth)
+    auth.before("oauth.finalize_link")(rewrite(changes))
+    effects: list[object] = []
+    auth.before("social_account.create")(effects.append)
+    auth.before("social_account.update")(effects.append)
+    auth.after("oauth.finalize_link")(effects.append)
+
+    mock_token_and_userinfo(
+        email=email, email_verified=email_verified, provider_user_id="linked-id"
+    )
+    with _client(auth) as client:
+        link_code = _link_code(client)
+        with pytest.raises(ValueError, match="email or email_verified"):
+            _finalize_link(client, link_code)
+
+    assert effects == []
+    assert _all_social_accounts(accounts_storage) == []
+
+
+class _UserClaimChanges(TypedDict, total=False):
+    email: str
+    email_verified: bool
+
+
+@pytest.mark.parametrize(
+    ("email_verified", "changes"),
+    [
+        pytest.param(True, {"email": "someone-else@example.com"}, id="email"),
+        # The baseline is the canonical form from ``normalize_email``.
+        pytest.param(True, {"email": "New@Example.com"}, id="denormalize_email"),
+        pytest.param(False, {"email_verified": True}, id="verify"),
+        pytest.param(True, {"email_verified": False}, id="unverify"),
+    ],
+)
+@respx.mock
+def test_user_create_cannot_change_email_claims(
+    build_auth,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    email_verified: bool,
+    changes: _UserClaimChanges,
+):
+    auth = build_auth(normalize_email=str.lower)
+    auth.before("user.create")(lambda event: replace(event, **changes))
+    effects: list[object] = []
+    auth.before("social_account.create")(effects.append)
+    auth.after("user.create")(effects.append)
+    auth.before("login")(effects.append)
+
+    mock_token_and_userinfo(
+        email="New@Example.com", email_verified=email_verified, provider_user_id="new"
+    )
+    with _client(auth) as client:
+        _, state = start_provider_auth(client, "/fake/login")
+        with pytest.raises(ValueError, match="user.create before hooks cannot"):
+            client.get("/fake/callback", params={"code": "code", "state": state})
+
+    assert effects == []
+    assert session_storage.records == {}
+    assert list(accounts_storage.data) == ["test"]
+
+
+class _ProviderClaimChanges(TypedDict, total=False):
+    provider_email: str | None
+    provider_email_verified: bool | None
+
+
+_PROVIDER_CLAIM_REWRITES = pytest.mark.parametrize(
+    ("email_verified", "changes"),
+    [
+        pytest.param(True, {"provider_email": "victim@example.com"}, id="email"),
+        pytest.param(True, {"provider_email": None}, id="remove_email"),
+        pytest.param(False, {"provider_email_verified": True}, id="verify"),
+        pytest.param(None, {"provider_email_verified": True}, id="verify_absent"),
+        pytest.param(True, {"provider_email_verified": False}, id="unverify"),
+    ],
+)
+
+
+@_PROVIDER_CLAIM_REWRITES
+@respx.mock
+def test_social_account_create_cannot_change_provider_email_claims(
+    auth: CrossAuth,
+    accounts_storage: MemoryAccountsStorage,
+    email_verified: bool | None,
+    changes: _ProviderClaimChanges,
+):
+    auth.before("social_account.create")(lambda event: replace(event, **changes))
+
+    mock_token_and_userinfo(
+        email="test@example.com",
+        email_verified=email_verified,
+        provider_user_id="connect-id",
+    )
+    with _client(auth) as client:
+        with pytest.raises(ValueError, match="social_account.create before hooks"):
+            _connect(client)
+
+    assert _all_social_accounts(accounts_storage) == []
+
+
+@respx.mock
+def test_signup_rolls_back_when_social_account_create_changes_provider_email(
+    auth: CrossAuth,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+):
+    auth.before("social_account.create")(
+        lambda event: replace(event, provider_email="victim@example.com")
+    )
+
+    mock_token_and_userinfo(email="new@example.com", provider_user_id="new")
+    with _client(auth) as client:
+        _, state = start_provider_auth(client, "/fake/login")
+        with pytest.raises(ValueError, match="social_account.create before hooks"):
+            client.get("/fake/callback", params={"code": "code", "state": state})
+
+    assert list(accounts_storage.data) == ["test"]
+    assert session_storage.records == {}
+
+
+@_PROVIDER_CLAIM_REWRITES
+@respx.mock
+def test_social_account_update_cannot_change_provider_email_claims(
+    auth: CrossAuth,
+    accounts_storage: MemoryAccountsStorage,
+    monkeypatch: pytest.MonkeyPatch,
+    email_verified: bool | None,
+    changes: _ProviderClaimChanges,
+):
+    mock_token_and_userinfo(
+        email="test@example.com",
+        email_verified=email_verified,
+        provider_user_id="connect-id",
+    )
+    with _client(auth) as client:
+        assert _connect(client).status_code == 302
+
+        updates: list[object] = []
+        monkeypatch.setattr(
+            accounts_storage,
+            "update_social_account",
+            lambda *args, **kwargs: updates.append(args),
+        )
+        auth.before("social_account.update")(lambda event: replace(event, **changes))
+        with pytest.raises(ValueError, match="social_account.update before hooks"):
+            _connect(client)
+
+    assert updates == []
+
+
+@respx.mock
+def test_provider_verified_email_change_refreshes_social_account(
+    auth: CrossAuth, accounts_storage: MemoryAccountsStorage
+):
+    seen: list[tuple[str | None, bool | None]] = []
+
+    @auth.before("social_account.update")
+    def record_claims(event: BeforeSocialAccountUpdateEvent) -> None:
+        seen.append((event.provider_email, event.provider_email_verified))
+
+    mock_token_and_userinfo(
+        email="old@example.com", email_verified=False, provider_user_id="connect-id"
+    )
+    with _client(auth) as client:
+        assert _connect(client).status_code == 302
+        mock_token_and_userinfo(
+            email="renamed@example.com",
+            email_verified=True,
+            provider_user_id="connect-id",
+        )
+        assert _connect(client).status_code == 302
+
+    assert seen == [("renamed@example.com", True)]
+    [account] = accounts_storage.data["test"].social_accounts
+    assert account.provider_email == "renamed@example.com"
+    assert account.provider_email_verified is True
+
+
+# --- application email policies -------------------------------------------
+#
+# Representative of hooks that read email claims for policy and add
+# ``extra_fields``, as FastAPI Cloud does. Exercised with library fixtures only.
+
+
+@respx.mock
+def test_read_only_email_policies_and_extra_fields_keep_working(
+    build_auth,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+):
+    auth = build_auth(normalize_email=lambda email: email.strip().lower())
+    callbacks: list[tuple[str | None, bool | None, str]] = []
+
+    @auth.before("oauth.callback")
+    def reject_suspended_account(event: BeforeOAuthCallbackEvent) -> None:
+        validated = event.validated_user_info
+        callbacks.append(
+            (validated.email, validated.email_verified, validated.provider_user_id)
+        )
+        if validated.email == "suspended@example.com":
+            raise CrossAuthException("access_denied", "Account suspended", 403)
+
+    @auth.before("user.create")
+    def reject_disallowed_signup(event: BeforeUserCreateEvent) -> None:
+        if not event.email.endswith("@example.com"):
+            raise CrossAuthException("signup_not_allowed", "Signup not allowed", 403)
+
+    @auth.before("user.create")
+    def populate_full_name(event: BeforeUserCreateEvent) -> BeforeUserCreateEvent:
+        full_name = event.user_info.get("name") or event.email.split("@")[0]
+        return replace(
+            event, extra_fields={**event.extra_fields, "full_name": full_name}
+        )
+
+    @auth.before("social_account.create")
+    @auth.before("social_account.update")
+    def populate_provider_username(
+        event: BeforeSocialAccountCreateEvent | BeforeSocialAccountUpdateEvent,
+    ) -> BeforeSocialAccountCreateEvent | BeforeSocialAccountUpdateEvent:
+        username = event.user_info.get("login") or event.provider_user_id
+        return replace(
+            event,
+            extra_fields={**event.extra_fields, "provider_username": username},
+        )
+
+    completed: list[AfterOAuthCallbackEvent] = []
+    auth.after("oauth.callback")(completed.append)
+
+    def sign_in(email: str, provider_user_id: str):
+        mock_token_and_userinfo(email=email, provider_user_id=provider_user_id)
+        _, state = start_provider_auth(client, "/fake/login")
+        return client.get("/fake/callback", params={"code": "code", "state": state})
+
+    with _client(auth) as client:
+        assert sign_in(" Alice@Example.com", "alice-id").status_code == 302
+        assert accounts_storage.last_user_extra_fields == {"full_name": "alice"}
+        assert sign_in(" Alice@Example.com", "alice-id").status_code == 302
+
+        suspended = sign_in("suspended@example.com", "suspended-id")
+        assert suspended.status_code == 403
+        assert suspended.json()["error"] == "access_denied"
+
+        denied = sign_in("bob@other.org", "bob-id")
+        assert denied.json()["error"] == "signup_not_allowed"
+
+    user = accounts_storage.data["alice-id"]
+    assert user.email == "alice@example.com"
+    [account] = user.social_accounts
+    assert account.provider_email == " Alice@Example.com"
+    assert account.provider_email_verified is True
+    assert accounts_storage.social_account_extra_fields_history == [
+        {"provider_username": "alice-id"},
+        {"provider_username": "alice-id"},
+    ]
+    assert callbacks == [
+        (" Alice@Example.com", True, "alice-id"),
+        (" Alice@Example.com", True, "alice-id"),
+        ("suspended@example.com", True, "suspended-id"),
+        ("bob@other.org", True, "bob-id"),
+    ]
+    assert [event.created_user is not None for event in completed] == [True, False]
+    assert list(accounts_storage.data) == ["test", "alice-id"]
+    assert len(session_storage.records) == 2
