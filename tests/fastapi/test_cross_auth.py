@@ -572,34 +572,55 @@ def test_cross_auth_and_router_share_one_setup(
     assert seen == [payload]
 
 
+@pytest.mark.parametrize("replace_resolver", [False, True])
 def test_custom_user_resolver_reaches_router_and_facade(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
     session_storage: SessionStorage,
+    replace_resolver: bool,
 ):
     user = accounts_storage.find_user_by_id("test")
+    calls: list[str | None] = []
 
     def resolver(request) -> User | None:
+        calls.append(request.headers.get("x-user"))
         return user if request.headers.get("x-user") == "test" else None
 
-    auth = _make_auth(
-        secondary_storage,
-        accounts_storage,
-        session_storage,
-        get_user_from_request=resolver,
+    auth = CrossAuth(
+        providers=[GitHubProvider(client_id="id", client_secret="secret")],
+        storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=session_storage,
+        get_user_from_request=None if replace_resolver else resolver,
     )
+    if replace_resolver:
+        auth.router.context.get_user_from_request = resolver
     assert auth.router.context.get_user_from_request is resolver
+    token, _ = auth.issue_session_token("test")
 
     app = FastAPI()
+    app.include_router(auth.router)
 
     @app.get("/me")
     def me(request: Request):
         current = auth.get_current_user(request)
         return {"user": current.id if current else None}
 
-    with TestClient(app) as client:
+    with TestClient(app, follow_redirects=False) as client:
+        # A valid session must not bypass the custom resolver's denial policy.
+        client.headers["Authorization"] = f"Bearer {token}"
         assert client.get("/me", headers={"x-user": "test"}).json() == {"user": "test"}
         assert client.get("/me").json() == {"user": None}
+        assert (
+            client.get("/github/connect", headers={"x-user": "test"}).status_code == 302
+        )
+        assert client.get("/github/connect").status_code == 401
+        assert calls == ["test", None, "test", None]
+
+        # Switching back to the built-in resolver restores session-based login.
+        auth.router.context.get_user_from_request = auth._default_get_user_from_request
+        assert client.get("/me").json() == {"user": "test"}
+        assert calls == ["test", None, "test", None]
 
 
 @pytest.mark.parametrize("cookie_auth", [False, True])
@@ -631,7 +652,22 @@ def test_direct_router_matches_cross_auth_router(
 
     assert type(facade) is AuthRouter
     assert _route_table(facade) == _route_table(direct)
-    paths = {path for path, _, _ in _route_table(direct)}
-    assert ("/github/login" in paths) is cookie_auth
+    routes = {
+        (path, method)
+        for path, methods, _ in _route_table(direct)
+        for method in methods
+    }
+    assert {
+        ("/github/connect", "GET"),
+        ("/github/social-accounts", "DELETE"),
+        ("/github/social-accounts/{social_account_id}", "DELETE"),
+        ("/github/authorize", "GET"),
+        ("/github/callback", "GET"),
+        ("/github/callback", "POST"),
+        ("/github/link", "POST"),
+        ("/github/finalize-link", "POST"),
+        ("/token", "POST"),
+    } <= routes
+    assert (("/github/login", "GET") in routes) is cookie_auth
     assert _openapi(facade) == _openapi(direct)
     assert facade.extra_schemas == direct.extra_schemas

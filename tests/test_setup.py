@@ -1,5 +1,6 @@
 """Framework-free setup: no FastAPI imports here (see the isolation test)."""
 
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -95,6 +96,26 @@ def test_providers_keep_route_order_and_last_id_wins_for_lookup(
 
     assert setup.providers == (first, second)
     assert dict(setup.providers_by_id) == {"github": second}
+
+
+def test_routes_and_lookup_use_one_provider_snapshot(
+    secondary_storage, accounts_storage
+):
+    first = GitHubProvider(client_id="first", client_secret="secret")
+    later = GitHubProvider(client_id="later", client_secret="secret")
+
+    class ChangingProviders(list[OAuth2Provider]):
+        def __iter__(self) -> Iterator[OAuth2Provider]:
+            yield from super().__iter__()
+            # Model a caller changing the input between snapshot and lookup.
+            self.append(later)
+
+    providers = ChangingProviders([first])
+    setup = _build(secondary_storage, accounts_storage, providers=providers)
+
+    assert len(providers) == 2
+    assert setup.providers == (first,)
+    assert dict(setup.providers_by_id) == {"github": first}
 
 
 @pytest.mark.parametrize(

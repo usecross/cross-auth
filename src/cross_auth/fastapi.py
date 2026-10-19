@@ -167,7 +167,6 @@ class CrossAuth:
             warnings.warn(
                 _TRUSTED_ORIGINS_DEPRECATION, DeprecationWarning, stacklevel=2
             )
-        self._uses_default_get_user_from_request = get_user_from_request is None
         # The default resolver is bound before the context exists; it reads the
         # context's storage/session settings only when a request arrives.
         self._setup = build_auth_setup(
@@ -225,7 +224,7 @@ class CrossAuth:
         ``SessionCookieMiddleware`` so the rolled cookie also reaches the
         browser.
         """
-        if not self._uses_default_get_user_from_request:
+        if self._context.get_user_from_request != self._default_get_user_from_request:
             # Preserve the custom-resolver contract: sliding sessions refresh
             # implicitly before the callback runs, even when the callback uses
             # another authentication mechanism.

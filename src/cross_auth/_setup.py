@@ -60,9 +60,10 @@ def build_auth_setup(
         normalize_email=normalize_email,
         get_client=get_client,
     )
+    registered_providers = tuple(providers)
     return AuthSetup(
         context=context,
-        providers=tuple(providers),
-        providers_by_id={provider.id: provider for provider in providers},
+        providers=registered_providers,
+        providers_by_id={provider.id: provider for provider in registered_providers},
         issuer=Issuer(),
     )
