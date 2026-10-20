@@ -70,7 +70,7 @@ def _parse_redirect(uri: str, application_type: str) -> SplitResult:
 
 
 class OAuthClient(BaseModel):
-    """Registered broker client. Native loopback redirects may vary only by port.
+    """Registered OAuth client. Native loopback redirects may vary only by port.
 
     Private-use native schemes must follow reverse-domain notation and have
     no authority. Claimed HTTPS redirects must be verified by the application

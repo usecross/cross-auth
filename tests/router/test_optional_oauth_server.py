@@ -1,7 +1,7 @@
-"""CrossAuth without the OAuth broker (``broker=False``).
+"""CrossAuth without the OAuth server (``oauth_server=False``).
 
-The broker makes Cross Auth an authorization server for registered SPA and
-native clients: ``/{provider}/authorize``, ``/token`` and the PKCE
+The OAuth server is the authorization server for registered SPA and native
+clients: ``/{provider}/authorize``, ``/token`` and the PKCE
 ``/{provider}/link`` + ``/{provider}/finalize-link`` pair. Browser sign-in,
 integration-only connect, disconnect and the programmatic APIs work without it.
 """
@@ -57,15 +57,15 @@ SESSION_ROUTES = {
     ("/{p}/callback", "GET"),
     ("/{p}/callback", "POST"),
 }
-BROKER_ROUTES = {
+OAUTH_SERVER_ROUTES = {
     ("/{p}/authorize", "GET"),
     ("/{p}/link", "POST"),
     ("/{p}/finalize-link", "POST"),
 }
 
 
-def _expected(provider_ids: list[str], *, broker: bool, cookie_auth: bool):
-    per_provider = SESSION_ROUTES | (BROKER_ROUTES if broker else set())
+def _expected(provider_ids: list[str], *, oauth_server: bool, cookie_auth: bool):
+    per_provider = SESSION_ROUTES | (OAUTH_SERVER_ROUTES if oauth_server else set())
     if not cookie_auth:
         per_provider = per_provider - {("/{p}/login", "GET")}
     routes = {
@@ -73,7 +73,7 @@ def _expected(provider_ids: list[str], *, broker: bool, cookie_auth: bool):
         for provider_id in provider_ids
         for path, method in per_provider
     }
-    return routes | ({("/token", "POST")} if broker else set())
+    return routes | ({("/token", "POST")} if oauth_server else set())
 
 
 def _route_methods(router: AuthRouter) -> set[tuple[str, str]]:
@@ -99,29 +99,31 @@ def providers() -> list[OAuth2Provider]:
 
 
 @pytest.mark.parametrize("cookie_auth", [True, False])
-@pytest.mark.parametrize("broker", [True, False])
-def test_cross_auth_routes(build_auth, providers, broker: bool, cookie_auth: bool):
+@pytest.mark.parametrize("oauth_server", [True, False])
+def test_cross_auth_routes(
+    build_auth, providers, oauth_server: bool, cookie_auth: bool
+):
     auth = build_auth(
         providers=providers,
-        broker=broker,
+        oauth_server=oauth_server,
         config={"session": {"cookies": {"auth": cookie_auth}}},
     )
 
     assert _route_methods(auth.router) == _expected(
-        ["fake", "github"], broker=broker, cookie_auth=cookie_auth
+        ["fake", "github"], oauth_server=oauth_server, cookie_auth=cookie_auth
     )
-    assert (auth.router.issuer is None) is not broker
+    assert (auth.router.issuer is None) is not oauth_server
     assert auth.router.issuer is auth._setup.issuer
 
 
 @pytest.mark.parametrize("cookie_auth", [True, False])
-@pytest.mark.parametrize("broker", [True, False])
+@pytest.mark.parametrize("oauth_server", [True, False])
 def test_auth_router_routes(
     secondary_storage,
     accounts_storage,
     session_storage,
     providers,
-    broker: bool,
+    oauth_server: bool,
     cookie_auth: bool,
 ):
     router = AuthRouter(
@@ -132,16 +134,16 @@ def test_auth_router_routes(
         None,
         session_storage,
         config={"session": {"cookies": {"auth": cookie_auth}}},
-        broker=broker,
+        oauth_server=oauth_server,
     )
 
     assert _route_methods(router) == _expected(
-        ["fake", "github"], broker=broker, cookie_auth=cookie_auth
+        ["fake", "github"], oauth_server=oauth_server, cookie_auth=cookie_auth
     )
-    assert (router.issuer is None) is not broker
+    assert (router.issuer is None) is not oauth_server
 
 
-def test_broker_is_on_by_default(secondary_storage, accounts_storage, providers):
+def test_oauth_server_is_on_by_default(secondary_storage, accounts_storage, providers):
     default = CrossAuth(
         providers=providers,
         storage=secondary_storage,
@@ -151,13 +153,34 @@ def test_broker_is_on_by_default(secondary_storage, accounts_storage, providers)
         providers=providers,
         storage=secondary_storage,
         accounts_storage=accounts_storage,
-        broker=True,
+        oauth_server=True,
     )
 
     assert _route_methods(default.router) == _route_methods(explicit.router)
     assert _route_methods(default.router) == _expected(
-        ["fake", "github"], broker=True, cookie_auth=False
+        ["fake", "github"], oauth_server=True, cookie_auth=False
     )
+
+
+def test_broker_is_not_an_alias(secondary_storage, accounts_storage, providers):
+    # ``broker`` was the unreleased name for ``oauth_server``.
+    old_name: dict[str, Any] = {"broker": False}
+
+    with pytest.raises(TypeError, match="broker"):
+        CrossAuth(
+            providers=providers,
+            storage=secondary_storage,
+            accounts_storage=accounts_storage,
+            **old_name,
+        )
+    with pytest.raises(TypeError, match="broker"):
+        AuthRouter(
+            providers=providers,
+            secondary_storage=secondary_storage,
+            accounts_storage=accounts_storage,
+            get_user_from_request=lambda request: None,
+            **old_name,
+        )
 
 
 @pytest.mark.parametrize(
@@ -179,7 +202,7 @@ def test_broker_is_on_by_default(secondary_storage, accounts_storage, providers)
         ({"token_issuer": lambda request: ("token", 60)}, "token_issuer"),
     ],
 )
-def test_broker_settings_require_the_broker(
+def test_oauth_server_settings_require_oauth_server(
     secondary_storage, accounts_storage, kwargs, message
 ):
     with pytest.raises(ValueError, match=message):
@@ -187,12 +210,12 @@ def test_broker_settings_require_the_broker(
             providers=[],
             storage=secondary_storage,
             accounts_storage=accounts_storage,
-            broker=False,
+            oauth_server=False,
             **kwargs,
         )
 
 
-def test_openapi_without_broker_is_self_contained(
+def test_openapi_without_oauth_server_is_self_contained(
     secondary_storage, accounts_storage, session_storage, providers
 ):
     auth = CrossAuth(
@@ -201,7 +224,7 @@ def test_openapi_without_broker_is_self_contained(
         accounts_storage=accounts_storage,
         session_storage=session_storage,
         config={"session": {"cookies": {"auth": True}}},
-        broker=False,
+        oauth_server=False,
     )
     # A plain app: no fixture merges auth.router.extra_schemas into the schema.
     app = FastAPI()
@@ -224,7 +247,7 @@ def _client(auth: CrossAuth) -> TestClient:
     return TestClient(app, follow_redirects=False)
 
 
-def _start_broker_flow(
+def _start_oauth_server_flow(
     client: TestClient, flow: str, *, provider_id: str = "fake"
 ) -> str:
     if flow == "token":
@@ -259,7 +282,7 @@ def _codes(storage: MemoryStorage) -> list[str]:
 @pytest.mark.parametrize("method", ["GET", "POST"])
 @pytest.mark.parametrize("flow", ["token", "link"])
 @respx.mock
-def test_pending_broker_callback_is_refused_after_disabling(
+def test_pending_oauth_server_callback_is_refused_after_disabling(
     build_auth,
     secondary_storage: MemoryStorage,
     accounts_storage: MemoryAccountsStorage,
@@ -273,11 +296,11 @@ def test_pending_broker_callback_is_refused_after_disabling(
         "session": {"cookies": {"auth": True}},
     }
     with _client(build_auth(config=config)) as before:
-        state = _start_broker_flow(before, flow)
+        state = _start_oauth_server_flow(before, flow)
         cookies = dict(before.cookies)
     users_before = set(accounts_storage.data)
 
-    disabled = build_auth(config=config, broker=False)
+    disabled = build_auth(config=config, oauth_server=False)
     seen: list[str] = []
     for event in ("token.authorization_code", "user.create", "social_account.create"):
         disabled._context.hooks.register_after(
@@ -297,7 +320,7 @@ def test_pending_broker_callback_is_refused_after_disabling(
     assert response.status_code == 400
     assert response.json() == {
         "error": "invalid_request",
-        "error_description": "The OAuth broker is disabled",
+        "error_description": "The OAuth server is disabled",
     }
     assert "location" not in response.headers
     # The bound browser consumed the attempt and its binding cookie is cleared.
@@ -314,13 +337,13 @@ def test_pending_broker_callback_is_refused_after_disabling(
 
 
 @respx.mock
-def test_unbound_browser_cannot_consume_a_pending_broker_callback(
+def test_unbound_browser_cannot_consume_a_pending_oauth_server_callback(
     build_auth, secondary_storage
 ):
     with _client(build_auth()) as victim:
-        state = _start_broker_flow(victim, "token")
+        state = _start_oauth_server_flow(victim, "token")
 
-    with _client(build_auth(broker=False)) as attacker:
+    with _client(build_auth(oauth_server=False)) as attacker:
         response = attacker.get(
             "/fake/callback", params={"code": "provider-code", "state": state}
         )
@@ -340,7 +363,7 @@ def test_pending_session_flow_survives_disabling(build_auth):
         _, login_state = start_provider_auth(before, "/fake/login")
         cookies = dict(before.cookies)
 
-    with _client(build_auth(broker=False)) as browser:
+    with _client(build_auth(oauth_server=False)) as browser:
         browser.cookies.update(cookies)
         response = browser.get(
             "/fake/callback", params={"code": "code", "state": login_state}
@@ -351,11 +374,11 @@ def test_pending_session_flow_survives_disabling(build_auth):
 
 
 @respx.mock
-def test_session_login_and_connect_without_broker(
+def test_session_login_and_connect_without_oauth_server(
     build_auth, accounts_storage: MemoryAccountsStorage
 ):
     mock_token_and_userinfo(email="social@example.com", provider_user_id="social-1")
-    with _client(build_auth(broker=False)) as browser:
+    with _client(build_auth(oauth_server=False)) as browser:
         _, state = start_provider_auth(browser, "/fake/login")
         response = browser.get(
             "/fake/callback", params={"code": "code", "state": state}
@@ -364,7 +387,7 @@ def test_session_login_and_connect_without_broker(
         assert response.cookies.get("session_id")
 
     mock_token_and_userinfo(email="test@example.com", provider_user_id="connected")
-    with _client(build_auth(broker=False)) as browser:
+    with _client(build_auth(oauth_server=False)) as browser:
         response = browser.get(
             "/fake/connect", headers={"Authorization": "Bearer test"}
         )
@@ -396,7 +419,7 @@ def social_only(
         accounts_storage=accounts_storage,
         session_storage=session_storage,
         config={"session": {"cookies": {"auth": True, "secure": False}}},
-        broker=False,
+        oauth_server=False,
     )
 
 
@@ -413,7 +436,7 @@ def social_only_client(social_only: CrossAuth):
         yield client
 
 
-def test_google_cookie_sign_in_without_broker(
+def test_google_cookie_sign_in_without_oauth_server(
     social_only_client: TestClient, accounts_storage: MemoryAccountsStorage
 ):
     with respx.mock(assert_all_called=False) as router:
@@ -441,7 +464,7 @@ def test_google_cookie_sign_in_without_broker(
     assert social_only_client.get("/me").json() == {"id": str(user.id)}
 
 
-def test_password_and_bearer_sessions_without_broker(
+def test_password_and_bearer_sessions_without_oauth_server(
     social_only: CrossAuth, social_only_client: TestClient
 ):
     user = social_only.authenticate("test@example.com", TEST_PASSWORD)
@@ -474,7 +497,7 @@ def apple_provider() -> AppleProvider:
 @pytest.mark.parametrize("flow", ["token", "link"])
 @pytest.mark.parametrize("provider_error", [False, True])
 @respx.mock
-def test_disabled_broker_rejects_apple_form_post(
+def test_disabled_oauth_server_rejects_apple_form_post(
     build_auth,
     apple_provider: AppleProvider,
     secondary_storage: MemoryStorage,
@@ -488,12 +511,12 @@ def test_disabled_broker_rejects_apple_form_post(
         "session": {"cookies": {"auth": True}},
     }
     with _client(build_auth(providers=[apple_provider], config=config)) as before:
-        state = _start_broker_flow(before, flow, provider_id="apple")
+        state = _start_oauth_server_flow(before, flow, provider_id="apple")
         cookies = dict(before.cookies)
     users_before = set(accounts_storage.data)
 
     with _client(
-        build_auth(providers=[apple_provider], config=config, broker=False)
+        build_auth(providers=[apple_provider], config=config, oauth_server=False)
     ) as browser:
         browser.cookies.update(cookies)
         form = {"state": state}
@@ -509,7 +532,7 @@ def test_disabled_broker_rejects_apple_form_post(
         response = browser.get(location)
 
     assert response.status_code == 400
-    assert response.json()["error_description"] == "The OAuth broker is disabled"
+    assert response.json()["error_description"] == "The OAuth server is disabled"
     assert "location" not in response.headers
     assert secondary_storage.get(f"oauth:authorization_request:v2:{state}") is None
     assert secondary_storage.get(f"oauth:form_post:{resume}") is None
@@ -534,10 +557,10 @@ def test_unbound_browser_cannot_consume_apple_form_post(
         "session": {"cookies": {"auth": True}},
     }
     with _client(build_auth(providers=[apple_provider], config=config)) as before:
-        state = _start_broker_flow(before, flow, provider_id="apple")
+        state = _start_oauth_server_flow(before, flow, provider_id="apple")
         cookies = dict(before.cookies)
 
-    disabled = build_auth(providers=[apple_provider], config=config, broker=False)
+    disabled = build_auth(providers=[apple_provider], config=config, oauth_server=False)
     with _client(disabled) as browser:
         browser.cookies.update(cookies)
         response = browser.post(
@@ -564,7 +587,7 @@ def test_unbound_browser_cannot_consume_apple_form_post(
 
         # The bound browser can still resume, then consume the refused attempt.
         response = browser.get(location)
-        assert response.json()["error_description"] == "The OAuth broker is disabled"
+        assert response.json()["error_description"] == "The OAuth server is disabled"
         assert secondary_storage.get(authorization_key) is None
         assert secondary_storage.get(continuation_key) is None
     assert not respx.calls

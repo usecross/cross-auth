@@ -144,7 +144,7 @@ def protected(user: Annotated[User, Depends(auth.require_current_user)]):
 
 To also sign in with Google, add the provider and turn on cookie sign-in. A
 browser application like this one doesn't need the
-[OAuth broker](/docs/oauth#the-oauth-broker), which serves SPA and native
+[OAuth server](/docs/oauth#the-oauth-server), which serves SPA and native
 clients:
 
 ```python
@@ -163,7 +163,7 @@ auth = CrossAuth(
     accounts_storage=accounts_storage,
     session_storage=session_storage,
     config={"session": {"cookies": {"auth": True}}},
-    broker=False,
+    oauth_server=False,
 )
 ```
 

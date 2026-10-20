@@ -30,7 +30,7 @@ class Config(TypedDict, total=False):
     require_verified_email: bool
 
     # Simple static web-client registry. For database-backed or native clients,
-    # supply get_client instead. Without either registry, broker flows reject clients.
+    # supply get_client instead. Without either registry, OAuth server flows reject clients.
     client_redirect_uris: dict[str, list[str]]
 
     # Session cookie settings (cookie name, max_age, secure, etc.) plus the

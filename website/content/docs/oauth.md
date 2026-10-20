@@ -11,9 +11,9 @@ Cross-Auth implements the OAuth 2.0 authorization code flow with PKCE (Proof Key
 for Code Exchange). This is used when Cross-Auth acts as the authorization
 server -- for example, when your SPA or mobile app needs to obtain tokens.
 
-## The OAuth broker
+## The OAuth server
 
-The OAuth broker is the part of Cross-Auth that acts as an authorization server
+The OAuth server is the part of Cross-Auth that acts as an authorization server
 for your own registered clients. It adds these routes:
 
 - `GET /{provider}/authorize`, which signs a client in through the provider and
@@ -23,16 +23,16 @@ for your own registered clients. It adds these routes:
 - `POST /{provider}/link` and `POST /{provider}/finalize-link`, the PKCE account
   linking flow for clients that authenticate with a bearer token.
 
-The broker is not how Cross-Auth talks to Google or GitHub. Signing in with a
-provider in the browser, the provider callback, its PKCE, `state` and nonce
-checks all work without it. Neither does every bearer token come from the
-broker: `issue_session_token` mints the same revocable token for your own
-sign-in endpoints. The broker serves public clients you register (SPAs and
+The OAuth server is not how Cross-Auth talks to Google or GitHub. Signing in
+with a provider in the browser, the provider callback, its PKCE, `state` and
+nonce checks all work without it. Neither does every bearer token come from the
+OAuth server: `issue_session_token` mints the same revocable token for your own
+sign-in endpoints. The OAuth server serves public clients you register (SPAs and
 native apps); it is not a general identity provider for third-party apps and has
 no consent screens or confidential-client authentication.
 
-The broker is enabled by default. Applications whose browsers sign in with a
-session cookie don't need it, and can turn it off:
+The OAuth server is enabled by default. Applications whose browsers sign in with
+a session cookie don't need it, and can turn it off:
 
 ```python
 auth = CrossAuth(
@@ -41,36 +41,37 @@ auth = CrossAuth(
     accounts_storage=accounts_storage,
     session_storage=session_storage,
     config={"session": {"cookies": {"auth": True}}},
-    broker=False,
+    oauth_server=False,
 )
 ```
 
-`AuthRouter` takes the same keyword-only `broker=False`. Without the broker,
-Cross-Auth mounts `GET /{provider}/login` (when cookie sign-in is enabled),
-`GET /{provider}/connect`, the `DELETE /{provider}/social-accounts` routes, and
-`GET`/`POST /{provider}/callback`; the OpenAPI schema lists only those. Turning
-the broker off does not turn cookie sign-in on: `/{provider}/login` still needs
-`session_storage` and `config["session"]["cookies"]["auth"]`.
+`AuthRouter` takes the same keyword-only `oauth_server=False`. Without the OAuth
+server, Cross-Auth mounts `GET /{provider}/login` (when cookie sign-in is
+enabled), `GET /{provider}/connect`, the `DELETE /{provider}/social-accounts`
+routes, and `GET`/`POST /{provider}/callback`; the OpenAPI schema lists only
+those. Turning the OAuth server off does not turn cookie sign-in on:
+`/{provider}/login` still needs `session_storage` and
+`config["session"]["cookies"]["auth"]`.
 
 `/{provider}/connect` remains integration-only: it does not enable that identity
-for sign-in. Adding another identity as a login method still uses the broker's
-`link`/`finalize-link` flow. Turning off the broker does not add a new
-login-enabled session linking route.
+for sign-in. Adding another identity as a login method still uses the OAuth
+server's `link`/`finalize-link` flow. Turning off the OAuth server does not add
+a new login-enabled session linking route.
 
-`client_redirect_uris`, `get_client` and `token_issuer` only configure the
-broker, so passing any of them with `broker=False` raises `ValueError` at
+`client_redirect_uris`, `get_client` and `token_issuer` only configure the OAuth
+server, so passing any of them with `oauth_server=False` raises `ValueError` at
 startup.
 
 The provider callback also completes session and connect flows, so it stays
-mounted. Authorization and link attempts started before the broker was turned
-off are refused there with `invalid_request`: after the browser binding check
-consumes the attempt, Cross-Auth returns an error without contacting the
+mounted. Authorization and link attempts started before the OAuth server was
+turned off are refused there with `invalid_request`: after the browser binding
+check consumes the attempt, Cross-Auth returns an error without contacting the
 provider, creating or linking accounts, storing a code, or redirecting to the
 client. Users start again from the client.
 
 Applications that serve both browsers with cookies and a SPA or native app keep
-the broker on, which is today's default. Pass `broker=True` to make that choice
-explicit:
+the OAuth server on, which is today's default. Pass `oauth_server=True` to make
+that choice explicit:
 
 ```python
 auth = CrossAuth(
@@ -82,7 +83,7 @@ auth = CrossAuth(
         "client_redirect_uris": {"web-app": ["https://app.example.com/callback"]},
         "session": {"cookies": {"auth": True}},
     },
-    broker=True,
+    oauth_server=True,
 )
 ```
 
@@ -105,7 +106,7 @@ config = {
 }
 ```
 
-These registrations configure the broker. `/{provider}/authorize` and
+These registrations configure the OAuth server. `/{provider}/authorize` and
 `/{provider}/link` require a registered `client_id` and a matching
 `redirect_uri`. An absent or empty registry disables these flows. A client
 registered for one callback cannot use another client's callback.

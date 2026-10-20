@@ -40,7 +40,7 @@ FlowHandler = Callable[..., Response]
 
 
 def _provider_routes(
-    provider: OAuth2Provider, *, cookie_auth: bool, broker: bool
+    provider: OAuth2Provider, *, cookie_auth: bool, oauth_server: bool
 ) -> list[Route]:
     prefix = f"/{provider.id}"
 
@@ -92,7 +92,7 @@ def _provider_routes(
         ]
     )
 
-    if broker:
+    if oauth_server:
         routes.append(
             Route(
                 path=f"{prefix}/authorize",
@@ -102,8 +102,8 @@ def _provider_routes(
             )
         )
 
-    # The callback serves every flow, so it stays mounted without the broker
-    # and refuses the broker's pending requests itself.
+    # The callback serves every flow, so it stays mounted without the OAuth server
+    # and refuses the OAuth server's pending requests itself.
     routes.extend(
         [
             Route(
@@ -122,7 +122,7 @@ def _provider_routes(
         ]
     )
 
-    if broker:
+    if oauth_server:
         routes.extend(
             [
                 Route(
@@ -147,7 +147,7 @@ def _provider_routes(
 
 class AuthRouter(APIRouter):
     context: Context
-    # The OAuth broker's token endpoint; None when the broker is disabled.
+    # The OAuth server's token endpoint; None when the OAuth server is disabled.
     issuer: Issuer | None
     extra_schemas: dict[str, Any]
 
@@ -167,7 +167,7 @@ class AuthRouter(APIRouter):
         normalize_email: Callable[[str], str] | None = None,
         get_client: ClientResolver | None = None,
         *,
-        broker: bool = True,
+        oauth_server: bool = True,
     ):
         if trusted_origins is not None:
             warnings.warn(
@@ -186,7 +186,7 @@ class AuthRouter(APIRouter):
             hooks=hooks,
             normalize_email=normalize_email,
             get_client=get_client,
-            broker=broker,
+            oauth_server=oauth_server,
         )
         self._mount(setup)
 
@@ -210,7 +210,7 @@ class AuthRouter(APIRouter):
                 _provider_routes(
                     provider,
                     cookie_auth=setup.context.cookie_auth_enabled,
-                    broker=setup.context.broker_enabled,
+                    oauth_server=setup.context.oauth_server_enabled,
                 )
             )
         if self.issuer is not None:

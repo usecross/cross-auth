@@ -1,4 +1,4 @@
-"""Broker callbacks are registered exactly and belong to a specific client."""
+"""OAuth server callbacks are registered exactly and belong to a specific client."""
 
 import json
 from typing import cast
