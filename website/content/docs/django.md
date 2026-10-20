@@ -25,7 +25,7 @@ user model, passwords, permissions, `request.user`, middleware, sessions,
 cookie involved.
 
 The finished project is in
-[`examples/django`](https://github.com/usecross/cross-auth/tree/4c80a3ece4268a240c322320acf580d98e3c39aa/examples/django).
+[`examples/django`](https://github.com/usecross/cross-auth/tree/041d49087e52769a92223c1169498aa48f2d8d8c/examples/django).
 
 > **Pilot scope:** this integration is new. It supports Google, Django 5.2 LTS
 > (5.2.8 or later), Python 3.11 to 3.14, database-backed Django sessions, and
@@ -50,7 +50,7 @@ also installs Django 5.2:
 mkdir django-google-demo
 cd django-google-demo
 uv init --bare
-uv add "cross-auth[django] @ git+https://github.com/usecross/cross-auth@4c80a3ece4268a240c322320acf580d98e3c39aa"
+uv add "cross-auth[django] @ git+https://github.com/usecross/cross-auth@041d49087e52769a92223c1169498aa48f2d8d8c"
 ```
 
 > **Note:** the Django integration is not released yet. Cross Auth 0.36.0 on
