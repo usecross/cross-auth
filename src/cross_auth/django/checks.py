@@ -2,10 +2,25 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.conf import settings
 from django.core import checks
 from django.core.exceptions import ImproperlyConfigured
 
 from .conf import get_settings
+
+BACKEND = "cross_auth.django.backends.CrossAuthBackend"
+_SESSION_ENGINES = {
+    "django.contrib.sessions.backends.db",
+    "django.contrib.sessions.backends.cached_db",
+}
+_REQUIRED_MIDDLEWARE = (
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+)
+# Apps whose presence suggests sign-in requires another factor. Provider
+# sign-in calls django.contrib.auth.login() directly and would skip it.
+_MFA_APPS = ("django_otp", "two_factor", "allauth.mfa", "mfa")
 
 
 @checks.register(checks.Tags.compatibility)
@@ -15,3 +30,53 @@ def check_settings(**kwargs: Any) -> list[checks.CheckMessage]:
     except (ImproperlyConfigured, ImportError) as error:
         return [checks.Error(str(error), id="cross_auth.E001")]
     return []
+
+
+@checks.register(checks.Tags.security)
+def check_login_setup(**kwargs: Any) -> list[checks.CheckMessage]:
+    messages: list[checks.CheckMessage] = []
+    if BACKEND not in settings.AUTHENTICATION_BACKENDS:
+        messages.append(
+            checks.Error(
+                f"Add {BACKEND!r} to AUTHENTICATION_BACKENDS.",
+                hint=(
+                    "Provider sign-ins are stored with this backend; without it "
+                    "Django cannot restore request.user on later requests."
+                ),
+                id="cross_auth.E002",
+            )
+        )
+    if settings.SESSION_ENGINE not in _SESSION_ENGINES:
+        messages.append(
+            checks.Error(
+                "Cross Auth's Django views need database-backed sessions.",
+                hint="Set SESSION_ENGINE to the db or cached_db backend.",
+                id="cross_auth.E003",
+            )
+        )
+    missing = [name for name in _REQUIRED_MIDDLEWARE if name not in settings.MIDDLEWARE]
+    if missing:
+        messages.append(
+            checks.Error(
+                f"Add {', '.join(missing)} to MIDDLEWARE.",
+                id="cross_auth.E004",
+            )
+        )
+    mfa_apps = [
+        app
+        for app in settings.INSTALLED_APPS
+        if app in _MFA_APPS or app.startswith(tuple(f"{name}." for name in _MFA_APPS))
+    ]
+    if mfa_apps:
+        messages.append(
+            checks.Warning(
+                "Provider sign-in logs users in without your multi-factor step.",
+                hint=(
+                    f"{', '.join(mfa_apps)} is installed. Do not enable Cross Auth "
+                    "sign-in where users must complete another factor; silence "
+                    "this with SILENCED_SYSTEM_CHECKS only if MFA is optional."
+                ),
+                id="cross_auth.W001",
+            )
+        )
+    return messages

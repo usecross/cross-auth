@@ -1,0 +1,33 @@
+{% extends "core/base.html" %}
+
+{% block content %}
+  <h1>{{ user.get_username }}</h1>
+
+  <h2>Connected accounts</h2>
+  <ul>
+    {% for account in user.cross_auth_social_accounts.all %}
+      <li>
+        {{ account.provider }}: {{ account.provider_email }}
+        <form method="post"
+              action="{% url 'cross_auth:disconnect' account.provider account.pk %}">
+          {% csrf_token %}
+          <input type="hidden" name="next" value="{% url 'profile' %}">
+          <button type="submit">Disconnect</button>
+        </form>
+      </li>
+    {% empty %}
+      <li>None yet.</li>
+    {% endfor %}
+  </ul>
+
+  <form method="post" action="{% url 'cross_auth:link' 'google' %}">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="{% url 'profile' %}">
+    <button type="submit">Connect Google</button>
+  </form>
+
+  <form method="post" action="{% url 'logout' %}">
+    {% csrf_token %}
+    <button type="submit">Sign out</button>
+  </form>
+{% endblock %}

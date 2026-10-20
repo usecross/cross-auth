@@ -15,14 +15,17 @@ from django.core.exceptions import ImproperlyConfigured
 from django.core.signals import setting_changed
 from django.utils.module_loading import import_string
 
+from cross_auth._config import AccountLinkingConfig
+from cross_auth.social_providers.oauth import OAuth2Provider
+
 
 class UserFactory(Protocol):
     """Creates the native user for a first provider sign-in.
 
     Runs inside the transaction that also stores the user's first identity,
     so rows it writes roll back together with them. It must not call external
-    services. ``email`` is normalized; ``extra_fields`` come from
-    ``user.create`` before hooks.
+    services; send notifications from a ``user_created`` receiver instead.
+    ``email`` is normalized; ``extra_fields`` is empty.
     """
 
     def __call__(
@@ -59,14 +62,75 @@ def create_user(
 
 @dataclass(frozen=True)
 class CrossAuthSettings:
+    providers: Mapping[str, OAuth2Provider]
     create_user: UserFactory
     # Whether users can sign in with their Django password. When True, a
     # usable password counts as another way to sign in, so the last provider
     # identity can be disconnected.
     password_login: bool
+    account_linking: AccountLinkingConfig
+    require_verified_email: bool
+    # Public origin used for provider callback URLs instead of the request's.
+    base_url: str | None
 
 
-_KNOWN_KEYS = frozenset({"CREATE_USER", "PASSWORD_LOGIN"})
+_KNOWN_KEYS = frozenset(
+    {
+        "PROVIDERS",
+        "CREATE_USER",
+        "PASSWORD_LOGIN",
+        "ACCOUNT_LINKING",
+        "REQUIRE_VERIFIED_EMAIL",
+        "BASE_URL",
+    }
+)
+_ACCOUNT_LINKING_KEYS = frozenset({"enabled", "allow_different_emails"})
+
+
+def _bool(
+    raw: Mapping[Any, object], key: str, default: bool, *, prefix: str = ""
+) -> bool:
+    value = raw.get(key, default)
+    if not isinstance(value, bool):
+        raise ImproperlyConfigured(f"CROSS_AUTH{prefix}['{key}'] must be a bool")
+    return value
+
+
+def _providers(value: object) -> dict[str, OAuth2Provider]:
+    if not isinstance(value, (list, tuple)):
+        raise ImproperlyConfigured("CROSS_AUTH['PROVIDERS'] must be a list")
+    providers: dict[str, OAuth2Provider] = {}
+    for provider in value:
+        if not isinstance(provider, OAuth2Provider):
+            raise ImproperlyConfigured(
+                "CROSS_AUTH['PROVIDERS'] must contain provider instances such as "
+                "GoogleProvider(...)"
+            )
+        if provider.id in providers:
+            raise ImproperlyConfigured(
+                f"CROSS_AUTH['PROVIDERS'] lists {provider.id!r} more than once"
+            )
+        providers[provider.id] = provider
+    return providers
+
+
+def _account_linking(value: object) -> AccountLinkingConfig:
+    if not isinstance(value, Mapping):
+        raise ImproperlyConfigured("CROSS_AUTH['ACCOUNT_LINKING'] must be a dict")
+    unknown = set(value) - _ACCOUNT_LINKING_KEYS
+    if unknown:
+        # allow_shared_connections is not offered: the schema gives each
+        # identity exactly one owner.
+        raise ImproperlyConfigured(
+            "Unsupported CROSS_AUTH['ACCOUNT_LINKING'] key(s): "
+            + ", ".join(sorted(unknown))
+        )
+    return AccountLinkingConfig(
+        enabled=_bool(value, "enabled", False, prefix="['ACCOUNT_LINKING']"),
+        allow_different_emails=_bool(
+            value, "allow_different_emails", False, prefix="['ACCOUNT_LINKING']"
+        ),
+    )
 
 
 @cache
@@ -91,11 +155,22 @@ def get_settings() -> CrossAuthSettings:
                 f"CROSS_AUTH['CREATE_USER'] {factory_path!r} is not callable"
             )
 
-    password_login = raw.get("PASSWORD_LOGIN", True)
-    if not isinstance(password_login, bool):
-        raise ImproperlyConfigured("CROSS_AUTH['PASSWORD_LOGIN'] must be a bool")
+    base_url = raw.get("BASE_URL")
+    if base_url is not None and not (
+        isinstance(base_url, str) and base_url.startswith(("https://", "http://"))
+    ):
+        raise ImproperlyConfigured(
+            "CROSS_AUTH['BASE_URL'] must be an origin such as https://example.com"
+        )
 
-    return CrossAuthSettings(create_user=factory, password_login=password_login)
+    return CrossAuthSettings(
+        providers=_providers(raw.get("PROVIDERS", [])),
+        create_user=factory,
+        password_login=_bool(raw, "PASSWORD_LOGIN", True),
+        account_linking=_account_linking(raw.get("ACCOUNT_LINKING", {})),
+        require_verified_email=_bool(raw, "REQUIRE_VERIFIED_EMAIL", True),
+        base_url=base_url,
+    )
 
 
 def _reset(*, setting: str, **kwargs: object) -> None:

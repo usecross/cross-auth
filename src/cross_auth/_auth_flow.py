@@ -14,7 +14,12 @@ from pydantic import BaseModel, Field, ValidationError
 
 from ._context import Context
 from ._issuer import AuthorizationCodeGrantData
-from ._login import login_with_session, require_immediate_commit, run_now
+from ._login import (
+    BrowserLogin,
+    login_with_session,
+    require_immediate_commit,
+    run_now,
+)
 from ._session import _get_header
 from ._storage import SocialAccount, SocialAccountCreate, User
 from .exceptions import CrossAuthException
@@ -102,6 +107,9 @@ class AuthRequest(BaseModel):
     # Link + connect flows: the user who initiated attaching a social account.
     user_id: str | None = None
 
+    # Connect flow: also make the attached account a login method.
+    allow_login: bool = False
+
 
 class LinkCodeData(BaseModel):
     """Stored after a successful link callback; redeemed by finalize-link."""
@@ -134,6 +142,10 @@ class InitiateLinkResponse(BaseModel):
 
 class DisconnectResponse(BaseModel):
     message: str
+
+
+# Called with a callback's verified identity before any account is touched.
+OnVerified = Callable[[AuthRequest, ValidatedUserInfo], None]
 
 
 class ResolvedUser(NamedTuple):
@@ -222,6 +234,9 @@ def _is_safe_next_url(next_url: str) -> bool:
         return False
     # Disallow protocol-relative URLs like //evil.com/path
     if next_url.startswith("//"):
+        return False
+    # Browsers read /\evil.com as //evil.com and drop tabs and newlines.
+    if "\\" in next_url or any(ord(char) < 32 or ord(char) == 127 for char in next_url):
         return False
     return True
 
@@ -335,13 +350,16 @@ def start_session_flow(
     provider: OAuth2Provider,
     request: HTTPRequest,
     context: Context,
+    *,
+    next_url: str | None = None,
 ) -> Response:
     """GET /{provider}/login — start a session (cookie) login flow.
 
     Supports ?next=/some/path (relative path only) to control post-login redirect.
-    Falls back to context.default_next_url.
+    Framework adapters may pass ``next_url`` instead. Falls back to
+    context.default_next_url.
     """
-    next_url = request.query_params.get("next") or context.default_next_url
+    next_url = next_url or request.query_params.get("next") or context.default_next_url
     if not _is_safe_next_url(next_url):
         next_url = context.default_next_url
 
@@ -383,6 +401,9 @@ def start_connect_flow(
     provider: OAuth2Provider,
     request: HTTPRequest,
     context: Context,
+    *,
+    allow_login: bool = False,
+    next_url: str | None = None,
 ) -> Response:
     """GET /{provider}/connect — logged-in user attaches a social account.
 
@@ -399,7 +420,7 @@ def start_connect_flow(
             status_code=401,
         )
 
-    next_url = request.query_params.get("next") or context.default_next_url
+    next_url = next_url or request.query_params.get("next") or context.default_next_url
     if not _is_safe_next_url(next_url):
         next_url = context.default_next_url
 
@@ -421,6 +442,7 @@ def start_connect_flow(
             provider_data=provider_data,
             next_url=next_url,
             user_id=str(user.id),
+            allow_login=allow_login,
         ),
         binding=binding,
     )
@@ -586,6 +608,9 @@ def handle_callback(
     provider: OAuth2Provider,
     request: HTTPRequest,
     context: Context,
+    *,
+    login: BrowserLogin | None = None,
+    on_verified: OnVerified | None = None,
 ) -> Response:
     """GET/POST /{provider}/callback — provider redirects back here.
 
@@ -604,11 +629,19 @@ def handle_callback(
     body that would strand the user on the API origin. `default_next_url` is
     operator configuration fixed at construction time — never derived from the
     request — so these fallback redirects cannot be attacker-controlled.
+
+    Session sign-ins use ``login`` when a framework owns the browser session,
+    and a Cross Auth cookie session otherwise. ``on_verified`` lets a framework
+    adapter refuse a session or connect callback once the provider identity is
+    verified and before any account is looked up or written; its exceptions
+    propagate.
     """
     if intercepted := provider.intercept_callback(request, context):
         return intercepted
 
-    response = _handle_oauth_callback(provider, request, context)
+    response = _handle_oauth_callback(
+        provider, request, context, login=login, on_verified=on_verified
+    )
     return provider.finalize_redirect(request, response)
 
 
@@ -642,6 +675,9 @@ def _handle_oauth_callback(
     provider: OAuth2Provider,
     request: HTTPRequest,
     context: Context,
+    *,
+    login: BrowserLogin | None,
+    on_verified: OnVerified | None,
 ) -> Response:
     """Handle the standard OAuth callback path after provider interception."""
     resume = request.query_params.get("resume") if request.method == "GET" else None
@@ -661,7 +697,15 @@ def _handle_oauth_callback(
     state = callback_data.state
     auth_request = _load_auth_request(context, state) if state else None
     if auth_request is None:
-        return _complete_oauth_callback(provider, request, context, callback_data, None)
+        return _complete_oauth_callback(
+            provider,
+            request,
+            context,
+            callback_data,
+            None,
+            login=login,
+            on_verified=on_verified,
+        )
 
     if auth_request.provider_id != provider.id:
         return Response.error("server_error", "Provider mismatch")
@@ -703,7 +747,13 @@ def _handle_oauth_callback(
         return Response.error("invalid_request", "OAuth callback has already been used")
 
     response = _complete_oauth_callback(
-        provider, request, context, callback_data, auth_request
+        provider,
+        request,
+        context,
+        callback_data,
+        auth_request,
+        login=login,
+        on_verified=on_verified,
     )
     response.cookies = [*(response.cookies or []), cookie]
     return response
@@ -715,6 +765,9 @@ def _complete_oauth_callback(
     context: Context,
     callback_data: CallbackData,
     auth_request: AuthRequest | None,
+    *,
+    login: BrowserLogin | None,
+    on_verified: OnVerified | None,
 ) -> Response:
     if auth_request is not None and auth_request.flow in {"token", "link"}:
         if (
@@ -803,6 +856,9 @@ def _complete_oauth_callback(
             auth_request, error=e.error, error_description=e.error_description
         )
 
+    if on_verified is not None:
+        on_verified(auth_request, validated)
+
     if auth_request.flow == "connect":
         try:
             return _complete_connect(
@@ -828,6 +884,7 @@ def _complete_oauth_callback(
             token_response=token_response,
             user_info=user_info,
             validated=validated,
+            login=login,
         )
 
     return Response.error("server_error", error_description="Unknown flow")
@@ -843,6 +900,7 @@ def _complete_sign_in(
     token_response: TokenResponse,
     user_info: UserInfo,
     validated: ValidatedUserInfo,
+    login: BrowserLogin | None,
 ) -> Response:
     """Check login eligibility and complete a session or token sign-in."""
     provider_snapshot = ProviderSnapshot.of(provider)
@@ -898,6 +956,7 @@ def _complete_sign_in(
                 resolved_user.user,
                 context,
                 request,
+                login=login,
             )
         except CrossAuthException as e:
             return _flow_error(
@@ -928,11 +987,12 @@ def _complete_sign_in(
             client_state=None,
         )
         # The login's session is the last write; follow its commit.
-        on_commit = (
-            context.session_storage.on_commit
-            if context.session_storage is not None
-            else run_now
-        )
+        if login is not None:
+            on_commit = login.on_commit
+        elif context.session_storage is not None:
+            on_commit = context.session_storage.on_commit
+        else:
+            on_commit = run_now
         on_commit(lambda: context.hooks.run_after("oauth.callback", session_event))
 
         return response
@@ -1522,6 +1582,9 @@ def _complete_connect(
             error_description="User from connect flow no longer exists",
         )
 
+    if auth_request.allow_login:
+        _check_login_link_email(provider, context, validated, user)
+
     social_account = context.accounts_storage.find_social_account(
         provider=provider.id,
         provider_user_id=validated.provider_user_id,
@@ -1532,6 +1595,7 @@ def _complete_connect(
         _update_social_account(
             context=context,
             social_account=social_account,
+            enable_login=auth_request.allow_login,
             access_token=token_response.access_token,
             refresh_token=token_response.refresh_token,
             access_token_expires_at=token_response.access_token_expires_at,
@@ -1555,11 +1619,31 @@ def _complete_connect(
             user_info=user_info,
             provider_email=validated.email,
             provider_email_verified=validated.email_verified,
-            is_login_method=False,
+            is_login_method=auth_request.allow_login,
         )
 
     next_url = auth_request.next_url or context.default_next_url
     return Response.redirect(next_url)
+
+
+def _check_login_link_email(
+    provider: OAuth2Provider,
+    context: Context,
+    validated: ValidatedUserInfo,
+    user: User,
+) -> None:
+    """Require a verified provider email, matching the user's unless allowed."""
+    if not provider.trust_email and validated.email_verified is not True:
+        raise CrossAuthException(
+            "email_not_verified",
+            "Cannot link account: email not verified by provider.",
+        )
+
+    if not provider.allows_different_emails(context, validated.email, user.email):
+        raise CrossAuthException(
+            "email_mismatch",
+            "Provider email does not match account email.",
+        )
 
 
 def _complete_session(
@@ -1567,7 +1651,13 @@ def _complete_session(
     user: User,
     context: Context,
     request: HTTPRequest,
+    *,
+    login: BrowserLogin | None,
 ) -> Response:
+    next_url = auth_request.next_url or context.default_next_url
+    if login is not None:
+        return cast(Response, login.login(user, response=Response.redirect(next_url)))
+
     if not context.cookie_auth_enabled:
         return Response.error(
             "server_error",
@@ -1581,7 +1671,6 @@ def _complete_session(
     if session_storage is None:
         raise RuntimeError("Session flow not configured for this deployment")
 
-    next_url = auth_request.next_url or context.default_next_url
     response = login_with_session(
         str(user.id),
         response=Response.redirect(next_url),
@@ -1938,17 +2027,10 @@ def finalize_link(
             "linking_disabled", error_description="Account linking is not enabled."
         )
 
-    if not provider.trust_email and validated.email_verified is not True:
-        return Response.error(
-            "email_not_verified",
-            error_description="Cannot link account: email not verified by provider.",
-        )
-
-    if not provider.allows_different_emails(context, validated.email, user.email):
-        return Response.error(
-            "email_mismatch",
-            error_description="Provider email does not match account email.",
-        )
+    try:
+        _check_login_link_email(provider, context, validated, user)
+    except CrossAuthException as e:
+        return Response.error(e.error, error_description=e.error_description)
 
     social_account = context.accounts_storage.find_social_account(
         provider=provider.id,
