@@ -48,16 +48,17 @@ Migration from 0.38:
 - `get_client=` and `token_issuer=` move from `CrossAuth`, `AuthRouter` and
   `Context` into `OAuthServer`. Passing them at the top level raises
   `TypeError`. A database-backed `get_client` works unchanged.
-- `OAuthServer()` without `get_client` rejects every client.
+- Without `get_client`, authorization-code and linking flows reject every
+  client. The legacy password grant does not use this lookup.
 - `AuthRouter` takes `providers`, `secondary_storage`, `accounts_storage` and
   `get_user_from_request` positionally; every other argument is keyword-only.
   `Context` takes every argument after `session_storage` by keyword.
 - `Context.token_issuer` is replaced by `Context.oauth_server`.
 
-`OAuthServer` keeps the redirect policy: `get_client` is called on every
-request, a returned client with a different `client_id` is an error, and
-registrations are checked again at the provider callback, `/token` and
-`/finalize-link`.
+`OAuthServer` keeps the redirect policy: client lookups are not cached, a
+returned client with a different `client_id` is an error, and registrations are
+checked again at the provider callback, authorization-code redemption at
+`/token`, and `/finalize-link`.
 
 Authorization and link attempts started before the OAuth server was removed are
 refused at the provider callback with `invalid_request`, after the browser and

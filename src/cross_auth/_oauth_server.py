@@ -14,9 +14,10 @@ class OAuthServer:
     ``/{provider}/link`` and ``/{provider}/finalize-link`` for SPA and native
     clients. Without it those routes do not exist.
 
-    ``get_client`` looks up a registered client by id on every request; it
-    returns ``None`` for unknown clients. A static mapping's ``.get`` works.
-    Without it every client is rejected.
+    ``get_client`` looks up clients at authorization-code and linking checks;
+    it returns ``None`` for unknown clients. A static mapping's ``.get`` works.
+    Without it these flows reject every client. Password grants do not use
+    this lookup.
 
     ``token_issuer`` mints the token ``/token`` returns. Without it, ``/token``
     issues an opaque session token from ``session_storage``.

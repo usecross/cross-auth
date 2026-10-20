@@ -79,8 +79,9 @@ auth = CrossAuth(
 )
 ```
 
-- `get_client` looks up a registered client by id; see
-  [Register clients](#register-clients). Without it, every client is rejected.
+- `get_client` controls client registration for authorization-code and linking
+  flows; see [Register clients](#register-clients). Without it, those flows
+  reject every client. The legacy password grant does not use this lookup.
 - `token_issuer` mints the token `/token` returns; see
   [Custom token issuers](#custom-token-issuers). Without it, `/token` issues an
   opaque session token from `session_storage`.
