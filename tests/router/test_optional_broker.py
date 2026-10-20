@@ -164,6 +164,7 @@ def test_broker_is_on_by_default(secondary_storage, accounts_storage, providers)
             {"config": {"client_redirect_uris": {"web": ["https://a.example/cb"]}}},
             "client_redirect_uris",
         ),
+        ({"config": {"client_redirect_uris": {}}}, "client_redirect_uris"),
         (
             {
                 "get_client": lambda client_id: OAuthClient(
