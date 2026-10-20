@@ -603,7 +603,9 @@ with `**kwargs` so that new arguments do not break them.
 - **Django's signals.** Cross Auth logs users in with
   `django.contrib.auth.login()`, so Django sends `user_logged_in` itself; Cross
   Auth does not send it again. Logging out goes through Django's `LogoutView`
-  and `user_logged_out`; there is no Cross Auth logout signal.
+  and `user_logged_out`; there is no Cross Auth logout signal. Provider failures
+  do not emit Django's `user_login_failed`, which is sent by failed calls to
+  Django's `authenticate()`.
 
 ## Settings reference
 

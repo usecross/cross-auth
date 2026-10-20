@@ -10,9 +10,10 @@ Signals are sent with ``Signal.send()``: a receiver's exception propagates and
 return values are ignored. Raise ``PermissionDenied`` from a ``before_*``
 receiver to refuse; Django answers with its 403 response.
 
-They cover only Cross Auth's provider flows. Django's own ``user_logged_in``,
-``user_logged_out`` and ``user_login_failed`` cover every login, including
-password logins, and are sent by Django as usual.
+They cover only Cross Auth's provider flows. Django emits ``user_logged_in``
+and ``user_logged_out`` through its native login and logout functions, including
+password flows. Provider failures do not emit Django's ``user_login_failed``;
+that signal belongs to failed calls to Django's ``authenticate()``.
 """
 
 from django.dispatch import Signal
