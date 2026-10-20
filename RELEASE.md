@@ -34,7 +34,11 @@ CROSS_AUTH = {
 - System checks cover the backend, session engine, middleware and settings, and
   warn when a known multi-factor app is installed, since provider sign-in would
   bypass it.
-- A step-by-step guide and `examples/django` show the setup with Google.
+- When two browsers finish a first sign-in with the same Google account at once,
+  one signs in and the other shows `account_not_linked`; signing in again
+  reaches the same user.
+- A step-by-step guide and `examples/django` show the setup with Google,
+  including disconnecting and connecting Google without deleting users.
 
 Core changes shared with FastAPI: browser sign-in can complete through a
 framework-owned login instead of a Cross Auth cookie session, the connect flow

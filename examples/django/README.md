@@ -21,9 +21,10 @@ page, and Django's own sessions and logout.
 
 4. Open <http://127.0.0.1:8000/> (not `localhost`) and sign in.
 
-`uv run` uses the Cross Auth source from this repository. To create a password
-user to connect Google to, run `uv run python manage.py createsuperuser` or use
-the shell command from the guide.
+`uv run` uses the Cross Auth source from this repository. To try disconnecting
+and connecting Google with a password account, follow Steps 10 to 13 of the
+guide, which give your Google user a password with
+`uv run python manage.py changepassword` instead of creating another user.
 
 The project uses SQLite (`db.sqlite3`, ignored by Git) and Django's development
 settings. See the guide's production checklist before deploying anything based

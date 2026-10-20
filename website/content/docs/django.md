@@ -12,8 +12,8 @@ section: Guides
 This guide builds a Django project, step by step, where people can:
 
 - sign in with Google, creating a Django user on first sign-in;
+- keep at least one way to sign in when disconnecting Google;
 - sign in with a Django password, then connect Google to the same user;
-- disconnect Google without losing their last way to sign in;
 - sign out with Django's own logout.
 
 Cross Auth only handles the conversation with Google and stores which Google
@@ -23,7 +23,7 @@ user model, passwords, permissions, `request.user`, middleware, sessions,
 cookie involved.
 
 The finished project is in
-[`examples/django`](https://github.com/usecross/cross-auth/tree/main/examples/django).
+[`examples/django`](https://github.com/usecross/cross-auth/tree/7983f422620e08d5d9d05096da70ae84315f3c03/examples/django).
 
 > **Pilot scope:** this integration is new. It supports Google, Django 5.2 LTS
 > (5.2.8 or later), Python 3.11 to 3.14, database-backed Django sessions, and
@@ -48,12 +48,14 @@ also installs Django 5.2:
 mkdir django-google-demo
 cd django-google-demo
 uv init --bare
-uv add "cross-auth[django]"
+uv add "cross-auth[django] @ git+https://github.com/usecross/cross-auth@7983f422620e08d5d9d05096da70ae84315f3c03"
 ```
 
-> **Note:** the Django integration was added after Cross Auth 0.36.0. Until a
-> release that includes it is on PyPI, install it from GitHub instead:
-> `uv add "cross-auth[django] @ git+https://github.com/usecross/cross-auth@2026-10-20-django-google-login"`.
+> **Note:** the Django integration is not released yet. Cross Auth 0.36.0 on
+> PyPI has no `django` extra, so this command installs a fixed, tested revision
+> from GitHub. Once a release includes the integration, its release notes will
+> say so, and you can replace this dependency with `cross-auth[django]` from
+> PyPI.
 
 Create a Django project in the current directory and an app for your pages:
 
@@ -387,44 +389,71 @@ What happened:
 3. On your first sign-in, it created a Django user and the Google account link
    in one database transaction. The user has your Google email as username and
    email, and no usable password.
-4. It called `django.contrib.auth.login()`, which rotated the session key and
-   stored the session through Django's session backend.
+4. It called `django.contrib.auth.login()`, which gave the session a new key,
+   replacing any anonymous session you had, and stored it through Django's
+   session backend.
 
 Your browser now holds Django's `sessionid` and `csrftoken` cookies and nothing
 else. Open [http://127.0.0.1:8000/profile/](http://127.0.0.1:8000/profile/) in a
 new tab; `@login_required` and `request.user` work as with any Django login.
 
-Click **Sign out**. Django's `LogoutView` ends the session. You are still signed
-in to Google itself, so the next sign-in may skip Google's account chooser.
+The rest of this guide continues with this user, so keep the development
+database and stay signed in.
 
-## Step 10: Connect Google to a password account
+## Step 10: Try to disconnect your only way to sign in
 
-People who already have a Django account should sign in the way they always did,
-then connect Google. Cross Auth never attaches a Google account to an existing
-user just because the email addresses match: signing in with Google as
-`you@gmail.com` while a user with that email exists shows an
-`account_not_linked` error instead.
+On your profile, click **Disconnect** next to Google. Cross Auth refuses with
+`no_alternative_login_method` and keeps the connection: the user signed up
+through Google and has no usable password, so disconnecting would leave no way
+to sign in. Go back to your profile; Google is still listed.
 
-Create a user with a password and the same email as your Google account,
-replacing `you@gmail.com`. The first command deletes the user Step 9 created,
-whose username is that email, together with its Google connection:
+A usable Django password counts as another way to sign in. If your site has no
+password sign-in, set `"PASSWORD_LOGIN": False` in `CROSS_AUTH` so that a
+password never counts.
+
+## Step 11: Give your development user a password
+
+To see disconnecting and connecting with a password account, give this
+development user a password with Django's `changepassword` command. Its username
+is your Google email; replace `you@gmail.com`:
 
 ```bash
-uv run python manage.py shell -c "
-from django.contrib.auth.models import User
-User.objects.filter(username='you@gmail.com').delete()
-User.objects.create_user('alice', 'you@gmail.com', 'a-long-unique-password')
-"
+uv run python manage.py changepassword 'you@gmail.com'
 ```
+
+The command prompts for the new password twice, so it is not saved in your shell
+history.
+
+> **Warning:** `changepassword` is an administrator command for your local
+> development database. It is not a way for people to recover or set a password
+> in production; use Django's password reset or password change views for that.
+
+Changing a password ends the user's existing sessions, as Django always does.
+Reload your profile: you are signed out. Sign in at
+[http://127.0.0.1:8000/accounts/login/](http://127.0.0.1:8000/accounts/login/)
+with your Google email as the username and the new password. You are back on the
+same profile, with Google still connected.
+
+## Step 12: Disconnect Google
+
+Click **Disconnect** next to Google again. The user now has a password, so the
+Google connection is removed. The Django user, its password and any data your
+application stores for it stay in place.
+
+Sign out, then click **Sign in with Google** on the home page. Cross Auth shows
+an `account_not_linked` error: a user with your Google email exists, but Cross
+Auth never attaches a Google account to an existing user just because the email
+addresses match. Signing in and connecting Google is up to the user.
+
+## Step 13: Connect Google to the password account
 
 1. Sign in at
    [http://127.0.0.1:8000/accounts/login/](http://127.0.0.1:8000/accounts/login/)
-   as `alice`.
-2. On your profile, click **Connect Google** and pick the Google account for
-   `you@gmail.com`.
-3. Back on the profile, Google is listed under **Connected accounts**.
+   with your password.
+2. On your profile, click **Connect Google** and pick the same Google account.
+3. Back on the profile, Google is listed under **Connected accounts** again.
 4. Sign out, then click **Sign in with Google** on the home page. You are signed
-   in as `alice`.
+   in as the same user as before.
 
 Connecting requires Google to report the email as verified and to match the
 user's email, ignoring case. To let people connect a Google account with a
@@ -432,19 +461,11 @@ different email, set `"ACCOUNT_LINKING": {"allow_different_emails": True}` in
 `CROSS_AUTH`. A Google account can belong to only one user; connecting one that
 another user already has fails with `account_already_linked`.
 
-## Step 11: Disconnect safely
+Click **Sign out** when you are done. Django's `LogoutView` ends the session.
+You are still signed in to Google itself, so the next sign-in may skip Google's
+account chooser.
 
-While signed in as `alice`, click **Disconnect** next to Google. Alice still has
-a password, so the Google account is removed and she can only sign in with her
-password again.
-
-Now sign in with Google as a user who signed up through Google (as in Step 9)
-and click **Disconnect**. Cross Auth refuses with `no_alternative_login_method`,
-because the user would have no way left to sign in. If your site has no password
-sign-in, set `"PASSWORD_LOGIN": False` so that a usable password does not count
-as an alternative.
-
-## Step 12 (optional): Run code around sign-in
+## Step 14 (optional): Run code around sign-in
 
 Cross Auth's [hooks](/docs/hooks) run around sign-in. `login` hooks wrap every
 Google sign-in: a `before` hook can refuse it by raising `CrossAuthException`,
@@ -540,7 +561,7 @@ reports invalid values.
 | `CREATE_USER`            | Django's manager   | Dotted path of the user factory for first sign-ins.                                                                 |
 | `PASSWORD_LOGIN`         | `True`             | Whether a usable Django password counts as a way to sign in when disconnecting.                                     |
 | `REQUIRE_VERIFIED_EMAIL` | `True`             | Refuse to create users when Google does not report the email as verified.                                           |
-| `ACCOUNT_LINKING`        | `{}`               | `enabled`: attach a Google sign-in to the user with the same verified email. `allow_different_emails`: see Step 10. |
+| `ACCOUNT_LINKING`        | `{}`               | `enabled`: attach a Google sign-in to the user with the same verified email. `allow_different_emails`: see Step 13. |
 | `HOOKS`                  | none               | Dotted path of a `HookRegistry`.                                                                                    |
 | `BASE_URL`               | the request's host | Public origin, such as `https://example.com`, used to build the redirect URI.                                       |
 
@@ -568,10 +589,11 @@ users. Even then, Cross Auth refuses when several users share the email.
   transaction, such as one opened by middleware. Users and their Google account
   links live on the database your router picks for the user model.
 - **Concurrency.** A database constraint gives each Google account one owner,
-  and sign-in state is consumed by exactly one request. On SQLite, concurrent
-  writes wait for each other; consider
-  `"OPTIONS": {"transaction_mode": "IMMEDIATE"}` for busy sites, or use
-  PostgreSQL.
+  and sign-in state is consumed by exactly one request. When two first sign-ins
+  with the same email finish at once, one creates the user and the other shows
+  `account_not_linked`; signing in again works. On SQLite, concurrent writes
+  wait for each other; consider `"OPTIONS": {"transaction_mode": "IMMEDIATE"}`
+  for busy sites, or use PostgreSQL.
 - **Errors** render `cross_auth/error.html` with the error code and a
   description. Override the template in your own app to style it.
 - **Provider tokens** from Google are not stored. Only the Google account ID,
@@ -624,7 +646,8 @@ cannot detect every setup.
 - **`invalid_client` or a token exchange error:** check `GOOGLE_CLIENT_ID` and
   `GOOGLE_CLIENT_SECRET`, and that the client type is Web application.
 - **`account_not_linked`:** a user with that email already exists. Sign in as
-  that user and connect Google from the profile page.
+  that user and connect Google from the profile page. Right after a first
+  sign-in from two tabs at once, sign in again instead.
 - **`KeyError: 'GOOGLE_CLIENT_ID'`:** the environment variables are not set in
   this shell; see Step 8.
 - **Django check errors `cross_auth.E00x`:** add the backend, keep database

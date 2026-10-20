@@ -35,13 +35,10 @@ Redis adapter needs a Redis server 6.2 or newer. See the
 ## Django
 
 The native Django integration is behind the `django` extra, which installs
-Django 5.2 LTS:
-
-```bash
-uv add 'cross-auth[django]'
-```
-
-It needs no other extras. See the [Django](/docs/django) guide to set it up.
+Django 5.2 LTS. It needs no other extras. It is not released yet: Cross Auth
+0.36.0 on PyPI has no `django` extra. Until a release includes it, the
+[Django](/docs/django) guide installs a tested revision from GitHub and shows
+how to set it up.
 
 ## Requirements
 
