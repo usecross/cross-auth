@@ -55,6 +55,9 @@
         </form>
         <div class="actions">
           <a class="button" href="{{ github_login_url }}">Continue with GitHub</a>
+          {% if google_enabled %}
+            <a class="button" href="/auth/google/login?next=/profile">Continue with Google</a>
+          {% endif %}
         </div>
       {% endif %}
     </div>
