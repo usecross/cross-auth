@@ -1,8 +1,7 @@
 import { join, resolve } from "node:path"
 
-import { expect } from "@playwright/test"
-
 import type { AccountFacts, App, Framework } from "../support/app.js"
+import { createBrowserApp } from "../support/browser.js"
 import {
   emulatorUrl,
   GOOGLE_CLIENT_ID,
@@ -57,68 +56,22 @@ export const fastapi: Framework = {
     )
 
     const app: App & { stop(): Promise<void> } = {
-      baseURL,
-      googleCallbackUrl: `${baseURL}/auth/google/callback`,
+      ...createBrowserApp(baseURL, {
+        routes: { signIn: "/", profile: "/profile" },
+        googleSignIn: { role: "link", name: "Continue with Google" },
+        password: {
+          identifierLabel: "Email",
+          submitName: "Sign in with password",
+        },
+        // Login-enabled PKCE linking, not the integration-only /connect.
+        googleConnect: "Link Google account",
+        signOut: "Log out",
+        googleAccount: {
+          selector: "li[data-social-account-id]",
+          providerText: "google",
+        },
+      }),
       stop: server.stop,
-
-      async startGoogleSignIn(page) {
-        await page.goto(`${baseURL}/`)
-        await page.getByRole("link", { name: "Continue with Google" }).click()
-      },
-
-      async signInWithPassword(page, email, password) {
-        await page.goto(`${baseURL}/`)
-        await page.getByLabel("Email").fill(email)
-        await page.getByLabel("Password").fill(password)
-        await page
-          .getByRole("button", { name: "Sign in with password" })
-          .click()
-      },
-
-      async startGoogleConnect(page) {
-        // The PKCE link flow with allow_login connects Google as a way to
-        // sign in, like Django's link view. "Connect Google (session)" only
-        // adds an integration; fastapi/connect-integration.spec.ts covers it.
-        await page.getByRole("button", { name: "Link Google account" }).click()
-      },
-
-      async disconnectGoogle(page, providerEmail) {
-        // The profile page disconnects with a DELETE request and reloads.
-        await app
-          .googleAccount(page, providerEmail)
-          .getByRole("button", { name: "Disconnect" })
-          .click()
-      },
-
-      async signOut(page) {
-        await page.getByRole("button", { name: "Log out" }).click()
-        await expect(
-          page.getByRole("button", { name: "Sign in with password" }),
-        ).toBeVisible()
-      },
-
-      async gotoProfile(page) {
-        await page.goto(`${baseURL}/profile`)
-      },
-
-      profileHeading(page, email) {
-        return page.getByRole("heading", { level: 1, name: email, exact: true })
-      },
-
-      googleAccount(page, providerEmail) {
-        return page
-          .locator("li[data-social-account-id]")
-          .filter({ hasText: "google" })
-          .filter({ hasText: providerEmail })
-      },
-
-      async expectSignedOut(page) {
-        await page.goto(`${baseURL}/profile`)
-        await expect(page).toHaveURL(`${baseURL}/`)
-        await expect(
-          page.getByRole("button", { name: "Sign in with password" }),
-        ).toBeVisible()
-      },
 
       async seedPasswordUser(email, password) {
         await state("seed-password-user", email, password)

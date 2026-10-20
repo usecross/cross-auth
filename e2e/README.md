@@ -49,16 +49,17 @@ playwright.frameworks.config.ts   one Playwright project per framework
 frameworks/
   frameworks.ts                   the framework list
   contract/*.spec.ts              shared scenarios and every assertion
-  support/app.ts                  the App interface a framework driver implements
+  support/app.ts                  the App interface used by shared scenarios
+  support/browser.ts              shared browser actions and profile/session checks
   support/fixtures.ts             per-worker server, network guard, identities
   support/google.ts               emulator seed, test identities, account picker
   support/global-setup.ts         starts the Google emulator
   support/process.ts              server start, readiness and cleanup
-  django/app.ts                   Django driver: startup, routes, locators
+  django/app.ts                   Django startup/state + declarative routes/labels
   django/e2e_settings.py          the example's settings, pointed at the emulator
   django/e2e_support/             test-only Django app with the e2e_state command
   django/*.spec.ts                Django-only behavior
-  fastapi/app.ts                  FastAPI driver
+  fastapi/app.ts                  FastAPI startup/state + declarative routes/labels
   fastapi/state.py                seeds password users, reads users/identities
   fastapi/*.spec.ts               FastAPI-only behavior
 ```
@@ -140,8 +141,9 @@ Framework-specific, run only for that framework:
 Intentional differences the contract does not hide:
 
 - Django uses its users, password login, logout and database sessions; FastAPI
-  uses Cross-Auth sessions and its own SQLModel users. Drivers only map steps to
-  each app's pages.
+  uses Cross-Auth sessions and its own SQLModel users. Browser actions and
+  profile/session checks are shared in `support/browser.ts`; framework files
+  provide declarative routes/labels plus native startup and state access.
 - Error pages differ (Django renders a page, FastAPI returns JSON or an inline
   message); scenarios assert the outcome and status.
 - Which check refuses an unverified email first is the app's choice, so that
@@ -154,9 +156,11 @@ Intentional differences the contract does not hide:
 1. Make its example app able to run on a given port and database with Google
    pointed at `GOOGLE_EMULATOR_URL`.
 2. Add `frameworks/<name>/app.ts` implementing `Framework` from
-   `support/app.ts`: start the server, map each step to the app's UI, and seed
-   or read users through a small framework-native helper, such as Django's
-   test-only management command or FastAPI's `state.py`.
+   `support/app.ts`: start the server and compose `createBrowserApp` from
+   `support/browser.ts` with its routes and UI labels. Seed or read users
+   through a small framework-native helper, such as Django's test-only
+   management command or FastAPI's `state.py`. Don't reimplement browser actions
+   in the framework file.
 3. Add it to `frameworks/frameworks.ts` with an unused base port. Its project
    then runs every scenario in `contract/`; put behavior only that framework has
    in `frameworks/<name>/*.spec.ts`.

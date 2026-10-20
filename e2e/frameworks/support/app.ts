@@ -11,9 +11,10 @@ export interface AccountFacts {
   }[]
 }
 
-// How the shared scenarios drive one framework's example app. Drivers map
-// steps to the app's own pages, forms and storage; the scenarios, and every
-// assertion about authentication outcomes, live in frameworks/contract.
+// How the shared scenarios drive an example app. support/browser.ts supplies
+// the browser actions from each framework's route/locator configuration.
+// Framework drivers supply native storage setup/reads; scenarios live in
+// frameworks/contract.
 export interface App {
   readonly baseURL: string
   readonly googleCallbackUrl: string

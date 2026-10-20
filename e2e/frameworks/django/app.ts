@@ -1,8 +1,7 @@
 import { join, resolve } from "node:path"
 
-import { expect } from "@playwright/test"
-
 import type { AccountFacts, App, Framework } from "../support/app.js"
+import { createBrowserApp } from "../support/browser.js"
 import {
   emulatorUrl,
   GOOGLE_CLIENT_ID,
@@ -53,60 +52,18 @@ export const django: Framework = {
     )
 
     const app: App & { stop(): Promise<void> } = {
-      baseURL,
-      googleCallbackUrl: `${baseURL}/auth/google/callback`,
+      ...createBrowserApp(baseURL, {
+        routes: {
+          signIn: "/accounts/login/?next=/profile/",
+          profile: "/profile/",
+        },
+        googleSignIn: { role: "button", name: "Sign in with Google" },
+        password: { identifierLabel: "Username", submitName: "Sign in" },
+        googleConnect: "Connect Google",
+        signOut: "Sign out",
+        googleAccount: { selector: "li", providerText: "google:" },
+      }),
       stop: server.stop,
-
-      async startGoogleSignIn(page) {
-        await page.goto(`${baseURL}/`)
-        await page.getByRole("button", { name: "Sign in with Google" }).click()
-      },
-
-      async signInWithPassword(page, email, password) {
-        await page.goto(`${baseURL}/accounts/login/?next=/profile/`)
-        await page.getByLabel("Username").fill(email)
-        await page.getByLabel("Password").fill(password)
-        await page.getByRole("button", { name: "Sign in", exact: true }).click()
-      },
-
-      async startGoogleConnect(page) {
-        await page.getByRole("button", { name: "Connect Google" }).click()
-      },
-
-      async disconnectGoogle(page, providerEmail) {
-        await app
-          .googleAccount(page, providerEmail)
-          .getByRole("button", { name: "Disconnect" })
-          .click()
-      },
-
-      async signOut(page) {
-        await page.getByRole("button", { name: "Sign out" }).click()
-        await expect(
-          page.getByRole("button", { name: "Sign in with Google" }),
-        ).toBeVisible()
-      },
-
-      async gotoProfile(page) {
-        await page.goto(`${baseURL}/profile/`)
-      },
-
-      profileHeading(page, email) {
-        return page.getByRole("heading", { level: 1, name: email, exact: true })
-      },
-
-      googleAccount(page, providerEmail) {
-        return page
-          .getByRole("listitem")
-          .filter({ hasText: `google: ${providerEmail}` })
-      },
-
-      async expectSignedOut(page) {
-        await page.goto(`${baseURL}/profile/`)
-        await expect(page).toHaveURL(
-          `${baseURL}/accounts/login/?next=/profile/`,
-        )
-      },
 
       async seedPasswordUser(email, password) {
         await state("seed-password-user", email, password)
