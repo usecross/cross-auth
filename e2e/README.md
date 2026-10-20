@@ -56,7 +56,7 @@ frameworks/
   support/process.ts              server start, readiness and cleanup
   django/app.ts                   Django driver: startup, routes, locators
   django/e2e_settings.py          the example's settings, pointed at the emulator
-  django/state.py                 seeds password users, reads users/identities
+  django/e2e_support/             test-only Django app with the e2e_state command
   django/*.spec.ts                Django-only behavior
   fastapi/app.ts                  FastAPI driver
   fastapi/state.py                seeds password users, reads users/identities
@@ -80,16 +80,21 @@ frameworks/
 - Emulator users exist before the run, so every Google identity a scenario uses
   is declared in `support/google.ts`, one copy per `--repeat-each` index (up to
   3). Scenarios never share an identity, and password users are created per
-  scenario through `state.py`.
+  scenario through Django's `manage.py e2e_state` command or FastAPI's
+  `state.py` helper.
 - Every browser request outside `127.0.0.1` and `localhost` is blocked and fails
   the test. The apps reach the emulator's token and JWKS endpoints over HTTP;
   nothing calls Google.
 
 Test-only configuration stays out of the examples' defaults:
 
-- Django: `django/e2e_settings.py` imports the example's settings and replaces
-  only the database and the Google provider. Views, templates, signals,
-  middleware and Django's own sessions and password login are unchanged, and
+- Django: `django/e2e_settings.py` imports the example's settings, replaces the
+  database and Google provider, and installs the test-only `e2e_support` app.
+  Its `manage.py e2e_state seed-password-user EMAIL PASSWORD` and
+  `manage.py e2e_state facts EMAIL` commands seed users and read account facts.
+  Django handles setup, argument parsing and output; the command is unavailable
+  with the example's normal settings. Views, templates, signals, middleware and
+  Django's own sessions and password login are unchanged, and
   `ALLOWED_EMAIL_DOMAIN=e2e.test` turns on the example's domain policy.
 - FastAPI: `examples/fastapi/main.py` reads `EXAMPLE_BASE_URL`,
   `EXAMPLE_DATABASE_URL` and `GOOGLE_EMULATOR_URL`. Unset, the demo is the same
@@ -150,7 +155,8 @@ Intentional differences the contract does not hide:
    pointed at `GOOGLE_EMULATOR_URL`.
 2. Add `frameworks/<name>/app.ts` implementing `Framework` from
    `support/app.ts`: start the server, map each step to the app's UI, and seed
-   or read users through a small script like `state.py`.
+   or read users through a small framework-native helper, such as Django's
+   test-only management command or FastAPI's `state.py`.
 3. Add it to `frameworks/frameworks.ts` with an unused base port. Its project
    then runs every scenario in `contract/`; put behavior only that framework has
    in `frameworks/<name>/*.spec.ts`.

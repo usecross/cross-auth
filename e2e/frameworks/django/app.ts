@@ -41,7 +41,7 @@ export const django: Framework = {
       },
     })
     const state = (...args: string[]) =>
-      run(command(join(import.meta.dirname, "state.py"), ...args))
+      run(command("manage.py", "e2e_state", ...args))
 
     await run(command("manage.py", "migrate", "--noinput"))
     const server = await startServer(

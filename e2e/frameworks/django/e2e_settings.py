@@ -9,6 +9,7 @@ import os
 
 from config.settings import *  # noqa: F403
 from config.settings import DATABASES
+from config.settings import INSTALLED_APPS as EXAMPLE_INSTALLED_APPS
 
 from cross_auth.social_providers.google import GoogleProvider
 
@@ -23,6 +24,7 @@ class EmulatedGoogleProvider(GoogleProvider):
 
 
 DATABASES["default"]["NAME"] = os.environ["E2E_DATABASE"]
+INSTALLED_APPS = [*EXAMPLE_INSTALLED_APPS, "e2e_support"]
 
 CROSS_AUTH = {
     "PROVIDERS": [
