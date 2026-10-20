@@ -90,12 +90,8 @@ jobs:
         with:
           bun-version: "1.3.11"
 
-      # Both examples share the workspace environment; --inexact keeps the
-      # first example's dependencies while adding the second's.
-      - name: Sync example dependencies
-        run: |
-          uv sync --frozen --package cross-auth-fastapi-example
-          uv sync --frozen --inexact --package cross-auth-django-example
+      - name: Sync workspace dependencies
+        run: uv sync --frozen --all-packages
 
       - name: Install E2E dependencies
         working-directory: e2e

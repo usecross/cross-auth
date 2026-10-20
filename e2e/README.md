@@ -17,9 +17,15 @@ bun install
 bunx playwright install chromium
 ```
 
-The Python side runs through `uv` from the repository's workspace, so
-`uv run --package cross-auth-django-example` and
-`--package cross-auth-fastapi-example` must work from the repository root.
+The Python examples are members of the repository's uv workspace. Install all
+workspace dependencies from the repository root:
+
+```bash
+uv sync --frozen --all-packages
+```
+
+This includes the Django and FastAPI examples and the website. New example
+packages added to the workspace are included automatically.
 
 ## Shared framework contract
 
