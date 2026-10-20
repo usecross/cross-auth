@@ -89,3 +89,7 @@ exclude_also = [
     "if TYPE_CHECKING:",
     "@overload",
 ]
+
+[tool.ty.environment]
+# The shared browser suite's Django settings extend the example's settings.
+root = ["src", ".", "examples/django"]

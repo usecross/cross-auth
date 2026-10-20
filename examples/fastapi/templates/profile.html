@@ -63,8 +63,12 @@
         <a class="button" href="/sessions">Manage sessions</a>
         <a class="button" href="/api/me">/api/me</a>
         <a class="button" href="http://localhost:5173" target="_blank" rel="noreferrer">Open SPA demo</a>
-        <button type="button" id="link-github-button">Link GitHub account</button>
+        <button type="button" class="link-account" data-provider="github">Link GitHub account</button>
         <a class="button" href="/auth/github/connect?next=/profile" id="connect-github-link">Connect GitHub (session)</a>
+        {% if google_enabled %}
+          <button type="button" class="link-account" data-provider="google">Link Google account</button>
+          <a class="button" href="/auth/google/connect?next=/profile">Connect Google (session)</a>
+        {% endif %}
         <form action="/logout" method="post">
           <button type="submit">Log out</button>
         </form>
@@ -111,11 +115,11 @@
 
 {% block scripts %}
   <script>
-    const linkButton = document.getElementById("link-github-button")
     const linkStatus = document.getElementById("link-status")
     const clientId = {{ spa_client_id|tojson }}
     const redirectUri = `${window.location.origin}/link-callback`
     const linkVerifierKey = "cross_auth_fastapi_link_code_verifier"
+    const linkProviderKey = "cross_auth_fastapi_link_provider"
 
     function generateRandomString() {
       const bytes = new Uint8Array(32)
@@ -136,40 +140,44 @@
       linkStatus.textContent = message
     }
 
-    linkButton?.addEventListener("click", async () => {
-      try {
-        linkButton.disabled = true
-        setLinkStatus("Redirecting to GitHub to link your account...")
+    for (const linkButton of document.querySelectorAll(".link-account")) {
+      linkButton.addEventListener("click", async () => {
+        const provider = linkButton.dataset.provider
+        try {
+          linkButton.disabled = true
+          setLinkStatus("Redirecting to the provider to link your account...")
 
-        const codeVerifier = generateRandomString()
-        const codeChallenge = await generateCodeChallenge(codeVerifier)
-        window.sessionStorage.setItem(linkVerifierKey, codeVerifier)
+          const codeVerifier = generateRandomString()
+          const codeChallenge = await generateCodeChallenge(codeVerifier)
+          window.sessionStorage.setItem(linkVerifierKey, codeVerifier)
+          window.sessionStorage.setItem(linkProviderKey, provider)
 
-        const response = await fetch("/auth/github/link", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            client_id: clientId,
-            redirect_uri: redirectUri,
-            code_challenge: codeChallenge,
-            code_challenge_method: "S256",
-          }),
-        })
+          const response = await fetch(`/auth/${provider}/link`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              client_id: clientId,
+              redirect_uri: redirectUri,
+              code_challenge: codeChallenge,
+              code_challenge_method: "S256",
+            }),
+          })
 
-        if (!response.ok) {
-          const body = await response.text()
-          throw new Error(body || "Failed to initiate account linking")
+          if (!response.ok) {
+            const body = await response.text()
+            throw new Error(body || "Failed to initiate account linking")
+          }
+
+          const data = await response.json()
+          window.location.href = data.authorization_url
+        } catch (error) {
+          linkButton.disabled = false
+          setLinkStatus(error instanceof Error ? error.message : "Failed to initiate account linking")
         }
-
-        const data = await response.json()
-        window.location.href = data.authorization_url
-      } catch (error) {
-        linkButton.disabled = false
-        setLinkStatus(error instanceof Error ? error.message : "Failed to initiate account linking")
-      }
-    })
+      })
+    }
 
     const disconnectStatus = document.getElementById("disconnect-status")
 

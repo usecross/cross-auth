@@ -34,11 +34,15 @@ Redis adapter needs a Redis server 6.2 or newer. See the
 
 ## Django
 
-The native Django integration is behind the `django` extra, which installs
-Django 5.2 LTS. It needs no other extras. It is not released yet: Cross Auth
-0.36.0 on PyPI has no `django` extra. Until a release includes it, the
-[Django](/docs/django) guide installs a tested revision from GitHub and shows
-how to set it up.
+The native Django Google sign-in integration is available from Cross Auth
+0.38.0. Install the `django` extra, which includes Django 5.2 LTS:
+
+```bash
+uv add "cross-auth[django]>=0.38.0"
+```
+
+It needs no other extras. Follow the [Django](/docs/django) guide to configure
+Google, Django-owned sessions, account linking and signals.
 
 ## Requirements
 

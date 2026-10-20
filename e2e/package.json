@@ -5,9 +5,14 @@
   "type": "module",
   "scripts": {
     "test:e2e": "playwright test",
-    "test:e2e:headed": "playwright test --headed"
+    "test:e2e:headed": "playwright test --headed",
+    "test:frameworks": "playwright test -c playwright.frameworks.config.ts",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@playwright/test": "^1.54.2"
+    "@playwright/test": "^1.54.2",
+    "@types/node": "22.20.5",
+    "emulate": "0.12.1",
+    "typescript": "5.9.3"
   }
 }

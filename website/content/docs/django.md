@@ -25,7 +25,7 @@ user model, passwords, permissions, `request.user`, middleware, sessions,
 cookie involved.
 
 The finished project is in
-[`examples/django`](https://github.com/usecross/cross-auth/tree/3d18fa17d8e40f25811488dda9f5287e26715c78/examples/django).
+[`examples/django`](https://github.com/usecross/cross-auth/tree/main/examples/django).
 
 > **Pilot scope:** this integration is new. It supports Google, Django 5.2 LTS
 > (5.2.8 or later), Python 3.11 to 3.14, database-backed Django sessions, and
@@ -52,14 +52,11 @@ mkdir django-google-demo
 cd django-google-demo
 uv init --bare --python 3.13
 uv python pin 3.13
-uv add "cross-auth[django] @ git+https://github.com/usecross/cross-auth@3d18fa17d8e40f25811488dda9f5287e26715c78"
+uv add "cross-auth[django]>=0.38.0"
 ```
 
-> **Note:** the Django integration is not released yet. Cross Auth 0.36.0 on
-> PyPI has no `django` extra, so this command installs a fixed, tested revision
-> from GitHub. Once a release includes the integration, its release notes will
-> say so, and you can replace this dependency with `cross-auth[django]` from
-> PyPI.
+> **Version:** this guide requires Cross Auth 0.38.0 or later, which includes
+> the native Google sign-in views and Django signals.
 
 Create a Django project in the current directory and an app for your pages:
 

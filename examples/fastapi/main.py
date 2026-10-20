@@ -1,3 +1,4 @@
+import os
 import threading
 import time
 from dataclasses import replace
@@ -38,6 +39,8 @@ from cross_auth.hooks import (
     BeforeUserCreateEvent,
 )
 from cross_auth.social_providers.github import GitHubProvider
+from cross_auth.social_providers.google import GoogleProvider
+from cross_auth.social_providers.oauth import OAuth2Provider
 from cross_auth.storage.sqlmodel import (
     SQLModelAccountsStorage,
     SQLModelSession,
@@ -57,6 +60,12 @@ DEMO_PASSWORD = "password123"  # noqa: S105
 # racing the tests that link GitHub to demo@example.com.
 CONNECT_DEMO_EMAIL = "connect-demo@example.com"
 GITHUB_MOCK_BASE_URL = "https://github-oauth-mock.fastapicloud.dev"
+# The shared framework browser suite (e2e/README.md) runs this app on its own
+# port and database, with Google served by a local emulator. Unset, the demo
+# runs on 127.0.0.1:8000 with in-memory storage and only the GitHub mock.
+BASE_URL = os.environ.get("EXAMPLE_BASE_URL", "http://127.0.0.1:8000")
+DATABASE_URL = os.environ.get("EXAMPLE_DATABASE_URL")
+GOOGLE_EMULATOR_URL = os.environ.get("GOOGLE_EMULATOR_URL")
 SPA_DEMO_URL = "http://localhost:5173"
 SPA_CLIENT_ID = "spa-example"
 MAX_HOOK_EVENTS = 20
@@ -162,10 +171,14 @@ class SessionRecord(SQLModelSession, table=True):
 # connection would open an empty database); check_same_thread lets FastAPI's
 # threadpooled sync endpoints reach it. Restarting the process drops every
 # table, so the demo keeps its "restart resets everything" property.
-engine = create_engine(
-    "sqlite://",
-    poolclass=StaticPool,
-    connect_args={"check_same_thread": False},
+engine = (
+    create_engine(
+        "sqlite://",
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    if DATABASE_URL is None
+    else create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 )
 SQLModel.metadata.create_all(engine)
 
@@ -325,6 +338,26 @@ github = GitHubProvider(
     api_base_url=f"{GITHUB_MOCK_BASE_URL}/api",
 )
 
+providers: list[OAuth2Provider] = [github]
+
+if GOOGLE_EMULATOR_URL is not None:
+
+    class EmulatedGoogleProvider(GoogleProvider):
+        # The emulator signs ID tokens with its own URL as issuer. Signature,
+        # audience, nonce and PKCE checks are unchanged.
+        issuer = GOOGLE_EMULATOR_URL
+        jwks_cache_key = "google-emulator:jwks"
+
+    providers.append(
+        EmulatedGoogleProvider(
+            client_id=os.environ["GOOGLE_CLIENT_ID"],
+            client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
+            authorization_endpoint=f"{GOOGLE_EMULATOR_URL}/o/oauth2/v2/auth",
+            token_endpoint=f"{GOOGLE_EMULATOR_URL}/oauth2/token",
+            jwks_uri=f"{GOOGLE_EMULATOR_URL}/oauth2/v3/certs",
+        )
+    )
+
 secondary_storage = MemorySecondaryStorage()
 # Swap for Redis: from cross_auth.storage.redis import RedisStorage
 # storage = RedisStorage.from_url(os.environ["REDIS_URL"])
@@ -379,7 +412,7 @@ def normalize_login_email(email: str) -> str:
 
 
 auth = CrossAuth(
-    providers=[github],
+    providers=providers,
     storage=secondary_storage,
     accounts_storage=accounts_storage,
     session_storage=session_storage,
@@ -387,11 +420,13 @@ auth = CrossAuth(
     default_next_url="/profile",
     # Explicit here; needed when redirect URIs must not be derived from the
     # incoming request (e.g. behind a proxy).
-    base_url="http://127.0.0.1:8000",
+    base_url=BASE_URL,
     normalize_email=normalize_login_email,
     config={
         "account_linking": {"enabled": True, "allow_different_emails": True},
-        "client_redirect_uris": {SPA_CLIENT_ID: CLIENT_REDIRECT_URIS},
+        "client_redirect_uris": {
+            SPA_CLIENT_ID: [*CLIENT_REDIRECT_URIS, f"{BASE_URL}/link-callback"]
+        },
         "require_verified_email": True,
         "session": SESSION_CONFIG,
     },
@@ -472,6 +507,7 @@ def reject_blocked_provider_email(event: BeforeOAuthCallbackEvent) -> None:
         raise CrossAuthException(
             "blocked_domain",
             "This email domain is not allowed for this demo.",
+            status_code=403,
         )
 
 
@@ -525,6 +561,7 @@ def home(
             "error_message": get_error_message(error),
             "github_login_url": "/auth/github/login?next=/profile",
             "github_mock_base_url": GITHUB_MOCK_BASE_URL,
+            "google_enabled": GOOGLE_EMULATOR_URL is not None,
             "hook_events": hook_events[:5],
             "spa_client_id": SPA_CLIENT_ID,
             "spa_demo_url": SPA_DEMO_URL,
@@ -570,7 +607,12 @@ def profile(
     return templates.TemplateResponse(
         request,
         "profile.html",
-        {"hook_events": hook_events[:5], "user": user, "spa_client_id": SPA_CLIENT_ID},
+        {
+            "google_enabled": GOOGLE_EMULATOR_URL is not None,
+            "hook_events": hook_events[:5],
+            "user": user,
+            "spa_client_id": SPA_CLIENT_ID,
+        },
     )
 
 
