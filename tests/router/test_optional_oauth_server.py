@@ -1,9 +1,10 @@
-"""CrossAuth without the OAuth server (``oauth_server=False``).
+"""The opt-in OAuth server (``oauth_server=OAuthServer(...)``).
 
 The OAuth server is the authorization server for registered SPA and native
 clients: ``/{provider}/authorize``, ``/token`` and the PKCE
-``/{provider}/link`` + ``/{provider}/finalize-link`` pair. Browser sign-in,
-integration-only connect, disconnect and the programmatic APIs work without it.
+``/{provider}/link`` + ``/{provider}/finalize-link`` pair. It is off by
+default; browser sign-in, integration-only connect, disconnect and the
+programmatic APIs work without it.
 """
 
 import json
@@ -19,7 +20,7 @@ from fastapi import Depends, FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-from cross_auth._clients import OAuthClient
+from cross_auth import OAuthClient, OAuthServer, TokenIssueRequest
 from cross_auth._config import Config
 from cross_auth._storage import AccountsStorage, SecondaryStorage, User
 from cross_auth.fastapi import CrossAuth
@@ -37,7 +38,13 @@ from ..conftest import (
     MemoryStorage,
 )
 from ..django.fake_google import CLIENT_ID, Account, Authorization, FakeGoogle
-from .conftest import FakeProvider, mock_token_and_userinfo, start_provider_auth
+from .conftest import (
+    APP_CLIENT,
+    APP_OAUTH_SERVER,
+    FakeProvider,
+    mock_token_and_userinfo,
+    start_provider_auth,
+)
 
 VERIFIER = "a" * 64
 CLIENT_PARAMS = {
@@ -105,7 +112,7 @@ def test_cross_auth_routes(
 ):
     auth = build_auth(
         providers=providers,
-        oauth_server=oauth_server,
+        oauth_server=APP_OAUTH_SERVER if oauth_server else None,
         config={"session": {"cookies": {"auth": cookie_auth}}},
     )
 
@@ -131,10 +138,9 @@ def test_auth_router_routes(
         secondary_storage,
         accounts_storage,
         lambda request: None,
-        None,
-        session_storage,
+        session_storage=session_storage,
         config={"session": {"cookies": {"auth": cookie_auth}}},
-        oauth_server=oauth_server,
+        oauth_server=APP_OAUTH_SERVER if oauth_server else None,
     )
 
     assert _route_methods(router) == _expected(
@@ -143,76 +149,133 @@ def test_auth_router_routes(
     assert (router.issuer is None) is not oauth_server
 
 
-def test_oauth_server_is_on_by_default(secondary_storage, accounts_storage, providers):
-    default = CrossAuth(
+def test_oauth_server_is_off_by_default(secondary_storage, accounts_storage, providers):
+    auth = CrossAuth(
         providers=providers,
         storage=secondary_storage,
         accounts_storage=accounts_storage,
     )
-    explicit = CrossAuth(
+    router = AuthRouter(
         providers=providers,
-        storage=secondary_storage,
+        secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
-        oauth_server=True,
+        get_user_from_request=lambda request: None,
     )
 
-    assert _route_methods(default.router) == _route_methods(explicit.router)
-    assert _route_methods(default.router) == _expected(
-        ["fake", "github"], oauth_server=True, cookie_auth=False
-    )
-
-
-def test_broker_is_not_an_alias(secondary_storage, accounts_storage, providers):
-    # ``broker`` was the unreleased name for ``oauth_server``.
-    old_name: dict[str, Any] = {"broker": False}
-
-    with pytest.raises(TypeError, match="broker"):
-        CrossAuth(
-            providers=providers,
-            storage=secondary_storage,
-            accounts_storage=accounts_storage,
-            **old_name,
-        )
-    with pytest.raises(TypeError, match="broker"):
-        AuthRouter(
-            providers=providers,
-            secondary_storage=secondary_storage,
-            accounts_storage=accounts_storage,
-            get_user_from_request=lambda request: None,
-            **old_name,
+    for default in (auth.router, router):
+        assert default.issuer is None
+        assert default.context.oauth_server is None
+        assert _route_methods(default) == _expected(
+            ["fake", "github"], oauth_server=False, cookie_auth=False
         )
 
 
-@pytest.mark.parametrize(
-    ("kwargs", "message"),
-    [
-        (
-            {"config": {"client_redirect_uris": {"web": ["https://a.example/cb"]}}},
-            "client_redirect_uris",
-        ),
-        ({"config": {"client_redirect_uris": {}}}, "client_redirect_uris"),
-        (
-            {
-                "get_client": lambda client_id: OAuthClient(
-                    client_id=client_id, redirect_uris=("https://a.example/cb",)
-                )
-            },
-            "get_client",
-        ),
-        ({"token_issuer": lambda request: ("token", 60)}, "token_issuer"),
-    ],
-)
-def test_oauth_server_settings_require_oauth_server(
-    secondary_storage, accounts_storage, kwargs, message
+@pytest.mark.parametrize("name", ["get_client", "token_issuer", "broker"])
+def test_oauth_server_options_are_not_constructor_arguments(
+    secondary_storage, accounts_storage, name
 ):
-    with pytest.raises(ValueError, match=message):
+    removed: dict[str, Any] = {name: lambda _: None}
+
+    with pytest.raises(TypeError, match=name):
         CrossAuth(
             providers=[],
             storage=secondary_storage,
             accounts_storage=accounts_storage,
-            oauth_server=False,
-            **kwargs,
+            **removed,
         )
+    with pytest.raises(TypeError, match=name):
+        AuthRouter(
+            providers=[],
+            secondary_storage=secondary_storage,
+            accounts_storage=accounts_storage,
+            get_user_from_request=lambda request: None,
+            **removed,
+        )
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_oauth_server_is_not_a_flag(secondary_storage, accounts_storage, value):
+    flag: Any = value
+    with pytest.raises(TypeError, match="OAuthServer"):
+        CrossAuth(
+            providers=[],
+            storage=secondary_storage,
+            accounts_storage=accounts_storage,
+            oauth_server=flag,
+        )
+
+
+def test_auth_router_options_are_keyword_only(
+    secondary_storage, accounts_storage, session_storage
+):
+    # 0.38 took token_issuer as the seventh positional argument; later
+    # positionals must not slide into its place.
+    arguments: list[Any] = [
+        [],
+        secondary_storage,
+        accounts_storage,
+        lambda request: None,
+        None,
+        session_storage,
+        lambda request: ("token", 60),
+    ]
+    with pytest.raises(TypeError, match="positional"):
+        AuthRouter(*arguments)
+
+
+@respx.mock
+def test_oauth_server_callbacks_drive_the_token_flow(
+    build_auth, session_storage: MemorySessionStorage
+):
+    lookups: list[str] = []
+    issued: list[TokenIssueRequest] = []
+
+    def get_client(client_id: str) -> OAuthClient | None:
+        lookups.append(client_id)
+        return APP_CLIENT if client_id == APP_CLIENT.client_id else None
+
+    def issue_token(request: TokenIssueRequest) -> tuple[str, int]:
+        issued.append(request)
+        return "app-token", 900
+
+    mock_token_and_userinfo(email="test@example.com", provider_user_id="token-flow")
+    auth = build_auth(
+        config={
+            "account_linking": {"enabled": True},
+            "session": {"cookies": {"auth": True}},
+        },
+        oauth_server=OAuthServer(get_client=get_client, token_issuer=issue_token),
+    )
+    with _client(auth) as browser:
+        state = _start_oauth_server_flow(browser, "token")
+        response = browser.get(
+            "/fake/callback", params={"code": "provider-code", "state": state}
+        )
+        assert response.status_code == 302, response.text
+        location = urlparse(response.headers["location"])
+        assert (
+            f"{location.scheme}://{location.netloc}{location.path}"
+            == (CLIENT_PARAMS["redirect_uri"])
+        )
+        code = parse_qs(location.query)["code"][0]
+        response = browser.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": CLIENT_PARAMS["client_id"],
+                "code": code,
+                "redirect_uri": CLIENT_PARAMS["redirect_uri"],
+                "code_verifier": VERIFIER,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["access_token"] == "app-token"
+    assert [request.grant_type for request in issued] == ["authorization_code"]
+    assert issued[0].client_id == "app-client"
+    assert lookups and set(lookups) == {"app-client"}
+    # The application's token_issuer minted the credential, not session storage.
+    assert not session_storage.records
 
 
 def test_openapi_without_oauth_server_is_self_contained(
@@ -224,7 +287,6 @@ def test_openapi_without_oauth_server_is_self_contained(
         accounts_storage=accounts_storage,
         session_storage=session_storage,
         config={"session": {"cookies": {"auth": True}}},
-        oauth_server=False,
     )
     # A plain app: no fixture merges auth.router.extra_schemas into the schema.
     app = FastAPI()
@@ -300,7 +362,7 @@ def test_pending_oauth_server_callback_is_refused_after_disabling(
         cookies = dict(before.cookies)
     users_before = set(accounts_storage.data)
 
-    disabled = build_auth(config=config, oauth_server=False)
+    disabled = build_auth(config=config, oauth_server=None)
     seen: list[str] = []
     for event in ("token.authorization_code", "user.create", "social_account.create"):
         disabled._context.hooks.register_after(
@@ -343,7 +405,7 @@ def test_unbound_browser_cannot_consume_a_pending_oauth_server_callback(
     with _client(build_auth()) as victim:
         state = _start_oauth_server_flow(victim, "token")
 
-    with _client(build_auth(oauth_server=False)) as attacker:
+    with _client(build_auth(oauth_server=None)) as attacker:
         response = attacker.get(
             "/fake/callback", params={"code": "provider-code", "state": state}
         )
@@ -363,7 +425,7 @@ def test_pending_session_flow_survives_disabling(build_auth):
         _, login_state = start_provider_auth(before, "/fake/login")
         cookies = dict(before.cookies)
 
-    with _client(build_auth(oauth_server=False)) as browser:
+    with _client(build_auth(oauth_server=None)) as browser:
         browser.cookies.update(cookies)
         response = browser.get(
             "/fake/callback", params={"code": "code", "state": login_state}
@@ -378,7 +440,7 @@ def test_session_login_and_connect_without_oauth_server(
     build_auth, accounts_storage: MemoryAccountsStorage
 ):
     mock_token_and_userinfo(email="social@example.com", provider_user_id="social-1")
-    with _client(build_auth(oauth_server=False)) as browser:
+    with _client(build_auth(oauth_server=None)) as browser:
         _, state = start_provider_auth(browser, "/fake/login")
         response = browser.get(
             "/fake/callback", params={"code": "code", "state": state}
@@ -387,7 +449,7 @@ def test_session_login_and_connect_without_oauth_server(
         assert response.cookies.get("session_id")
 
     mock_token_and_userinfo(email="test@example.com", provider_user_id="connected")
-    with _client(build_auth(oauth_server=False)) as browser:
+    with _client(build_auth(oauth_server=None)) as browser:
         response = browser.get(
             "/fake/connect", headers={"Authorization": "Bearer test"}
         )
@@ -419,7 +481,6 @@ def social_only(
         accounts_storage=accounts_storage,
         session_storage=session_storage,
         config={"session": {"cookies": {"auth": True, "secure": False}}},
-        oauth_server=False,
     )
 
 
@@ -516,7 +577,7 @@ def test_disabled_oauth_server_rejects_apple_form_post(
     users_before = set(accounts_storage.data)
 
     with _client(
-        build_auth(providers=[apple_provider], config=config, oauth_server=False)
+        build_auth(providers=[apple_provider], config=config, oauth_server=None)
     ) as browser:
         browser.cookies.update(cookies)
         form = {"state": state}
@@ -560,7 +621,7 @@ def test_unbound_browser_cannot_consume_apple_form_post(
         state = _start_oauth_server_flow(before, flow, provider_id="apple")
         cookies = dict(before.cookies)
 
-    disabled = build_auth(providers=[apple_provider], config=config, oauth_server=False)
+    disabled = build_auth(providers=[apple_provider], config=config, oauth_server=None)
     with _client(disabled) as browser:
         browser.cookies.update(cookies)
         response = browser.post(

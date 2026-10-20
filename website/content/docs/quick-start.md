@@ -163,7 +163,6 @@ auth = CrossAuth(
     accounts_storage=accounts_storage,
     session_storage=session_storage,
     config={"session": {"cookies": {"auth": True}}},
-    oauth_server=False,
 )
 ```
 

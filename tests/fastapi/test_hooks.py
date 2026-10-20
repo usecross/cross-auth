@@ -17,6 +17,7 @@ from cross_auth._auth_flow import AuthRequest, LinkCodeData
 from cross_auth._config import Config
 from cross_auth._issuer import AuthorizationCodeGrantData
 from cross_auth._session import get_session
+from cross_auth import OAuthClient, OAuthServer
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.fastapi import CrossAuth
 from cross_auth.hooks import (
@@ -57,6 +58,14 @@ def oauth_provider() -> TestOAuth2Provider:
     )
 
 
+_CLIENTS = {
+    client_id: OAuthClient(
+        client_id=client_id, redirect_uris=("http://valid-frontend.com/callback",)
+    )
+    for client_id in ("test", "original-client", "my_app_client_id", "test-client")
+}
+
+
 def _make_auth(
     secondary_storage,
     accounts_storage,
@@ -68,15 +77,6 @@ def _make_auth(
 ) -> CrossAuth:
     if config is None:
         config = {"session": {"cookies": {"auth": True}}}
-    config = {
-        "client_redirect_uris": {
-            "test": ["http://valid-frontend.com/callback"],
-            "original-client": ["http://valid-frontend.com/callback"],
-            "my_app_client_id": ["http://valid-frontend.com/callback"],
-            "test-client": ["http://valid-frontend.com/callback"],
-        },
-        **config,
-    }
     return CrossAuth(
         providers=providers if providers is not None else [],
         storage=secondary_storage,
@@ -84,6 +84,8 @@ def _make_auth(
         session_storage=session_storage,
         get_user_from_request=get_user_from_request,
         config=config,
+        # The token and link hook tests run through the OAuth server.
+        oauth_server=OAuthServer(get_client=_CLIENTS.get),
     )
 
 

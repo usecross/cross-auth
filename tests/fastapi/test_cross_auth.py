@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from cross_auth import (
     AccountsStorage,
     OAuth2Provider,
+    OAuthServer,
     SecondaryStorage,
     SessionStorage,
     User,
@@ -48,7 +49,7 @@ def test_token_endpoint_uses_token_issuer_without_session_storage(
         providers=[],
         storage=secondary_storage,
         accounts_storage=accounts_storage,
-        token_issuer=issue_token,
+        oauth_server=OAuthServer(token_issuer=issue_token),
     )
     app = FastAPI()
     app.include_router(auth.router)
@@ -641,6 +642,7 @@ def test_direct_router_matches_cross_auth_router(
         session_storage=session_storage,
         get_user_from_request=lambda _: None,
         config=config,
+        oauth_server=OAuthServer(),
     )
     facade = CrossAuth(
         providers=providers,
@@ -648,6 +650,7 @@ def test_direct_router_matches_cross_auth_router(
         accounts_storage=accounts_storage,
         session_storage=session_storage,
         config=config,
+        oauth_server=OAuthServer(),
     ).router
 
     assert type(facade) is AuthRouter

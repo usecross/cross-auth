@@ -16,14 +16,13 @@ from ._auth_flow import (
     start_session_flow,
     start_token_flow,
 )
-from ._clients import ClientResolver
 from ._config import Config
 from ._context import AccountsStorage, Context, SecondaryStorage, User
 from ._issuer import Issuer
+from ._oauth_server import OAuthServer
 from ._route import Route
 from ._setup import AuthSetup, build_auth_setup
 from ._storage import SessionStorage
-from ._tokens import TokenIssuer
 from .hooks import HookRegistry
 from .social_providers.oauth import OAuth2Provider
 
@@ -147,7 +146,7 @@ def _provider_routes(
 
 class AuthRouter(APIRouter):
     context: Context
-    # The OAuth server's token endpoint; None when the OAuth server is disabled.
+    # The OAuth server's token endpoint; None without an OAuthServer.
     issuer: Issuer | None
     extra_schemas: dict[str, Any]
 
@@ -157,17 +156,15 @@ class AuthRouter(APIRouter):
         secondary_storage: SecondaryStorage,
         accounts_storage: AccountsStorage,
         get_user_from_request: Callable[[HTTPRequest], User | None],
+        *,
         trusted_origins: list[str] | None = None,
         session_storage: SessionStorage | None = None,
-        token_issuer: TokenIssuer | None = None,
         base_url: str | None = None,
         config: Config | None = None,
         default_next_url: str = "/",
         hooks: HookRegistry | None = None,
         normalize_email: Callable[[str], str] | None = None,
-        get_client: ClientResolver | None = None,
-        *,
-        oauth_server: bool = True,
+        oauth_server: OAuthServer | None = None,
     ):
         if trusted_origins is not None:
             warnings.warn(
@@ -178,14 +175,12 @@ class AuthRouter(APIRouter):
             secondary_storage=secondary_storage,
             accounts_storage=accounts_storage,
             session_storage=session_storage,
-            token_issuer=token_issuer,
             get_user_from_request=get_user_from_request,
             base_url=base_url,
             config=config,
             default_next_url=default_next_url,
             hooks=hooks,
             normalize_email=normalize_email,
-            get_client=get_client,
             oauth_server=oauth_server,
         )
         self._mount(setup)
@@ -210,7 +205,7 @@ class AuthRouter(APIRouter):
                 _provider_routes(
                     provider,
                     cookie_auth=setup.context.cookie_auth_enabled,
-                    oauth_server=setup.context.oauth_server_enabled,
+                    oauth_server=self.issuer is not None,
                 )
             )
         if self.issuer is not None:

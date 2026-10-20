@@ -17,9 +17,8 @@ Browser OAuth callbacks have their own protection: expiring, single-use state,
 an initiating-browser binding cookie, provider binding, PKCE where supported,
 and a managed nonce for OIDC. These checks do not authorize unrelated browser
 requests. Cross-Auth does not configure CSRF or CORS; configure both in your
-application. The `client_redirect_uris` configuration or `get_client` callback
-registers OAuth client callbacks; it does not grant permission to make
-cookie-authenticated requests.
+application. `OAuthServer(get_client=...)` registers OAuth client callbacks; it
+does not grant permission to make cookie-authenticated requests.
 
 Route paths below are relative to where you include `auth.router`:
 

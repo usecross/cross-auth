@@ -20,7 +20,6 @@ from fastapi import Request as FastAPIRequest
 from fastapi import Response as FastAPIResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from ._clients import ClientResolver
 from ._config import Config
 from ._context import AccountsStorage, SecondaryStorage, User
 from ._login import (
@@ -31,6 +30,7 @@ from ._login import (
     run_now,
 )
 from ._native import sign_in_with_id_token as _sign_in_with_id_token
+from ._oauth_server import OAuthServer
 from ._password import authenticate
 from ._request import make_http_request
 from ._session import (
@@ -52,7 +52,6 @@ from ._storage import (
     SessionStatus,
     SessionStorage,
 )
-from ._tokens import TokenIssuer
 from .hooks import (
     AfterAuthenticateEvent,
     AfterLoginEvent,
@@ -158,14 +157,12 @@ class CrossAuth:
         accounts_storage: AccountsStorage,
         trusted_origins: list[str] | None = None,
         session_storage: SessionStorage | None = None,
-        token_issuer: TokenIssuer | None = None,
         get_user_from_request: Callable[[HTTPRequest], User | None] | None = None,
         base_url: str | None = None,
         config: Config | None = None,
         default_next_url: str = "/",
         normalize_email: Callable[[str], str] | None = None,
-        get_client: ClientResolver | None = None,
-        oauth_server: bool = True,
+        oauth_server: OAuthServer | None = None,
     ):
         if trusted_origins is not None:
             warnings.warn(
@@ -178,7 +175,6 @@ class CrossAuth:
             secondary_storage=storage,
             accounts_storage=accounts_storage,
             session_storage=session_storage,
-            token_issuer=token_issuer,
             get_user_from_request=(
                 self._default_get_user_from_request
                 if get_user_from_request is None
@@ -189,7 +185,6 @@ class CrossAuth:
             default_next_url=default_next_url,
             hooks=HookRegistry(),
             normalize_email=normalize_email,
-            get_client=get_client,
             oauth_server=oauth_server,
         )
         self._context = self._setup.context

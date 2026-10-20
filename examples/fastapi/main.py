@@ -19,6 +19,8 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Field, Relationship, Session, SQLModel, create_engine
 
 from cross_auth import (
+    OAuthClient,
+    OAuthServer,
     SecondaryStorage,
     SessionConfig,
     SessionStatus,
@@ -411,6 +413,13 @@ def normalize_login_email(email: str) -> str:
     return f"{local}{sep}{domain}"
 
 
+OAUTH_CLIENTS = {
+    SPA_CLIENT_ID: OAuthClient(
+        client_id=SPA_CLIENT_ID,
+        redirect_uris=(*CLIENT_REDIRECT_URIS, f"{BASE_URL}/link-callback"),
+    )
+}
+
 auth = CrossAuth(
     providers=providers,
     storage=secondary_storage,
@@ -424,12 +433,9 @@ auth = CrossAuth(
     normalize_email=normalize_login_email,
     # The SPA and the profile page's "Link Google account" use the OAuth
     # server's /authorize, /token, /link and /finalize-link routes.
-    oauth_server=True,
+    oauth_server=OAuthServer(get_client=OAUTH_CLIENTS.get),
     config={
         "account_linking": {"enabled": True, "allow_different_emails": True},
-        "client_redirect_uris": {
-            SPA_CLIENT_ID: [*CLIENT_REDIRECT_URIS, f"{BASE_URL}/link-callback"]
-        },
         "require_verified_email": True,
         "session": SESSION_CONFIG,
     },

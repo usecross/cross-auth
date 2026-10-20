@@ -10,6 +10,7 @@ from cross_auth._clients import OAuthClient
 from cross_auth._config import Config
 from cross_auth._email import normalize_email as default_normalize_email
 from cross_auth._issuer import Issuer
+from cross_auth._oauth_server import OAuthServer
 from cross_auth._setup import build_auth_setup
 from cross_auth._storage import AccountsStorage, SecondaryStorage
 from cross_auth.hooks import HookRegistry
@@ -41,6 +42,7 @@ def test_setup_shares_the_given_objects(
 ):
     hooks = HookRegistry()
     config: Config = {"session": {"max_age": 60}}
+    oauth_server = OAuthServer()
 
     def resolver(request: HTTPRequest) -> None:
         return None
@@ -59,6 +61,7 @@ def test_setup_shares_the_given_objects(
         normalize_email=lower,
         base_url="https://api.example",
         default_next_url="/home",
+        oauth_server=oauth_server,
     )
     context = setup.context
 
@@ -72,6 +75,7 @@ def test_setup_shares_the_given_objects(
     assert context.session_config is config["session"]
     assert context.base_url == "https://api.example"
     assert context.default_next_url == "/home"
+    assert context.oauth_server is oauth_server
     assert isinstance(setup.issuer, Issuer)
 
 
@@ -82,6 +86,8 @@ def test_setup_defaults(secondary_storage, accounts_storage):
     assert setup.context.normalize_email is default_normalize_email
     assert setup.context.session_config is None
     assert setup.context.session_storage is None
+    assert setup.context.oauth_server is None
+    assert setup.issuer is None
 
 
 def test_providers_keep_route_order_and_last_id_wins_for_lookup(
@@ -121,14 +127,7 @@ def test_routes_and_lookup_use_one_provider_snapshot(
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"config": {"allowed_client_ids": ["web"]}}, "allowed_client_ids"),
-        (
-            {
-                "config": {"client_redirect_uris": {"web": ["https://a.example/cb"]}},
-                "get_client": lambda client_id: None,
-            },
-            "not both",
-        ),
+        ({"config": {"client_redirect_uris": {}}}, "Unknown config keys"),
         ({"config": {"session": {"cookies": {"auth": True}}}}, "session_storage"),
     ],
 )
@@ -139,26 +138,34 @@ def test_setup_rejects_invalid_configuration(
         _build(secondary_storage, accounts_storage, **kwargs)
 
 
-def test_setup_validates_static_client_redirects(secondary_storage, accounts_storage):
-    with pytest.raises(ValueError):
-        _build(
-            secondary_storage,
-            accounts_storage,
-            config={"client_redirect_uris": {"web": ["not a url"]}},
-        )
+@pytest.mark.parametrize("name", ["get_client", "token_issuer"])
+def test_oauth_server_options_are_not_setup_arguments(
+    secondary_storage, accounts_storage, name
+):
+    removed: dict[str, Any] = {name: lambda _: None}
+    with pytest.raises(TypeError, match=name):
+        _build(secondary_storage, accounts_storage, **removed)
 
 
-def test_custom_client_resolver_is_used(secondary_storage, accounts_storage):
+def test_oauth_server_client_lookup_is_used(secondary_storage, accounts_storage):
     client = OAuthClient(client_id="web", redirect_uris=("https://a.example/cb",))
     setup = _build(
         secondary_storage,
         accounts_storage,
-        get_client=lambda client_id: client if client_id == "web" else None,
+        oauth_server=OAuthServer(get_client={"web": client}.get),
     )
 
     assert setup.context.get_client("web") is client
     assert setup.context.is_valid_redirect_uri("https://a.example/cb", client_id="web")
     assert setup.context.get_client("other") is None
+
+
+def test_oauth_server_without_client_lookup_rejects_every_client(
+    secondary_storage, accounts_storage
+):
+    setup = _build(secondary_storage, accounts_storage, oauth_server=OAuthServer())
+
+    assert setup.context.get_client("web") is None
 
 
 def test_issuer_runs_against_the_setup_context(
@@ -173,7 +180,9 @@ def test_issuer_runs_against_the_setup_context(
         session_storage=session_storage,
         hooks=hooks,
         normalize_email=lambda email: email.strip().lower(),
+        oauth_server=OAuthServer(),
     )
+    assert setup.issuer is not None
 
     response = setup.issuer.token(
         HTTPRequest.from_form_data(
@@ -190,11 +199,3 @@ def test_issuer_runs_against_the_setup_context(
     assert response.status_code == 200
     assert seen == ["test"]
     assert [record.user_id for record in session_storage.records.values()] == ["test"]
-
-
-def test_setup_without_oauth_server_has_no_issuer(secondary_storage, accounts_storage):
-    setup = _build(secondary_storage, accounts_storage, oauth_server=False)
-
-    assert setup.issuer is None
-    assert setup.context.oauth_server_enabled is False
-    assert _build(secondary_storage, accounts_storage).context.oauth_server_enabled

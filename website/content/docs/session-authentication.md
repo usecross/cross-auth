@@ -113,9 +113,9 @@ rolled copy.
 
 `session_storage` is optional when constructing `CrossAuth`, but session-backed
 features require it. `login()`, `logout()`, and session-management methods raise
-clearly when no `session_storage` is configured. With the OAuth server, the
-built-in `/token` endpoint is still registered, but successful token issuance
-requires `session_storage` or a `token_issuer`.
+clearly when no `session_storage` is configured. With an `OAuthServer`, the
+built-in `/token` endpoint is registered, but successful token issuance requires
+`session_storage` or the server's `token_issuer`.
 
 ## Lower-Level Session Functions
 

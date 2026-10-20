@@ -6,8 +6,11 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.testclient import TestClient
 
 from cross_auth._context import AccountsStorage, SecondaryStorage
+from cross_auth._oauth_server import OAuthServer
 from cross_auth._storage import SessionStorage
 from cross_auth.router import AuthRouter
+
+from ..conftest import TEST_CLIENTS
 
 
 @pytest.fixture
@@ -24,9 +27,7 @@ def test_app(
         accounts_storage=accounts_storage,
         session_storage=session_storage,
         get_user_from_request=lambda _: None,
-        config={
-            "client_redirect_uris": {"test": ["http://valid-frontend.com/callback"]}
-        },
+        oauth_server=OAuthServer(get_client=TEST_CLIENTS.get),
     )
 
     app.include_router(router)

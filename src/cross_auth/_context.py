@@ -2,10 +2,11 @@ from collections.abc import Callable
 
 from cross_web import HTTPRequest
 
-from ._clients import ClientResolver, OAuthClient
+from ._clients import OAuthClient
 from ._config import Config
 from ._email import normalize_email as _default_normalize_email
 from ._login import issue_bearer_session, run_login, run_now
+from ._oauth_server import OAuthServer
 from ._session import (
     SessionConfig,
     SessionMetadata,
@@ -33,20 +34,22 @@ class Context:
         accounts_storage: AccountsStorage,
         get_user_from_request: Callable[[HTTPRequest], User | None],
         session_storage: SessionStorage | None = None,
-        token_issuer: TokenIssuer | None = None,
+        *,
         base_url: str | None = None,
         config: Config | None = None,
         default_next_url: str = "/",
         hooks: HookRegistry | None = None,
         normalize_email: Callable[[str], str] | None = None,
-        get_client: ClientResolver | None = None,
-        oauth_server: bool = True,
+        oauth_server: OAuthServer | None = None,
     ):
         self.secondary_storage = secondary_storage
         self.accounts_storage = accounts_storage
         self.session_storage = session_storage
         self.get_user_from_request = get_user_from_request
-        self.token_issuer = token_issuer
+        if oauth_server is not None and not isinstance(oauth_server, OAuthServer):
+            raise TypeError("oauth_server must be an OAuthServer or None")
+        # Mounts /authorize, /token, /link and /finalize-link; None leaves them out.
+        self.oauth_server = oauth_server
         self.base_url = base_url
         # Applied to every user lookup/creation by email (not to the raw
         # provider_email stored on social accounts).
@@ -54,34 +57,9 @@ class Context:
             normalize_email if normalize_email is not None else _default_normalize_email
         )
         self.config: Config = config if config is not None else {}
-        if "allowed_client_ids" in self.config:
-            raise ValueError(
-                "Replace allowed_client_ids with client_redirect_uris or get_client: "
-                "register exact callback URLs for each client"
-            )
-
-        if get_client is not None and self.config.get("client_redirect_uris"):
-            raise ValueError("Use get_client or client_redirect_uris, not both")
-
-        # The OAuth server: /authorize, /token, /link and /finalize-link for
-        # registered clients. Its settings would silently do nothing without it.
-        self.oauth_server_enabled = oauth_server
-        if not oauth_server:
-            for name, supplied in (
-                ("client_redirect_uris", "client_redirect_uris" in self.config),
-                ("get_client", get_client is not None),
-                ("token_issuer", token_issuer is not None),
-            ):
-                if supplied:
-                    raise ValueError(
-                        f"{name} configures the OAuth server; it requires oauth_server=True"
-                    )
-
-        self._get_client = get_client
-        for client_id, redirect_uris in self.config.get(
-            "client_redirect_uris", {}
-        ).items():
-            OAuthClient(client_id=client_id, redirect_uris=tuple(redirect_uris))
+        unknown = self.config.keys() - Config.__optional_keys__
+        if unknown:
+            raise ValueError(f"Unknown config keys: {', '.join(sorted(unknown))}")
 
         self.session_config: SessionConfig | None = self.config.get("session")
         self.default_next_url = default_next_url
@@ -119,10 +97,10 @@ class Context:
     def issue_token(self, request: TokenIssueRequest) -> tuple[str, int]:
         """Log ``request.user_id`` in with a bearer token for the token endpoint.
 
-        Runs the ``login`` hooks around a ``token_issuer`` call or, without
-        one, around a new session.
+        Runs the ``login`` hooks around the OAuth server's ``token_issuer``
+        call or, without one, around a new session.
         """
-        token_issuer = self.token_issuer
+        token_issuer = self._token_issuer
         if token_issuer is not None:
             issued, _ = run_login(
                 BeforeLoginEvent(
@@ -157,25 +135,23 @@ class Context:
         )
         return session_token, expires_in
 
+    @property
+    def _token_issuer(self) -> TokenIssuer | None:
+        return None if self.oauth_server is None else self.oauth_server.token_issuer
+
     def _on_token_commit(self, callback: CommitCallback) -> None:
         """Schedule callback after the credential ``issue_token`` stored commits."""
-        if self.token_issuer is None and self.session_storage is not None:
+        if self._token_issuer is None and self.session_storage is not None:
             self.session_storage.on_commit(callback)
         else:
             callback()
 
     def get_client(self, client_id: str) -> OAuthClient | None:
         """Look up the current registration without caching application results."""
-        if self._get_client is not None:
-            client = self._get_client(client_id)
-        else:
-            redirects = self.config.get("client_redirect_uris", {}).get(client_id)
-            client = (
-                OAuthClient(client_id=client_id, redirect_uris=tuple(redirects))
-                if redirects
-                else None
-            )
+        if self.oauth_server is None or self.oauth_server.get_client is None:
+            return None
 
+        client = self.oauth_server.get_client(client_id)
         if client is not None and client.client_id != client_id:
             raise ValueError("get_client returned a different client_id")
 

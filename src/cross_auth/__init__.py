@@ -1,6 +1,7 @@
 from cross_auth._clients import ClientResolver, OAuthClient
 from cross_auth._context import Context
 from cross_auth._email import normalize_email
+from cross_auth._oauth_server import OAuthServer
 from cross_auth._session import SessionConfig, SessionCookieConfig, get_bearer_token
 from cross_auth._storage import (
     AccountsStorage,
@@ -68,6 +69,7 @@ __all__ = [
     "Context",
     "ClientResolver",
     "OAuthClient",
+    "OAuthServer",
     "AfterAuthenticateEvent",
     "AfterLoginEvent",
     "AfterLogoutEvent",

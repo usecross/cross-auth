@@ -8,7 +8,7 @@ import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from cross_auth import OAuthClient
+from cross_auth import OAuthClient, OAuthServer
 
 from .conftest import mock_token_and_userinfo
 from .test_link_flow import _LINK_CODE_CHALLENGE, _LINK_CODE_VERIFIER
@@ -19,7 +19,7 @@ REDIRECT = "https://dashboard.example/callback"
 
 def _browser(build_auth, resolver):
     auth = build_auth(
-        get_client=resolver,
+        oauth_server=OAuthServer(get_client=resolver),
         config={"account_linking": {"enabled": True, "allow_different_emails": True}},
     )
     app = FastAPI()

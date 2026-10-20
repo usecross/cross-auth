@@ -9,6 +9,7 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
+from cross_auth import OAuthServer
 from cross_auth._auth_flow import logger as auth_flow_logger
 from cross_auth._issuer import AuthorizationCodeGrantData
 from cross_auth._storage import SecondaryStorage
@@ -228,7 +229,7 @@ def test_pending_callback_cannot_redirect_after_registration_is_removed(
     auth, client, provider_error
 ):
     _, state = start_provider_auth(client, "/fake/authorize", params=_AUTHZ_PARAMS)
-    auth._router.context.config["client_redirect_uris"].clear()
+    auth._router.context.oauth_server = OAuthServer()
     params = {"state": state, "code": "provider-code"}
     if provider_error:
         params["error"] = provider_error
