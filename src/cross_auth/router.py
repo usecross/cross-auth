@@ -16,14 +16,13 @@ from ._auth_flow import (
     start_session_flow,
     start_token_flow,
 )
-from ._clients import ClientResolver
 from ._config import Config
 from ._context import AccountsStorage, Context, SecondaryStorage, User
 from ._issuer import Issuer
+from ._oauth_server import OAuthServer
 from ._route import Route
 from ._setup import AuthSetup, build_auth_setup
 from ._storage import SessionStorage
-from ._tokens import TokenIssuer
 from .hooks import HookRegistry
 from .social_providers.oauth import OAuth2Provider
 
@@ -39,7 +38,9 @@ _TRUSTED_ORIGINS_DEPRECATION = (
 FlowHandler = Callable[..., Response]
 
 
-def _provider_routes(provider: OAuth2Provider, *, cookie_auth: bool) -> list[Route]:
+def _provider_routes(
+    provider: OAuth2Provider, *, cookie_auth: bool, oauth_server: bool
+) -> list[Route]:
     prefix = f"/{provider.id}"
 
     def bound(
@@ -87,12 +88,23 @@ def _provider_routes(provider: OAuth2Provider, *, cookie_auth: bool) -> list[Rou
                     }
                 ],
             ),
+        ]
+    )
+
+    if oauth_server:
+        routes.append(
             Route(
                 path=f"{prefix}/authorize",
                 methods=["GET"],
                 function=bound(start_token_flow),
                 operation_id=f"{provider.id}_authorize",
-            ),
+            )
+        )
+
+    # The callback serves every flow, so it stays mounted without the OAuth server
+    # and refuses the OAuth server's pending requests itself.
+    routes.extend(
+        [
             Route(
                 path=f"{prefix}/callback",
                 methods=["GET"],
@@ -106,29 +118,36 @@ def _provider_routes(provider: OAuth2Provider, *, cookie_auth: bool) -> list[Rou
                 operation_id=f"{provider.id}_callback_post",
                 read_form_data=True,
             ),
-            Route(
-                path=f"{prefix}/link",
-                methods=["POST"],
-                function=bound(start_link_flow),
-                operation_id=f"{provider.id}_link",
-                read_body=True,
-            ),
-            Route(
-                path=f"{prefix}/finalize-link",
-                methods=["POST"],
-                function=bound(finalize_link),
-                operation_id=f"{provider.id}_finalize_link",
-                read_body=True,
-            ),
         ]
     )
+
+    if oauth_server:
+        routes.extend(
+            [
+                Route(
+                    path=f"{prefix}/link",
+                    methods=["POST"],
+                    function=bound(start_link_flow),
+                    operation_id=f"{provider.id}_link",
+                    read_body=True,
+                ),
+                Route(
+                    path=f"{prefix}/finalize-link",
+                    methods=["POST"],
+                    function=bound(finalize_link),
+                    operation_id=f"{provider.id}_finalize_link",
+                    read_body=True,
+                ),
+            ]
+        )
 
     return routes
 
 
 class AuthRouter(APIRouter):
     context: Context
-    issuer: Issuer
+    # The OAuth server's token endpoint; None without an OAuthServer.
+    issuer: Issuer | None
     extra_schemas: dict[str, Any]
 
     def __init__(
@@ -137,15 +156,15 @@ class AuthRouter(APIRouter):
         secondary_storage: SecondaryStorage,
         accounts_storage: AccountsStorage,
         get_user_from_request: Callable[[HTTPRequest], User | None],
+        *,
         trusted_origins: list[str] | None = None,
         session_storage: SessionStorage | None = None,
-        token_issuer: TokenIssuer | None = None,
         base_url: str | None = None,
         config: Config | None = None,
         default_next_url: str = "/",
         hooks: HookRegistry | None = None,
         normalize_email: Callable[[str], str] | None = None,
-        get_client: ClientResolver | None = None,
+        oauth_server: OAuthServer | None = None,
     ):
         if trusted_origins is not None:
             warnings.warn(
@@ -156,14 +175,13 @@ class AuthRouter(APIRouter):
             secondary_storage=secondary_storage,
             accounts_storage=accounts_storage,
             session_storage=session_storage,
-            token_issuer=token_issuer,
             get_user_from_request=get_user_from_request,
             base_url=base_url,
             config=config,
             default_next_url=default_next_url,
             hooks=hooks,
             normalize_email=normalize_email,
-            get_client=get_client,
+            oauth_server=oauth_server,
         )
         self._mount(setup)
 
@@ -185,11 +203,15 @@ class AuthRouter(APIRouter):
         for provider in setup.providers:
             provider_routes.extend(
                 _provider_routes(
-                    provider, cookie_auth=setup.context.cookie_auth_enabled
+                    provider,
+                    cookie_auth=setup.context.cookie_auth_enabled,
+                    oauth_server=self.issuer is not None,
                 )
             )
+        if self.issuer is not None:
+            provider_routes.extend(self.issuer.routes)
 
-        for route in provider_routes + self.issuer.routes:
+        for route in provider_routes:
             self.add_api_route(
                 route.path,
                 route.to_fastapi_endpoint(setup.context),

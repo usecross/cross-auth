@@ -140,6 +140,35 @@ def protected(user: Annotated[User, Depends(auth.require_current_user)]):
     return {"user": user.id}  # raises 401 if not logged in
 ```
 
+## Step 6: Sign In with Google (Optional)
+
+To also sign in with Google, add the provider and turn on cookie sign-in. A
+browser application like this one doesn't need the
+[OAuth server](/docs/oauth#the-oauth-server), which serves SPA and native
+clients:
+
+```python
+import os
+
+from cross_auth.social_providers.google import GoogleProvider
+
+auth = CrossAuth(
+    providers=[
+        GoogleProvider(
+            client_id=os.environ["GOOGLE_CLIENT_ID"],
+            client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
+        )
+    ],
+    storage=secondary_storage,
+    accounts_storage=accounts_storage,
+    session_storage=session_storage,
+    config={"session": {"cookies": {"auth": True}}},
+)
+```
+
+Link to `/google/login?next=/me`; Google redirects back to `/google/callback`,
+which signs the user in with the same session cookie as `auth.login()`.
+
 ## Next Steps
 
 - [Session Authentication](/docs/session-authentication) -- Full guide on

@@ -8,6 +8,8 @@ import pytest
 import respx
 import time_machine
 
+from cross_auth import OAuthClient, OAuthServer
+
 from .conftest import mock_token_and_userinfo
 from .test_link_flow import _auth_enabled_client, _store_link_code, _LINK_CODE_VERIFIER
 
@@ -160,7 +162,15 @@ def test_concurrent_redemptions_exchange_provider_code_once(
     ("registry", "expected_error"),
     [
         ({}, "invalid_client"),
-        ({"app-client": ["http://client.example/replacement"]}, "invalid_redirect_uri"),
+        (
+            {
+                "app-client": OAuthClient(
+                    client_id="app-client",
+                    redirect_uris=("http://client.example/replacement",),
+                )
+            },
+            "invalid_redirect_uri",
+        ),
     ],
 )
 @respx.mock
@@ -172,10 +182,8 @@ def test_finalization_rechecks_current_client_registration(
 
     code = _store_link_code(secondary_storage)
     auth = build_auth(
-        config={
-            "account_linking": {"enabled": True},
-            "client_redirect_uris": registry,
-        }
+        config={"account_linking": {"enabled": True}},
+        oauth_server=OAuthServer(get_client=registry.get),
     )
     app = FastAPI()
     app.include_router(auth.router)

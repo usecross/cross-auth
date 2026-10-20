@@ -34,7 +34,7 @@ from cross_auth.hooks import AfterLoginEvent, BeforeLoginEvent
 from cross_auth.hooks._types import HookEventName
 from tests.conftest import TEST_PASSWORD, MemorySessionStorage
 
-from .conftest import mock_token_and_userinfo, start_provider_auth
+from .conftest import APP_OAUTH_SERVER, mock_token_and_userinfo, start_provider_auth
 
 NOW = datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc)
 # S256 challenge for the code verifier "test".
@@ -630,7 +630,7 @@ def issuer_auth(build_auth, issued: list[TokenIssueRequest]) -> CrossAuth:
         issued.append(request)
         return f"jwt-for-{request.user_id}", 900
 
-    return build_auth(token_issuer=token_issuer)
+    return build_auth(oauth_server=replace(APP_OAUTH_SERVER, token_issuer=token_issuer))
 
 
 def test_token_issuer_credentials_are_logins_without_sessions(

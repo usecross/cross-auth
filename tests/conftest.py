@@ -11,6 +11,7 @@ from cross_web import HTTPRequest
 from passlib.context import CryptContext
 
 from cross_auth._auth_flow import LinkCodeData
+from cross_auth._clients import OAuthClient
 from cross_auth._context import Context
 from cross_auth._issuer import AuthorizationCodeGrantData, Issuer
 from cross_auth._storage import (
@@ -28,6 +29,7 @@ from cross_auth._storage import (
     User as UserProtocol,
     session_status,
 )
+from cross_auth._oauth_server import OAuthServer
 from cross_auth.exceptions import CrossAuthException
 
 pytestmark = pytest.mark.asyncio
@@ -36,6 +38,13 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Test password constant
 TEST_PASSWORD = "password123"
+
+TEST_CLIENTS = {
+    client_id: OAuthClient(
+        client_id=client_id, redirect_uris=("http://valid-frontend.com/callback",)
+    )
+    for client_id in ("test_client_id", "my_app_client_id", "test")
+}
 
 
 def _same_id(left: Any, right: Any) -> bool:
@@ -586,13 +595,8 @@ def context(
         accounts_storage=accounts_storage,
         session_storage=session_storage,
         get_user_from_request=_get_user_from_request,
-        config={
-            "client_redirect_uris": {
-                "test_client_id": ["http://valid-frontend.com/callback"],
-                "my_app_client_id": ["http://valid-frontend.com/callback"],
-                "test": ["http://valid-frontend.com/callback"],
-            }
-        },
+        # The provider and token flow tests exercise the OAuth server.
+        oauth_server=OAuthServer(get_client=TEST_CLIENTS.get),
     )
 
 

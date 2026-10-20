@@ -258,6 +258,7 @@ _IMPORT_ISOLATION_SCRIPT = textwrap.dedent(
     from cross_auth._tokens import TokenIssueRequest
     from cross_auth._native import sign_in_with_id_token
     from cross_auth._setup import build_auth_setup
+    from cross_auth import OAuthServer
     from tests.conftest import (
         MemoryAccountsStorage,
         MemorySessionStorage,
@@ -273,6 +274,7 @@ _IMPORT_ISOLATION_SCRIPT = textwrap.dedent(
         secondary_storage=MemoryStorage(),
         accounts_storage=MemoryAccountsStorage("unused-hash"),
         get_user_from_request=lambda request: None,
+        oauth_server=OAuthServer(),
     )
     user, _ = sign_in_with_id_token(
         context=setup.context,
@@ -307,7 +309,9 @@ _IMPORT_ISOLATION_SCRIPT = textwrap.dedent(
         session_config=None,
     )
     setup.context.hooks = hooks
-    setup.context.token_issuer = lambda request: ("app-token", 60)
+    setup.context.oauth_server = OAuthServer(
+        token_issuer=lambda request: ("app-token", 60)
+    )
     assert setup.context.issue_token(
         TokenIssueRequest(
             user_id=str(user.user.id),

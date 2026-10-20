@@ -6,6 +6,7 @@ import pytest
 from cross_web import HTTPRequest
 from inline_snapshot import snapshot
 
+from cross_auth import OAuthServer
 from cross_auth._context import Context
 from cross_auth._issuer import AuthorizationCodeGrantData, Issuer
 from cross_auth._password import DUMMY_PASSWORD_HASH
@@ -13,7 +14,7 @@ from cross_auth._storage import SecondaryStorage
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.hooks import BeforeTokenPasswordEvent, UserSnapshot
 
-from .conftest import MemorySessionStorage
+from .conftest import TEST_CLIENTS, MemorySessionStorage
 
 
 def test_issuer(issuer: Issuer):
@@ -296,11 +297,8 @@ def test_authorization_code_grant_uses_token_issuer_without_session_storage(
         secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
         session_storage=None,
-        token_issuer=issue_token,
         get_user_from_request=lambda _: None,
-        config={
-            "client_redirect_uris": {"test": ["http://valid-frontend.com/callback"]}
-        },
+        oauth_server=OAuthServer(get_client=TEST_CLIENTS.get, token_issuer=issue_token),
     )
 
     http_request = HTTPRequest.from_form_data(
@@ -352,11 +350,8 @@ def test_password_grant_uses_token_issuer_without_session_storage(
         secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
         session_storage=None,
-        token_issuer=issue_token,
         get_user_from_request=lambda _: None,
-        config={
-            "client_redirect_uris": {"test": ["http://valid-frontend.com/callback"]}
-        },
+        oauth_server=OAuthServer(get_client=TEST_CLIENTS.get, token_issuer=issue_token),
     )
 
     http_request = HTTPRequest.from_form_data(
@@ -404,9 +399,7 @@ def test_token_endpoint_errors_without_token_issuer_or_session_storage(
         accounts_storage=accounts_storage,
         session_storage=None,
         get_user_from_request=lambda _: None,
-        config={
-            "client_redirect_uris": {"test": ["http://valid-frontend.com/callback"]}
-        },
+        oauth_server=OAuthServer(get_client=TEST_CLIENTS.get),
     )
 
     response = issuer.token(
@@ -724,7 +717,7 @@ def test_password_grant_verifies_password_hash_for_unknown_users(
 def test_authorization_code_rejects_removed_callback_registration(
     context, issuer, valid_code
 ):
-    context.config["client_redirect_uris"].clear()
+    context.oauth_server = OAuthServer()
     request = HTTPRequest.from_form_data(
         data={
             "grant_type": "authorization_code",

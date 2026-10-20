@@ -1,10 +1,18 @@
 import pytest
 from cross_web import HTTPRequest, TestingHTTPRequestAdapter
 
+from cross_auth import OAuthClient, OAuthServer
 from cross_auth._auth_flow import AuthRequest, start_token_flow
 from cross_auth._context import Context
 from cross_auth._storage import SecondaryStorage
 from cross_auth.social_providers.oauth import OAuth2Provider
+
+_ALLOWED_CLIENTS = {
+    "allowed_client": OAuthClient(
+        client_id="allowed_client",
+        redirect_uris=("http://valid-frontend.com/callback",),
+    )
+}
 
 
 @pytest.mark.parametrize(
@@ -173,11 +181,7 @@ def test_authorize_rejects_invalid_client_id(
         get_user_from_request=lambda r: (
             logged_in_user if r.headers.get("Authorization") == "Bearer test" else None
         ),
-        config={
-            "client_redirect_uris": {
-                "allowed_client": ["http://valid-frontend.com/callback"]
-            }
-        },
+        oauth_server=OAuthServer(get_client=_ALLOWED_CLIENTS.get),
     )
 
     request = HTTPRequest(
@@ -218,11 +222,7 @@ def test_authorize_accepts_valid_client_id(
         get_user_from_request=lambda r: (
             logged_in_user if r.headers.get("Authorization") == "Bearer test" else None
         ),
-        config={
-            "client_redirect_uris": {
-                "allowed_client": ["http://valid-frontend.com/callback"]
-            }
-        },
+        oauth_server=OAuthServer(get_client=_ALLOWED_CLIENTS.get),
     )
 
     request = HTTPRequest(

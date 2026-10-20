@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from copy import deepcopy
+from dataclasses import replace
 from typing import get_args
 
 import pytest
@@ -35,7 +36,7 @@ from tests.conftest import (
     MemorySessionStorage,
 )
 
-from .conftest import mock_token_and_userinfo, start_provider_auth
+from .conftest import APP_OAUTH_SERVER, mock_token_and_userinfo, start_provider_auth
 
 
 class TransactionalAccountsStorage(MemoryAccountsStorage):
@@ -279,7 +280,10 @@ def test_token_issuer_logins_complete_when_the_issuer_returns(build_auth):
     def token_issuer(request: TokenIssueRequest) -> tuple[str, int]:
         return f"jwt-for-{request.user_id}", 900
 
-    auth = build_auth(session_storage=session_storage, token_issuer=token_issuer)
+    auth = build_auth(
+        session_storage=session_storage,
+        oauth_server=replace(APP_OAUTH_SERVER, token_issuer=token_issuer),
+    )
     trace = _trace_after_hooks(auth)
 
     response = _password_grant(auth)

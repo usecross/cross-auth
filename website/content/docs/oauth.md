@@ -11,71 +11,61 @@ Cross-Auth implements the OAuth 2.0 authorization code flow with PKCE (Proof Key
 for Code Exchange). This is used when Cross-Auth acts as the authorization
 server -- for example, when your SPA or mobile app needs to obtain tokens.
 
-## Register client redirect URIs
+## The OAuth server
 
-Register each client's complete callback URLs in `CrossAuth`'s `config`:
+The OAuth server is the part of Cross-Auth that acts as an authorization server
+for your own registered clients. It adds these routes:
+
+- `GET /{provider}/authorize`, which signs a client in through the provider and
+  redirects back to the client with a Cross-Auth authorization code;
+- `POST /token`, which exchanges that code (with the client's PKCE verifier) for
+  a bearer token;
+- `POST /{provider}/link` and `POST /{provider}/finalize-link`, the PKCE account
+  linking flow for clients that authenticate with a bearer token.
+
+The OAuth server is not how Cross-Auth talks to Google or GitHub. Signing in
+with a provider in the browser, the provider callback, its PKCE, `state` and
+nonce checks all work without it. Neither does every bearer token come from the
+OAuth server: `issue_session_token` mints the same revocable token for your own
+sign-in endpoints. The OAuth server serves public clients you register (SPAs and
+native apps); it is not a general identity provider for third-party apps and has
+no consent screens or confidential-client authentication.
+
+The OAuth server is off by default. Applications whose browsers sign in with a
+session cookie don't need it:
 
 ```python
-config = {
-    "client_redirect_uris": {
-        "my-app": [
-            "https://app.example.com/callback",
-            "https://app.example.com/link-callback",
-        ],
-        "local-app": [
-            "http://localhost:5173/callback",
-            "http://localhost:5173/link-callback",
-        ],
-    },
-}
+auth = CrossAuth(
+    providers=providers,
+    storage=secondary_storage,
+    accounts_storage=accounts_storage,
+    session_storage=session_storage,
+    config={"session": {"cookies": {"auth": True}}},
+)
 ```
 
-`/{provider}/authorize` and `/{provider}/link` require a registered `client_id`
-and a matching `redirect_uri`. An absent or empty registry disables these flows.
-A client registered for one callback cannot use another client's callback.
+Without the OAuth server, Cross-Auth mounts `GET /{provider}/login` (when cookie
+sign-in is enabled), `GET /{provider}/connect`, the
+`DELETE /{provider}/social-accounts` routes, and
+`GET`/`POST /{provider}/callback`; the OpenAPI schema lists only those. Leaving
+the OAuth server out does not turn cookie sign-in on: `/{provider}/login` still
+needs `session_storage` and `config["session"]["cookies"]["auth"]`.
 
-Matching uses the complete original URL string, including scheme, host, port,
-path, query string, and case. Register each intended variation explicitly:
-`http://localhost:5173/callback` does not match
-`http://127.0.0.1:5173/callback`, a trailing slash, or an added query parameter.
-This configuration shortcut creates web clients supporting HTTP and HTTPS URLs.
-Use HTTPS in production. Fragments, user information, backslashes, whitespace,
-and hostname wildcards are rejected. Register ASCII URI spelling: percent-encode
-non-ASCII paths/query values and use punycode for international hostnames.
-Native clients use the lookup API below.
+`/{provider}/connect` remains integration-only: it does not enable that identity
+for sign-in. Adding another identity as a login method uses the OAuth server's
+`link`/`finalize-link` flow.
 
-These are the application's callbacks, separate from the provider callback such
-as `/auth/github/callback` that Cross-Auth handles itself. A SPA using
-`${window.location.origin}/callback` must register that full URL for each
-environment where it runs.
-
-Cross-Auth checks the current registry again when redeeming an authorization
-code at `/token` or finalizing a link. Removing a registration also prevents
-pending codes for that client and callback from completing.
-
-### Hardcoded client records
-
-`OAuthClient` describes one application receiving tokens from Cross-Auth. Its
-client ID is separate from your Google/GitHub provider credentials. A dashboard
-and mobile application can have different client IDs while authenticating the
-same users.
-
-Pass a lookup callback to `CrossAuth` (or `AuthRouter`) for typed client
-records:
+To serve a SPA or native app, pass an `OAuthServer`. It holds every OAuth server
+option, and `AuthRouter` takes the same keyword-only `oauth_server`:
 
 ```python
-from cross_auth import OAuthClient
+from cross_auth import OAuthClient, OAuthServer
 from cross_auth.fastapi import CrossAuth
 
 clients = {
-    "cloud-dashboard": OAuthClient(
-        client_id="cloud-dashboard",
-        redirect_uris=("https://dashboard.example.com/callback",),
-    ),
-    "cloud-mobile": OAuthClient(
-        client_id="cloud-mobile",
-        application_type="native",
-        redirect_uris=("com.example.cloud:/callback",),
+    "web-app": OAuthClient(
+        client_id="web-app",
+        redirect_uris=("https://app.example.com/callback",),
     ),
 }
 
@@ -84,14 +74,75 @@ auth = CrossAuth(
     storage=secondary_storage,
     accounts_storage=accounts_storage,
     session_storage=session_storage,
-    get_client=clients.get,
+    config={"session": {"cookies": {"auth": True}}},
+    oauth_server=OAuthServer(get_client=clients.get),
 )
 ```
 
-Use either `get_client` or the `client_redirect_uris` shortcut. Supplying both
-with nonempty static registrations raises `ValueError` to avoid competing
-sources of client policy. To combine hardcoded and database clients, implement
-that precedence explicitly in your lookup callback.
+- `get_client` controls client registration for authorization-code and linking
+  flows; see [Register clients](#register-clients). Without it, those flows
+  reject every client. The legacy password grant does not use this lookup.
+- `token_issuer` mints the token `/token` returns; see
+  [Custom token issuers](#custom-token-issuers). Without it, `/token` issues an
+  opaque session token from `session_storage`.
+
+The provider callback also completes session and connect flows, so it stays
+mounted without the OAuth server. Authorization and link attempts started before
+the OAuth server was removed are refused there with `invalid_request`: after the
+browser binding check consumes the attempt, Cross-Auth returns an error without
+contacting the provider, creating or linking accounts, storing a code, or
+redirecting to the client. Users start again from the client.
+
+## Register clients
+
+`OAuthClient` describes one application receiving tokens from Cross-Auth. Its
+client ID is separate from your Google/GitHub provider credentials. A dashboard
+and mobile application can have different client IDs while authenticating the
+same users.
+
+`OAuthServer(get_client=...)` takes a lookup with the signature
+`get_client(client_id: str) -> OAuthClient | None`. For hardcoded clients, a
+dictionary's `.get` is enough:
+
+```python
+from cross_auth import OAuthClient, OAuthServer
+
+clients = {
+    "cloud-dashboard": OAuthClient(
+        client_id="cloud-dashboard",
+        redirect_uris=(
+            "https://dashboard.example.com/callback",
+            "https://dashboard.example.com/link-callback",
+        ),
+    ),
+    "cloud-mobile": OAuthClient(
+        client_id="cloud-mobile",
+        application_type="native",
+        redirect_uris=("com.example.cloud:/callback",),
+    ),
+}
+
+oauth_server = OAuthServer(get_client=clients.get)
+```
+
+`/{provider}/authorize` and `/{provider}/link` require a registered `client_id`
+and a matching `redirect_uri`. A client registered for one callback cannot use
+another client's callback. To combine hardcoded and database clients, implement
+that precedence in your lookup.
+
+Matching uses the complete original URL string, including scheme, host, port,
+path, query string, and case. Register each intended variation explicitly:
+`http://localhost:5173/callback` does not match
+`http://127.0.0.1:5173/callback`, a trailing slash, or an added query parameter.
+Web clients (the default `application_type`) support HTTP and HTTPS URLs. Use
+HTTPS in production. Fragments, user information, backslashes, whitespace, and
+hostname wildcards are rejected. Register ASCII URI spelling: percent-encode
+non-ASCII paths/query values and use punycode for international hostnames.
+
+These are the application's callbacks, separate from the provider callback such
+as `/auth/github/callback` that Cross-Auth handles itself. A SPA using
+`${window.location.origin}/callback` must register that full URL for each
+environment where it runs.
 
 ### Database-backed clients
 
@@ -123,10 +174,11 @@ def get_client(client_id: str) -> OAuthClient | None:
         )
 ```
 
-Pass this function as `get_client=get_client`. Django can supply the same record
-from an ORM query. Cross-Auth does not require a client table, schema migration,
-or storage adapter; the application owns registration and app-management APIs.
-Registration data is validated when the `OAuthClient` is constructed.
+Pass this function as `OAuthServer(get_client=get_client)`. Django can supply
+the same record from an ORM query. Cross-Auth does not require a client table,
+schema migration, or storage adapter; the application owns registration and
+app-management APIs. Registration data is validated when the `OAuthClient` is
+constructed.
 
 Cross-Auth does not cache callback results: it looks up the registration again
 at provider callback completion and code redemption. Changes therefore affect
@@ -161,13 +213,44 @@ policy, or public dynamic-registration endpoints. Those need explicit
 application policy before opening registration to arbitrary third-party apps.
 The legacy password grant is separate and does not use this client lookup.
 
-### Migrate from client IDs and trusted hosts
+### Migrate from 0.38
 
-Replace `config["allowed_client_ids"]` with `config["client_redirect_uris"]` or
-a `get_client` callback; the removed setting now raises `ValueError` at startup.
-Expand each intended client and host into explicit callback URLs, including the
-scheme, port, and path. Deploy the registrations with the updated library before
-starting new authorization or link attempts.
+Cross-Auth 0.38 enabled the OAuth server by default and configured it with
+top-level settings. Update your setup before upgrading:
+
+```python
+# 0.38
+auth = CrossAuth(
+    ...,
+    config={
+        "client_redirect_uris": {"web-app": ["https://app.example.com/callback"]},
+        "session": {"cookies": {"auth": True}},
+    },
+    token_issuer=issue_token,
+)
+
+# Now
+clients = {
+    "web-app": OAuthClient(
+        client_id="web-app",
+        redirect_uris=("https://app.example.com/callback",),
+    ),
+}
+
+auth = CrossAuth(
+    ...,
+    config={"session": {"cookies": {"auth": True}}},
+    oauth_server=OAuthServer(get_client=clients.get, token_issuer=issue_token),
+)
+```
+
+- Turn each `config["client_redirect_uris"]` entry into an `OAuthClient`.
+  Unknown `config` keys, including `client_redirect_uris` and the older
+  `allowed_client_ids`, raise `ValueError` at startup.
+- Move `get_client=` and `token_issuer=` into `OAuthServer`. Passing them to
+  `CrossAuth` or `AuthRouter` raises `TypeError`.
+- Applications that never used `/authorize`, `/token`, `/link` or
+  `/finalize-link` need no `OAuthServer`.
 
 Client redirect registration does not configure CORS or CSRF protection;
 configure those separately in the hosting application. Relative `next`
@@ -190,8 +273,27 @@ The recommended flow for public clients (SPAs, mobile apps):
 
 The token endpoint issues opaque bearer tokens backed by `SessionStorage`. These
 tokens are revocable session records, not JWTs. Configure `session_storage` on
-`CrossAuth` to enable token issuance; without it, `/token` returns an OAuth
-error instead of minting a token.
+`CrossAuth` to enable token issuance; without it or a `token_issuer`, `/token`
+returns an OAuth error instead of minting a token.
+
+### Custom token issuers
+
+`OAuthServer(token_issuer=...)` replaces the session token with your own
+credential, such as a JWT. It receives a `TokenIssueRequest` with the user,
+client, grant type and scope, and returns the token and its lifetime in seconds:
+
+```python
+from cross_auth import OAuthServer, TokenIssueRequest
+
+
+def issue_token(request: TokenIssueRequest) -> tuple[str, int]:
+    return mint_jwt(subject=request.user_id, audience=request.client_id), 900
+
+
+oauth_server = OAuthServer(get_client=clients.get, token_issuer=issue_token)
+```
+
+The `login` hooks run around the call; Cross-Auth creates no session for it.
 
 ### Password Grant
 

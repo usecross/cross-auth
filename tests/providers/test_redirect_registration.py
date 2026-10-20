@@ -1,4 +1,4 @@
-"""Broker callbacks are registered exactly and belong to a specific client."""
+"""OAuth server callbacks are registered exactly and belong to a specific client."""
 
 import json
 from typing import cast
@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from cross_web import HTTPRequest, TestingHTTPRequestAdapter
 
+from cross_auth import OAuthClient, OAuthServer
 from cross_auth._auth_flow import start_link_flow, start_token_flow
 from cross_auth._context import Context
 from cross_auth._config import Config
@@ -38,14 +39,20 @@ def initiate(provider, context, flow, client_id, redirect_uri):
 
 
 @pytest.fixture
-def registered_context(context):
-    context.config = {
-        "account_linking": {"enabled": True},
-        "client_redirect_uris": {
-            "dashboard": [CALLBACK],
-            "other-app": ["http://valid-frontend.com/other-callback"],
-        },
+def clients():
+    return {
+        "dashboard": OAuthClient(client_id="dashboard", redirect_uris=(CALLBACK,)),
+        "other-app": OAuthClient(
+            client_id="other-app",
+            redirect_uris=("http://valid-frontend.com/other-callback",),
+        ),
     }
+
+
+@pytest.fixture
+def registered_context(context, clients):
+    context.config = {"account_linking": {"enabled": True}}
+    context.oauth_server = OAuthServer(get_client=clients.get)
     return context
 
 
@@ -91,8 +98,10 @@ def test_unknown_client_cannot_use_another_clients_redirect(
 
 
 @pytest.mark.parametrize("flow", ["token", "link"])
-def test_missing_registration_fails_closed(oauth_provider, registered_context, flow):
-    registered_context.config.pop("client_redirect_uris")
+def test_missing_registration_fails_closed(
+    oauth_provider, registered_context, clients, flow
+):
+    clients.clear()
 
     response = initiate(oauth_provider, registered_context, flow, "dashboard", CALLBACK)
 
@@ -110,9 +119,9 @@ def test_missing_registration_fails_closed(oauth_provider, registered_context, f
     ],
 )
 def test_exact_registered_callback_succeeds(
-    oauth_provider, registered_context, secondary_storage, flow, uri
+    oauth_provider, registered_context, clients, secondary_storage, flow, uri
 ):
-    registered_context.config["client_redirect_uris"]["dashboard"] = [uri]
+    clients["dashboard"] = OAuthClient(client_id="dashboard", redirect_uris=(uri,))
     response = initiate(oauth_provider, registered_context, flow, "dashboard", uri)
 
     assert response.status_code == (302 if flow == "token" else 200)
@@ -141,34 +150,19 @@ def test_exact_registered_callback_succeeds(
         "https://valid-frontend.com\\evil/callback",
     ],
 )
-def test_invalid_callback_registration_fails_at_startup(context, uri):
+def test_invalid_callback_registration_fails_at_startup(uri):
     with pytest.raises(ValueError):
+        OAuthClient(client_id="dashboard", redirect_uris=(uri,))
+
+
+@pytest.mark.parametrize(
+    "config", [{"allowed_client_ids": ["dashboard"]}, {"client_redirect_uris": {}}]
+)
+def test_removed_client_registry_config_is_rejected(context, config):
+    with pytest.raises(ValueError, match="Unknown config keys"):
         Context(
             secondary_storage=context.secondary_storage,
             accounts_storage=context.accounts_storage,
             get_user_from_request=context.get_user_from_request,
-            config={"client_redirect_uris": {"dashboard": [uri]}},
-        )
-
-
-def test_client_id_allowlist_requires_migration(context):
-    with pytest.raises(
-        ValueError, match="Replace allowed_client_ids with client_redirect_uris"
-    ):
-        Context(
-            secondary_storage=context.secondary_storage,
-            accounts_storage=context.accounts_storage,
-            get_user_from_request=context.get_user_from_request,
-            config=cast(Config, {"allowed_client_ids": ["dashboard"]}),
-        )
-
-
-def test_static_registry_and_client_lookup_cannot_compete(context):
-    with pytest.raises(ValueError, match="Use get_client or client_redirect_uris"):
-        Context(
-            secondary_storage=context.secondary_storage,
-            accounts_storage=context.accounts_storage,
-            get_user_from_request=context.get_user_from_request,
-            get_client=lambda client_id: None,
-            config={"client_redirect_uris": {"dashboard": [CALLBACK]}},
+            config=cast(Config, config),
         )
