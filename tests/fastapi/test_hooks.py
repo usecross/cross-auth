@@ -48,6 +48,7 @@ from cross_auth.social_providers.oauth import OAuth2Provider
 
 from ..conftest import TEST_PASSWORD
 from ..providers.conftest import TestOAuth2Provider
+from ..conftest import legacy_password_grant
 
 
 @pytest.fixture
@@ -74,6 +75,7 @@ def _make_auth(
     providers: list[OAuth2Provider] | None = None,
     get_user_from_request=None,
     config: Config | None = None,
+    password_grant: bool = False,
 ) -> CrossAuth:
     if config is None:
         config = {"session": {"cookies": {"auth": True}}}
@@ -85,7 +87,9 @@ def _make_auth(
         get_user_from_request=get_user_from_request,
         config=config,
         # The token and link hook tests run through the OAuth server.
-        oauth_server=OAuthServer(get_client=_CLIENTS.get),
+        oauth_server=OAuthServer(
+            get_client=_CLIENTS.get, password_grant=password_grant
+        ),
     )
 
 
@@ -873,6 +877,7 @@ def test_token_hooks(
         secondary_storage,
         accounts_storage,
         session_storage=session_storage,
+        password_grant=True,
     )
     blocked = False
     seen: dict[str, str] = {}
@@ -908,15 +913,16 @@ def test_token_hooks(
     app.include_router(auth.router)
 
     with TestClient(app) as client:
-        blocked_resp = client.post(
-            "/token",
-            data={
-                "grant_type": "password",
-                "client_id": "legacy-spa",
-                "username": "test@example.com",
-                "password": TEST_PASSWORD,
-            },
-        )
+        with legacy_password_grant():
+            blocked_resp = client.post(
+                "/token",
+                data={
+                    "grant_type": "password",
+                    "client_id": "legacy-spa",
+                    "username": "test@example.com",
+                    "password": TEST_PASSWORD,
+                },
+            )
         # After-hook failures propagate; the issued session is not undone.
         with pytest.raises(CrossAuthException, match="server_error"):
             client.post(

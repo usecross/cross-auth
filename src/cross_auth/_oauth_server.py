@@ -21,7 +21,11 @@ class OAuthServer:
 
     ``token_issuer`` mints the token ``/token`` returns. Without it, ``/token``
     issues an opaque session token from ``session_storage``.
+
+    ``password_grant=True`` also accepts the deprecated OAuth password grant at
+    ``/token``, warning on each use. It will be removed in 1.0.
     """
 
     get_client: ClientResolver | None = None
     token_issuer: TokenIssuer | None = None
+    password_grant: bool = False

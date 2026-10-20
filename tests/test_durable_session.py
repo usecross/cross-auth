@@ -29,7 +29,12 @@ from cross_auth._session import (
 from cross_auth._storage import AccountsStorage, SecondaryStorage
 from cross_auth.fastapi import CrossAuth, SessionCookieMiddleware
 
-from .conftest import TEST_CLIENTS, MemorySessionStorage
+from .conftest import (
+    LEGACY_PASSWORD_SERVER,
+    TEST_CLIENTS,
+    MemorySessionStorage,
+    legacy_password_grant,
+)
 
 NOW = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
 
@@ -349,20 +354,22 @@ def test_password_token_endpoint_creates_session_with_session_storage(
     session_storage: MemorySessionStorage,
     context: Context,
 ):
+    context.oauth_server = LEGACY_PASSWORD_SERVER
     issuer = Issuer()
 
-    response = issuer.token(
-        _request(
-            headers={"User-Agent": "ios-app/1.0"},
-            post_data={
-                "grant_type": "password",
-                "client_id": "ios-app",
-                "username": "test@example.com",
-                "password": "password123",
-            },
-        ),
-        context,
-    )
+    with legacy_password_grant():
+        response = issuer.token(
+            _request(
+                headers={"User-Agent": "ios-app/1.0"},
+                post_data={
+                    "grant_type": "password",
+                    "client_id": "ios-app",
+                    "username": "test@example.com",
+                    "password": "password123",
+                },
+            ),
+            context,
+        )
 
     assert response.status_code == 200
     assert response.json() == snapshot(

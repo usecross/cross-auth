@@ -45,6 +45,8 @@ TEST_CLIENTS = {
     )
     for client_id in ("test_client_id", "my_app_client_id", "test")
 }
+# The deprecated password grant is opt-in; tests that cover it use this server.
+LEGACY_PASSWORD_SERVER = OAuthServer(get_client=TEST_CLIENTS.get, password_grant=True)
 
 
 def _same_id(left: Any, right: Any) -> bool:
@@ -659,3 +661,10 @@ def valid_link_code(secondary_storage: SecondaryStorage) -> str:
     )
 
     return code
+
+
+def legacy_password_grant() -> pytest.WarningsRecorder:
+    """Expect the deprecation warning a password-grant request emits."""
+    return pytest.warns(
+        DeprecationWarning, match="The OAuth password grant is deprecated"
+    )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Callable, Generator
 from urllib.parse import parse_qs, urlparse
 
@@ -60,6 +61,8 @@ APP_CLIENT = OAuthClient(
 )
 # Most router tests drive the OAuth server's /authorize, /token and /link flows.
 APP_OAUTH_SERVER = OAuthServer(get_client={"app-client": APP_CLIENT}.get)
+# The deprecated password grant is opt-in; tests that cover it use this server.
+LEGACY_APP_OAUTH_SERVER = replace(APP_OAUTH_SERVER, password_grant=True)
 
 
 def _build_auth(

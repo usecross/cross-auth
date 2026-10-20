@@ -1,8 +1,16 @@
+import warnings
 from datetime import datetime, timezone
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from cross_web import HTTPRequest, Response
-from pydantic import AwareDatetime, BaseModel, Discriminator, Field, ValidationError
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    ValidationError,
+)
 from pydantic.type_adapter import TypeAdapter
 
 from cross_auth.models.oauth_token_response import TokenResponse
@@ -41,6 +49,9 @@ class AuthorizationCodeGrantRequest(BaseModel):
 
 
 class PasswordGrantRequest(BaseModel):
+    # RFC 9700 section 2.4: the resource owner password grant MUST NOT be used.
+    model_config = ConfigDict(json_schema_extra={"deprecated": True})
+
     grant_type: Literal["password"] = Field(description="The OAuth 2.0 grant type")
     client_id: str = Field(description="The client identifier")
     client_secret: str | None = Field(
@@ -56,6 +67,13 @@ TokenRequest = Annotated[
     Discriminator("grant_type"),
 ]
 TokenRequestAdapter: TypeAdapter[TokenRequest] = TypeAdapter(TokenRequest)
+
+PASSWORD_GRANT_DEPRECATION = (
+    "The OAuth password grant is deprecated (RFC 9700 section 2.4) and will be "
+    "removed in Cross Auth 1.0. Use the authorization code grant with PKCE for "
+    "SPA and native clients, or your own sign-in endpoint with authenticate() "
+    "for first-party password login, then drop OAuthServer(password_grant=True)."
+)
 
 
 KnownTokenErrorType = Literal[
@@ -149,6 +167,16 @@ class Issuer:
         context: Context,
     ) -> Response:
         input_data = dict(request.post_data)
+
+        if input_data.get("grant_type") == "password":
+            # Refused before validation, so no legacy field is required and no
+            # account is looked up.
+            oauth_server = context.oauth_server
+            if oauth_server is None or not oauth_server.password_grant:
+                return self._error_response(
+                    "unsupported_grant_type", "Grant type 'password' is not supported"
+                )
+            warnings.warn(PASSWORD_GRANT_DEPRECATION, DeprecationWarning, stacklevel=2)
 
         try:
             token_request = TokenRequestAdapter.validate_python(input_data)
@@ -365,8 +393,22 @@ class Issuer:
             cookies=[],
         )
 
-    @property
-    def routes(self) -> list[Route]:
+    def routes(self, *, password_grant: bool) -> list[Route]:
+        # The route reads its own form, so FastAPI adds no components for these
+        # models: inline them so the schema resolves without extra_schemas.
+        code_grant = AuthorizationCodeGrantRequest.model_json_schema()
+        grant_schemas: dict[str, dict[str, Any]] = {
+            "AuthorizationCodeGrantRequest": code_grant
+        }
+        request_schema = code_grant
+        if password_grant:
+            password_schema = PasswordGrantRequest.model_json_schema()
+            grant_schemas["PasswordGrantRequest"] = password_schema
+            request_schema = {
+                "oneOf": [code_grant, password_schema],
+                "title": "Request",
+            }
+
         return [
             Route(
                 path="/token",
@@ -380,24 +422,7 @@ class Issuer:
                     "requestBody": {
                         "content": {
                             "application/x-www-form-urlencoded": {
-                                "schema": {
-                                    "oneOf": [
-                                        {
-                                            "$ref": "#/components/schemas/AuthorizationCodeGrantRequest"
-                                        },
-                                        {
-                                            "$ref": "#/components/schemas/PasswordGrantRequest"
-                                        },
-                                    ],
-                                    "title": "Request",
-                                    "discriminator": {
-                                        "propertyName": "grant_type",
-                                        "mapping": {
-                                            "authorization_code": "#/components/schemas/AuthorizationCodeGrantRequest",
-                                            "password": "#/components/schemas/PasswordGrantRequest",
-                                        },
-                                    },
-                                }
+                                "schema": request_schema
                             }
                         },
                         "required": True,
@@ -417,16 +442,15 @@ class Issuer:
                             "description": "Bad request - invalid parameters or grant",
                             "content": {
                                 "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/TokenErrorResponse"
-                                    }
+                                    "schema": TokenErrorResponse.model_json_schema()
                                 }
                             },
                         },
                     },
                 },
+                # Published for applications that merge them into their schema.
                 openapi_schemas={
-                    "AuthorizationCodeGrantRequest": AuthorizationCodeGrantRequest.model_json_schema(),
+                    **grant_schemas,
                     "HTTPValidationError": {
                         "properties": {
                             "detail": {
@@ -440,7 +464,6 @@ class Issuer:
                         "type": "object",
                         "title": "HTTPValidationError",
                     },
-                    "PasswordGrantRequest": PasswordGrantRequest.model_json_schema(),
                     "TokenErrorResponse": TokenErrorResponse.model_json_schema(),
                     "TokenResponse": TokenResponse.model_json_schema(),
                 },

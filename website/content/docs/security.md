@@ -188,10 +188,11 @@ user. See
 verification, using the event's email and your application's shared limiter. It
 has no request or source IP. The legacy `/token` password grant calls
 `before("token.password")`, not `before("authenticate")`; protect both if that
-grant is exposed. `before("oauth.id_token")` runs before ID-token validation but
-has only the provider name, raw token, and supplied user metadata. Those inputs
-do not establish a trusted user identity, and the hook has no request or source
-IP. Apply the request limit outside these hooks.
+grant is enabled with `OAuthServer(password_grant=True)`, or leave the
+deprecated grant off (the default). `before("oauth.id_token")` runs before
+ID-token validation but has only the provider name, raw token, and supplied user
+metadata. Those inputs do not establish a trusted user identity, and the hook
+has no request or source IP. Apply the request limit outside these hooks.
 
 Before hooks can reject with `CrossAuthException`; after hooks run too late to
 block the operation. `/token` converts hook errors into HTTP 400 OAuth errors,

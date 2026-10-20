@@ -41,7 +41,13 @@ from tests.conftest import (
     User,
 )
 
-from .conftest import FakeProvider, mock_token_and_userinfo, start_provider_auth
+from .conftest import (
+    LEGACY_APP_OAUTH_SERVER,
+    FakeProvider,
+    mock_token_and_userinfo,
+    start_provider_auth,
+)
+from ..conftest import legacy_password_grant
 
 # S256 challenge for the code verifier "test".
 _CODE_CHALLENGE = "n4bQgYhMfWWaL-qgxVrQFaO_TxsrC4Is0V1sFbDwCgg"
@@ -540,10 +546,11 @@ def test_social_account_update_hooks_can_still_adjust_tokens(
 
 
 def test_password_grant_cannot_change_the_user(
-    auth: CrossAuth,
+    build_auth,
     accounts_storage: MemoryAccountsStorage,
     session_storage: MemorySessionStorage,
 ):
+    auth = build_auth(oauth_server=LEGACY_APP_OAUTH_SERVER)
     test_user = accounts_storage.data["test"]
     other = _add_other_user(accounts_storage)
     logins: list[object] = []
@@ -556,15 +563,16 @@ def test_password_grant_cannot_change_the_user(
 
     with _client(auth) as client:
         with pytest.raises(FrozenInstanceError):
-            client.post(
-                "/token",
-                data={
-                    "grant_type": "password",
-                    "client_id": "app-client",
-                    "username": "test@example.com",
-                    "password": TEST_PASSWORD,
-                },
-            )
+            with legacy_password_grant():
+                client.post(
+                    "/token",
+                    data={
+                        "grant_type": "password",
+                        "client_id": "app-client",
+                        "username": "test@example.com",
+                        "password": TEST_PASSWORD,
+                    },
+                )
 
     assert test_user.id == "test"
     assert logins == []

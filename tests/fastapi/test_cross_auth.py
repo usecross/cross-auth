@@ -19,6 +19,7 @@ from cross_auth._session import create_session, get_session
 from cross_auth.fastapi import CrossAuth
 from cross_auth.router import AuthRouter
 from cross_auth.social_providers.github import GitHubProvider
+from ..conftest import legacy_password_grant
 
 TEST_PASSWORD = "password123"  # noqa: S105
 
@@ -49,21 +50,22 @@ def test_token_endpoint_uses_token_issuer_without_session_storage(
         providers=[],
         storage=secondary_storage,
         accounts_storage=accounts_storage,
-        oauth_server=OAuthServer(token_issuer=issue_token),
+        oauth_server=OAuthServer(token_issuer=issue_token, password_grant=True),
     )
     app = FastAPI()
     app.include_router(auth.router)
 
     with TestClient(app) as client:
-        response = client.post(
-            "/token",
-            data={
-                "grant_type": "password",
-                "client_id": "mobile-app",
-                "username": "test@example.com",
-                "password": TEST_PASSWORD,
-            },
-        )
+        with legacy_password_grant():
+            response = client.post(
+                "/token",
+                data={
+                    "grant_type": "password",
+                    "client_id": "mobile-app",
+                    "username": "test@example.com",
+                    "password": TEST_PASSWORD,
+                },
+            )
 
     assert response.status_code == 200
     assert response.json()["access_token"] == "stateless-token"
