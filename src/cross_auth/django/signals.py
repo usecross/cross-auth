@@ -6,9 +6,11 @@ every receiver gets ``request`` (the view's ``HttpRequest``) and ``provider``
 (the provider ID, such as ``"google"``) besides the arguments listed below.
 
 ``before_*`` receivers get plain values: IDs are strings, and nothing is a
-model instance. Raise ``PermissionDenied`` from one to refuse; Django answers
-with its 403 response and nothing is written. The other signals follow a
-committed change and get model instances.
+model instance. Raise ``PermissionDenied`` to refuse that step; Django answers
+with its 403 response. Earlier committed changes remain: a first sign-in has
+already created its user before ``before_login`` runs. Success signals follow
+their completed state write, account commit or saved session; user and account
+notifications carry native model instances.
 
 Signals are sent with ``Signal.send()``: a receiver's exception propagates and
 return values are ignored.

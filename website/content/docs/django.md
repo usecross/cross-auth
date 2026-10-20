@@ -37,7 +37,8 @@ The finished project is in
 
 ## Prerequisites
 
-- Python 3.11 or later and [uv](https://docs.astral.sh/uv/).
+- Python 3.11–3.14 and [uv](https://docs.astral.sh/uv/). The commands below
+  select Python 3.13 so that `uv` does not choose an untested newer version.
 - A Google account that can create a project in the
   [Google Cloud console](https://console.cloud.google.com/).
 
@@ -49,7 +50,8 @@ also installs Django 5.2:
 ```bash
 mkdir django-google-demo
 cd django-google-demo
-uv init --bare
+uv init --bare --python 3.13
+uv python pin 3.13
 uv add "cross-auth[django] @ git+https://github.com/usecross/cross-auth@3d18fa17d8e40f25811488dda9f5287e26715c78"
 ```
 
