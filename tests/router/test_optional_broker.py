@@ -13,6 +13,8 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 import respx
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import Depends, FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
@@ -22,6 +24,7 @@ from cross_auth._config import Config
 from cross_auth._storage import AccountsStorage, SecondaryStorage, User
 from cross_auth.fastapi import CrossAuth
 from cross_auth.router import AuthRouter
+from cross_auth.social_providers.apple import AppleProvider
 from cross_auth.social_providers.github import GitHubProvider
 from cross_auth.social_providers.google import GoogleProvider
 from cross_auth.social_providers.oauth import OAuth2Provider
@@ -221,13 +224,17 @@ def _client(auth: CrossAuth) -> TestClient:
     return TestClient(app, follow_redirects=False)
 
 
-def _start_broker_flow(client: TestClient, flow: str) -> str:
+def _start_broker_flow(
+    client: TestClient, flow: str, *, provider_id: str = "fake"
+) -> str:
     if flow == "token":
-        _, state = start_provider_auth(client, "/fake/authorize", CLIENT_PARAMS)
+        _, state = start_provider_auth(
+            client, f"/{provider_id}/authorize", CLIENT_PARAMS
+        )
         return state
 
     response = client.post(
-        "/fake/link",
+        f"/{provider_id}/link",
         json={
             "client_id": CLIENT_PARAMS["client_id"],
             "redirect_uri": CLIENT_PARAMS["redirect_uri"],
@@ -447,3 +454,117 @@ def test_password_and_bearer_sessions_without_broker(
 
     social_only.revoke_session(record.id, user_id=user.id)
     assert social_only_client.get("/me", headers=headers).json() == {"id": None}
+
+
+@pytest.fixture
+def apple_provider() -> AppleProvider:
+    key = ec.generate_private_key(ec.SECP256R1())
+    return AppleProvider(
+        client_id="com.example.web",
+        team_id="TEAM123456",
+        key_id="KEY1234567",
+        private_key=key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode(),
+    )
+
+
+@pytest.mark.parametrize("flow", ["token", "link"])
+@pytest.mark.parametrize("provider_error", [False, True])
+@respx.mock
+def test_disabled_broker_rejects_apple_form_post(
+    build_auth,
+    apple_provider: AppleProvider,
+    secondary_storage: MemoryStorage,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    flow: str,
+    provider_error: bool,
+):
+    config: Config = {
+        "account_linking": {"enabled": True},
+        "session": {"cookies": {"auth": True}},
+    }
+    with _client(build_auth(providers=[apple_provider], config=config)) as before:
+        state = _start_broker_flow(before, flow, provider_id="apple")
+        cookies = dict(before.cookies)
+    users_before = set(accounts_storage.data)
+
+    with _client(
+        build_auth(providers=[apple_provider], config=config, broker=False)
+    ) as browser:
+        browser.cookies.update(cookies)
+        form = {"state": state}
+        form.update(
+            {"error": "access_denied"} if provider_error else {"code": "unused-code"}
+        )
+        # Apple's callback fields are form data, not query parameters.
+        response = browser.post("/apple/callback", data=form)
+        assert response.status_code == 303
+        location = response.headers["location"]
+        resume = parse_qs(urlparse(location).query)["resume"][0]
+        assert "unused-code" not in location
+        response = browser.get(location)
+
+    assert response.status_code == 400
+    assert response.json()["error_description"] == "The OAuth broker is disabled"
+    assert "location" not in response.headers
+    assert secondary_storage.get(f"oauth:authorization_request:v2:{state}") is None
+    assert secondary_storage.get(f"oauth:form_post:{resume}") is None
+    assert "Max-Age=0" in response.headers["set-cookie"]
+    assert not respx.calls
+    assert set(accounts_storage.data) == users_before
+    assert accounts_storage.data["test"].social_accounts == []
+    assert _codes(secondary_storage) == []
+    assert not session_storage.records
+
+
+@pytest.mark.parametrize("flow", ["token", "link"])
+@respx.mock
+def test_unbound_browser_cannot_consume_apple_form_post(
+    build_auth,
+    apple_provider: AppleProvider,
+    secondary_storage: MemoryStorage,
+    flow: str,
+):
+    config: Config = {
+        "account_linking": {"enabled": True},
+        "session": {"cookies": {"auth": True}},
+    }
+    with _client(build_auth(providers=[apple_provider], config=config)) as before:
+        state = _start_broker_flow(before, flow, provider_id="apple")
+        cookies = dict(before.cookies)
+
+    disabled = build_auth(providers=[apple_provider], config=config, broker=False)
+    with _client(disabled) as browser:
+        browser.cookies.update(cookies)
+        response = browser.post(
+            "/apple/callback", data={"state": state, "code": "unused-code"}
+        )
+        assert response.status_code == 303
+        location = response.headers["location"]
+        resume = parse_qs(urlparse(location).query)["resume"][0]
+        authorization_key = f"oauth:authorization_request:v2:{state}"
+        continuation_key = f"oauth:form_post:{resume}"
+        authorization = secondary_storage.get(authorization_key)
+        continuation = secondary_storage.get(continuation_key)
+        assert authorization is not None
+        assert continuation is not None
+
+        with _client(disabled) as attacker:
+            response = attacker.get(location)
+        assert response.status_code == 400
+        assert response.json()["error_description"] == (
+            "OAuth callback belongs to another browser"
+        )
+        assert secondary_storage.get(authorization_key) == authorization
+        assert secondary_storage.get(continuation_key) == continuation
+
+        # The bound browser can still resume, then consume the refused attempt.
+        response = browser.get(location)
+        assert response.json()["error_description"] == "The OAuth broker is disabled"
+        assert secondary_storage.get(authorization_key) is None
+        assert secondary_storage.get(continuation_key) is None
+    assert not respx.calls

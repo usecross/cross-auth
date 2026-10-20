@@ -52,6 +52,11 @@ Cross-Auth mounts `GET /{provider}/login` (when cookie sign-in is enabled),
 the broker off does not turn cookie sign-in on: `/{provider}/login` still needs
 `session_storage` and `config["session"]["cookies"]["auth"]`.
 
+`/{provider}/connect` remains integration-only: it does not enable that identity
+for sign-in. Adding another identity as a login method still uses the broker's
+`link`/`finalize-link` flow. Turning off the broker does not add a new
+login-enabled session linking route.
+
 `client_redirect_uris`, `get_client` and `token_issuer` only configure the
 broker, so passing any of them with `broker=False` raises `ValueError` at
 startup.
