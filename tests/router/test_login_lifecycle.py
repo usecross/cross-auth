@@ -34,7 +34,12 @@ from cross_auth.hooks import AfterLoginEvent, BeforeLoginEvent
 from cross_auth.hooks._types import HookEventName
 from tests.conftest import TEST_PASSWORD, MemorySessionStorage
 
-from .conftest import APP_OAUTH_SERVER, mock_token_and_userinfo, start_provider_auth
+from .conftest import (
+    LEGACY_APP_OAUTH_SERVER,
+    mock_token_and_userinfo,
+    start_provider_auth,
+)
+from ..conftest import legacy_password_grant
 
 NOW = datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc)
 # S256 challenge for the code verifier "test".
@@ -113,17 +118,18 @@ def browser_client(auth: CrossAuth):
 
 
 def _password_grant(client: TestClient, **data: str):
-    return client.post(
-        "/token",
-        data={
-            "grant_type": "password",
-            "client_id": "app-client",
-            "username": "test@example.com",
-            "password": TEST_PASSWORD,
-            **data,
-        },
-        headers={"User-Agent": "cli/3.0"},
-    )
+    with legacy_password_grant():
+        return client.post(
+            "/token",
+            data={
+                "grant_type": "password",
+                "client_id": "app-client",
+                "username": "test@example.com",
+                "password": TEST_PASSWORD,
+                **data,
+            },
+            headers={"User-Agent": "cli/3.0"},
+        )
 
 
 # --- Browser cookie login -------------------------------------------------
@@ -477,9 +483,10 @@ def test_issue_session_token_after_hook_failure_leaves_session(
 
 @time_machine.travel(NOW, tick=False)
 def test_password_grant_runs_one_login_lifecycle(
-    auth: CrossAuth,
+    build_auth,
     session_storage: MemorySessionStorage,
 ):
+    auth = build_auth(oauth_server=LEGACY_APP_OAUTH_SERVER)
     trace = _trace_hooks(auth)
     before, after = _capture_login(auth)
 
@@ -510,9 +517,10 @@ def test_password_grant_runs_one_login_lifecycle(
 
 
 def test_failed_password_grant_runs_no_login(
-    auth: CrossAuth,
+    build_auth,
     session_storage: MemorySessionStorage,
 ):
+    auth = build_auth(oauth_server=LEGACY_APP_OAUTH_SERVER)
     trace = _trace_hooks(auth)
 
     with _client(auth) as client:
@@ -524,9 +532,10 @@ def test_failed_password_grant_runs_no_login(
 
 
 def test_password_grant_login_veto_is_a_token_error(
-    auth: CrossAuth,
+    build_auth,
     session_storage: MemorySessionStorage,
 ):
+    auth = build_auth(oauth_server=LEGACY_APP_OAUTH_SERVER)
     trace = _trace_hooks(auth)
 
     @auth.before("login")
@@ -603,9 +612,11 @@ def test_authorization_code_login_happens_once_at_redemption(
 
 
 def test_token_after_hook_failures_surface_after_session_is_saved(
-    auth: CrossAuth,
+    build_auth,
     session_storage: MemorySessionStorage,
 ):
+    auth = build_auth(oauth_server=LEGACY_APP_OAUTH_SERVER)
+
     @auth.after("token.password")
     def fail(event: Any) -> None:
         raise CrossAuthException("server_error", "after hook failed")
@@ -630,7 +641,9 @@ def issuer_auth(build_auth, issued: list[TokenIssueRequest]) -> CrossAuth:
         issued.append(request)
         return f"jwt-for-{request.user_id}", 900
 
-    return build_auth(oauth_server=replace(APP_OAUTH_SERVER, token_issuer=token_issuer))
+    return build_auth(
+        oauth_server=replace(LEGACY_APP_OAUTH_SERVER, token_issuer=token_issuer)
+    )
 
 
 def test_token_issuer_credentials_are_logins_without_sessions(

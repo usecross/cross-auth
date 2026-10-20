@@ -6,11 +6,10 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.testclient import TestClient
 
 from cross_auth._context import AccountsStorage, SecondaryStorage
-from cross_auth._oauth_server import OAuthServer
 from cross_auth._storage import SessionStorage
 from cross_auth.router import AuthRouter
 
-from ..conftest import TEST_CLIENTS
+from ..conftest import LEGACY_PASSWORD_SERVER
 
 
 @pytest.fixture
@@ -27,7 +26,8 @@ def test_app(
         accounts_storage=accounts_storage,
         session_storage=session_storage,
         get_user_from_request=lambda _: None,
-        oauth_server=OAuthServer(get_client=TEST_CLIENTS.get),
+        # The token endpoint tests cover the deprecated password grant too.
+        oauth_server=LEGACY_PASSWORD_SERVER,
     )
 
     app.include_router(router)

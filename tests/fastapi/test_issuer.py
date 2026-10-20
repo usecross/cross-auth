@@ -2,6 +2,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 from inline_snapshot import snapshot
+from ..conftest import legacy_password_grant
 
 
 def test_returns_error_response_if_grant_type_is_missing(
@@ -63,14 +64,15 @@ def test_returns_error_response_if_code_verifier_is_missing(
 
 
 def test_password_grant_missing_username(client: TestClient) -> None:
-    response = client.post(
-        "/token",
-        data={
-            "grant_type": "password",
-            "client_id": "test",
-            "password": "password123",
-        },
-    )
+    with legacy_password_grant():
+        response = client.post(
+            "/token",
+            data={
+                "grant_type": "password",
+                "client_id": "test",
+                "password": "password123",
+            },
+        )
     assert response.status_code == 400
     assert response.json() == snapshot(
         {"error": "invalid_request", "error_description": "username is required"}
@@ -78,14 +80,15 @@ def test_password_grant_missing_username(client: TestClient) -> None:
 
 
 def test_password_grant_missing_password(client: TestClient) -> None:
-    response = client.post(
-        "/token",
-        data={
-            "grant_type": "password",
-            "client_id": "test",
-            "username": "test@example.com",
-        },
-    )
+    with legacy_password_grant():
+        response = client.post(
+            "/token",
+            data={
+                "grant_type": "password",
+                "client_id": "test",
+                "username": "test@example.com",
+            },
+        )
     assert response.status_code == 400
     assert response.json() == snapshot(
         {"error": "invalid_request", "error_description": "password is required"}
@@ -95,7 +98,8 @@ def test_password_grant_missing_password(client: TestClient) -> None:
 def test_issuer_route_validates_password_grant_missing_client_id(
     client: TestClient,
 ) -> None:
-    response = client.post("/token", data={"grant_type": "password"})
+    with legacy_password_grant():
+        response = client.post("/token", data={"grant_type": "password"})
     assert response.status_code == 400
 
     assert response.json() == snapshot(
@@ -218,15 +222,16 @@ def test_returns_token_if_code_is_valid(
 
 
 def test_password_grant_invalid_credentials(client: TestClient) -> None:
-    response = client.post(
-        "/token",
-        data={
-            "grant_type": "password",
-            "client_id": "test",
-            "username": "test@example.com",
-            "password": "wrong_password",
-        },
-    )
+    with legacy_password_grant():
+        response = client.post(
+            "/token",
+            data={
+                "grant_type": "password",
+                "client_id": "test",
+                "username": "test@example.com",
+                "password": "wrong_password",
+            },
+        )
     assert response.status_code == 400
     assert response.json() == snapshot(
         {"error": "invalid_grant", "error_description": "Invalid username or password"}
@@ -234,15 +239,16 @@ def test_password_grant_invalid_credentials(client: TestClient) -> None:
 
 
 def test_password_grant_invalid_username(client: TestClient) -> None:
-    response = client.post(
-        "/token",
-        data={
-            "grant_type": "password",
-            "client_id": "test",
-            "username": "nonexistent@example.com",
-            "password": "password123",
-        },
-    )
+    with legacy_password_grant():
+        response = client.post(
+            "/token",
+            data={
+                "grant_type": "password",
+                "client_id": "test",
+                "username": "nonexistent@example.com",
+                "password": "password123",
+            },
+        )
     assert response.status_code == 400
     assert response.json() == snapshot(
         {"error": "invalid_grant", "error_description": "Invalid username or password"}
@@ -252,15 +258,16 @@ def test_password_grant_invalid_username(client: TestClient) -> None:
 def test_password_grant_success(
     client: TestClient,
 ) -> None:
-    response = client.post(
-        "/token",
-        data={
-            "grant_type": "password",
-            "client_id": "test",
-            "username": "test@example.com",
-            "password": "password123",
-        },
-    )
+    with legacy_password_grant():
+        response = client.post(
+            "/token",
+            data={
+                "grant_type": "password",
+                "client_id": "test",
+                "username": "test@example.com",
+                "password": "password123",
+            },
+        )
     assert response.status_code == 200
     assert response.json() == snapshot(
         {
@@ -278,16 +285,17 @@ def test_password_grant_success(
 def test_password_grant_with_scope(
     client: TestClient,
 ) -> None:
-    response = client.post(
-        "/token",
-        data={
-            "grant_type": "password",
-            "client_id": "test",
-            "username": "test@example.com",
-            "password": "password123",
-            "scope": "",
-        },
-    )
+    with legacy_password_grant():
+        response = client.post(
+            "/token",
+            data={
+                "grant_type": "password",
+                "client_id": "test",
+                "username": "test@example.com",
+                "password": "password123",
+                "scope": "",
+            },
+        )
     assert response.status_code == 200
     assert response.json() == snapshot(
         {

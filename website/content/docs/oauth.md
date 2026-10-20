@@ -251,6 +251,9 @@ auth = CrossAuth(
   `CrossAuth` or `AuthRouter` raises `TypeError`.
 - Applications that never used `/authorize`, `/token`, `/link` or
   `/finalize-link` need no `OAuthServer`.
+- Clients that still send `grant_type=password` to `/token` need
+  `OAuthServer(password_grant=True)` until they migrate; see
+  [Password Grant](#password-grant-deprecated).
 
 Client redirect registration does not configure CORS or CSRF protection;
 configure those separately in the hosting application. Relative `next`
@@ -295,9 +298,28 @@ oauth_server = OAuthServer(get_client=clients.get, token_issuer=issue_token)
 
 The `login` hooks run around the call; Cross-Auth creates no session for it.
 
-### Password Grant
+### Password Grant (deprecated)
 
-Available for first-party applications where the client is trusted:
+The resource owner password grant is deprecated and will be removed in
+Cross-Auth 1.0. [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700#section-2.4),
+the OAuth 2.0 Security Best Current Practice, says it MUST NOT be used: it hands
+the user's password to the client, and it cannot support multi-factor or passkey
+sign-in.
+
+`OAuthServer` refuses it by default: `/token` answers `grant_type=password` with
+`unsupported_grant_type` before looking up the account, verifying a password or
+running hooks, and its OpenAPI schema lists only the authorization code grant.
+Without the OAuth server there is no `/token` endpoint at all.
+
+Clients that still need it can opt in while they migrate:
+
+```python
+oauth_server = OAuthServer(
+    get_client=clients.get,
+    # Deprecated; removed in 1.0.
+    password_grant=True,
+)
+```
 
 ```http
 POST /token
@@ -306,8 +328,26 @@ Content-Type: application/x-www-form-urlencoded
 grant_type=password&client_id=my-app&username=user@example.com&password=secret
 ```
 
-> **Note:** The password grant is less secure than the authorization code flow
-> and should only be used by first-party clients.
+Each password-grant request then emits a `DeprecationWarning`. The warning does
+not include the username, password, client or token. Python hides
+`DeprecationWarning` outside `__main__` by default, so to find remaining callers
+run with `-W default::DeprecationWarning`, or record them with an
+`after("token.password")` [hook](/docs/hooks#tokenpassword). In the OpenAPI
+schema only the password variant of the `/token` request is marked `deprecated`;
+the endpoint and the authorization code grant are not deprecated.
+
+To migrate:
+
+- SPA and native clients: use the authorization code grant with PKCE above.
+- First-party password sign-in: post the password to your own endpoint, check it
+  with `auth.authenticate()`, then call `auth.login()` for a cookie session or
+  `auth.issue_session_token()` for a bearer token. Django projects use Django's
+  own login views. Your endpoint owns its CSRF protection and rate limits.
+
+Password sign-in through your own endpoint is not deprecated. Only the OAuth
+password grant at `/token` is.
+
+Cross-Auth 1.0 removes the grant and `OAuthServer`'s `password_grant` option.
 
 ## Token Usage
 

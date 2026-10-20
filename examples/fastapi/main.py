@@ -433,7 +433,12 @@ auth = CrossAuth(
     normalize_email=normalize_login_email,
     # The SPA and the profile page's "Link Google account" use the OAuth
     # server's /authorize, /token, /link and /finalize-link routes.
-    oauth_server=OAuthServer(get_client=OAUTH_CLIENTS.get),
+    oauth_server=OAuthServer(
+        get_client=OAUTH_CLIENTS.get,
+        # Deprecated and removed in 1.0: the SPA's password form still uses
+        # the OAuth password grant at /token, which warns on each use.
+        password_grant=True,
+    ),
     config={
         "account_linking": {"enabled": True, "allow_different_emails": True},
         "require_verified_email": True,

@@ -18,20 +18,112 @@ def test_router(test_app: FastAPI):
                                     "schema": {
                                         "oneOf": [
                                             {
-                                                "$ref": "#/components/schemas/AuthorizationCodeGrantRequest"
+                                                "properties": {
+                                                    "grant_type": {
+                                                        "type": "string",
+                                                        "const": "authorization_code",
+                                                        "title": "Grant Type",
+                                                        "description": "The OAuth 2.0 grant type",
+                                                    },
+                                                    "client_id": {
+                                                        "type": "string",
+                                                        "title": "Client Id",
+                                                        "description": "The client identifier",
+                                                    },
+                                                    "client_secret": {
+                                                        "anyOf": [
+                                                            {"type": "string"},
+                                                            {"type": "null"},
+                                                        ],
+                                                        "title": "Client Secret",
+                                                        "description": "The client secret (for confidential clients)",
+                                                    },
+                                                    "code": {
+                                                        "type": "string",
+                                                        "title": "Code",
+                                                        "description": "The authorization code received from the authorization server",
+                                                    },
+                                                    "redirect_uri": {
+                                                        "type": "string",
+                                                        "title": "Redirect Uri",
+                                                        "description": "The redirect URI used in the authorization request",
+                                                    },
+                                                    "code_verifier": {
+                                                        "type": "string",
+                                                        "title": "Code Verifier",
+                                                        "description": "The PKCE code verifier",
+                                                    },
+                                                    "scope": {
+                                                        "anyOf": [
+                                                            {"type": "string"},
+                                                            {"type": "null"},
+                                                        ],
+                                                        "title": "Scope",
+                                                        "description": "Space-delimited list of scopes",
+                                                    },
+                                                },
+                                                "type": "object",
+                                                "required": [
+                                                    "grant_type",
+                                                    "client_id",
+                                                    "code",
+                                                    "redirect_uri",
+                                                    "code_verifier",
+                                                ],
+                                                "title": "AuthorizationCodeGrantRequest",
                                             },
                                             {
-                                                "$ref": "#/components/schemas/PasswordGrantRequest"
+                                                "properties": {
+                                                    "grant_type": {
+                                                        "type": "string",
+                                                        "const": "password",
+                                                        "title": "Grant Type",
+                                                        "description": "The OAuth 2.0 grant type",
+                                                    },
+                                                    "client_id": {
+                                                        "type": "string",
+                                                        "title": "Client Id",
+                                                        "description": "The client identifier",
+                                                    },
+                                                    "client_secret": {
+                                                        "anyOf": [
+                                                            {"type": "string"},
+                                                            {"type": "null"},
+                                                        ],
+                                                        "title": "Client Secret",
+                                                        "description": "The client secret (for confidential clients)",
+                                                    },
+                                                    "username": {
+                                                        "type": "string",
+                                                        "title": "Username",
+                                                        "description": "The resource owner username",
+                                                    },
+                                                    "password": {
+                                                        "type": "string",
+                                                        "title": "Password",
+                                                        "description": "The resource owner password",
+                                                    },
+                                                    "scope": {
+                                                        "anyOf": [
+                                                            {"type": "string"},
+                                                            {"type": "null"},
+                                                        ],
+                                                        "title": "Scope",
+                                                        "description": "Space-delimited list of scopes",
+                                                    },
+                                                },
+                                                "type": "object",
+                                                "required": [
+                                                    "grant_type",
+                                                    "client_id",
+                                                    "username",
+                                                    "password",
+                                                ],
+                                                "title": "PasswordGrantRequest",
+                                                "deprecated": True,
                                             },
                                         ],
                                         "title": "Request",
-                                        "discriminator": {
-                                            "propertyName": "grant_type",
-                                            "mapping": {
-                                                "authorization_code": "#/components/schemas/AuthorizationCodeGrantRequest",
-                                                "password": "#/components/schemas/PasswordGrantRequest",
-                                            },
-                                        },
                                     }
                                 }
                             },
@@ -63,7 +155,45 @@ def test_router(test_app: FastAPI):
                                 "content": {
                                     "application/json": {
                                         "schema": {
-                                            "$ref": "#/components/schemas/TokenErrorResponse"
+                                            "properties": {
+                                                "error": {
+                                                    "anyOf": [
+                                                        {
+                                                            "type": "string",
+                                                            "enum": [
+                                                                "invalid_request",
+                                                                "invalid_client",
+                                                                "invalid_grant",
+                                                                "unauthorized_client",
+                                                                "unsupported_grant_type",
+                                                                "invalid_scope",
+                                                            ],
+                                                        },
+                                                        {"type": "string"},
+                                                    ],
+                                                    "title": "Error",
+                                                    "description": "Error code as per OAuth 2.0 specification",
+                                                },
+                                                "error_description": {
+                                                    "anyOf": [
+                                                        {"type": "string"},
+                                                        {"type": "null"},
+                                                    ],
+                                                    "title": "Error Description",
+                                                    "description": "Human-readable explanation of the error",
+                                                },
+                                                "error_uri": {
+                                                    "anyOf": [
+                                                        {"type": "string"},
+                                                        {"type": "null"},
+                                                    ],
+                                                    "title": "Error Uri",
+                                                    "description": "URI to a web page with more information about the error",
+                                                },
+                                            },
+                                            "type": "object",
+                                            "required": ["error"],
+                                            "title": "TokenErrorResponse",
                                         }
                                     }
                                 },
@@ -157,6 +287,7 @@ def test_router(test_app: FastAPI):
                         "title": "ValidationError",
                     },
                     "PasswordGrantRequest": {
+                        "deprecated": True,
                         "properties": {
                             "grant_type": {
                                 "type": "string",

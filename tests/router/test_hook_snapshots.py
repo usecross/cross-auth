@@ -29,7 +29,12 @@ from cross_auth.social_providers.oauth import UserInfo, ValidatedUserInfo
 from tests.conftest import TEST_PASSWORD, MemoryAccountsStorage, MemorySessionStorage
 from tests.conftest import SocialAccount
 
-from .conftest import FakeProvider, mock_token_and_userinfo, start_provider_auth
+from .conftest import (
+    LEGACY_APP_OAUTH_SERVER,
+    FakeProvider,
+    mock_token_and_userinfo,
+    start_provider_auth,
+)
 from .test_identity_hooks import (
     _add_other_user,
     _all_social_accounts,
@@ -39,6 +44,7 @@ from .test_identity_hooks import (
     _link_code,
     _start_link,
 )
+from ..conftest import legacy_password_grant
 
 _AUTHZ_PARAMS = {
     "client_id": "app-client",
@@ -315,11 +321,12 @@ def test_finalize_link_hook_cannot_change_the_signed_in_user(
 
 @_DENY
 def test_password_hook_cannot_change_the_user(
-    auth: CrossAuth,
+    build_auth,
     accounts_storage: MemoryAccountsStorage,
     session_storage: MemorySessionStorage,
     deny: bool,
 ):
+    auth = build_auth(oauth_server=LEGACY_APP_OAUTH_SERVER)
     user = accounts_storage.data["test"]
     other = _add_other_user(accounts_storage)
 
@@ -347,15 +354,16 @@ def test_password_hook_cannot_change_the_user(
 
 
 def _password_grant(client) -> Response:
-    return client.post(
-        "/token",
-        data={
-            "grant_type": "password",
-            "client_id": "app-client",
-            "username": "test@example.com",
-            "password": TEST_PASSWORD,
-        },
-    )
+    with legacy_password_grant():
+        return client.post(
+            "/token",
+            data={
+                "grant_type": "password",
+                "client_id": "app-client",
+                "username": "test@example.com",
+                "password": TEST_PASSWORD,
+            },
+        )
 
 
 @_DENY
@@ -397,7 +405,10 @@ def test_disconnect_hook_cannot_change_the_user_or_account(
 def test_link_and_password_hooks_cannot_return_replacement_events(
     build_auth, accounts_storage: MemoryAccountsStorage, secondary_storage
 ):
-    auth = build_auth(config={"account_linking": {"enabled": True}})
+    auth = build_auth(
+        config={"account_linking": {"enabled": True}},
+        oauth_server=LEGACY_APP_OAUTH_SERVER,
+    )
     other = _add_other_user(accounts_storage)
     auth.before("oauth.link")(lambda event: replace(event, user=other))
     auth.before("token.password")(lambda event: replace(event, user=other))

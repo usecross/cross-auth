@@ -571,11 +571,14 @@ async def cleanup_provider_state(event: AfterOAuthDisconnectEvent) -> None:
 
 ### `token.password`
 
-Runs around OAuth password-grant token issuance. Use it to restrict which
-clients may exchange usernames and passwords for tokens, then audit or measure
-successful token issuance. The before event's `user` is a `UserSnapshot`, or
-`None` when no user matches the username. This before hook is policy-only and
-must return `None`.
+Runs around OAuth password-grant token issuance. The password grant is
+[deprecated](/docs/oauth#password-grant-deprecated); use this hook to restrict
+which clients may still exchange usernames and passwords for tokens, then audit
+or measure the clients that remain. It only runs when the application opts in
+with `OAuthServer(password_grant=True)`; without that, `/token` refuses the
+grant before any hook. The before event's `user` is a `UserSnapshot`, or `None`
+when no user matches the username. This before hook is policy-only and must
+return `None`.
 
 ```python
 from cross_auth.hooks import AfterTokenPasswordEvent, BeforeTokenPasswordEvent

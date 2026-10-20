@@ -36,7 +36,12 @@ from tests.conftest import (
     MemorySessionStorage,
 )
 
-from .conftest import APP_OAUTH_SERVER, mock_token_and_userinfo, start_provider_auth
+from .conftest import (
+    LEGACY_APP_OAUTH_SERVER,
+    mock_token_and_userinfo,
+    start_provider_auth,
+)
+from ..conftest import legacy_password_grant
 
 
 class TransactionalAccountsStorage(MemoryAccountsStorage):
@@ -247,20 +252,23 @@ def _password_grant(auth: CrossAuth):
     app = FastAPI()
     app.include_router(auth.router)
     with TestClient(app) as client:
-        return client.post(
-            "/token",
-            data={
-                "grant_type": "password",
-                "client_id": "app-client",
-                "username": "test@example.com",
-                "password": TEST_PASSWORD,
-            },
-        )
+        with legacy_password_grant():
+            return client.post(
+                "/token",
+                data={
+                    "grant_type": "password",
+                    "client_id": "app-client",
+                    "username": "test@example.com",
+                    "password": TEST_PASSWORD,
+                },
+            )
 
 
 def test_session_login_hooks_follow_the_session_store_commit(build_auth):
     session_storage = DeferredSessionStorage()
-    auth = build_auth(session_storage=session_storage)
+    auth = build_auth(
+        session_storage=session_storage, oauth_server=LEGACY_APP_OAUTH_SERVER
+    )
     trace = _trace_after_hooks(auth)
 
     response = _password_grant(auth)
@@ -282,7 +290,7 @@ def test_token_issuer_logins_complete_when_the_issuer_returns(build_auth):
 
     auth = build_auth(
         session_storage=session_storage,
-        oauth_server=replace(APP_OAUTH_SERVER, token_issuer=token_issuer),
+        oauth_server=replace(LEGACY_APP_OAUTH_SERVER, token_issuer=token_issuer),
     )
     trace = _trace_after_hooks(auth)
 

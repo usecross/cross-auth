@@ -14,11 +14,16 @@ from cross_auth._storage import SecondaryStorage
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.hooks import BeforeTokenPasswordEvent, UserSnapshot
 
-from .conftest import TEST_CLIENTS, MemorySessionStorage
+from .conftest import (
+    LEGACY_PASSWORD_SERVER,
+    TEST_CLIENTS,
+    MemorySessionStorage,
+    legacy_password_grant,
+)
 
 
 def test_issuer(issuer: Issuer):
-    (token_route,) = issuer.routes
+    (token_route,) = issuer.routes(password_grant=False)
 
     assert token_route.path == "/token"
     assert token_route.methods == ["POST"]
@@ -351,7 +356,9 @@ def test_password_grant_uses_token_issuer_without_session_storage(
         accounts_storage=accounts_storage,
         session_storage=None,
         get_user_from_request=lambda _: None,
-        oauth_server=OAuthServer(get_client=TEST_CLIENTS.get, token_issuer=issue_token),
+        oauth_server=OAuthServer(
+            get_client=TEST_CLIENTS.get, token_issuer=issue_token, password_grant=True
+        ),
     )
 
     http_request = HTTPRequest.from_form_data(
@@ -364,7 +371,8 @@ def test_password_grant_uses_token_issuer_without_session_storage(
         }
     )
 
-    response = issuer.token(http_request, context)
+    with legacy_password_grant():
+        response = issuer.token(http_request, context)
 
     assert response.status_code == 200
     assert response.json() == snapshot(
@@ -471,16 +479,18 @@ def test_authorization_code_can_only_be_used_once(
 
 
 def test_password_grant_missing_username(issuer: Issuer, context: Context):
-    response = issuer.token(
-        HTTPRequest.from_form_data(
-            data={
-                "grant_type": "password",
-                "client_id": "test",
-                "password": "password123",
-            }
-        ),
-        context,
-    )
+    context.oauth_server = LEGACY_PASSWORD_SERVER
+    with legacy_password_grant():
+        response = issuer.token(
+            HTTPRequest.from_form_data(
+                data={
+                    "grant_type": "password",
+                    "client_id": "test",
+                    "password": "password123",
+                }
+            ),
+            context,
+        )
     assert response.status_code == 400
     assert response.json() == snapshot(
         {"error": "invalid_request", "error_description": "username is required"}
@@ -488,16 +498,18 @@ def test_password_grant_missing_username(issuer: Issuer, context: Context):
 
 
 def test_password_grant_missing_password(issuer: Issuer, context: Context):
-    response = issuer.token(
-        HTTPRequest.from_form_data(
-            data={
-                "grant_type": "password",
-                "client_id": "test",
-                "username": "test@example.com",
-            }
-        ),
-        context,
-    )
+    context.oauth_server = LEGACY_PASSWORD_SERVER
+    with legacy_password_grant():
+        response = issuer.token(
+            HTTPRequest.from_form_data(
+                data={
+                    "grant_type": "password",
+                    "client_id": "test",
+                    "username": "test@example.com",
+                }
+            ),
+            context,
+        )
     assert response.status_code == 400
     assert response.json() == snapshot(
         {"error": "invalid_request", "error_description": "password is required"}
@@ -505,17 +517,19 @@ def test_password_grant_missing_password(issuer: Issuer, context: Context):
 
 
 def test_password_grant_invalid_credentials(issuer: Issuer, context: Context):
-    response = issuer.token(
-        HTTPRequest.from_form_data(
-            data={
-                "grant_type": "password",
-                "client_id": "test",
-                "username": "test@example.com",
-                "password": "wrong_password",
-            }
-        ),
-        context,
-    )
+    context.oauth_server = LEGACY_PASSWORD_SERVER
+    with legacy_password_grant():
+        response = issuer.token(
+            HTTPRequest.from_form_data(
+                data={
+                    "grant_type": "password",
+                    "client_id": "test",
+                    "username": "test@example.com",
+                    "password": "wrong_password",
+                }
+            ),
+            context,
+        )
     assert response.status_code == 400
     assert response.json() == snapshot(
         {"error": "invalid_grant", "error_description": "Invalid username or password"}
@@ -523,17 +537,19 @@ def test_password_grant_invalid_credentials(issuer: Issuer, context: Context):
 
 
 def test_password_grant_invalid_username(issuer: Issuer, context: Context):
-    response = issuer.token(
-        HTTPRequest.from_form_data(
-            data={
-                "grant_type": "password",
-                "client_id": "test",
-                "username": "nonexistent@example.com",
-                "password": "password123",
-            }
-        ),
-        context,
-    )
+    context.oauth_server = LEGACY_PASSWORD_SERVER
+    with legacy_password_grant():
+        response = issuer.token(
+            HTTPRequest.from_form_data(
+                data={
+                    "grant_type": "password",
+                    "client_id": "test",
+                    "username": "nonexistent@example.com",
+                    "password": "password123",
+                }
+            ),
+            context,
+        )
     assert response.status_code == 400
     assert response.json() == snapshot(
         {"error": "invalid_grant", "error_description": "Invalid username or password"}
@@ -544,6 +560,7 @@ def test_password_grant_preserves_unknown_hook_error_type(
     issuer: Issuer,
     context: Context,
 ):
+    context.oauth_server = LEGACY_PASSWORD_SERVER
     looked_up_user = context.accounts_storage.find_user_by_email("test@example.com")
     assert looked_up_user is not None
 
@@ -557,17 +574,18 @@ def test_password_grant_preserves_unknown_hook_error_type(
     )
 
     with mock.patch("cross_auth._issuer._verify_password") as verify_password:
-        response = issuer.token(
-            HTTPRequest.from_form_data(
-                data={
-                    "grant_type": "password",
-                    "client_id": "test",
-                    "username": "test@example.com",
-                    "password": "password123",
-                }
-            ),
-            context,
-        )
+        with legacy_password_grant():
+            response = issuer.token(
+                HTTPRequest.from_form_data(
+                    data={
+                        "grant_type": "password",
+                        "client_id": "test",
+                        "username": "test@example.com",
+                        "password": "password123",
+                    }
+                ),
+                context,
+            )
 
     verify_password.assert_not_called()
     assert response.status_code == 400
@@ -584,17 +602,19 @@ def test_password_grant_success(
     context: Context,
     session_storage: MemorySessionStorage,
 ):
-    response = issuer.token(
-        HTTPRequest.from_form_data(
-            data={
-                "grant_type": "password",
-                "client_id": "test",
-                "username": "test@example.com",
-                "password": "password123",
-            }
-        ),
-        context,
-    )
+    context.oauth_server = LEGACY_PASSWORD_SERVER
+    with legacy_password_grant():
+        response = issuer.token(
+            HTTPRequest.from_form_data(
+                data={
+                    "grant_type": "password",
+                    "client_id": "test",
+                    "username": "test@example.com",
+                    "password": "password123",
+                }
+            ),
+            context,
+        )
     assert response.status_code == 200
     assert response.json() == snapshot(
         {
@@ -630,18 +650,20 @@ def test_password_grant_with_scope(
     context: Context,
     session_storage: MemorySessionStorage,
 ):
-    response = issuer.token(
-        HTTPRequest.from_form_data(
-            data={
-                "grant_type": "password",
-                "client_id": "test",
-                "username": "test@example.com",
-                "password": "password123",
-                "scope": "",
-            }
-        ),
-        context,
-    )
+    context.oauth_server = LEGACY_PASSWORD_SERVER
+    with legacy_password_grant():
+        response = issuer.token(
+            HTTPRequest.from_form_data(
+                data={
+                    "grant_type": "password",
+                    "client_id": "test",
+                    "username": "test@example.com",
+                    "password": "password123",
+                    "scope": "",
+                }
+            ),
+            context,
+        )
     assert response.status_code == 200
     assert response.json() == snapshot(
         {
@@ -676,6 +698,7 @@ def test_password_grant_verifies_password_hash_for_unknown_users(
     issuer: Issuer,
     context: Context,
 ):
+    context.oauth_server = LEGACY_PASSWORD_SERVER
     existing_user = context.accounts_storage.find_user_by_email("test@example.com")
     assert existing_user is not None
     assert existing_user.hashed_password is not None
@@ -687,17 +710,18 @@ def test_password_grant_verifies_password_hash_for_unknown_users(
         return False
 
     def request_password_token(username: str):
-        return issuer.token(
-            HTTPRequest.from_form_data(
-                data={
-                    "grant_type": "password",
-                    "client_id": "test",
-                    "username": username,
-                    "password": "wrong_password",
-                }
-            ),
-            context,
-        )
+        with legacy_password_grant():
+            return issuer.token(
+                HTTPRequest.from_form_data(
+                    data={
+                        "grant_type": "password",
+                        "client_id": "test",
+                        "username": username,
+                        "password": "wrong_password",
+                    }
+                ),
+                context,
+            )
 
     with mock.patch(
         "cross_auth._password.pwd_context.verify",

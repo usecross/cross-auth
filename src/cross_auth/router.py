@@ -199,17 +199,20 @@ class AuthRouter(APIRouter):
         self.extra_schemas = {}
         self.context = setup.context
 
+        oauth_server = setup.context.oauth_server
         provider_routes: list[Route] = []
         for provider in setup.providers:
             provider_routes.extend(
                 _provider_routes(
                     provider,
                     cookie_auth=setup.context.cookie_auth_enabled,
-                    oauth_server=self.issuer is not None,
+                    oauth_server=oauth_server is not None,
                 )
             )
-        if self.issuer is not None:
-            provider_routes.extend(self.issuer.routes)
+        if self.issuer is not None and oauth_server is not None:
+            provider_routes.extend(
+                self.issuer.routes(password_grant=oauth_server.password_grant)
+            )
 
         for route in provider_routes:
             self.add_api_route(

@@ -18,6 +18,7 @@ from cross_auth.social_providers.github import GitHubProvider
 from cross_auth.social_providers.oauth import OAuth2Provider
 
 from .conftest import TEST_PASSWORD, MemorySessionStorage
+from .conftest import legacy_password_grant
 
 
 def _build(
@@ -180,21 +181,22 @@ def test_issuer_runs_against_the_setup_context(
         session_storage=session_storage,
         hooks=hooks,
         normalize_email=lambda email: email.strip().lower(),
-        oauth_server=OAuthServer(),
+        oauth_server=OAuthServer(password_grant=True),
     )
     assert setup.issuer is not None
 
-    response = setup.issuer.token(
-        HTTPRequest.from_form_data(
-            data={
-                "grant_type": "password",
-                "client_id": "test",
-                "username": "  TEST@example.com ",
-                "password": TEST_PASSWORD,
-            }
-        ),
-        setup.context,
-    )
+    with legacy_password_grant():
+        response = setup.issuer.token(
+            HTTPRequest.from_form_data(
+                data={
+                    "grant_type": "password",
+                    "client_id": "test",
+                    "username": "  TEST@example.com ",
+                    "password": TEST_PASSWORD,
+                }
+            ),
+            setup.context,
+        )
 
     assert response.status_code == 200
     assert seen == ["test"]
