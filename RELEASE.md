@@ -30,14 +30,21 @@ CROSS_AUTH = {
 - Sign-in refuses inactive users, existing users with the same email (connect
   explicitly instead), and unverified emails at signup, then calls
   `django.contrib.auth.login()` and saves the database-backed session.
-- Django signals in `cross_auth.django.signals` run code around provider
-  sign-ins: `before_user_create`, `user_created`, `before_login` and
-  `after_login`. Connect receivers with `@receiver` in your app's
-  `AppConfig.ready()`. `before_*` receivers get read-only values such as `email`
-  and refuse by raising `PermissionDenied` (403); `user_created` and
-  `after_login` get the native user and `HttpRequest` once the sign-up or the
-  session is committed. Receiver errors propagate and return values are ignored.
-  Django's own `user_logged_in` is sent once, by `login()`.
+- Django signals in `cross_auth.django.signals` run code around the provider
+  flows: `before_authorization`/`authorization_started` (login and link views),
+  `before_callback` (once Google's response is verified, before any account is
+  touched), `before_user_create`/`user_created`,
+  `before_social_account_create`/`social_account_created`,
+  `before_social_account_update`/`social_account_updated`,
+  `social_account_linked` (a link's committed connection),
+  `before_login`/`after_login`, and
+  `before_social_account_disconnect`/`social_account_disconnected`. Connect
+  receivers with `@receiver` in your app's `AppConfig.ready()`. `before_*`
+  receivers get read-only values such as `email` and string IDs, and refuse by
+  raising `PermissionDenied` (403) before anything is written; the others get
+  the native user or `SocialAccount` once the change is committed. Receiver
+  errors propagate and return values are ignored. Django's own `user_logged_in`
+  is sent once, by `login()`, and password logins send only Django's signals.
 - System checks cover the backend, session engine, middleware and settings, and
   warn when a known multi-factor app is installed, since provider sign-in would
   bypass it.
@@ -48,8 +55,11 @@ CROSS_AUTH = {
   including disconnecting and connecting Google without deleting users.
 
 Core changes shared with FastAPI: browser sign-in can complete through a
-framework-owned login instead of a Cross Auth cookie session, the connect flow
-can add a login method after the same email checks as `finalize-link`, and
-`next` URLs containing backslashes or control characters now fall back to the
-default redirect. `LoginCredential` gains `"django_session"`, so code that
-matches every credential type needs a new case.
+framework-owned login instead of a Cross Auth cookie session, an internal
+`handle_callback` callback lets a framework adapter see the verified identity of
+a session or connect callback before any account is touched (FastAPI's hooks are
+unchanged and its connect flow still runs no `oauth.callback` hooks), the
+connect flow can add a login method after the same email checks as
+`finalize-link`, and `next` URLs containing backslashes or control characters
+now fall back to the default redirect. `LoginCredential` gains
+`"django_session"`, so code that matches every credential type needs a new case.

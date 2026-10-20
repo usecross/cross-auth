@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -24,10 +24,18 @@ from django.contrib.sessions.models import Session
 from django.core.exceptions import PermissionDenied
 from django.db import IntegrityError, connections, transaction
 from django.http import HttpRequest, HttpResponse, HttpResponseBase
-from django.test import AsyncClient, Client, override_settings
+from django.test import AsyncClient, Client, RequestFactory, override_settings
 
-from cross_auth.django.models import SocialAccount
-from cross_auth.django.storage import DjangoAccountsStorage, DjangoUser
+from cross_auth._auth_flow import _create_social_account
+from cross_auth._context import Context
+from cross_auth.django import views
+from cross_auth.django.conf import get_settings
+from cross_auth.django.models import ExpiringValue, SocialAccount
+from cross_auth.django.storage import (
+    DjangoAccountsStorage,
+    DjangoSecondaryStorage,
+    DjangoUser,
+)
 
 from .conftest import CUSTOM_USER, connect, make_user
 from .fake_google import CALLBACK, Account, Authorization, FakeGoogle
@@ -613,14 +621,63 @@ class TestDisconnect:
         assert csrf_post(client, self.path(account)).status_code == 401
 
 
+LOGIN_START = ["before_authorization", "authorization_started"]
+SIGN_UP = [
+    *LOGIN_START,
+    "before_callback",
+    "before_user_create",
+    "before_social_account_create",
+    "user_created",
+    "social_account_created",
+    "before_login",
+    "after_login",
+]
+RETURNING_SIGN_IN = [
+    *LOGIN_START,
+    "before_callback",
+    "before_social_account_update",
+    "social_account_updated",
+    "before_login",
+    "after_login",
+]
+LINK = [
+    "before_authorization",
+    "authorization_started",
+    "before_callback",
+    "before_social_account_create",
+    "social_account_created",
+    "social_account_linked",
+]
+# Raw provider credentials no receiver should see.
+SECRETS = {"google-access-token", "test-client-secret"}
+
+
+def refuse(**kwargs: Any) -> None:
+    raise PermissionDenied("Not allowed.")
+
+
+def password_user(client: Client, email: str = "person@gmail.com") -> Any:
+    user = make_user(email, password="secret")
+    client.force_login(user, backend="django.contrib.auth.backends.ModelBackend")
+    return user
+
+
+def link(client: Client, google: FakeGoogle) -> HttpResponseBase:
+    authorization = google.authorize(csrf_post(client, "/auth/google/link/"))
+    return google.callback(client, authorization)
+
+
+def stored_states() -> int:
+    return ExpiringValue.objects.filter(
+        key__startswith="oauth:authorization_request"
+    ).count()
+
+
 class TestSignals:
     def test_sign_up_sends_each_signal_once(
         self, client: Client, google: FakeGoogle
     ) -> None:
-        logged_in: list[str] = []
-
         def native_login(sender: object, **kwargs: Any) -> None:
-            logged_in.append("user_logged_in")
             signals.events.append(("user_logged_in", kwargs))
 
         user_logged_in.connect(native_login)
@@ -631,47 +688,84 @@ class TestSignals:
 
         # Django sends its own user_logged_in inside login(); Cross Auth does
         # not send it again and after_login follows the saved session.
-        assert sent() == [
-            "before_user_create",
-            "user_created",
-            "before_login",
-            "user_logged_in",
-            "after_login",
-        ]
+        expected = list(SIGN_UP)
+        expected.insert(expected.index("after_login"), "user_logged_in")
+        assert sent() == expected
         User = get_user_model()
-        for name in ("before_user_create", "user_created", "before_login"):
-            assert payload(name)["sender"] is User
-            assert payload(name)["provider"] == "google"
-            assert isinstance(payload(name)["request"], HttpRequest)
-        assert payload("after_login")["sender"] is User
+        for name, kwargs in signals.events:
+            if name == "user_logged_in":
+                continue
+            assert kwargs["sender"] is User, name
+            assert kwargs["provider"] == "google", name
+            assert isinstance(kwargs["request"], HttpRequest), name
 
     def test_before_signals_get_values_not_records(
         self, client: Client, google: FakeGoogle
     ) -> None:
         sign_in(client, google)
+        user_id = whoami(client)["user_id"]
+        account = SocialAccount.objects.get()
 
-        before_create = payload("before_user_create")
-        assert set(before_create) == {
-            "signal",
-            "sender",
-            "request",
-            "provider",
+        common = {"signal", "sender", "request", "provider"}
+        assert payload("before_authorization").keys() - common == {"flow", "user_id"}
+        assert payload("before_authorization")["flow"] == "login"
+        assert payload("before_authorization")["user_id"] is None
+        assert payload("before_callback").keys() - common == {
+            "flow",
+            "provider_user_id",
             "email",
             "email_verified",
+            "user_id",
         }
+        before_callback = payload("before_callback")
+        assert before_callback["flow"] == "login"
+        assert before_callback["provider_user_id"] == "google-sub-1"
+        assert before_callback["email"] == "person@gmail.com"
+        assert before_callback["email_verified"] is True
+        assert before_callback["user_id"] is None
+        before_create = payload("before_user_create")
+        assert before_create.keys() - common == {"email", "email_verified"}
         assert before_create["email"] == "person@gmail.com"
         assert before_create["email_verified"] is True
-        before = payload("before_login")
-        assert set(before) == {
-            "signal",
-            "sender",
-            "request",
-            "provider",
+        before_account = payload("before_social_account_create")
+        assert before_account.keys() - common == {
             "user_id",
+            "provider_user_id",
             "email",
+            "email_verified",
+            "is_login_method",
         }
-        assert before["user_id"] == whoami(client)["user_id"]
+        assert before_account["user_id"] == user_id
+        assert before_account["provider_user_id"] == "google-sub-1"
+        assert before_account["is_login_method"] is True
+        before = payload("before_login")
+        assert before.keys() - common == {"user_id", "email"}
+        assert before["user_id"] == user_id
         assert before["email"] == "person@gmail.com"
+
+        signals.events.clear()
+        sign_in(Client(enforce_csrf_checks=True), google)
+        before_update = payload("before_social_account_update")
+        assert before_update.keys() - common == {
+            "social_account_id",
+            "user_id",
+            "provider_user_id",
+            "email",
+            "email_verified",
+            "is_login_method",
+        }
+        assert before_update["social_account_id"] == str(account.pk)
+        assert before_update["user_id"] == user_id
+
+        # Plain values only: no users, accounts, providers or credentials.
+        for name, kwargs in signals.events:
+            if not name.startswith("before_"):
+                continue
+            for key, value in kwargs.items():
+                if key in common:
+                    continue
+                assert value is None or type(value) in {str, bool}, (name, key)
+                assert value not in SECRETS, (name, key)
 
     def test_after_signals_get_the_native_user_and_request(
         self, client: Client, google: FakeGoogle
@@ -690,16 +784,23 @@ class TestSignals:
         sign_in(client, google)
 
         User = get_user_model()
+        common = {"signal", "sender", "request", "provider"}
         created = payload("user_created")
-        assert set(created) == {"signal", "sender", "request", "provider", "user"}
+        assert created.keys() - common == {"user"}
         native = created["user"]
         assert type(native) is User
         assert native._state.db == "default"
         assert str(native.pk) == whoami(client)["user_id"]
         if CUSTOM_USER:
             assert isinstance(native.pk, uuid.UUID)
+        account = payload("social_account_created")
+        assert account.keys() - common == {"social_account"}
+        assert type(account["social_account"]) is SocialAccount
+        assert account["social_account"]._state.db == "default"
+        assert account["social_account"].pk == SocialAccount.objects.get().pk
+        assert account["social_account"].user_id == native.pk
         after = payload("after_login")
-        assert set(after) == {"signal", "sender", "request", "provider", "user"}
+        assert after.keys() - common == {"user"}
         assert type(after["user"]) is User
         assert after["user"].pk == native.pk
         assert seen == {
@@ -708,15 +809,22 @@ class TestSignals:
             "request_user": after["user"],
         }
 
-    def test_returning_sign_in_sends_only_login_signals(
+    def test_returning_sign_in_refreshes_the_account_once(
         self, client: Client, google: FakeGoogle
     ) -> None:
         sign_in(client, google)
         signals.events.clear()
 
-        sign_in(Client(enforce_csrf_checks=True), google)
+        sign_in(
+            Client(enforce_csrf_checks=True), google, Account(email="new@gmail.com")
+        )
 
-        assert sent() == ["before_login", "after_login"]
+        assert sent() == RETURNING_SIGN_IN
+        assert payload("before_social_account_update")["email"] == "new@gmail.com"
+        updated = payload("social_account_updated")["social_account"]
+        assert type(updated) is SocialAccount
+        assert updated.provider_email == "new@gmail.com"
+        assert updated.pk == SocialAccount.objects.get().pk
 
     def test_before_login_permission_denied_is_forbidden(
         self, client: Client, google: FakeGoogle
@@ -724,31 +832,24 @@ class TestSignals:
         sign_in(Client(enforce_csrf_checks=True), google)
         signals.events.clear()
         sessions = Session.objects.count()
-
-        def refuse(**kwargs: Any) -> None:
-            raise PermissionDenied("Use your company account.")
-
         signals.handlers["before_login"] = refuse
 
         response = sign_in(client, google)
 
         assert response.status_code == 403
         assert whoami(client)["authenticated"] is False
-        assert sent() == ["before_login"]
+        assert sent() == RETURNING_SIGN_IN[:-1]
         assert Session.objects.count() == sessions
 
     def test_before_user_create_permission_denied_creates_nothing(
         self, client: Client, google: FakeGoogle
     ) -> None:
-        def refuse(**kwargs: Any) -> None:
-            raise PermissionDenied("Sign-ups are closed.")
-
         signals.handlers["before_user_create"] = refuse
 
         response = sign_in(client, google)
 
         assert response.status_code == 403
-        assert sent() == ["before_user_create"]
+        assert sent() == [*LOGIN_START, "before_callback", "before_user_create"]
         assert not get_user_model()._default_manager.exists()
         assert not SocialAccount.objects.exists()
         assert whoami(client)["authenticated"] is False
@@ -756,35 +857,48 @@ class TestSignals:
     def test_return_values_are_ignored(
         self, client: Client, google: FakeGoogle
     ) -> None:
-        signals.handlers["before_user_create"] = lambda **kwargs: {
-            "email": "attacker@example.com"
-        }
+        rewrite = {"email": "attacker@example.com", "provider_user_id": "attacker"}
+        for name in (
+            "before_callback",
+            "before_user_create",
+            "before_social_account_create",
+        ):
+            signals.handlers[name] = lambda **kwargs: rewrite
         signals.handlers["before_login"] = lambda **kwargs: False
 
         sign_in(client, google)
 
         native = get_user_model()._default_manager.get()
         assert DjangoUser(native, password_login=True).email == "person@gmail.com"
+        account = SocialAccount.objects.get()
+        assert account.provider_user_id == "google-sub-1"
+        assert account.provider_email == "person@gmail.com"
         assert whoami(client)["authenticated"] is True
 
     def test_user_created_follows_the_committed_sign_up(
         self, client: Client, google: FakeGoogle
     ) -> None:
-        seen: list[tuple[bool, bool]] = []
+        seen: list[tuple[str, bool, bool]] = []
 
-        def created(user: Any, **kwargs: Any) -> None:
-            seen.append(
-                (
-                    connections["default"].in_atomic_block,
-                    SocialAccount.objects.filter(user_id=user.pk).exists(),
+        def committed(name: str) -> Callable[..., None]:
+            def check(**kwargs: Any) -> None:
+                native = kwargs.get("user") or kwargs["social_account"].user
+                seen.append(
+                    (
+                        name,
+                        connections["default"].in_atomic_block,
+                        SocialAccount.objects.filter(user_id=native.pk).exists(),
+                    )
                 )
-            )
 
-        signals.handlers["user_created"] = created
+            return check
+
+        signals.handlers["user_created"] = committed("user_created")
+        signals.handlers["social_account_created"] = committed("social_account")
 
         sign_in(client, google)
 
-        assert seen == [(False, True)]
+        assert seen == [("user_created", False, True), ("social_account", False, True)]
 
     def test_user_created_follows_the_factory_rows(
         self, client: Client, google: FakeGoogle
@@ -795,6 +909,11 @@ class TestSignals:
         signals.handlers["user_created"] = lambda user, **kwargs: profiles.append(
             Profile.objects.filter(user=user).exists()
         )
+        signals.handlers["social_account_created"] = (
+            lambda social_account, **kwargs: profiles.append(
+                Profile.objects.filter(user_id=social_account.user_id).exists()
+            )
+        )
 
         with override_settings(
             CROSS_AUTH={
@@ -804,7 +923,7 @@ class TestSignals:
         ):
             sign_in(client, google)
 
-        assert profiles == [True]
+        assert profiles == [True, True]
 
     def test_failed_sign_up_sends_no_user_created(
         self, client: Client, google: FakeGoogle
@@ -820,7 +939,7 @@ class TestSignals:
         ):
             sign_in(client, google)
 
-        assert sent() == ["before_user_create"]
+        assert sent() == [*LOGIN_START, "before_callback", "before_user_create"]
         assert not get_user_model()._default_manager.exists()
         assert not SocialAccount.objects.exists()
 
@@ -836,7 +955,7 @@ class TestSignals:
         response = sign_in(client, google)
 
         assert error_of(response) == "account_not_linked"
-        assert sent() == ["before_user_create"]
+        assert sent() == [*LOGIN_START, "before_callback", "before_user_create"]
         assert not SocialAccount.objects.exists()
 
     @pytest.mark.parametrize("error", [RuntimeError("boom"), IntegrityError("app")])
@@ -854,7 +973,7 @@ class TestSignals:
         # The sign-up is committed and not retried; nobody is logged in.
         native = get_user_model()._default_manager.get()
         assert SocialAccount.objects.get().user_id == native.pk
-        assert sent() == ["before_user_create", "user_created"]
+        assert sent() == SIGN_UP[: SIGN_UP.index("user_created") + 1]
         assert whoami(client)["authenticated"] is False
 
     def test_after_login_errors_propagate_after_the_session_is_saved(
@@ -873,19 +992,15 @@ class TestSignals:
         assert [data["_auth_user_id"] for data in stored] == [str(native.pk)]
         assert sent().count("after_login") == 1
 
-    def test_password_login_and_linking_send_no_login_signals(
-        self, client: Client, google: FakeGoogle
-    ) -> None:
+    def test_password_login_sends_nothing(self, client: Client) -> None:
         make_user("person@gmail.com", password="secret")
+
         assert client.login(username="person@gmail.com", password="secret")
+        csrf_post(client, "/accounts/logout/")
 
-        authorization = google.authorize(csrf_post(client, "/auth/google/link/"))
-        google.callback(client, authorization)
-
-        assert SocialAccount.objects.exists()
         assert sent() == []
 
-    def test_failed_callback_sends_nothing(
+    def test_failed_callback_sends_no_callback_signals(
         self, client: Client, google: FakeGoogle
     ) -> None:
         authorization = start_login(client, google)
@@ -895,7 +1010,7 @@ class TestSignals:
             {"state": authorization.state, "error": "access_denied"},
         )
 
-        assert sent() == []
+        assert sent() == LOGIN_START
 
     def test_reloading_settings_and_apps_does_not_duplicate_signals(
         self, client: Client, google: FakeGoogle
@@ -906,12 +1021,403 @@ class TestSignals:
         with override_settings(CROSS_AUTH={**settings.CROSS_AUTH}):
             sign_in(client, google)
 
+        assert sent() == SIGN_UP
+
+
+class TestAuthorizationSignals:
+    def test_login_signals_follow_the_stored_state(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        states: list[int] = []
+        signals.handlers["before_authorization"] = lambda **kwargs: states.append(
+            stored_states()
+        )
+        signals.handlers["authorization_started"] = lambda **kwargs: states.append(
+            stored_states()
+        )
+
+        start_login(client, google)
+
+        assert sent() == LOGIN_START
+        assert states == [0, 1]
+        started = payload("authorization_started")
+        assert started.keys() == {"signal", "sender", "request", "provider", "flow"}
+        assert started["flow"] == "login"
+        assert started["sender"] is get_user_model()
+
+    def test_link_signals_name_the_signed_in_user(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        user = password_user(client)
+        seen: list[Any] = []
+        signals.handlers["authorization_started"] = (
+            lambda request, **kwargs: seen.append(request.user.pk)
+        )
+
+        google.authorize(csrf_post(client, "/auth/google/link/"))
+
+        assert sent() == ["before_authorization", "authorization_started"]
+        assert payload("before_authorization")["flow"] == "link"
+        assert payload("before_authorization")["user_id"] == str(user.pk)
+        assert payload("authorization_started")["flow"] == "link"
+        assert seen == [user.pk]
+
+    @pytest.mark.parametrize("path", ["/auth/google/login/", "/auth/google/link/"])
+    def test_refused_authorization_stores_nothing(
+        self, client: Client, path: str
+    ) -> None:
+        password_user(client)
+        signals.handlers["before_authorization"] = refuse
+
+        response = csrf_post(client, path)
+
+        assert response.status_code == 403
+        assert sent() == ["before_authorization"]
+        assert stored_states() == 0
+        assert not [name for name in response.cookies if name.startswith("cross")]
+
+    def test_signed_out_link_sends_nothing(self, client: Client) -> None:
+        assert csrf_post(client, "/auth/google/link/").status_code == 401
+        assert sent() == []
+
+    def test_failed_state_write_sends_no_authorization_started(
+        self, client: Client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fail(*args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("storage down")
+
+        monkeypatch.setattr(DjangoSecondaryStorage, "set", fail)
+
+        with pytest.raises(RuntimeError):
+            csrf_post(client, "/auth/google/login/")
+
+        assert sent() == ["before_authorization"]
+
+
+class TestCallbackSignals:
+    def test_before_callback_follows_verification(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        seen: list[tuple[int, int, int]] = []
+        signals.handlers["before_callback"] = lambda **kwargs: seen.append(
+            (
+                stored_states(),
+                get_user_model()._default_manager.count(),
+                SocialAccount.objects.count(),
+            )
+        )
+
+        sign_in(client, google)
+
+        # The state is consumed and nothing is looked up or written yet.
+        assert seen == [(0, 0, 0)]
+
+    def test_refused_sign_in_callback_writes_nothing(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        sign_in(Client(enforce_csrf_checks=True), google)
+        account = SocialAccount.objects.get()
+        sessions = Session.objects.count()
+        signals.events.clear()
+        signals.handlers["before_callback"] = refuse
+
+        response = sign_in(client, google, Account(email="new@gmail.com"))
+        first = sign_in(
+            Client(enforce_csrf_checks=True), google, Account(sub="google-sub-2")
+        )
+
+        assert response.status_code == first.status_code == 403
+        assert sent() == [*LOGIN_START, "before_callback"] * 2
+        assert SocialAccount.objects.get().provider_email == account.provider_email
+        assert get_user_model()._default_manager.count() == 1
+        assert Session.objects.count() == sessions
+        assert whoami(client)["authenticated"] is False
+
+    def test_unverified_callbacks_send_no_before_callback(
+        self, google: FakeGoogle
+    ) -> None:
+        # Wrong nonce, another browser, a forged code and a replay.
+        client = Client(enforce_csrf_checks=True)
+        authorization = start_login(client, google)
+        authorization.params["nonce"] = "attacker-nonce"
+        assert error_of(google.callback(client, authorization)) == "invalid_token"
+
+        authorization = start_login(client, google)
+        attacker = Client(enforce_csrf_checks=True)
+        assert error_of(google.callback(attacker, authorization)) == "invalid_request"
+        forged = {"state": authorization.state, "code": "forged"}
+        assert client.get("/auth/google/callback", forged).status_code == 400
+        assert "before_callback" not in sent()
+
+        authorization = start_login(client, google)
+        code = google.approve(authorization, Account())
+        params = {"state": authorization.state, "code": code}
+        assert client.get("/auth/google/callback", params).status_code == 302
+        signals.events.clear()
+        assert client.get("/auth/google/callback", params).status_code >= 300
+
+        assert sent() == []
+
+    def test_link_callback_names_the_linking_user(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        user = password_user(client)
+
+        link(client, google)
+
+        assert sent() == LINK
+        before = payload("before_callback")
+        assert before["flow"] == "link"
+        assert before["user_id"] == str(user.pk)
+        assert before["provider_user_id"] == "google-sub-1"
+        assert payload("before_social_account_create")["user_id"] == str(user.pk)
+        account = SocialAccount.objects.get()
+        for name in ("social_account_created", "social_account_linked"):
+            assert payload(name)["social_account"].pk == account.pk
+            assert payload(name)["social_account"].user_id == user.pk
+        # Linking is not a login.
+        assert whoami(client)["backend"] == "django.contrib.auth.backends.ModelBackend"
+
+    @pytest.mark.parametrize(
+        "name", ["before_callback", "before_social_account_create"]
+    )
+    def test_refused_link_writes_nothing(
+        self, client: Client, google: FakeGoogle, name: str
+    ) -> None:
+        user = password_user(client)
+        signals.handlers[name] = refuse
+
+        response = link(client, google)
+
+        assert response.status_code == 403
+        assert sent()[-1] == name
+        assert not SocialAccount.objects.exists()
+        assert whoami(client)["user_id"] == str(user.pk)
+
+    def test_link_promotion_is_an_update(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        user = password_user(client)
+        connect(user, is_login_method=False)
+
+        link(client, google)
+
         assert sent() == [
-            "before_user_create",
-            "user_created",
-            "before_login",
-            "after_login",
+            *LOGIN_START,
+            "before_callback",
+            "before_social_account_update",
+            "social_account_updated",
+            "social_account_linked",
         ]
+        assert payload("before_social_account_update")["is_login_method"] is False
+        linked = payload("social_account_linked")["social_account"]
+        assert linked.is_login_method is True
+        assert payload("social_account_updated")["social_account"] is linked
+
+    def test_failed_link_sends_no_linked(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        owner = make_user("owner@example.com")
+        connect(owner)
+        password_user(client)
+
+        response = link(client, google)
+
+        assert error_of(response) == "account_already_linked"
+        assert sent() == [
+            *LOGIN_START,
+            "before_callback",
+            "before_social_account_create",
+        ]
+
+    @pytest.mark.parametrize("error", [RuntimeError("boom"), IntegrityError("app")])
+    def test_social_account_created_errors_propagate_after_commit(
+        self, client: Client, google: FakeGoogle, error: Exception
+    ) -> None:
+        def fail(**kwargs: Any) -> None:
+            raise error
+
+        user = password_user(client)
+        signals.handlers["social_account_created"] = fail
+
+        with pytest.raises(type(error)):
+            link(client, google)
+
+        assert SocialAccount.objects.get().user_id == user.pk
+        assert sent() == LINK[:-1]
+
+    def test_refused_refresh_does_not_log_in(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        sign_in(Client(enforce_csrf_checks=True), google)
+        signals.events.clear()
+        signals.handlers["before_social_account_update"] = refuse
+
+        response = sign_in(client, google, Account(email="new@gmail.com"))
+
+        assert response.status_code == 403
+        assert sent() == RETURNING_SIGN_IN[:4]
+        assert SocialAccount.objects.get().provider_email == "person@gmail.com"
+        assert whoami(client)["authenticated"] is False
+
+    def test_refused_sign_up_identity_rolls_back_the_user(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        signals.handlers["before_social_account_create"] = refuse
+
+        response = sign_in(client, google)
+
+        assert response.status_code == 403
+        assert sent() == SIGN_UP[: SIGN_UP.index("before_social_account_create") + 1]
+        assert not get_user_model()._default_manager.exists()
+        assert not SocialAccount.objects.exists()
+
+
+class TestDisconnectSignals:
+    def path(self, account: SocialAccount) -> str:
+        return f"/auth/google/accounts/{account.pk}/disconnect/"
+
+    def test_disconnect_sends_after_the_committed_removal(self, client: Client) -> None:
+        user = password_user(client)
+        account = connect(user)
+        seen: list[tuple[bool, bool]] = []
+        signals.handlers["social_account_disconnected"] = lambda **kwargs: seen.append(
+            (
+                connections["default"].in_atomic_block,
+                SocialAccount.objects.filter(pk=account.pk).exists(),
+            )
+        )
+
+        response = csrf_post(client, self.path(account))
+
+        assert response.status_code == 302
+        assert sent() == [
+            "before_social_account_disconnect",
+            "social_account_disconnected",
+        ]
+        before = payload("before_social_account_disconnect")
+        assert before.keys() - {"signal", "sender", "request", "provider"} == {
+            "social_account_id",
+            "user_id",
+            "provider_user_id",
+        }
+        assert before["social_account_id"] == str(account.pk)
+        assert before["user_id"] == str(user.pk)
+        assert before["provider_user_id"] == "google-sub-1"
+        removed = payload("social_account_disconnected")["social_account"]
+        assert type(removed) is SocialAccount
+        assert (removed.pk, removed.user_id) == (account.pk, user.pk)
+        assert seen == [(False, False)]
+
+    def test_refused_disconnect_keeps_the_account(self, client: Client) -> None:
+        account = connect(password_user(client))
+        signals.handlers["before_social_account_disconnect"] = refuse
+
+        response = csrf_post(client, self.path(account))
+
+        assert response.status_code == 403
+        assert sent() == ["before_social_account_disconnect"]
+        assert SocialAccount.objects.filter(pk=account.pk).exists()
+
+    def test_kept_last_login_method_sends_no_disconnected(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        sign_in(client, google)
+        account = SocialAccount.objects.get()
+        signals.events.clear()
+
+        response = csrf_post(client, self.path(account))
+
+        assert error_of(response) == "no_alternative_login_method"
+        assert sent() == ["before_social_account_disconnect"]
+
+    def test_someone_elses_account_sends_nothing(self, client: Client) -> None:
+        account = connect(make_user("owner@example.com", password="secret"))
+        password_user(client, "other@example.com")
+
+        assert error_of(csrf_post(client, self.path(account))) == (
+            "account_not_connected"
+        )
+        assert sent() == []
+
+    @pytest.mark.parametrize("error", [RuntimeError("boom"), IntegrityError("app")])
+    def test_disconnected_errors_propagate_after_commit(
+        self, client: Client, error: Exception
+    ) -> None:
+        def fail(**kwargs: Any) -> None:
+            raise error
+
+        account = connect(password_user(client))
+        signals.handlers["social_account_disconnected"] = fail
+
+        with pytest.raises(type(error)):
+            csrf_post(client, self.path(account))
+
+        assert not SocialAccount.objects.exists()
+        assert sent().count("social_account_disconnected") == 1
+
+
+class TestSignalCommits:
+    """Account signals follow Django's commit, as ``on_commit`` callbacks."""
+
+    @pytest.fixture
+    def context(self) -> Context:
+        provider = get_settings().providers["google"]
+        request = RequestFactory().get("/auth/google/callback")
+        return views._context(request, views._Signals(request, provider))
+
+    def create(self, context: Context, user: Any, sub: str) -> None:
+        _create_social_account(
+            context=context,
+            user_id=user.pk,
+            provider="google",
+            provider_user_id=sub,
+            access_token=None,
+            refresh_token=None,
+            access_token_expires_at=None,
+            refresh_token_expires_at=None,
+            scope=None,
+            user_info={"id": sub},
+            provider_email=None,
+            provider_email_verified=None,
+            is_login_method=False,
+        )
+
+    def test_sent_when_the_outer_transaction_commits(self, context: Context) -> None:
+        user = make_user("person@gmail.com")
+
+        with transaction.atomic():
+            self.create(context, user, "google-sub-1")
+            assert sent() == ["before_social_account_create"]
+
+        assert sent() == ["before_social_account_create", "social_account_created"]
+
+    def test_not_sent_when_the_transaction_rolls_back(self, context: Context) -> None:
+        user = make_user("person@gmail.com")
+
+        with pytest.raises(RuntimeError), transaction.atomic():
+            self.create(context, user, "google-sub-1")
+            raise RuntimeError("rollback")
+
+        assert sent() == ["before_social_account_create"]
+        assert not SocialAccount.objects.exists()
+
+    def test_not_sent_for_a_rolled_back_savepoint(self, context: Context) -> None:
+        user = make_user("person@gmail.com")
+
+        with transaction.atomic():
+            self.create(context, user, "google-sub-1")
+            with pytest.raises(RuntimeError), transaction.atomic():
+                self.create(context, user, "google-sub-2")
+                raise RuntimeError("rollback")
+
+        created = [
+            kwargs["social_account"].provider_user_id
+            for name, kwargs in signals.events
+            if name == "social_account_created"
+        ]
+        assert created == ["google-sub-1"]
+        assert SocialAccount.objects.get().provider_user_id == "google-sub-1"
 
 
 class TestTransactions:

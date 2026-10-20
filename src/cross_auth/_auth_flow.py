@@ -144,6 +144,10 @@ class DisconnectResponse(BaseModel):
     message: str
 
 
+# Called with a callback's verified identity before any account is touched.
+OnVerified = Callable[[AuthRequest, ValidatedUserInfo], None]
+
+
 class ResolvedUser(NamedTuple):
     user: User
     created: bool
@@ -606,6 +610,7 @@ def handle_callback(
     context: Context,
     *,
     login: BrowserLogin | None = None,
+    on_verified: OnVerified | None = None,
 ) -> Response:
     """GET/POST /{provider}/callback — provider redirects back here.
 
@@ -626,12 +631,17 @@ def handle_callback(
     request — so these fallback redirects cannot be attacker-controlled.
 
     Session sign-ins use ``login`` when a framework owns the browser session,
-    and a Cross Auth cookie session otherwise.
+    and a Cross Auth cookie session otherwise. ``on_verified`` lets a framework
+    adapter refuse a session or connect callback once the provider identity is
+    verified and before any account is looked up or written; its exceptions
+    propagate.
     """
     if intercepted := provider.intercept_callback(request, context):
         return intercepted
 
-    response = _handle_oauth_callback(provider, request, context, login=login)
+    response = _handle_oauth_callback(
+        provider, request, context, login=login, on_verified=on_verified
+    )
     return provider.finalize_redirect(request, response)
 
 
@@ -667,6 +677,7 @@ def _handle_oauth_callback(
     context: Context,
     *,
     login: BrowserLogin | None,
+    on_verified: OnVerified | None,
 ) -> Response:
     """Handle the standard OAuth callback path after provider interception."""
     resume = request.query_params.get("resume") if request.method == "GET" else None
@@ -687,7 +698,13 @@ def _handle_oauth_callback(
     auth_request = _load_auth_request(context, state) if state else None
     if auth_request is None:
         return _complete_oauth_callback(
-            provider, request, context, callback_data, None, login=login
+            provider,
+            request,
+            context,
+            callback_data,
+            None,
+            login=login,
+            on_verified=on_verified,
         )
 
     if auth_request.provider_id != provider.id:
@@ -730,7 +747,13 @@ def _handle_oauth_callback(
         return Response.error("invalid_request", "OAuth callback has already been used")
 
     response = _complete_oauth_callback(
-        provider, request, context, callback_data, auth_request, login=login
+        provider,
+        request,
+        context,
+        callback_data,
+        auth_request,
+        login=login,
+        on_verified=on_verified,
     )
     response.cookies = [*(response.cookies or []), cookie]
     return response
@@ -744,6 +767,7 @@ def _complete_oauth_callback(
     auth_request: AuthRequest | None,
     *,
     login: BrowserLogin | None,
+    on_verified: OnVerified | None,
 ) -> Response:
     if auth_request is not None and auth_request.flow in {"token", "link"}:
         if (
@@ -831,6 +855,9 @@ def _complete_oauth_callback(
         return _flow_error(
             auth_request, error=e.error, error_description=e.error_description
         )
+
+    if on_verified is not None:
+        on_verified(auth_request, validated)
 
     if auth_request.flow == "connect":
         try:

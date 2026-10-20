@@ -15,7 +15,8 @@ This guide builds a Django project, step by step, where people can:
 - keep at least one way to sign in when disconnecting Google;
 - sign in with a Django password, then connect Google to the same user;
 - sign out with Django's own logout;
-- run your own code around Google sign-ups and sign-ins with Django signals.
+- run your own code around Google sign-ins, connections and disconnections with
+  Django signals.
 
 Cross Auth only handles the conversation with Google and stores which Google
 account belongs to which Django user. Django keeps owning everything else: the
@@ -529,7 +530,8 @@ connection are created before `before_login` is sent, so refusing there leaves
 the new user in place. To stop sign-ups instead, raise `PermissionDenied` from a
 `before_user_create` receiver, which runs before anything is written.
 
-These signals are sent only for Google sign-ins through Cross Auth. Django's own
+Cross Auth sends these signals only for its Google flows; other signals cover
+starting a sign-in and connecting or disconnecting Google. Django's own
 `user_logged_in` and `user_logged_out` signals cover every login and logout,
 including password logins, and are sent as usual. See the
 [signals reference](#signals-reference).
@@ -573,39 +575,89 @@ keys, such as UUIDs, are supported.
 
 ## Signals reference
 
-`cross_auth.django.signals` defines four signals. Their sender is your user
-model. Every receiver gets `request`, the `HttpRequest` of Google's callback,
-and `provider`, such as `"google"`, plus the arguments below. Write receivers
-with `**kwargs` so that new arguments do not break them.
+`cross_auth.django.signals` defines the signals below. Their sender is your user
+model. Every receiver gets `request`, the view's `HttpRequest`, and `provider`,
+such as `"google"`, plus the arguments listed. Write receivers with `**kwargs`
+so that new arguments do not break them.
 
-| Signal               | Sent                                                                                               | Arguments                                                                |
-| -------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `before_user_create` | Before a first sign-in creates a user. Nothing is written yet.                                     | `email` (normalized), `email_verified`                                   |
-| `user_created`       | After the user, the rows your `CREATE_USER` factory wrote and the Google connection are committed. | `user`, your user model instance                                         |
-| `before_login`       | Before Django's `login()`, once Google's response is verified and the user is known.               | `user_id` (the primary key as a string), `email` (the user's, or `None`) |
-| `after_login`        | After `login()` and after the session is saved to the database.                                    | `user`, your user model instance                                         |
+`before_*` signals get plain values: IDs are strings and nothing is a model
+instance, so a receiver cannot change what Cross Auth is about to do except by
+refusing. The other signals are sent once the change is committed and get model
+instances: your user model, or `cross_auth.django.models.SocialAccount` (the
+Google connection, with `user_id`, `provider_user_id`, `provider_email`,
+`provider_email_verified` and `is_login_method`). Use `.pk` on them.
 
-- **Refusing.** Raise `PermissionDenied` from `before_user_create` or
-  `before_login`. Django answers with its 403 page; no user is created
-  (`before_user_create`) or nobody is logged in (`before_login`), and the
-  `after` signals are not sent.
+| Signal                             | Sent                                                                                                                                                          | Arguments                                                                                                                   |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `before_authorization`             | By the login and link views, before they store anything and redirect to Google.                                                                               | `flow` (`"login"` or `"link"`), `user_id` (the signed-in user's for `"link"`, `None` for `"login"`)                         |
+| `authorization_started`            | After the view stored the sign-in attempt, just before the redirect.                                                                                          | `flow`; for `"link"`, `request.user` is the user linking                                                                    |
+| `before_callback`                  | When Google's callback is verified (state, browser, PKCE code exchange, ID token signature and nonce), before any user or connection is looked up or written. | `flow`, `provider_user_id`, `email` and `email_verified` as Google reported them, `user_id` (as for `before_authorization`) |
+| `before_user_create`               | Before a first sign-in creates a user. Nothing is written yet.                                                                                                | `email` (normalized), `email_verified`                                                                                      |
+| `user_created`                     | After the user, the rows your `CREATE_USER` factory wrote and the Google connection are committed.                                                            | `user`                                                                                                                      |
+| `before_social_account_create`     | Before a Google account is connected to a user: at sign-up, inside its transaction, or by a link.                                                             | `user_id`, `provider_user_id`, `email`, `email_verified`, `is_login_method`                                                 |
+| `social_account_created`           | After the new connection is committed.                                                                                                                        | `social_account`                                                                                                            |
+| `before_social_account_update`     | Before a connection is refreshed with Google's latest email: on every later sign-in, and when a link reconnects it.                                           | `social_account_id`, `user_id`, `provider_user_id`, the new `email` and `email_verified`, the stored `is_login_method`      |
+| `social_account_updated`           | After the refresh is committed.                                                                                                                               | `social_account`                                                                                                            |
+| `social_account_linked`            | After a link's connection is committed, following `social_account_created` or `social_account_updated`. Never sent by sign-ins.                               | `social_account`                                                                                                            |
+| `before_login`                     | Before Django's `login()`, once the user is known.                                                                                                            | `user_id`, `email` (the user's, or `None`)                                                                                  |
+| `after_login`                      | After `login()` and after the session is saved to the database.                                                                                               | `user`                                                                                                                      |
+| `before_social_account_disconnect` | Before the disconnect view removes one of the signed-in user's connections.                                                                                   | `social_account_id`, `user_id`, `provider_user_id`                                                                          |
+| `social_account_disconnected`      | After the removal is committed. Not sent when the connection was the user's last way to sign in and stayed.                                                   | `social_account`, the removed row; its `pk` and `user_id` still name it                                                     |
+
+The flows send them in this order:
+
+| Flow           | Signals                                                                                                                                                                                                                                                                            |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| First sign-in  | `before_authorization`, `authorization_started`, `before_callback`, `before_user_create`, `before_social_account_create`, `user_created`, `social_account_created`, `before_login`, `user_logged_in`, `after_login`                                                                |
+| Later sign-in  | `before_authorization`, `authorization_started`, `before_callback`, `before_social_account_update`, `social_account_updated`, `before_login`, `user_logged_in`, `after_login`                                                                                                      |
+| Connect Google | `before_authorization`, `authorization_started`, `before_callback`, `before_social_account_create`, `social_account_created`, `social_account_linked`; for a connection the user already has, `before_social_account_update` and `social_account_updated` instead of the first two |
+| Disconnect     | `before_social_account_disconnect`, `social_account_disconnected`                                                                                                                                                                                                                  |
+
+`user_logged_in` is Django's own signal, sent by `login()`.
+
+- **Refusing.** Raise `PermissionDenied` from any `before_*` receiver. Django
+  answers with its 403 page and the step does not happen: no state is stored,
+  nobody is created, connected, refreshed, logged in or disconnected, and the
+  later signals are not sent. Refusing in `before_social_account_create` at
+  sign-up rolls back the new user too. Refusing in `before_login` on a first
+  sign-in leaves the new user in place; refuse sign-ups in `before_user_create`
+  instead, or a Google account before anything is written in `before_callback`.
+- **Before the callback is verified** nothing is sent, so `before_callback` and
+  the signals after it never see an unverified Google response. A denied
+  consent, an expired or replayed callback, another browser's callback, or an
+  invalid ID token sends none of them.
 - **Return values** are ignored, as for any Django signal. Receivers cannot
-  change the email, the user or anything else Google reported. Put profile
-  fields and application rows in your [`CREATE_USER`](#custom-user-models)
-  factory.
+  change the email, the user, the Google account or anything else Google
+  reported. Put profile fields and application rows in your
+  [`CREATE_USER`](#custom-user-models) factory.
 - **Errors.** Signals are sent with `send()`, not `send_robust()`, so an
-  exception from any receiver propagates. From `user_created` or `after_login`
-  it arrives after the sign-up or the login is saved, which it cannot undo.
-- **Order.** A first sign-in sends `before_user_create`, `user_created`,
-  `before_login`, then Django's `user_logged_in`, then `after_login`. A later
-  sign-in sends only the last three. Connecting Google to a signed-in user sends
-  none of them.
+  exception from any receiver propagates. From a signal sent after a commit it
+  arrives after the change is saved, which it cannot undo, and the later signals
+  of that flow are not sent.
+- **Commits.** The signals after a commit are Django
+  [`on_commit`](https://docs.djangoproject.com/en/5.2/topics/db/transactions/#performing-actions-after-commit)
+  callbacks. Cross Auth's views run outside your transactions, so they follow
+  right away.
 - **Django's signals.** Cross Auth logs users in with
   `django.contrib.auth.login()`, so Django sends `user_logged_in` itself; Cross
-  Auth does not send it again. Logging out goes through Django's `LogoutView`
-  and `user_logged_out`; there is no Cross Auth logout signal. Provider failures
-  do not emit Django's `user_login_failed`, which is sent by failed calls to
-  Django's `authenticate()`.
+  Auth does not send it again. Password logins send only Django's signals.
+  Logging out goes through Django's `LogoutView` and `user_logged_out`; there is
+  no Cross Auth logout signal. Provider failures do not emit Django's
+  `user_login_failed`, which is sent by failed calls to Django's
+  `authenticate()`.
+
+For example, to tell users when Google was connected to their account:
+
+```python
+from django.dispatch import receiver
+
+from cross_auth.django.signals import social_account_linked
+
+
+@receiver(social_account_linked)
+def google_connected(sender, social_account, **kwargs):
+    print(f"Google connected to user {social_account.user_id}")
+```
 
 ## Settings reference
 
