@@ -39,7 +39,9 @@ _TRUSTED_ORIGINS_DEPRECATION = (
 FlowHandler = Callable[..., Response]
 
 
-def _provider_routes(provider: OAuth2Provider, *, cookie_auth: bool) -> list[Route]:
+def _provider_routes(
+    provider: OAuth2Provider, *, cookie_auth: bool, broker: bool
+) -> list[Route]:
     prefix = f"/{provider.id}"
 
     def bound(
@@ -87,12 +89,23 @@ def _provider_routes(provider: OAuth2Provider, *, cookie_auth: bool) -> list[Rou
                     }
                 ],
             ),
+        ]
+    )
+
+    if broker:
+        routes.append(
             Route(
                 path=f"{prefix}/authorize",
                 methods=["GET"],
                 function=bound(start_token_flow),
                 operation_id=f"{provider.id}_authorize",
-            ),
+            )
+        )
+
+    # The callback serves every flow, so it stays mounted without the broker
+    # and refuses the broker's pending requests itself.
+    routes.extend(
+        [
             Route(
                 path=f"{prefix}/callback",
                 methods=["GET"],
@@ -106,29 +119,36 @@ def _provider_routes(provider: OAuth2Provider, *, cookie_auth: bool) -> list[Rou
                 operation_id=f"{provider.id}_callback_post",
                 read_form_data=True,
             ),
-            Route(
-                path=f"{prefix}/link",
-                methods=["POST"],
-                function=bound(start_link_flow),
-                operation_id=f"{provider.id}_link",
-                read_body=True,
-            ),
-            Route(
-                path=f"{prefix}/finalize-link",
-                methods=["POST"],
-                function=bound(finalize_link),
-                operation_id=f"{provider.id}_finalize_link",
-                read_body=True,
-            ),
         ]
     )
+
+    if broker:
+        routes.extend(
+            [
+                Route(
+                    path=f"{prefix}/link",
+                    methods=["POST"],
+                    function=bound(start_link_flow),
+                    operation_id=f"{provider.id}_link",
+                    read_body=True,
+                ),
+                Route(
+                    path=f"{prefix}/finalize-link",
+                    methods=["POST"],
+                    function=bound(finalize_link),
+                    operation_id=f"{provider.id}_finalize_link",
+                    read_body=True,
+                ),
+            ]
+        )
 
     return routes
 
 
 class AuthRouter(APIRouter):
     context: Context
-    issuer: Issuer
+    # The OAuth broker's token endpoint; None when the broker is disabled.
+    issuer: Issuer | None
     extra_schemas: dict[str, Any]
 
     def __init__(
@@ -146,6 +166,8 @@ class AuthRouter(APIRouter):
         hooks: HookRegistry | None = None,
         normalize_email: Callable[[str], str] | None = None,
         get_client: ClientResolver | None = None,
+        *,
+        broker: bool = True,
     ):
         if trusted_origins is not None:
             warnings.warn(
@@ -164,6 +186,7 @@ class AuthRouter(APIRouter):
             hooks=hooks,
             normalize_email=normalize_email,
             get_client=get_client,
+            broker=broker,
         )
         self._mount(setup)
 
@@ -185,11 +208,15 @@ class AuthRouter(APIRouter):
         for provider in setup.providers:
             provider_routes.extend(
                 _provider_routes(
-                    provider, cookie_auth=setup.context.cookie_auth_enabled
+                    provider,
+                    cookie_auth=setup.context.cookie_auth_enabled,
+                    broker=setup.context.broker_enabled,
                 )
             )
+        if self.issuer is not None:
+            provider_routes.extend(self.issuer.routes)
 
-        for route in provider_routes + self.issuer.routes:
+        for route in provider_routes:
             self.add_api_route(
                 route.path,
                 route.to_fastapi_endpoint(setup.context),

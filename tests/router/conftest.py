@@ -67,10 +67,11 @@ def _build_auth(
     normalize_email: Callable[[str], str] | None = None,
     get_client: ClientResolver | None = None,
     token_issuer: TokenIssuer | None = None,
+    broker: bool = True,
 ) -> CrossAuth:
     if config is None:
         config = {"session": {"cookies": {"auth": True}}}
-    if get_client is None:
+    if broker and get_client is None:
         config = {
             "client_redirect_uris": {"app-client": ["http://client.example/cb"]},
             **config,
@@ -86,6 +87,7 @@ def _build_auth(
         normalize_email=normalize_email,
         get_client=get_client,
         token_issuer=token_issuer,
+        broker=broker,
     )
 
 

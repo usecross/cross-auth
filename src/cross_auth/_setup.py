@@ -1,8 +1,9 @@
 """Framework-independent Cross Auth setup.
 
-Builds the shared ``Context``, provider registry, and token ``Issuer`` once so
-framework adapters (the FastAPI ``AuthRouter`` and ``CrossAuth`` facade today)
-route against the same objects instead of resolving their own copies.
+Builds the shared ``Context``, provider registry, and (with the OAuth broker)
+token ``Issuer`` once so framework adapters (the FastAPI ``AuthRouter`` and
+``CrossAuth`` facade today) route against the same objects instead of resolving
+their own copies.
 """
 
 from __future__ import annotations
@@ -29,7 +30,8 @@ class AuthSetup:
     providers: tuple[OAuth2Provider, ...]
     # Lookup by id for headless operations; the last provider with an id wins.
     providers_by_id: Mapping[str, OAuth2Provider]
-    issuer: Issuer
+    # The OAuth broker's token endpoint; None when the broker is disabled.
+    issuer: Issuer | None
 
 
 def build_auth_setup(
@@ -46,6 +48,7 @@ def build_auth_setup(
     hooks: HookRegistry | None = None,
     normalize_email: Callable[[str], str] | None = None,
     get_client: ClientResolver | None = None,
+    broker: bool = True,
 ) -> AuthSetup:
     context = Context(
         secondary_storage=secondary_storage,
@@ -59,11 +62,12 @@ def build_auth_setup(
         hooks=hooks,
         normalize_email=normalize_email,
         get_client=get_client,
+        broker=broker,
     )
     registered_providers = tuple(providers)
     return AuthSetup(
         context=context,
         providers=registered_providers,
         providers_by_id={provider.id: provider for provider in registered_providers},
-        issuer=Issuer(),
+        issuer=Issuer() if broker else None,
     )

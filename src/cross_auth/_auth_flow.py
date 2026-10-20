@@ -770,6 +770,11 @@ def _complete_oauth_callback(
     on_verified: OnVerified | None,
 ) -> Response:
     if auth_request is not None and auth_request.flow in {"token", "link"}:
+        # Started before the broker was disabled: the callback stays mounted
+        # for session and connect flows, so refuse here, before the provider
+        # code is exchanged and without redirecting to the client's URI.
+        if not context.broker_enabled:
+            return Response.error("invalid_request", "The OAuth broker is disabled")
         if (
             auth_request.client_id is None
             or auth_request.client_redirect_uri is None

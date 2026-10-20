@@ -422,6 +422,9 @@ auth = CrossAuth(
     # incoming request (e.g. behind a proxy).
     base_url=BASE_URL,
     normalize_email=normalize_login_email,
+    # The SPA and the profile page's "Link Google account" use the OAuth
+    # broker's /authorize, /token, /link and /finalize-link routes.
+    broker=True,
     config={
         "account_linking": {"enabled": True, "allow_different_emails": True},
         "client_redirect_uris": {

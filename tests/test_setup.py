@@ -190,3 +190,11 @@ def test_issuer_runs_against_the_setup_context(
     assert response.status_code == 200
     assert seen == ["test"]
     assert [record.user_id for record in session_storage.records.values()] == ["test"]
+
+
+def test_setup_without_broker_has_no_issuer(secondary_storage, accounts_storage):
+    setup = _build(secondary_storage, accounts_storage, broker=False)
+
+    assert setup.issuer is None
+    assert setup.context.broker_enabled is False
+    assert _build(secondary_storage, accounts_storage).context.broker_enabled

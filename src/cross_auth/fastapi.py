@@ -165,6 +165,7 @@ class CrossAuth:
         default_next_url: str = "/",
         normalize_email: Callable[[str], str] | None = None,
         get_client: ClientResolver | None = None,
+        broker: bool = True,
     ):
         if trusted_origins is not None:
             warnings.warn(
@@ -189,6 +190,7 @@ class CrossAuth:
             hooks=HookRegistry(),
             normalize_email=normalize_email,
             get_client=get_client,
+            broker=broker,
         )
         self._context = self._setup.context
         self._router = AuthRouter._from_setup(self._setup)

@@ -19,6 +19,40 @@ Cross-Auth will create or link accounts in your storage.
 4. The provider redirects back to your app with an authorization code.
 5. Cross-Auth exchanges the code for user info and creates/links the account.
 
+## Sign in with a session cookie
+
+A web application that signs people in with a provider and keeps them signed in
+with a cookie needs session storage, cookie sign-in, and no OAuth broker:
+
+```python
+import os
+
+from cross_auth.fastapi import CrossAuth
+from cross_auth.social_providers.google import GoogleProvider
+
+auth = CrossAuth(
+    providers=[
+        GoogleProvider(
+            client_id=os.environ["GOOGLE_CLIENT_ID"],
+            client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
+        )
+    ],
+    storage=secondary_storage,
+    accounts_storage=accounts_storage,
+    session_storage=session_storage,
+    config={"session": {"cookies": {"auth": True}}},
+    broker=False,
+)
+app.include_router(auth.router, prefix="/auth")
+```
+
+Link to `/auth/google/login?next=/dashboard` to sign in, and register
+`https://your-app.example/auth/google/callback` as the redirect URI in Google's
+console. `GET /auth/google/connect` attaches Google to the signed-in user as an
+integration, without making it a way to sign in. The
+[OAuth broker](/docs/oauth#the-oauth-broker) is only needed when a SPA or native
+app gets its tokens from Cross-Auth.
+
 ## Account Linking
 
 Cross-Auth supports linking multiple social accounts to a single user. If a user
@@ -26,7 +60,8 @@ signs in with GitHub and later connects their Google account, both providers are
 linked to the same user record via the `SocialAccount` model.
 
 The `POST /{provider}/link` endpoint handles account linking for authenticated
-users.
+users. It is part of the [OAuth broker](/docs/oauth#the-oauth-broker); without
+the broker, `GET /{provider}/connect` attaches an integration-only account.
 
 The `DELETE /{provider}/social-accounts` endpoint disconnects the current user's
 provider account when only one account for that provider is connected. If a user

@@ -11,6 +11,76 @@ Cross-Auth implements the OAuth 2.0 authorization code flow with PKCE (Proof Key
 for Code Exchange). This is used when Cross-Auth acts as the authorization
 server -- for example, when your SPA or mobile app needs to obtain tokens.
 
+## The OAuth broker
+
+The OAuth broker is the part of Cross-Auth that acts as an authorization server
+for your own registered clients. It adds these routes:
+
+- `GET /{provider}/authorize`, which signs a client in through the provider and
+  redirects back to the client with a Cross-Auth authorization code;
+- `POST /token`, which exchanges that code (with the client's PKCE verifier) for
+  a bearer token;
+- `POST /{provider}/link` and `POST /{provider}/finalize-link`, the PKCE account
+  linking flow for clients that authenticate with a bearer token.
+
+The broker is not how Cross-Auth talks to Google or GitHub. Signing in with a
+provider in the browser, the provider callback, its PKCE, `state` and nonce
+checks all work without it. Neither does every bearer token come from the
+broker: `issue_session_token` mints the same revocable token for your own
+sign-in endpoints. The broker serves public clients you register (SPAs and
+native apps); it is not a general identity provider for third-party apps and has
+no consent screens or confidential-client authentication.
+
+The broker is enabled by default. Applications whose browsers sign in with a
+session cookie don't need it, and can turn it off:
+
+```python
+auth = CrossAuth(
+    providers=providers,
+    storage=secondary_storage,
+    accounts_storage=accounts_storage,
+    session_storage=session_storage,
+    config={"session": {"cookies": {"auth": True}}},
+    broker=False,
+)
+```
+
+`AuthRouter` takes the same keyword-only `broker=False`. Without the broker,
+Cross-Auth mounts `GET /{provider}/login` (when cookie sign-in is enabled),
+`GET /{provider}/connect`, the `DELETE /{provider}/social-accounts` routes, and
+`GET`/`POST /{provider}/callback`; the OpenAPI schema lists only those. Turning
+the broker off does not turn cookie sign-in on: `/{provider}/login` still needs
+`session_storage` and `config["session"]["cookies"]["auth"]`.
+
+`client_redirect_uris`, `get_client` and `token_issuer` only configure the
+broker, so passing any of them with `broker=False` raises `ValueError` at
+startup.
+
+The provider callback also completes session and connect flows, so it stays
+mounted. Authorization and link attempts started before the broker was turned
+off are refused there with `invalid_request`: after the browser binding check
+consumes the attempt, Cross-Auth returns an error without contacting the
+provider, creating or linking accounts, storing a code, or redirecting to the
+client. Users start again from the client.
+
+Applications that serve both browsers with cookies and a SPA or native app keep
+the broker on, which is today's default. Pass `broker=True` to make that choice
+explicit:
+
+```python
+auth = CrossAuth(
+    providers=providers,
+    storage=secondary_storage,
+    accounts_storage=accounts_storage,
+    session_storage=session_storage,
+    config={
+        "client_redirect_uris": {"web-app": ["https://app.example.com/callback"]},
+        "session": {"cookies": {"auth": True}},
+    },
+    broker=True,
+)
+```
+
 ## Register client redirect URIs
 
 Register each client's complete callback URLs in `CrossAuth`'s `config`:
@@ -30,9 +100,10 @@ config = {
 }
 ```
 
-`/{provider}/authorize` and `/{provider}/link` require a registered `client_id`
-and a matching `redirect_uri`. An absent or empty registry disables these flows.
-A client registered for one callback cannot use another client's callback.
+These registrations configure the broker. `/{provider}/authorize` and
+`/{provider}/link` require a registered `client_id` and a matching
+`redirect_uri`. An absent or empty registry disables these flows. A client
+registered for one callback cannot use another client's callback.
 
 Matching uses the complete original URL string, including scheme, host, port,
 path, query string, and case. Register each intended variation explicitly:

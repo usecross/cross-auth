@@ -40,6 +40,7 @@ class Context:
         hooks: HookRegistry | None = None,
         normalize_email: Callable[[str], str] | None = None,
         get_client: ClientResolver | None = None,
+        broker: bool = True,
     ):
         self.secondary_storage = secondary_storage
         self.accounts_storage = accounts_storage
@@ -61,6 +62,20 @@ class Context:
 
         if get_client is not None and self.config.get("client_redirect_uris"):
             raise ValueError("Use get_client or client_redirect_uris, not both")
+
+        # The OAuth broker: /authorize, /token, /link and /finalize-link for
+        # registered clients. Its settings would silently do nothing without it.
+        self.broker_enabled = broker
+        if not broker:
+            for name, value in (
+                ("client_redirect_uris", self.config.get("client_redirect_uris")),
+                ("get_client", get_client),
+                ("token_issuer", token_issuer),
+            ):
+                if value:
+                    raise ValueError(
+                        f"{name} configures the OAuth broker; it requires broker=True"
+                    )
 
         self._get_client = get_client
         for client_id, redirect_uris in self.config.get(
