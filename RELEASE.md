@@ -14,6 +14,11 @@ references `settings.AUTH_USER_MODEL`, and short-lived OAuth state in
 - A database constraint gives each `(provider, provider_user_id)` one owner.
   Concurrent sign-ups or links of the same identity leave one winner; the others
   roll back and raise `account_already_linked`.
+- Concurrent first sign-ins with the same email also leave one user. When the
+  native user's unique username or email rejects a sign-up, it rolls back and
+  raises `account_not_linked`; signing in again uses the winner's identity, and
+  an identity from another provider is not merged into that account. Other
+  integrity errors from a user factory propagate.
 - A first sign-in creates the user, any rows written by its factory, and the
   identity in one `transaction.atomic` block. The default factory supports user
   models managed by Django's `UserManager`, using the email as the username and

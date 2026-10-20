@@ -12,7 +12,7 @@ from django.contrib.auth.base_user import AbstractBaseUser
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.test import override_settings
 from django.utils import timezone
 
@@ -173,6 +173,87 @@ def test_signup_race_keeps_one_user(
     assert {loser.error for loser in losers} == {"account_already_linked"}
     assert get_user_model()._default_manager.count() == 1
     assert SocialAccount.objects.get().user_id == winners[0].id
+
+
+@pytest.mark.django_db(transaction=True)
+@override_settings(CROSS_AUTH={"CREATE_USER": "tests.django.factories.with_profile"})
+def test_same_email_signup_race_is_a_conflict(storage: DjangoAccountsStorage) -> None:
+    # Independent first sign-ins with one identity: every attempt saw no user
+    # with this email, so each runs the factory and its unique native username
+    # or email rejects all but one.
+    results = run_in_threads(4, lambda _: _signup(storage)[0])
+
+    winners = [result for result in results if isinstance(result, DjangoUser)]
+    losers = [result for result in results if isinstance(result, CrossAuthException)]
+    assert len(winners) == 1, results
+    assert len(losers) == 3, results
+    assert {loser.error for loser in losers} == {"account_not_linked"}
+    native = get_user_model()._default_manager.get()
+    assert native.pk == winners[0].id
+    assert Profile.objects.get().user == native
+    assert SocialAccount.objects.get().user_id == native.pk
+
+    # Signing in again finds the identity the winner stored.
+    account = storage.find_social_account(
+        provider="google", provider_user_id="google-sub-1"
+    )
+    assert account is not None
+    assert account.user_id == native.pk
+
+
+@pytest.mark.django_db(transaction=True)
+def test_same_email_signup_race_does_not_merge_identities(
+    storage: DjangoAccountsStorage,
+) -> None:
+    identities = [("google", "google-sub-1"), ("github", "github-id-1")]
+
+    def sign_up(index: int) -> DjangoUser:
+        provider, provider_user_id = identities[index]
+        user, _ = storage.create_user_with_identity(
+            user={
+                "user_info": {"name": "Pat"},
+                "email": "person@example.com",
+                "email_verified": True,
+                "extra_fields": None,
+            },
+            identity=lambda created: identity_data(
+                created.id, provider=provider, provider_user_id=provider_user_id
+            ),
+        )
+        return user
+
+    results = run_in_threads(2, sign_up)
+
+    winners = [result for result in results if isinstance(result, DjangoUser)]
+    losers = [result for result in results if isinstance(result, CrossAuthException)]
+    assert len(winners) == 1, results
+    assert [loser.error for loser in losers] == ["account_not_linked"], results
+    # The losing identity is not attached to the winner's account.
+    account = SocialAccount.objects.get()
+    assert account.user_id == winners[0].id
+    assert get_user_model()._default_manager.count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+@override_settings(
+    CROSS_AUTH={"CREATE_USER": "tests.django.factories.with_duplicate_profile"}
+)
+def test_unrelated_factory_integrity_errors_propagate(
+    storage: DjangoAccountsStorage,
+) -> None:
+    with pytest.raises(IntegrityError):
+        _signup(storage)
+
+    assert not get_user_model()._default_manager.exists()
+    assert not Profile.objects.exists()
+    assert not SocialAccount.objects.exists()
+
+    # A later sign-in with a working factory still succeeds.
+    with override_settings(
+        CROSS_AUTH={"CREATE_USER": "tests.django.factories.with_profile"}
+    ):
+        user, account = _signup(storage)
+    assert account.user_id == user.id
 
 
 def test_signup_with_unmanaged_default_factory_is_rejected(

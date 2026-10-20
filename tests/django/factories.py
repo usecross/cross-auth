@@ -23,3 +23,12 @@ def with_profile(
         user = create_user(email=email, user_info=user_info, extra_fields=extra_fields)
     Profile.objects.create(user=user, display_name=user_info.get("name", ""))
     return user
+
+
+def with_duplicate_profile(
+    *, email: str, user_info: Mapping[str, Any], extra_fields: Mapping[str, Any]
+) -> AbstractBaseUser:
+    """Fail on an application row with an IntegrityError unrelated to signup."""
+    user = with_profile(email=email, user_info=user_info, extra_fields=extra_fields)
+    Profile.objects.create(user=user, display_name="duplicate")
+    return user

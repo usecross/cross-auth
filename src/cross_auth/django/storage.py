@@ -185,8 +185,9 @@ class DjangoAccountsStorage:
         """Create the user, the rows its factory writes, and the identity.
 
         All of them commit together or not at all. When a concurrent sign-in
-        stored the same identity first, the database rejects this one and
-        everything rolls back.
+        stored the same identity, or a native user with this email, first, the
+        database rejects this one, everything rolls back and the conflict is a
+        ``CrossAuthException``. Other integrity errors propagate.
         """
         factory = get_settings().create_user
         data: SocialAccountCreate | None = None
@@ -215,6 +216,17 @@ class DjangoAccountsStorage:
                 provider=data["provider"], provider_user_id=data["provider_user_id"]
             ):
                 raise CrossAuthException("account_already_linked") from error
+            # Core signs up only after finding no user with this email, so one
+            # existing now was committed by a concurrent sign-up. Leave it to
+            # the next attempt, which signs in or reports the unlinked email.
+            if self.find_user_by_email(user["email"]) is not None:
+                raise CrossAuthException(
+                    "account_not_linked",
+                    error_description=(
+                        "Another sign-in created an account with this email at "
+                        "the same time. Try signing in again."
+                    ),
+                ) from error
             raise
         return created, account
 
