@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import itertools
 import json
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -59,6 +61,8 @@ class FakeGoogle:
     )
     # Codes Google has issued: code -> (account, nonce, code_challenge).
     codes: dict[str, tuple[Account, str, str]] = field(default_factory=dict)
+    # Never reuse a code name, even after earlier codes were exchanged.
+    code_numbers: Iterator[int] = field(default_factory=itertools.count)
     token_requests: list[dict[str, str]] = field(default_factory=list)
 
     def install(self) -> None:
@@ -82,7 +86,7 @@ class FakeGoogle:
 
     def approve(self, authorization: Authorization, account: Account) -> str:
         """Let the user consent; return the code Google redirects back with."""
-        code = f"code-{len(self.codes)}"
+        code = f"code-{next(self.code_numbers)}"
         self.codes[code] = (
             account,
             authorization.params["nonce"],

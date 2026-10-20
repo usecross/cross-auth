@@ -486,16 +486,16 @@ import os
 from django.core.exceptions import PermissionDenied
 from django.dispatch import receiver
 
-from cross_auth.django.signals import before_login, user_created
+from cross_auth.django.signals import before_callback, user_created
 
 # For example ALLOWED_EMAIL_DOMAIN=example.com. Unset, everyone may sign in.
 ALLOWED_EMAIL_DOMAIN = os.environ.get("ALLOWED_EMAIL_DOMAIN")
 
 
-@receiver(before_login)
-def only_company_accounts(sender, email, **kwargs):
-    if ALLOWED_EMAIL_DOMAIN and not (email or "").lower().endswith(
-        "@" + ALLOWED_EMAIL_DOMAIN
+@receiver(before_callback)
+def only_company_accounts(sender, email, email_verified, **kwargs):
+    if ALLOWED_EMAIL_DOMAIN and not (
+        email_verified and (email or "").lower().endswith("@" + ALLOWED_EMAIL_DOMAIN)
     ):
         raise PermissionDenied("Use your company account.")
 
@@ -523,12 +523,15 @@ class CoreConfig(AppConfig):
 Restart the server and sign up with a new Google account: the terminal prints
 the welcome line. To try the rule, add `ALLOWED_EMAIL_DOMAIN=example.com` to
 `.env`, load it again as in Step 8 and restart: signing in with any other Google
-account now shows Django's 403 page, and you stay signed out.
+account, new or known, now shows Django's 403 page, and you stay signed out.
+Connecting such an account is refused the same way.
 
-`before_login` is a sign-in rule. On a first sign-in the user and its Google
-connection are created before `before_login` is sent, so refusing there leaves
-the new user in place. To stop sign-ups instead, raise `PermissionDenied` from a
-`before_user_create` receiver, which runs before anything is written.
+`before_callback` is sent once Google's response is verified and before Cross
+Auth looks up or writes anything, so a refusal there creates no user and
+connects nothing. Its `email` is the one Google reported. To refuse only new
+users, use `before_user_create`; to refuse only logins of existing users,
+`before_login`. On a first sign-in the user and its Google connection already
+exist when `before_login` is sent, so refusing there leaves them in place.
 
 Cross Auth sends these signals only for its Google flows; other signals cover
 starting a sign-in and connecting or disconnecting Google. Django's own

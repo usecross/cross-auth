@@ -89,8 +89,8 @@ def test_ready_connects_the_signal_receivers(
 ) -> None:
     code = (
         # Checked before this code imports core.signals itself.
-        "from cross_auth.django.signals import before_login, user_created; "
-        "assert before_login.has_listeners() and user_created.has_listeners(); "
+        "from cross_auth.django.signals import before_callback, user_created; "
+        "assert before_callback.has_listeners() and user_created.has_listeners(); "
         "from core import signals; "
         "assert signals.ALLOWED_EMAIL_DOMAIN is None"
     )

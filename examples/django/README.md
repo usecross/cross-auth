@@ -27,9 +27,9 @@ guide, which give your Google user a password with
 `uv run python manage.py changepassword` instead of creating another user.
 
 `core/signals.py` connects receivers to Cross Auth's Django signals, as in Step
-14 of the guide: it prints a line for each new user, and refuses Google sign-ins
-outside `ALLOWED_EMAIL_DOMAIN` when you set that variable in `.env`. Unset,
-everyone may sign in.
+14 of the guide: it prints a line for each new user, and refuses Google accounts
+outside `ALLOWED_EMAIL_DOMAIN`, before anything is written, when you set that
+variable in `.env`. Unset, everyone may sign in.
 
 The project uses SQLite (`db.sqlite3`, ignored by Git) and Django's development
 settings. See the guide's production checklist before deploying anything based

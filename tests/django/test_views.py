@@ -648,8 +648,6 @@ LINK = [
     "social_account_created",
     "social_account_linked",
 ]
-# Raw provider credentials no receiver should see.
-SECRETS = {"google-access-token", "test-client-secret"}
 
 
 def refuse(**kwargs: Any) -> None:
@@ -758,6 +756,10 @@ class TestSignals:
         assert before_update["user_id"] == user_id
 
         # Plain values only: no users, accounts, providers or credentials.
+        secrets = {
+            "google-access-token",
+            get_settings().providers["google"].client_secret,
+        }
         for name, kwargs in signals.events:
             if not name.startswith("before_"):
                 continue
@@ -765,7 +767,7 @@ class TestSignals:
                 if key in common:
                     continue
                 assert value is None or type(value) in {str, bool}, (name, key)
-                assert value not in SECRETS, (name, key)
+                assert value not in secrets, (name, key)
 
     def test_after_signals_get_the_native_user_and_request(
         self, client: Client, google: FakeGoogle
