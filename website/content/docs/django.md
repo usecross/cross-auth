@@ -14,7 +14,8 @@ This guide builds a Django project, step by step, where people can:
 - sign in with Google, creating a Django user on first sign-in;
 - keep at least one way to sign in when disconnecting Google;
 - sign in with a Django password, then connect Google to the same user;
-- sign out with Django's own logout.
+- sign out with Django's own logout;
+- run your own code around Google sign-ups and sign-ins with Django signals.
 
 Cross Auth only handles the conversation with Google and stores which Google
 account belongs to which Django user. Django keeps owning everything else: the
@@ -96,9 +97,12 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "cross_auth.django",
-    "core",
+    "core.apps.CoreConfig",
 ]
 ```
+
+`core.apps.CoreConfig` is the app configuration that `startapp` generated; Step
+14 uses its `ready()` method.
 
 Keep the `MIDDLEWARE` that `startproject` generated. Cross Auth needs
 `SessionMiddleware`, `CsrfViewMiddleware` and `AuthenticationMiddleware`, all of
@@ -467,58 +471,75 @@ account chooser.
 
 ## Step 14 (optional): Run code around sign-in
 
-Cross Auth's [hooks](/docs/hooks) run around sign-in. `login` hooks wrap every
-Google sign-in: a `before` hook can refuse it by raising `CrossAuthException`,
-and an `after` hook runs once the Django session is saved. Create
-`core/auth_hooks.py`:
+Cross Auth sends
+[Django signals](https://docs.djangoproject.com/en/5.2/topics/signals/) around
+Google sign-ups and sign-ins. Receivers can refuse one by raising Django's
+`PermissionDenied`, which answers with Django's 403 page, or react once it is
+saved.
+
+Create `core/signals.py`:
 
 ```python
-from cross_auth.exceptions import CrossAuthException
-from cross_auth.hooks import AfterUserCreateEvent, BeforeLoginEvent, HookRegistry
+import os
 
-hooks = HookRegistry()
+from django.core.exceptions import PermissionDenied
+from django.dispatch import receiver
 
+from cross_auth.django.signals import before_login, user_created
 
-def only_company_accounts(event: BeforeLoginEvent) -> None:
-    from django.contrib.auth import get_user_model
-
-    user = get_user_model()._default_manager.get(pk=event.user_id)
-    if not user.email.endswith("@example.com"):
-        raise CrossAuthException(
-            "access_denied", "Use your company account.", status_code=403
-        )
+# For example ALLOWED_EMAIL_DOMAIN=example.com. Unset, everyone may sign in.
+ALLOWED_EMAIL_DOMAIN = os.environ.get("ALLOWED_EMAIL_DOMAIN")
 
 
-def welcome(event: AfterUserCreateEvent) -> None:
-    print(f"New user {event.user.id}")
+@receiver(before_login)
+def only_company_accounts(sender, email, **kwargs):
+    if ALLOWED_EMAIL_DOMAIN and not (email or "").lower().endswith(
+        "@" + ALLOWED_EMAIL_DOMAIN
+    ):
+        raise PermissionDenied("Use your company account.")
 
 
-hooks.register_before("login", only_company_accounts)
-hooks.register_after("user.create", welcome)
+@receiver(user_created)
+def welcome(sender, user, **kwargs):
+    print(f"Welcome, new user {user.pk} ({user.email})")
 ```
 
-Then point `CROSS_AUTH` at it:
+Replace `core/apps.py`, so Django connects the receivers once its apps are
+loaded:
 
 ```python
-CROSS_AUTH = {
-    "PROVIDERS": [...],
-    "HOOKS": "core.auth_hooks.hooks",
-}
+from django.apps import AppConfig
+
+
+class CoreConfig(AppConfig):
+    default_auto_field = "django.db.models.BigAutoField"
+    name = "core"
+
+    def ready(self):
+        from . import signals  # noqa: F401
 ```
 
-`login` events for Django sign-ins have `credential="django_session"`. Hooks run
-only for Google sign-ins; Django's own password login does not run them.
+Restart the server and sign up with a new Google account: the terminal prints
+the welcome line. To try the rule, add `ALLOWED_EMAIL_DOMAIN=example.com` to
+`.env`, load it again as in Step 8 and restart: signing in with any other Google
+account now shows Django's 403 page, and you stay signed out.
 
-On a first sign-in, the user and its Google connection are created before the
-`login` hooks run, so a refused login leaves the new user in place. To stop
-sign-ups instead, raise from a `before` `user.create` hook.
+`before_login` is a sign-in rule. On a first sign-in the user and its Google
+connection are created before `before_login` is sent, so refusing there leaves
+the new user in place. To stop sign-ups instead, raise `PermissionDenied` from a
+`before_user_create` receiver, which runs before anything is written.
+
+These signals are sent only for Google sign-ins through Cross Auth. Django's own
+`user_logged_in` and `user_logged_out` signals cover every login and logout,
+including password logins, and are sent as usual. See the
+[signals reference](#signals-reference).
 
 ## Custom user models
 
 Cross Auth creates users with your user model's default manager. The default
 factory works with models managed by Django's `UserManager`, including
-`AbstractUser` subclasses: it uses the email as username, sets no usable
-password, and passes any `extra_fields` from `user.create` hooks.
+`AbstractUser` subclasses: it uses the email as username and sets no usable
+password.
 
 For other models, such as one whose manager requires extra fields, set
 `CREATE_USER` to the dotted path of a function:
@@ -546,9 +567,43 @@ CROSS_AUTH = {
 
 The factory runs inside the transaction that also stores the Google account
 link, so if it raises, neither the user nor the rows it created are saved. Do
-not call external services from it; use an `after` `user.create` hook, which
-runs after the transaction commits. Custom primary keys, such as UUIDs, are
-supported.
+not call external services from it; use a `user_created` receiver, which runs
+after the transaction commits. `extra_fields` is always empty. Custom primary
+keys, such as UUIDs, are supported.
+
+## Signals reference
+
+`cross_auth.django.signals` defines four signals. Their sender is your user
+model. Every receiver gets `request`, the `HttpRequest` of Google's callback,
+and `provider`, such as `"google"`, plus the arguments below. Write receivers
+with `**kwargs` so that new arguments do not break them.
+
+| Signal               | Sent                                                                                               | Arguments                                                                |
+| -------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `before_user_create` | Before a first sign-in creates a user. Nothing is written yet.                                     | `email` (normalized), `email_verified`                                   |
+| `user_created`       | After the user, the rows your `CREATE_USER` factory wrote and the Google connection are committed. | `user`, your user model instance                                         |
+| `before_login`       | Before Django's `login()`, once Google's response is verified and the user is known.               | `user_id` (the primary key as a string), `email` (the user's, or `None`) |
+| `after_login`        | After `login()` and after the session is saved to the database.                                    | `user`, your user model instance                                         |
+
+- **Refusing.** Raise `PermissionDenied` from `before_user_create` or
+  `before_login`. Django answers with its 403 page; no user is created
+  (`before_user_create`) or nobody is logged in (`before_login`), and the
+  `after` signals are not sent.
+- **Return values** are ignored, as for any Django signal. Receivers cannot
+  change the email, the user or anything else Google reported. Put profile
+  fields and application rows in your [`CREATE_USER`](#custom-user-models)
+  factory.
+- **Errors.** Signals are sent with `send()`, not `send_robust()`, so an
+  exception from any receiver propagates. From `user_created` or `after_login`
+  it arrives after the sign-up or the login is saved, which it cannot undo.
+- **Order.** A first sign-in sends `before_user_create`, `user_created`,
+  `before_login`, then Django's `user_logged_in`, then `after_login`. A later
+  sign-in sends only the last three. Connecting Google to a signed-in user sends
+  none of them.
+- **Django's signals.** Cross Auth logs users in with
+  `django.contrib.auth.login()`, so Django sends `user_logged_in` itself; Cross
+  Auth does not send it again. Logging out goes through Django's `LogoutView`
+  and `user_logged_out`; there is no Cross Auth logout signal.
 
 ## Settings reference
 
@@ -562,7 +617,6 @@ reports invalid values.
 | `PASSWORD_LOGIN`         | `True`             | Whether a usable Django password counts as a way to sign in when disconnecting.                                     |
 | `REQUIRE_VERIFIED_EMAIL` | `True`             | Refuse to create users when Google does not report the email as verified.                                           |
 | `ACCOUNT_LINKING`        | `{}`               | `enabled`: attach a Google sign-in to the user with the same verified email. `allow_different_emails`: see Step 13. |
-| `HOOKS`                  | none               | Dotted path of a `HookRegistry`.                                                                                    |
 | `BASE_URL`               | the request's host | Public origin, such as `https://example.com`, used to build the redirect URI.                                       |
 
 `ACCOUNT_LINKING["enabled"]` is off by default. Turning it on lets anyone who
@@ -579,9 +633,9 @@ users. Even then, Cross Auth refuses when several users share the email.
   `url_has_allowed_host_and_scheme` accepts; anything else goes to
   `LOGIN_REDIRECT_URL`.
 - **Sessions.** Cross Auth requires the `db` or `cached_db` session engine, and
-  saves the session before `after` `login` hooks run. Existing session data is
-  kept when an anonymous visitor signs in, and Django's usual rules apply to
-  password changes (`update_session_auth_hash`) and logout.
+  saves the session before sending `after_login`. Existing session data is kept
+  when an anonymous visitor signs in, and Django's usual rules apply to password
+  changes (`update_session_auth_hash`) and logout.
 - **Inactive users** cannot sign in with Google, and lose their existing
   sessions on the next request.
 - **Transactions.** Each step commits on its own. Cross Auth's views opt out of
@@ -640,9 +694,11 @@ cannot detect every setup.
   with `https://` while you browse over plain HTTP.
 - **`session_expired` in the URL after sign-in:** the sign-in attempt took more
   than ten minutes or was already used. Start again.
-- **`access_denied`:** you cancelled at Google, the account is inactive, a
-  `before` hook refused it, or the Google account is connected for API access
-  only. With an organization account, check the **Audience** settings.
+- **`access_denied`:** you cancelled at Google, the account is inactive, or the
+  Google account is connected for API access only. With an organization account,
+  check the **Audience** settings.
+- **403 Forbidden after choosing a Google account:** one of your `before_login`
+  or `before_user_create` receivers raised `PermissionDenied`.
 - **`invalid_client` or a token exchange error:** check `GOOGLE_CLIENT_ID` and
   `GOOGLE_CLIENT_SECRET`, and that the client type is Web application.
 - **`account_not_linked`:** a user with that email already exists. Sign in as

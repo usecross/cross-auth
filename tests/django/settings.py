@@ -44,12 +44,11 @@ LOGIN_REDIRECT_URL = "/"
 LOGIN_URL = "/accounts/login/"
 LOGOUT_REDIRECT_URL = "/"
 
-CROSS_AUTH = {
+CROSS_AUTH: dict[str, object] = {
     "PROVIDERS": [
         GoogleProvider(client_id="test-client-id", client_secret="test-secret"),
         WorkspaceProvider(client_id="test-client-id", client_secret="test-secret"),
     ],
-    "HOOKS": "tests.django.hooks.hooks",
 }
 
 if USER_MODEL == "custom":

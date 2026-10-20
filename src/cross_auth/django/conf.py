@@ -16,7 +16,6 @@ from django.core.signals import setting_changed
 from django.utils.module_loading import import_string
 
 from cross_auth._config import AccountLinkingConfig
-from cross_auth.hooks import HookRegistry
 from cross_auth.social_providers.oauth import OAuth2Provider
 
 
@@ -25,8 +24,8 @@ class UserFactory(Protocol):
 
     Runs inside the transaction that also stores the user's first identity,
     so rows it writes roll back together with them. It must not call external
-    services. ``email`` is normalized; ``extra_fields`` come from
-    ``user.create`` before hooks.
+    services; send notifications from a ``user_created`` receiver instead.
+    ``email`` is normalized; ``extra_fields`` is empty.
     """
 
     def __call__(
@@ -71,7 +70,6 @@ class CrossAuthSettings:
     password_login: bool
     account_linking: AccountLinkingConfig
     require_verified_email: bool
-    hooks: HookRegistry
     # Public origin used for provider callback URLs instead of the request's.
     base_url: str | None
 
@@ -83,7 +81,6 @@ _KNOWN_KEYS = frozenset(
         "PASSWORD_LOGIN",
         "ACCOUNT_LINKING",
         "REQUIRE_VERIFIED_EMAIL",
-        "HOOKS",
         "BASE_URL",
     }
 )
@@ -136,21 +133,6 @@ def _account_linking(value: object) -> AccountLinkingConfig:
     )
 
 
-def _hooks(path: object) -> HookRegistry:
-    if path is None:
-        return HookRegistry()
-    if not isinstance(path, str):
-        raise ImproperlyConfigured(
-            "CROSS_AUTH['HOOKS'] must be the dotted path of a HookRegistry"
-        )
-    hooks = import_string(path)
-    if not isinstance(hooks, HookRegistry):
-        raise ImproperlyConfigured(
-            f"CROSS_AUTH['HOOKS'] {path!r} is not a HookRegistry"
-        )
-    return hooks
-
-
 @cache
 def get_settings() -> CrossAuthSettings:
     raw: Mapping[str, Any] = getattr(settings, "CROSS_AUTH", {})
@@ -187,7 +169,6 @@ def get_settings() -> CrossAuthSettings:
         password_login=_bool(raw, "PASSWORD_LOGIN", True),
         account_linking=_account_linking(raw.get("ACCOUNT_LINKING", {})),
         require_verified_email=_bool(raw, "REQUIRE_VERIFIED_EMAIL", True),
-        hooks=_hooks(raw.get("HOOKS")),
         base_url=base_url,
     )
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import threading
+import uuid
 from collections.abc import Iterator
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -15,22 +16,22 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 import respx
 from asgiref.sync import async_to_sync
+from django.apps import apps
 from django.conf import settings
-from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model, user_logged_in
 from django.contrib.auth.models import Permission, PermissionsMixin
 from django.contrib.sessions.models import Session
-from django.db import connections, transaction
-from django.http import HttpResponse, HttpResponseBase
+from django.core.exceptions import PermissionDenied
+from django.db import IntegrityError, connections, transaction
+from django.http import HttpRequest, HttpResponse, HttpResponseBase
 from django.test import AsyncClient, Client, override_settings
 
 from cross_auth.django.models import SocialAccount
 from cross_auth.django.storage import DjangoAccountsStorage, DjangoUser
-from cross_auth.exceptions import CrossAuthException
-from cross_auth.hooks import AfterLoginEvent, BeforeLoginEvent
 
-from . import hooks
 from .conftest import CUSTOM_USER, connect, make_user
 from .fake_google import CALLBACK, Account, Authorization, FakeGoogle
+from .testapp import signals
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -46,12 +47,21 @@ def google() -> Iterator[FakeGoogle]:
 
 
 @pytest.fixture(autouse=True)
-def reset_hooks() -> Iterator[None]:
-    hooks.events.clear()
-    hooks.handlers.clear()
+def reset_signals() -> Iterator[None]:
+    signals.events.clear()
+    signals.handlers.clear()
     yield
-    hooks.events.clear()
-    hooks.handlers.clear()
+    signals.events.clear()
+    signals.handlers.clear()
+
+
+def sent() -> list[str]:
+    return [name for name, _ in signals.events]
+
+
+def payload(name: str) -> dict[str, Any]:
+    [kwargs] = [kwargs for sent_name, kwargs in signals.events if sent_name == name]
+    return kwargs
 
 
 @pytest.fixture
@@ -372,7 +382,7 @@ class TestCallbackBinding:
             for result in results
         ), results
         assert get_user_model()._default_manager.count() == 1
-        assert [name for name, _ in hooks.events].count("before login") == 1
+        assert sent().count("before_login") == 1
 
     def test_parallel_first_sign_ins_leave_one_user(
         self, google: FakeGoogle, monkeypatch: pytest.MonkeyPatch
@@ -414,16 +424,15 @@ class TestCallbackBinding:
         assert error_of(loser) == "account_not_linked"
         native = get_user_model()._default_manager.get()
         assert SocialAccount.objects.get().user_id == native.pk
-        names = [name for name, _ in hooks.events]
-        assert names.count("after user.create") == 1
-        assert names.count("after login") == 1
+        assert sent().count("user_created") == 1
+        assert sent().count("after_login") == 1
 
         # Signing in again from the losing browser reaches the same user.
         loser_client = clients[responses.index(loser)]
         assert sign_in(loser_client, google)["Location"] == "/"
         assert whoami(loser_client)["user_id"] == str(native.pk)
         assert get_user_model()._default_manager.count() == 1
-        assert [name for name, _ in hooks.events].count("after user.create") == 1
+        assert sent().count("user_created") == 1
 
     @pytest.mark.parametrize(
         ("next_url", "expected"),
@@ -604,40 +613,305 @@ class TestDisconnect:
         assert csrf_post(client, self.path(account)).status_code == 401
 
 
-class TestLoginHooks:
-    def test_login_hooks_wrap_the_native_login(
+class TestSignals:
+    def test_sign_up_sends_each_signal_once(
         self, client: Client, google: FakeGoogle
     ) -> None:
-        stored: list[bool] = []
+        logged_in: list[str] = []
 
-        def after(event: AfterLoginEvent) -> None:
-            # The rotated session is already in the database.
-            stored.append(Session.objects.exists())
+        def native_login(sender: object, **kwargs: Any) -> None:
+            logged_in.append("user_logged_in")
+            signals.events.append(("user_logged_in", kwargs))
 
-        hooks.handlers["after login"] = after
+        user_logged_in.connect(native_login)
+        try:
+            sign_in(client, google)
+        finally:
+            user_logged_in.disconnect(native_login)
+
+        # Django sends its own user_logged_in inside login(); Cross Auth does
+        # not send it again and after_login follows the saved session.
+        assert sent() == [
+            "before_user_create",
+            "user_created",
+            "before_login",
+            "user_logged_in",
+            "after_login",
+        ]
+        User = get_user_model()
+        for name in ("before_user_create", "user_created", "before_login"):
+            assert payload(name)["sender"] is User
+            assert payload(name)["provider"] == "google"
+            assert isinstance(payload(name)["request"], HttpRequest)
+        assert payload("after_login")["sender"] is User
+
+    def test_before_signals_get_values_not_records(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        sign_in(client, google)
+
+        before_create = payload("before_user_create")
+        assert set(before_create) == {
+            "signal",
+            "sender",
+            "request",
+            "provider",
+            "email",
+            "email_verified",
+        }
+        assert before_create["email"] == "person@gmail.com"
+        assert before_create["email_verified"] is True
+        before = payload("before_login")
+        assert set(before) == {
+            "signal",
+            "sender",
+            "request",
+            "provider",
+            "user_id",
+            "email",
+        }
+        assert before["user_id"] == whoami(client)["user_id"]
+        assert before["email"] == "person@gmail.com"
+
+    def test_after_signals_get_the_native_user_and_request(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        seen: dict[str, Any] = {}
+
+        def check_session(request: HttpRequest, **kwargs: Any) -> None:
+            seen["session_stored"] = Session.objects.filter(
+                session_key=request.session.session_key
+            ).exists()
+            seen["session_user"] = request.session["_auth_user_id"]
+            seen["request_user"] = request.user
+
+        signals.handlers["after_login"] = check_session
 
         sign_in(client, google)
 
-        names = [name for name, _ in hooks.events]
-        assert names == ["after user.create", "before login", "after login"]
-        before = hooks.events[1][1]
-        assert isinstance(before, BeforeLoginEvent)
-        assert before.credential == "django_session"
-        assert before.user_id == whoami(client)["user_id"]
-        assert before.max_age is None
-        assert hooks.events[2][1].session_record is None
-        assert stored == [True]
+        User = get_user_model()
+        created = payload("user_created")
+        assert set(created) == {"signal", "sender", "request", "provider", "user"}
+        native = created["user"]
+        assert type(native) is User
+        assert native._state.db == "default"
+        assert str(native.pk) == whoami(client)["user_id"]
+        if CUSTOM_USER:
+            assert isinstance(native.pk, uuid.UUID)
+        after = payload("after_login")
+        assert set(after) == {"signal", "sender", "request", "provider", "user"}
+        assert type(after["user"]) is User
+        assert after["user"].pk == native.pk
+        assert seen == {
+            "session_stored": True,
+            "session_user": str(native.pk),
+            "request_user": after["user"],
+        }
 
-    def test_before_login_can_refuse(self, client: Client, google: FakeGoogle) -> None:
-        def refuse(event: BeforeLoginEvent) -> None:
-            raise CrossAuthException("access_denied", "Not today", status_code=403)
+    def test_returning_sign_in_sends_only_login_signals(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        sign_in(client, google)
+        signals.events.clear()
 
-        hooks.handlers["before login"] = refuse
+        sign_in(Client(enforce_csrf_checks=True), google)
+
+        assert sent() == ["before_login", "after_login"]
+
+    def test_before_login_permission_denied_is_forbidden(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        sign_in(Client(enforce_csrf_checks=True), google)
+        signals.events.clear()
+        sessions = Session.objects.count()
+
+        def refuse(**kwargs: Any) -> None:
+            raise PermissionDenied("Use your company account.")
+
+        signals.handlers["before_login"] = refuse
 
         response = sign_in(client, google)
 
-        assert error_of(response) == "access_denied"
+        assert response.status_code == 403
         assert whoami(client)["authenticated"] is False
+        assert sent() == ["before_login"]
+        assert Session.objects.count() == sessions
+
+    def test_before_user_create_permission_denied_creates_nothing(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        def refuse(**kwargs: Any) -> None:
+            raise PermissionDenied("Sign-ups are closed.")
+
+        signals.handlers["before_user_create"] = refuse
+
+        response = sign_in(client, google)
+
+        assert response.status_code == 403
+        assert sent() == ["before_user_create"]
+        assert not get_user_model()._default_manager.exists()
+        assert not SocialAccount.objects.exists()
+        assert whoami(client)["authenticated"] is False
+
+    def test_return_values_are_ignored(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        signals.handlers["before_user_create"] = lambda **kwargs: {
+            "email": "attacker@example.com"
+        }
+        signals.handlers["before_login"] = lambda **kwargs: False
+
+        sign_in(client, google)
+
+        native = get_user_model()._default_manager.get()
+        assert DjangoUser(native, password_login=True).email == "person@gmail.com"
+        assert whoami(client)["authenticated"] is True
+
+    def test_user_created_follows_the_committed_sign_up(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        seen: list[tuple[bool, bool]] = []
+
+        def created(user: Any, **kwargs: Any) -> None:
+            seen.append(
+                (
+                    connections["default"].in_atomic_block,
+                    SocialAccount.objects.filter(user_id=user.pk).exists(),
+                )
+            )
+
+        signals.handlers["user_created"] = created
+
+        sign_in(client, google)
+
+        assert seen == [(False, True)]
+
+    def test_user_created_follows_the_factory_rows(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        from .testapp.models import Profile
+
+        profiles: list[bool] = []
+        signals.handlers["user_created"] = lambda user, **kwargs: profiles.append(
+            Profile.objects.filter(user=user).exists()
+        )
+
+        with override_settings(
+            CROSS_AUTH={
+                **settings.CROSS_AUTH,
+                "CREATE_USER": "tests.django.factories.with_profile",
+            }
+        ):
+            sign_in(client, google)
+
+        assert profiles == [True]
+
+    def test_failed_sign_up_sends_no_user_created(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        with (
+            override_settings(
+                CROSS_AUTH={
+                    **settings.CROSS_AUTH,
+                    "CREATE_USER": "tests.django.factories.with_duplicate_profile",
+                }
+            ),
+            pytest.raises(IntegrityError),
+        ):
+            sign_in(client, google)
+
+        assert sent() == ["before_user_create"]
+        assert not get_user_model()._default_manager.exists()
+        assert not SocialAccount.objects.exists()
+
+    def test_lost_sign_up_race_sends_no_user_created(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        # Another sign-up commits this email after the lookup found none.
+        def concurrent_sign_up(**kwargs: Any) -> None:
+            make_user("person@gmail.com")
+
+        signals.handlers["before_user_create"] = concurrent_sign_up
+
+        response = sign_in(client, google)
+
+        assert error_of(response) == "account_not_linked"
+        assert sent() == ["before_user_create"]
+        assert not SocialAccount.objects.exists()
+
+    @pytest.mark.parametrize("error", [RuntimeError("boom"), IntegrityError("app")])
+    def test_user_created_errors_propagate_after_commit(
+        self, client: Client, google: FakeGoogle, error: Exception
+    ) -> None:
+        def fail(**kwargs: Any) -> None:
+            raise error
+
+        signals.handlers["user_created"] = fail
+
+        with pytest.raises(type(error)):
+            sign_in(client, google)
+
+        # The sign-up is committed and not retried; nobody is logged in.
+        native = get_user_model()._default_manager.get()
+        assert SocialAccount.objects.get().user_id == native.pk
+        assert sent() == ["before_user_create", "user_created"]
+        assert whoami(client)["authenticated"] is False
+
+    def test_after_login_errors_propagate_after_the_session_is_saved(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        def fail(**kwargs: Any) -> None:
+            raise RuntimeError("boom")
+
+        signals.handlers["after_login"] = fail
+
+        with pytest.raises(RuntimeError):
+            sign_in(client, google)
+
+        native = get_user_model()._default_manager.get()
+        stored = [session.get_decoded() for session in Session.objects.all()]
+        assert [data["_auth_user_id"] for data in stored] == [str(native.pk)]
+        assert sent().count("after_login") == 1
+
+    def test_password_login_and_linking_send_no_login_signals(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        make_user("person@gmail.com", password="secret")
+        assert client.login(username="person@gmail.com", password="secret")
+
+        authorization = google.authorize(csrf_post(client, "/auth/google/link/"))
+        google.callback(client, authorization)
+
+        assert SocialAccount.objects.exists()
+        assert sent() == []
+
+    def test_failed_callback_sends_nothing(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        authorization = start_login(client, google)
+
+        client.get(
+            "/auth/google/callback",
+            {"state": authorization.state, "error": "access_denied"},
+        )
+
+        assert sent() == []
+
+    def test_reloading_settings_and_apps_does_not_duplicate_signals(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        apps.get_app_config("testapp").ready()
+        apps.get_app_config("cross_auth").ready()
+
+        with override_settings(CROSS_AUTH={**settings.CROSS_AUTH}):
+            sign_in(client, google)
+
+        assert sent() == [
+            "before_user_create",
+            "user_created",
+            "before_login",
+            "after_login",
+        ]
 
 
 class TestTransactions:

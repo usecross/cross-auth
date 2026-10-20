@@ -4,7 +4,8 @@ Every view runs Cross Auth's shared OAuth flow; this module only adapts
 requests and responses and completes sign-in with ``django.contrib.auth``.
 Mutations are POSTs protected by ``CsrfViewMiddleware`` (a system check
 requires it); the provider callback is a GET verified by OAuth state, browser
-binding, PKCE, and the OpenID Connect nonce.
+binding, PKCE, and the OpenID Connect nonce. Each request sends
+``cross_auth.django.signals`` through its own ``_Signals`` bridge.
 """
 
 from __future__ import annotations
@@ -17,11 +18,13 @@ from typing import Concatenate, Literal, ParamSpec
 from cross_web import HTTPRequest
 from cross_web import Response as CrossWebResponse
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.contrib.auth import login as django_login
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.contrib.sessions.backends.db import SessionStore as DatabaseSessionStore
 from django.core.exceptions import ImproperlyConfigured
 from django.db import connections, router, transaction
+from django.dispatch import Signal
 from django.http import Http404, HttpRequest, HttpResponse, HttpResponseNotAllowed
 from django.shortcuts import render, resolve_url
 from django.utils.cache import add_never_cache_headers
@@ -37,11 +40,18 @@ from cross_auth._context import Context
 from cross_auth._login import require_immediate_commit, run_login
 from cross_auth._storage import CommitCallback, User
 from cross_auth.exceptions import CrossAuthException
-from cross_auth.hooks import BeforeLoginEvent
+from cross_auth.hooks import (
+    AfterLoginEvent,
+    AfterUserCreateEvent,
+    BeforeLoginEvent,
+    BeforeUserCreateEvent,
+    HookRegistry,
+)
 from cross_auth.social_providers.oauth import OAuth2Provider
 
 from .backends import CrossAuthBackend
 from .conf import get_settings
+from .signals import after_login, before_login, before_user_create, user_created
 from .storage import DjangoAccountsStorage, DjangoSecondaryStorage, DjangoUser
 
 BACKEND = "cross_auth.django.backends.CrossAuthBackend"
@@ -81,11 +91,63 @@ def _auth_view(method: str) -> Callable[[_View[_P]], _View[_P]]:
     return decorate
 
 
+def _native(user: User) -> AbstractBaseUser:
+    if not isinstance(user, DjangoUser):
+        raise TypeError("Cross Auth's Django views need DjangoAccountsStorage users")
+    return user.native
+
+
+class _Signals:
+    """Sends ``cross_auth.django.signals`` for one request's provider flow.
+
+    Core's lifecycle events reach it through hook registries built for this
+    request, so receivers get the request and provider without global state.
+    """
+
+    def __init__(self, request: HttpRequest, provider: OAuth2Provider) -> None:
+        self.request = request
+        self.provider = provider.id
+        self.hooks = HookRegistry()
+        self.hooks.register_before("user.create", self._before_user_create)
+        self.hooks.register_after("user.create", self._user_created)
+
+    def _send(self, signal: Signal, **kwargs: object) -> None:
+        signal.send(
+            sender=get_user_model(),
+            request=self.request,
+            provider=self.provider,
+            **kwargs,
+        )
+
+    def _before_user_create(self, event: BeforeUserCreateEvent) -> None:
+        self._send(
+            before_user_create, email=event.email, email_verified=event.email_verified
+        )
+
+    def _user_created(self, event: AfterUserCreateEvent) -> None:
+        self._send(user_created, user=_native(event.user))
+
+    def login_hooks(self, user: DjangoUser) -> HookRegistry:
+        """Return hooks that send the login signals around logging in ``user``."""
+
+        def before(event: BeforeLoginEvent) -> None:
+            self._send(before_login, user_id=event.user_id, email=user.email)
+
+        def after(event: AfterLoginEvent) -> None:
+            self._send(after_login, user=user.native)
+
+        hooks = HookRegistry()
+        hooks.register_before("login", before)
+        hooks.register_after("login", after)
+        return hooks
+
+
 class DjangoLogin:
     """Completes a verified provider sign-in with ``django.contrib.auth``."""
 
-    def __init__(self, request: HttpRequest) -> None:
+    def __init__(self, request: HttpRequest, signals: _Signals) -> None:
         self.request = request
+        self.signals = signals
         session = request.session
         if not isinstance(session, DatabaseSessionStore):
             raise ImproperlyConfigured(
@@ -114,8 +176,8 @@ class DjangoLogin:
         def issue(event: BeforeLoginEvent) -> tuple[CrossWebResponse, None]:
             assert event.response is not None
             django_login(self.request, native, backend=BACKEND)
-            # Persist the rotated session now, so after hooks see a login
-            # that is stored rather than one waiting for SessionMiddleware.
+            # Persist the rotated session now, so after_login receivers see a
+            # login that is stored rather than one waiting for SessionMiddleware.
             self.session.save()
             return event.response, None
 
@@ -127,7 +189,7 @@ class DjangoLogin:
                 metadata=None,
                 response=response,
             ),
-            hooks=get_settings().hooks,
+            hooks=self.signals.login_hooks(user),
             issue=issue,
             on_commit=self.on_commit,
         )
@@ -164,7 +226,8 @@ def _next_url(request: HttpRequest) -> str:
     return _default_next_url()
 
 
-def _context(request: HttpRequest) -> Context:
+def _context(request: HttpRequest, signals: _Signals | None = None) -> Context:
+    """Build the core context; only the callback, which signs in, sends signals."""
     conf = get_settings()
     accounts = DjangoAccountsStorage()
     secondary = DjangoSecondaryStorage()
@@ -183,7 +246,7 @@ def _context(request: HttpRequest) -> Context:
             "require_verified_email": conf.require_verified_email,
         },
         default_next_url=_default_next_url(),
-        hooks=conf.hooks,
+        hooks=HookRegistry() if signals is None else signals.hooks,
     )
 
 
@@ -250,11 +313,13 @@ def link(request: HttpRequest, provider: str) -> HttpResponse:
 @_auth_view("GET")
 def callback(request: HttpRequest, provider: str) -> HttpResponse:
     """Finish a sign-in or link when the provider redirects back."""
+    oauth_provider = _provider(provider)
+    signals = _Signals(request, oauth_provider)
     response = handle_callback(
-        _provider(provider),
+        oauth_provider,
         HTTPRequest.from_django(request),
-        _context(request),
-        login=DjangoLogin(request),
+        _context(request, signals),
+        login=DjangoLogin(request, signals),
     )
     return _to_django(request, response)
 

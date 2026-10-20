@@ -29,8 +29,15 @@ CROSS_AUTH = {
   and nonce checks.
 - Sign-in refuses inactive users, existing users with the same email (connect
   explicitly instead), and unverified emails at signup, then calls
-  `django.contrib.auth.login()` and saves the database-backed session before
-  `after` `login` hooks run. Login hooks see `credential="django_session"`.
+  `django.contrib.auth.login()` and saves the database-backed session.
+- Django signals in `cross_auth.django.signals` run code around provider
+  sign-ins: `before_user_create`, `user_created`, `before_login` and
+  `after_login`. Connect receivers with `@receiver` in your app's
+  `AppConfig.ready()`. `before_*` receivers get read-only values such as `email`
+  and refuse by raising `PermissionDenied` (403); `user_created` and
+  `after_login` get the native user and `HttpRequest` once the sign-up or the
+  session is committed. Receiver errors propagate and return values are ignored.
+  Django's own `user_logged_in` is sent once, by `login()`.
 - System checks cover the backend, session engine, middleware and settings, and
   warn when a known multi-factor app is installed, since provider sign-in would
   bypass it.

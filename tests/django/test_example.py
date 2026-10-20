@@ -84,6 +84,19 @@ def test_check_and_migrations(project: Path, env: dict[str, str]) -> None:
     manage(project, env, "makemigrations", "--check", "--dry-run")
 
 
+def test_ready_connects_the_signal_receivers(
+    project: Path, env: dict[str, str]
+) -> None:
+    code = (
+        # Checked before this code imports core.signals itself.
+        "from cross_auth.django.signals import before_login, user_created; "
+        "assert before_login.has_listeners() and user_created.has_listeners(); "
+        "from core import signals; "
+        "assert signals.ALLOWED_EMAIL_DOMAIN is None"
+    )
+    manage(project, env, "shell", "-c", code)
+
+
 def test_google_sign_in_starts_with_the_registered_redirect_uri(server: str) -> None:
     with httpx.Client(base_url=server) as browser:
         home = browser.get("/")

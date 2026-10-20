@@ -42,7 +42,8 @@ def test_core_imports_without_django() -> None:
 
 def test_settings_can_import_providers_before_apps_are_ready() -> None:
     code = (
-        "import django.conf, cross_auth.django, cross_auth.social_providers.google; "
+        "import django.conf, cross_auth.django, cross_auth.django.signals, "
+        "cross_auth.social_providers.google; "
         "from django.apps import apps; assert not apps.ready"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
@@ -97,7 +98,8 @@ def test_mfa_apps_warn(monkeypatch: pytest.MonkeyPatch) -> None:
         ({"PROVIDERS": [object()]}, "provider instances"),
         ({"ACCOUNT_LINKING": {"allow_shared_connections": True}}, "Unsupported"),
         ({"ACCOUNT_LINKING": {"enabled": "yes"}}, "['enabled'] must be a bool"),
-        ({"HOOKS": "tests.django.settings.SECRET_KEY"}, "is not a HookRegistry"),
+        # Receivers of cross_auth.django.signals replace a hook registry.
+        ({"HOOKS": "core.auth_hooks.hooks"}, "Unknown CROSS_AUTH setting(s): HOOKS"),
         ({"BASE_URL": "example.com"}, "must be an origin"),
     ],
 )
