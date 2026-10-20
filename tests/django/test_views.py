@@ -7,6 +7,7 @@ transactions (``transaction=True``); only Google's network is faked.
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Iterator
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -23,6 +24,7 @@ from django.http import HttpResponse, HttpResponseBase
 from django.test import AsyncClient, Client, override_settings
 
 from cross_auth.django.models import SocialAccount
+from cross_auth.django.storage import DjangoAccountsStorage, DjangoUser
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.hooks import AfterLoginEvent, BeforeLoginEvent
 
@@ -371,6 +373,57 @@ class TestCallbackBinding:
         ), results
         assert get_user_model()._default_manager.count() == 1
         assert [name for name, _ in hooks.events].count("before login") == 1
+
+    def test_parallel_first_sign_ins_leave_one_user(
+        self, google: FakeGoogle, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from .conftest import run_in_threads
+
+        clients = [Client(enforce_csrf_checks=True) for _ in range(2)]
+        authorizations = [start_login(client, google) for client in clients]
+        codes = [
+            google.approve(authorization, Account()) for authorization in authorizations
+        ]
+        # Both independent callbacks find no user before either creates one.
+        found_none = threading.Barrier(2)
+        find_user_by_email = DjangoAccountsStorage.find_user_by_email
+
+        def find_then_wait(
+            storage: DjangoAccountsStorage, email: str
+        ) -> DjangoUser | None:
+            user = find_user_by_email(storage, email)
+            if user is None:
+                found_none.wait(timeout=10)
+            return user
+
+        monkeypatch.setattr(DjangoAccountsStorage, "find_user_by_email", find_then_wait)
+
+        def complete(index: int) -> HttpResponseBase:
+            return clients[index].get(
+                "/auth/google/callback",
+                {"state": authorizations[index].state, "code": codes[index]},
+            )
+
+        results = run_in_threads(2, complete)
+        monkeypatch.undo()
+
+        responses = [result for result in results if isinstance(result, HttpResponse)]
+        assert len(responses) == 2, results
+        winner, loser = sorted(responses, key=lambda response: response.status_code)
+        assert winner["Location"] == "/"
+        assert error_of(loser) == "account_not_linked"
+        native = get_user_model()._default_manager.get()
+        assert SocialAccount.objects.get().user_id == native.pk
+        names = [name for name, _ in hooks.events]
+        assert names.count("after user.create") == 1
+        assert names.count("after login") == 1
+
+        # Signing in again from the losing browser reaches the same user.
+        loser_client = clients[responses.index(loser)]
+        assert sign_in(loser_client, google)["Location"] == "/"
+        assert whoami(loser_client)["user_id"] == str(native.pk)
+        assert get_user_model()._default_manager.count() == 1
+        assert [name for name, _ in hooks.events].count("after user.create") == 1
 
     @pytest.mark.parametrize(
         ("next_url", "expected"),
