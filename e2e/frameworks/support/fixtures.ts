@@ -38,25 +38,30 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
           `The Google emulator allows at most ${MAX_WORKERS} workers`,
         )
       }
-      const dataDir = mkdtempSync(
-        join(tmpdir(), `cross-auth-e2e-${framework}-`),
-      )
       const logDir = join(workerInfo.project.outputDir, "servers")
       mkdirSync(logDir, { recursive: true })
       const logFile = join(
         logDir,
         `${framework}-${workerInfo.parallelIndex}.log`,
       )
-      const { stop, ...app } = await frameworks[framework].start({
-        port: frameworks[framework].basePort + workerInfo.parallelIndex,
-        dataDir,
-        logFile,
-      })
+      const dataDir = mkdtempSync(
+        join(tmpdir(), `cross-auth-e2e-${framework}-`),
+      )
+      let stop: (() => Promise<void>) | undefined
       try {
+        const { stop: stopServer, ...app } = await frameworks[framework].start({
+          port: frameworks[framework].basePort + workerInfo.parallelIndex,
+          dataDir,
+          logFile,
+        })
+        stop = stopServer
         await use({ ...app, logFile })
       } finally {
-        await stop()
-        rmSync(dataDir, { recursive: true, force: true })
+        try {
+          await stop?.()
+        } finally {
+          rmSync(dataDir, { recursive: true, force: true })
+        }
       }
     },
     { scope: "worker", timeout: 120_000 },

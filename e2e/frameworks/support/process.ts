@@ -1,6 +1,6 @@
-import { execFile, spawn } from "node:child_process"
+import { type ChildProcess, execFile, spawn } from "node:child_process"
 import { once } from "node:events"
-import { openSync, readFileSync } from "node:fs"
+import { closeSync, openSync, readFileSync } from "node:fs"
 import { promisify } from "node:util"
 
 const execFileAsync = promisify(execFile)
@@ -63,12 +63,18 @@ export async function startServer(
 
   const log = openSync(logFile, "a")
   const [file, ...args] = command.args
-  const child = spawn(file, args, {
-    cwd: command.cwd,
-    env: { ...process.env, ...command.env },
-    detached: true,
-    stdio: ["ignore", log, log],
-  })
+  let child: ChildProcess
+  try {
+    child = spawn(file, args, {
+      cwd: command.cwd,
+      env: { ...process.env, ...command.env },
+      detached: true,
+      stdio: ["ignore", log, log],
+    })
+  } finally {
+    // The child owns its copies of the log descriptor.
+    closeSync(log)
+  }
   const exited = once(child, "exit")
 
   const stop = async () => {

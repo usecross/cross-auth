@@ -109,8 +109,8 @@ jobs:
         working-directory: e2e
         run: bunx playwright install --with-deps chromium
 
-      # Starts the pinned Google emulator, then one server and database per
-      # worker for each example app; no request leaves the runner.
+      # Starts the pinned Google emulator and isolated app workers. Browser
+      # requests are restricted to loopback; provider endpoints are local.
       - name: Run shared framework contract
         working-directory: e2e
         run: bun run test:frameworks
