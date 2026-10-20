@@ -35,6 +35,11 @@ export function googleIdentity(
   name: IdentityName,
   repeat: number,
 ): GoogleIdentity {
+  if (repeat >= MAX_REPEATS) {
+    throw new Error(
+      `The Google emulator seeds at most ${MAX_REPEATS} repeats (--repeat-each)`,
+    )
+  }
   const { domain = "e2e.test" } = IDENTITIES[name] as { domain?: string }
   return { email: `${name}.${repeat}@${domain}`, name: `E2E ${name} ${repeat}` }
 }
