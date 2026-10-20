@@ -21,6 +21,9 @@ redis = ["redis>=5.0"]
 # 0.0.28 is the oldest release that works across our supported Python range;
 # earlier releases cannot define table models on Python 3.14.
 sqlmodel = ["sqlmodel>=0.0.28"]
+# The Django pilot targets the 5.2 LTS series; 5.2.8 is the first release that
+# supports Python 3.14. Django 6 is not tested yet.
+django = ["django>=5.2.8,<6"]
 
 [tool.uv.workspace]
 members = ["website", "examples/fastapi"]
@@ -47,6 +50,9 @@ dev = [
     "sqlmodel>=0.0.28",
     "testcontainers>=4.8",
     "psycopg[binary]>=3.1",
+    "django>=5.2.8,<6",
+    "django-stubs>=5.2.9,<6",
+    "pytest-django>=4.14",
 ]
 
 
@@ -63,6 +69,11 @@ addopts = ["-ra", "-q"]
 testpaths = [
     "tests",
 ]
+# tests/django runs against these settings; CROSS_AUTH_TEST_DATABASE and
+# CROSS_AUTH_TEST_USER_MODEL select its database and user model.
+DJANGO_SETTINGS_MODULE = "tests.django.settings"
+django_find_project = false
+pythonpath = ["."]
 
 [tool.coverage.run]
 parallel = true
