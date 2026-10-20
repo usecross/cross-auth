@@ -41,8 +41,10 @@ CROSS_AUTH = {
   `before_social_account_disconnect`/`social_account_disconnected`. Connect
   receivers with `@receiver` in your app's `AppConfig.ready()`. `before_*`
   receivers get read-only values such as `email` and string IDs, and refuse by
-  raising `PermissionDenied` (403) before anything is written; the others get
-  the native user or `SocialAccount` once the change is committed. Receiver
+  raising `PermissionDenied` (403) before that step writes anything. Earlier
+  commits remain, so refusing `before_login` does not undo a new user. User and
+  account success signals carry native instances after commit;
+  `authorization_started` carries the flow after its state is stored. Receiver
   errors propagate and return values are ignored. Django's own `user_logged_in`
   is sent once, by `login()`, and password logins send only Django's signals.
 - System checks cover the backend, session engine, middleware and settings, and
