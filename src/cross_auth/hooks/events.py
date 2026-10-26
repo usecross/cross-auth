@@ -218,6 +218,9 @@ class BeforeLogoutEvent:
     request: HTTPRequest
     response: Response
     session_record: SessionRecord | None
+    # The token sent as the session cookie or bearer credential. Return a
+    # different one to revoke that session instead.
+    session_token: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

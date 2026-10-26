@@ -11,6 +11,7 @@ from ._auth_flow import (
     disconnect_provider,
     finalize_link,
     handle_callback,
+    logout,
     start_connect_flow,
     start_link_flow,
     start_session_flow,
@@ -209,6 +210,17 @@ class AuthRouter(APIRouter):
                     oauth_server=oauth_server is not None,
                 )
             )
+        if setup.context.session_storage is not None:
+            provider_routes.append(
+                Route(
+                    path="/logout",
+                    methods=["POST"],
+                    function=logout,
+                    status_code=204,
+                    operation_id="logout",
+                    summary="Revoke the current session",
+                )
+            )
         if self.issuer is not None and oauth_server is not None:
             provider_routes.extend(
                 self.issuer.routes(password_grant=oauth_server.password_grant)
@@ -220,6 +232,7 @@ class AuthRouter(APIRouter):
                 route.to_fastapi_endpoint(setup.context),
                 methods=route.methods,
                 response_model=route.response_model,
+                status_code=route.status_code,
                 operation_id=route.operation_id,
                 openapi_extra=route.get_openapi_extra(),
                 summary=route.summary,

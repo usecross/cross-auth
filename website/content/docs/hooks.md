@@ -227,18 +227,33 @@ def audit_login(event: AfterLoginEvent) -> None:
 
 ### `logout`
 
-Runs around browser session deletion. Use it to require or inspect the active
-session before it is removed, then record logout activity or clean up related
-application state after deletion succeeds.
+Runs around session revocation by `auth.logout()` and the mounted `POST /logout`
+route. Use it to inspect or pick the session before it is revoked, then record
+logout activity or clean up related application state after revocation succeeds.
+
+The before event carries the `session_token` Cross-Auth found in the session
+cookie or `Authorization: Bearer` header, and the active `session_record` it
+resolves to. Both are `None` when the request has no token, and `session_record`
+is `None` for an unknown, expired, or revoked token. Return the event with a
+different `session_token` to revoke that session instead, for example when your
+client sends it in another header. A returned `session_record` is revoked as is
+and takes precedence over the token. The after event never carries the raw
+token. A before hook that raises `CrossAuthException` stops the logout, and the
+route answers with that error instead of 204.
 
 ```python
+from dataclasses import replace
+
 from cross_auth.hooks import AfterLogoutEvent, BeforeLogoutEvent
 
 
 @auth.before("logout")
-def require_active_session(event: BeforeLogoutEvent) -> None:
-    if event.session_record is None:
-        raise CrossAuthException("unauthorized", "No active session", 401)
+def token_from_header(event: BeforeLogoutEvent) -> BeforeLogoutEvent | None:
+    if event.session_token is None:
+        return replace(
+            event, session_token=event.request.headers.get("x-session-token")
+        )
+    return None
 
 
 @auth.after("logout")

@@ -71,7 +71,13 @@ OAUTH_SERVER_ROUTES = {
 }
 
 
-def _expected(provider_ids: list[str], *, oauth_server: bool, cookie_auth: bool):
+def _expected(
+    provider_ids: list[str],
+    *,
+    oauth_server: bool,
+    cookie_auth: bool,
+    session_storage: bool = True,
+):
     per_provider = SESSION_ROUTES | (OAUTH_SERVER_ROUTES if oauth_server else set())
     if not cookie_auth:
         per_provider = per_provider - {("/{p}/login", "GET")}
@@ -80,6 +86,8 @@ def _expected(provider_ids: list[str], *, oauth_server: bool, cookie_auth: bool)
         for provider_id in provider_ids
         for path, method in per_provider
     }
+    if session_storage:
+        routes.add(("/logout", "POST"))
     return routes | ({("/token", "POST")} if oauth_server else set())
 
 
@@ -166,7 +174,10 @@ def test_oauth_server_is_off_by_default(secondary_storage, accounts_storage, pro
         assert default.issuer is None
         assert default.context.oauth_server is None
         assert _route_methods(default) == _expected(
-            ["fake", "github"], oauth_server=False, cookie_auth=False
+            ["fake", "github"],
+            oauth_server=False,
+            cookie_auth=False,
+            session_storage=False,
         )
 
 

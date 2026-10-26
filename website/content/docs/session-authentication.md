@@ -48,6 +48,25 @@ auth.login(str(user.id), response=response)
 
 ### Logout
 
+`auth.router` mounts `POST /logout` whenever `session_storage` is configured.
+Include the router under a prefix and clients call it there:
+
+```python
+app.include_router(auth.router, prefix="/api/v1")
+# POST /api/v1/logout
+```
+
+The route revokes the caller's session and answers `204 No Content` with a
+cleared session cookie. It reads the session token from the session cookie, then
+from `Authorization: Bearer ...`, so it logs out browser sessions and tokens
+from `/token` or `auth.issue_session_token()` alike. It answers 204 also when
+the request has no token, or one that is unknown, expired, or already revoked:
+logging out never fails with 401, so a client that answers 401 by signing out
+again cannot loop. Use a `logout` before hook to read the token from somewhere
+else; see [Hooks](/docs/hooks#logout).
+
+To log out from your own route, call `logout()`; the route runs the same code:
+
 ```python
 from fastapi import Request
 

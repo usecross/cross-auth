@@ -8,6 +8,13 @@ def test_router(test_app: FastAPI):
             "openapi": "3.1.0",
             "info": {"title": "FastAPI", "version": "1.0.0"},
             "paths": {
+                "/logout": {
+                    "post": {
+                        "summary": "Revoke the current session",
+                        "operationId": "logout",
+                        "responses": {"204": {"description": "Successful Response"}},
+                    }
+                },
                 "/token": {
                     "post": {
                         "summary": "OAuth 2.0 token endpoint",
@@ -200,7 +207,7 @@ def test_router(test_app: FastAPI):
                             },
                         },
                     }
-                }
+                },
             },
             "components": {
                 "schemas": {
