@@ -17,6 +17,7 @@ from ._issuer import AuthorizationCodeGrantData
 from ._login import (
     BrowserLogin,
     login_with_session,
+    logout_session,
     require_immediate_commit,
     run_now,
 )
@@ -40,6 +41,7 @@ from .hooks import (
     BeforeSocialAccountCreateEvent,
     BeforeSocialAccountUpdateEvent,
     BeforeUserCreateEvent,
+    LogoutScope,
     ProviderSnapshot,
     SocialAccountSnapshot,
     UserSnapshot,
@@ -126,6 +128,10 @@ class LinkCodeData(BaseModel):
     provider_data: dict[str, str] = Field(default_factory=dict)
     client_state: str | None = None
     provider_callback_extra: dict[str, Any] | None = None
+
+
+class LogoutRequest(BaseModel):
+    scope: LogoutScope = "current"
 
 
 class InitiateLinkRequest(BaseModel):
@@ -243,6 +249,45 @@ def _is_safe_next_url(next_url: str) -> bool:
 
 def _same_id(left: Any, right: Any) -> bool:
     return str(left) == str(right)
+
+
+def logout(request: HTTPRequest, context: Context) -> Response:
+    """POST /logout — revoke the caller's session.
+
+    Body (optional): LogoutRequest (JSON); ``{"scope": "all"}`` revokes every
+    session of the caller's user. Always answers 204, also without a session
+    to revoke: a client that treats 401 as "sign in again" must not loop on its
+    own logout. Only a malformed body or a ``logout`` before hook that raises
+    ``CrossAuthException`` changes the status.
+    """
+    assert context.session_storage is not None
+    try:
+        logout_request = (
+            LogoutRequest.model_validate_json(request.body)
+            if request.body
+            else LogoutRequest()
+        )
+    except ValidationError:
+        return Response.error(
+            "invalid_request", error_description="Invalid request body"
+        )
+
+    try:
+        response = logout_session(
+            request,
+            response=Response(status_code=204),
+            hooks=context.hooks,
+            session_storage=context.session_storage,
+            session_config=context.session_config,
+            scope=logout_request.scope,
+        )
+    except CrossAuthException as e:
+        return Response.error(
+            e.error,
+            error_description=e.error_description,
+            status_code=e.status_code,
+        )
+    return cast(Response, response)
 
 
 def disconnect_provider(

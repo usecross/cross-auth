@@ -30,6 +30,7 @@ Route paths below are relative to where you include `auth.router`:
 | `GET` or `POST /{provider}/callback`                          | Keep Cross-Auth's OAuth checks. Exempt these exact routes from ordinary form-CSRF checks so provider callbacks work. Rate-limit them.                                          |
 | `GET /{provider}/login`, `GET /{provider}/authorize`          | Rate-limit authorization starts and temporary-state allocation.                                                                                                                |
 | `POST /token`                                                 | Rate-limit credential verification and token issuance. This endpoint returns a bearer token; it does not authenticate through the browser's session cookie or set that cookie. |
+| `POST /logout`                                                | Require CSRF protection when the session cookie authenticates the request. A request that only sends `Authorization: Bearer` carries no ambient credential.                    |
 | Your password/native login, logout, session-revocation routes | Apply CSRF checks to browser endpoints, including login before a user has a session. Use POST or DELETE for mutations. Apply rate limits before calling Cross-Auth.            |
 
 ## Protect browser requests in FastAPI

@@ -74,6 +74,7 @@ class Route:
         methods: list[str],
         function: Callable[..., Response],
         response_model: type[BaseModel] | None = None,
+        status_code: int | None = None,
         operation_id: str | None = None,
         read_body: bool = False,
         read_form_data: bool = False,
@@ -86,6 +87,7 @@ class Route:
         self.methods = methods
         self.function = function
         self.response_model = response_model
+        self.status_code = status_code
         self.operation_id = operation_id
         self.read_body = read_body
         self.read_form_data = read_form_data

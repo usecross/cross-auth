@@ -227,18 +227,35 @@ def audit_login(event: AfterLoginEvent) -> None:
 
 ### `logout`
 
-Runs around browser session deletion. Use it to require or inspect the active
-session before it is removed, then record logout activity or clean up related
-application state after deletion succeeds.
+Runs around session revocation by `auth.logout()` and the mounted `POST /logout`
+route. Use it to inspect the session before it is revoked, then record logout
+activity or clean up related application state after revocation succeeds.
+
+The before event carries the active `session_record` Cross-Auth resolved from
+the session cookie or `Authorization: Bearer` header. It is `None` when the
+request has no token, or one that is unknown, expired, or revoked. A before hook
+that raises `CrossAuthException` stops the logout, and the route answers with
+that error instead of 204.
+
+Both events carry the `scope`: `"current"` revokes the request's session and
+`"all"` every session of its user. A before hook may return a different scope,
+for example to refuse logging out everywhere for some accounts. The after
+event's `revoked_count` is the number of sessions the logout revoked: `0`
+without a session, `1` for `"current"`.
 
 ```python
+from dataclasses import replace
+
 from cross_auth.hooks import AfterLogoutEvent, BeforeLogoutEvent
 
 
 @auth.before("logout")
-def require_active_session(event: BeforeLogoutEvent) -> None:
-    if event.session_record is None:
-        raise CrossAuthException("unauthorized", "No active session", 401)
+def keep_admins_signed_in_elsewhere(
+    event: BeforeLogoutEvent,
+) -> BeforeLogoutEvent | None:
+    if event.scope == "all" and is_admin_session(event.session_record):
+        return replace(event, scope="current")
+    return None
 
 
 @auth.after("logout")

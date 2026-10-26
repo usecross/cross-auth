@@ -1,19 +1,30 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Protocol, TypeVar
 
-from cross_web import Response
+from cross_web import HTTPRequest, Response
 
 from ._session import (
     SessionConfig,
     SessionMetadata,
     _build_cookie,
     create_session,
+    get_bearer_token,
+    hash_session_token,
+    make_clear_cookie,
     resolve_config,
 )
 from ._storage import CommitCallback, SessionRecord, SessionStorage, User
-from .hooks import AfterLoginEvent, BeforeLoginEvent, HookRegistry
+from .hooks import (
+    AfterLoginEvent,
+    AfterLogoutEvent,
+    BeforeLoginEvent,
+    BeforeLogoutEvent,
+    HookRegistry,
+    LogoutScope,
+)
 
 _IssuedT = TypeVar("_IssuedT")
 
@@ -210,3 +221,88 @@ def issue_bearer_session(
     )
     assert approved.max_age is not None
     return session_token, session_record, approved.max_age
+
+
+def logout_session(
+    request: HTTPRequest,
+    *,
+    response: Response,
+    hooks: HookRegistry,
+    session_storage: SessionStorage,
+    session_config: SessionConfig | None,
+    scope: LogoutScope = "current",
+) -> Response:
+    """Revoke the request's session and clear the session cookie on ``response``.
+
+    The session token comes from the session cookie, then from an
+    ``Authorization: Bearer`` header. ``scope="all"`` revokes every session of that session's user. A
+    missing, unknown, expired or already revoked token revokes nothing.
+    Returns the hook response; adapters decide how to send it and how to
+    surface hook exceptions.
+    """
+    resolved = resolve_config(session_config)
+
+    def find(session_token: str) -> SessionRecord | None:
+        # A plain lookup: rolling a sliding session forward is pointless when
+        # it is about to be revoked.
+        return session_storage.get(
+            token_hash=hash_session_token(session_token, resolved["token_hasher"]),
+            now=datetime.now(tz=timezone.utc),
+        )
+
+    # Same precedence as resolve_current_session: a stale cookie does not hide
+    # a valid bearer token.
+    session_record: SessionRecord | None = None
+    for session_token in (
+        request.cookies.get(resolved["cookies"]["name"]),
+        get_bearer_token(request),
+    ):
+        if session_token is not None:
+            session_record = find(session_token)
+            if session_record is not None:
+                break
+
+    event = hooks.run_before(
+        "logout",
+        BeforeLogoutEvent(
+            request=request,
+            response=response,
+            session_record=session_record,
+            scope=scope,
+        ),
+    )
+    if event.scope not in ("current", "all"):
+        raise ValueError("logout before hooks must keep scope 'current' or 'all'")
+    revoked_record = event.session_record
+
+    # Without a session to revoke nothing is written, so the after hook
+    # has no commit to wait for.
+    on_commit = run_now
+    revoked_count = 0
+    if revoked_record is not None:
+        require_immediate_commit(
+            session_storage.on_commit,
+            COOKIE_SESSION_COMMIT_ERROR.format(action="Logout"),
+        )
+        revoked_at = datetime.now(tz=timezone.utc)
+        if event.scope == "all":
+            revoked_count = session_storage.revoke_all_for_user(
+                revoked_record.user_id, revoked_at=revoked_at
+            )
+        else:
+            session_storage.revoke(revoked_record.id, revoked_at=revoked_at)
+            revoked_count = 1
+        on_commit = session_storage.on_commit
+
+    if event.response.cookies is None:
+        event.response.cookies = []
+    event.response.cookies.append(make_clear_cookie(session_config))
+    after_event = AfterLogoutEvent(
+        request=event.request,
+        response=event.response,
+        session_record=revoked_record,
+        scope=event.scope,
+        revoked_count=revoked_count,
+    )
+    on_commit(lambda: hooks.run_after("logout", after_event))
+    return event.response

@@ -8,6 +8,44 @@ def test_router(test_app: FastAPI):
             "openapi": "3.1.0",
             "info": {"title": "FastAPI", "version": "1.0.0"},
             "paths": {
+                "/logout": {
+                    "post": {
+                        "summary": "Revoke the current session",
+                        "operationId": "logout",
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "properties": {
+                                            "scope": {
+                                                "type": "string",
+                                                "enum": ["current", "all"],
+                                                "description": "'all' revokes every session of the caller's user",
+                                                "default": "current",
+                                            }
+                                        },
+                                        "type": "object",
+                                        "title": "Body",
+                                    }
+                                }
+                            },
+                            "required": False,
+                        },
+                        "responses": {
+                            "204": {"description": "Successful Response"},
+                            "422": {
+                                "description": "Validation Error",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "$ref": "#/components/schemas/HTTPValidationError"
+                                        }
+                                    }
+                                },
+                            },
+                        },
+                    }
+                },
                 "/token": {
                     "post": {
                         "summary": "OAuth 2.0 token endpoint",
@@ -200,7 +238,7 @@ def test_router(test_app: FastAPI):
                             },
                         },
                     }
-                }
+                },
             },
             "components": {
                 "schemas": {

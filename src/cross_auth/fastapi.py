@@ -23,11 +23,9 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from ._config import Config
 from ._context import AccountsStorage, SecondaryStorage, User
 from ._login import (
-    COOKIE_SESSION_COMMIT_ERROR,
     issue_bearer_session,
     login_with_session,
-    require_immediate_commit,
-    run_now,
+    logout_session,
 )
 from ._native import sign_in_with_id_token as _sign_in_with_id_token
 from ._oauth_server import OAuthServer
@@ -36,13 +34,9 @@ from ._request import make_http_request
 from ._session import (
     SessionMetadata,
     get_current_user,
-    make_clear_cookie,
     make_session_cookie,
     resolve_config,
     resolve_current_session,
-)
-from ._session import (
-    get_session as get_session_by_token,
 )
 from ._setup import build_auth_setup
 from ._storage import (
@@ -82,6 +76,7 @@ from .hooks import (
     BeforeTokenPasswordEvent,
     BeforeUserCreateEvent,
     HookRegistry,
+    LogoutScope,
 )
 from .hooks._types import HookEventName
 from .router import _TRUSTED_ORIGINS_DEPRECATION, AuthRouter
@@ -691,54 +686,28 @@ class CrossAuth:
         )
         self._apply_hook_response(hook_response, response)
 
-    def logout(self, request: FastAPIRequest, *, response: FastAPIResponse) -> None:
-        session_storage = self._require_session_storage()
-        resolved = resolve_config(self._context.session_config)
-        cookie_name = resolved["cookies"]["name"]
-        hook_request = make_http_request(AsyncHTTPRequest.from_fastapi(request))
-        hook_response = self._make_hook_response(response)
-        session_token = hook_request.cookies.get(cookie_name)
-        session_record = (
-            get_session_by_token(
-                session_token,
-                session_storage,
-                self._context.session_config,
-            )
-            if session_token is not None
-            else None
-        )
-        event = self._context.hooks.run_before(
-            "logout",
-            BeforeLogoutEvent(
-                request=hook_request,
-                response=hook_response,
-                session_record=session_record,
-            ),
-        )
+    def logout(
+        self,
+        request: FastAPIRequest,
+        *,
+        response: FastAPIResponse,
+        scope: LogoutScope = "current",
+    ) -> None:
+        """Revoke the request's session and clear the session cookie.
 
-        # Without a session to revoke nothing is written, so the after hook
-        # has no commit to wait for.
-        on_commit = run_now
-        if event.session_record is not None:
-            require_immediate_commit(
-                session_storage.on_commit,
-                COOKIE_SESSION_COMMIT_ERROR.format(action="Logout"),
-            )
-            session_storage.revoke(
-                event.session_record.id,
-                revoked_at=datetime.now(tz=timezone.utc),
-            )
-            on_commit = session_storage.on_commit
-
-        cookie = make_clear_cookie(self._context.session_config)
-        self._add_cookie_to_hook_response(event.response, cookie)
-        after_event = AfterLogoutEvent(
-            request=event.request,
-            response=event.response,
-            session_record=event.session_record,
+        Reads the session cookie, then an ``Authorization: Bearer`` token; the
+        mounted ``POST /logout`` route runs the same code. ``scope="all"``
+        revokes every session of the session's user (log out everywhere).
+        """
+        hook_response = logout_session(
+            make_http_request(AsyncHTTPRequest.from_fastapi(request)),
+            response=self._make_hook_response(response),
+            hooks=self._context.hooks,
+            session_storage=self._require_session_storage(),
+            session_config=self._context.session_config,
+            scope=scope,
         )
-        on_commit(lambda: self._context.hooks.run_after("logout", after_event))
-        self._apply_hook_response(event.response, response)
+        self._apply_hook_response(hook_response, response)
 
 
 def _serialize_cookie(cookie: Cookie) -> bytes:
