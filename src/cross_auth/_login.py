@@ -23,6 +23,7 @@ from .hooks import (
     BeforeLoginEvent,
     BeforeLogoutEvent,
     HookRegistry,
+    LogoutScope,
 )
 
 _IssuedT = TypeVar("_IssuedT")
@@ -229,12 +230,14 @@ def logout_session(
     hooks: HookRegistry,
     session_storage: SessionStorage,
     session_config: SessionConfig | None,
+    scope: LogoutScope = "current",
 ) -> Response:
     """Revoke the request's session and clear the session cookie on ``response``.
 
     The session token comes from the session cookie, then from an
     ``Authorization: Bearer`` header, and ``logout`` before hooks may replace
-    it. A missing, unknown, expired or already revoked token revokes nothing.
+    it. ``scope="all"`` revokes every session of that session's user. A
+    missing, unknown, expired or already revoked token revokes nothing.
     Returns the hook response; adapters decide how to send it and how to
     surface hook exceptions.
     """
@@ -270,8 +273,11 @@ def logout_session(
             response=response,
             session_record=session_record,
             session_token=session_token,
+            scope=scope,
         ),
     )
+    if event.scope not in ("current", "all"):
+        raise ValueError("logout before hooks must keep scope 'current' or 'all'")
     revoked_record = event.session_record
     # A hook that picked another token, but left the record alone, revokes the
     # session behind that token.
@@ -283,15 +289,20 @@ def logout_session(
     # Without a session to revoke nothing is written, so the after hook
     # has no commit to wait for.
     on_commit = run_now
+    revoked_count = 0
     if revoked_record is not None:
         require_immediate_commit(
             session_storage.on_commit,
             COOKIE_SESSION_COMMIT_ERROR.format(action="Logout"),
         )
-        session_storage.revoke(
-            revoked_record.id,
-            revoked_at=datetime.now(tz=timezone.utc),
-        )
+        revoked_at = datetime.now(tz=timezone.utc)
+        if event.scope == "all":
+            revoked_count = session_storage.revoke_all_for_user(
+                revoked_record.user_id, revoked_at=revoked_at
+            )
+        else:
+            session_storage.revoke(revoked_record.id, revoked_at=revoked_at)
+            revoked_count = 1
         on_commit = session_storage.on_commit
 
     if event.response.cookies is None:
@@ -301,6 +312,8 @@ def logout_session(
         request=event.request,
         response=event.response,
         session_record=revoked_record,
+        scope=event.scope,
+        revoked_count=revoked_count,
     )
     on_commit(lambda: hooks.run_after("logout", after_event))
     return event.response

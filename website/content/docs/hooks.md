@@ -241,6 +241,12 @@ and takes precedence over the token. The after event never carries the raw
 token. A before hook that raises `CrossAuthException` stops the logout, and the
 route answers with that error instead of 204.
 
+Both events carry the `scope`: `"current"` revokes the request's session and
+`"all"` every session of its user. A before hook may return a different scope,
+for example to refuse logging out everywhere for some accounts. The after
+event's `revoked_count` is the number of sessions the logout revoked: `0`
+without a session, `1` for `"current"`.
+
 ```python
 from dataclasses import replace
 

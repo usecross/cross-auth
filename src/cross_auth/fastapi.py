@@ -76,6 +76,7 @@ from .hooks import (
     BeforeTokenPasswordEvent,
     BeforeUserCreateEvent,
     HookRegistry,
+    LogoutScope,
 )
 from .hooks._types import HookEventName
 from .router import _TRUSTED_ORIGINS_DEPRECATION, AuthRouter
@@ -685,11 +686,18 @@ class CrossAuth:
         )
         self._apply_hook_response(hook_response, response)
 
-    def logout(self, request: FastAPIRequest, *, response: FastAPIResponse) -> None:
+    def logout(
+        self,
+        request: FastAPIRequest,
+        *,
+        response: FastAPIResponse,
+        scope: LogoutScope = "current",
+    ) -> None:
         """Revoke the request's session and clear the session cookie.
 
         Reads the session cookie, then an ``Authorization: Bearer`` token; the
-        mounted ``POST /logout`` route runs the same code.
+        mounted ``POST /logout`` route runs the same code. ``scope="all"``
+        revokes every session of the session's user (log out everywhere).
         """
         hook_response = logout_session(
             make_http_request(AsyncHTTPRequest.from_fastapi(request)),
@@ -697,6 +705,7 @@ class CrossAuth:
             hooks=self._context.hooks,
             session_storage=self._require_session_storage(),
             session_config=self._context.session_config,
+            scope=scope,
         )
         self._apply_hook_response(hook_response, response)
 

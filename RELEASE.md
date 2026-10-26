@@ -27,6 +27,13 @@ returned `session_record` still takes precedence.
 session sent as `Authorization: Bearer ...` when the request has no valid
 session cookie. It no longer rolls a sliding session forward before revoking it.
 
+Send `{"scope": "all"}` as the JSON body, or call
+`auth.logout(request, response=response, scope="all")`, to log out everywhere:
+Cross-Auth revokes every session of the caller's user. Both logout events have a
+new `scope` field (`"current"` or `"all"`, exported as
+`cross_auth.hooks.LogoutScope`), which a before hook may change, and
+`AfterLogoutEvent.revoked_count` reports how many sessions were revoked.
+
 If you protect `auth.router` with a CSRF dependency, note the new `logout`
 operation ID: cookie requests to it need the same protection as your other
 browser mutations.

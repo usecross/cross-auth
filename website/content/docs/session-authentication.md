@@ -65,6 +65,13 @@ logging out never fails with 401, so a client that answers 401 by signing out
 again cannot loop. Use a `logout` before hook to read the token from somewhere
 else; see [Hooks](/docs/hooks#logout).
 
+To log out everywhere, send `{"scope": "all"}` as the JSON body. The route then
+revokes every session of the caller's user (browser cookies and bearer tokens on
+every device), still answering 204. Without a valid session there is no user to
+log out, and nothing is revoked. An unknown `scope` answers
+`400 invalid_request`. To revoke a user's other sessions while keeping the
+current one, call `auth.revoke_other_sessions()` from your own route.
+
 To log out from your own route, call `logout()`; the route runs the same code:
 
 ```python
@@ -73,6 +80,9 @@ from fastapi import Request
 # Revoke session + clear cookie in one step
 response = JSONResponse({"ok": True})
 auth.logout(request, response=response)
+
+# Or revoke every session of the user
+auth.logout(request, response=response, scope="all")
 ```
 
 ### Get Current User

@@ -263,3 +263,146 @@ def test_logout_method_revokes_bearer_session(
 
     assert response.status_code == 200
     assert get_session(session_token, session_storage) is None
+
+
+def test_logout_route_scope_all_revokes_every_session_of_the_user(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
+    session_token, session_record = auth.issue_session_token("test")
+    other_device_token, _ = create_session("test", session_storage)
+    other_user_token, _ = create_session("other", session_storage)
+    seen: list[AfterLogoutEvent] = []
+
+    @auth.after("logout")
+    def capture(event: AfterLogoutEvent) -> None:
+        seen.append(event)
+
+    with TestClient(_make_app(auth)) as client:
+        response = client.post(
+            "/api/v1/logout",
+            headers={"Authorization": f"Bearer {session_token}"},
+            json={"scope": "all"},
+        )
+
+    assert response.status_code == 204
+    _assert_clears_cookie(response)
+    assert get_session(session_token, session_storage) is None
+    assert get_session(other_device_token, session_storage) is None
+    assert get_session(other_user_token, session_storage) is not None
+    assert [(e.scope, e.revoked_count, e.session_record) for e in seen] == [
+        ("all", 2, session_record)
+    ]
+
+
+def test_logout_route_scope_all_without_token(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
+    other_token, _ = create_session("test", session_storage)
+
+    with TestClient(_make_app(auth)) as client:
+        response = client.post("/api/v1/logout", json={"scope": "all"})
+
+    assert response.status_code == 204
+    assert get_session(other_token, session_storage) is not None
+
+
+def test_logout_route_defaults_to_current_scope(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
+    session_token, _ = auth.issue_session_token("test")
+    other_device_token, _ = create_session("test", session_storage)
+    seen: list[AfterLogoutEvent] = []
+
+    @auth.after("logout")
+    def capture(event: AfterLogoutEvent) -> None:
+        seen.append(event)
+
+    with TestClient(_make_app(auth)) as client:
+        response = client.post(
+            "/api/v1/logout",
+            headers={"Authorization": f"Bearer {session_token}"},
+            json={},
+        )
+
+    assert response.status_code == 204
+    assert get_session(session_token, session_storage) is None
+    assert get_session(other_device_token, session_storage) is not None
+    assert [(e.scope, e.revoked_count) for e in seen] == [("current", 1)]
+
+
+def test_logout_route_rejects_unknown_scope(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
+    session_token, _ = auth.issue_session_token("test")
+
+    with TestClient(_make_app(auth)) as client:
+        response = client.post(
+            "/api/v1/logout",
+            headers={"Authorization": f"Bearer {session_token}"},
+            json={"scope": "others"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_request"
+    assert get_session(session_token, session_storage) is not None
+
+
+def test_logout_before_hook_changes_scope(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
+    session_token, _ = auth.issue_session_token("test")
+    other_device_token, _ = create_session("test", session_storage)
+
+    @auth.before("logout")
+    def only_current(event: BeforeLogoutEvent) -> BeforeLogoutEvent:
+        assert event.scope == "all"
+        return replace(event, scope="current")
+
+    with TestClient(_make_app(auth)) as client:
+        response = client.post(
+            "/api/v1/logout",
+            headers={"Authorization": f"Bearer {session_token}"},
+            json={"scope": "all"},
+        )
+
+    assert response.status_code == 204
+    assert get_session(session_token, session_storage) is None
+    assert get_session(other_device_token, session_storage) is not None
+
+
+def test_logout_method_scope_all(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
+    session_token, _ = create_session("test", session_storage)
+    other_device_token, _ = auth.issue_session_token("test")
+    app = FastAPI()
+
+    @app.post("/sign-out-everywhere")
+    def sign_out_everywhere(request: Request, response: Response) -> None:
+        auth.logout(request, response=response, scope="all")
+
+    with TestClient(app) as client:
+        client.cookies.set("session_id", session_token)
+        response = client.post("/sign-out-everywhere")
+
+    assert response.status_code == 200
+    assert get_session(session_token, session_storage) is None
+    assert get_session(other_device_token, session_storage) is None

@@ -12,7 +12,38 @@ def test_router(test_app: FastAPI):
                     "post": {
                         "summary": "Revoke the current session",
                         "operationId": "logout",
-                        "responses": {"204": {"description": "Successful Response"}},
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "properties": {
+                                            "scope": {
+                                                "type": "string",
+                                                "enum": ["current", "all"],
+                                                "description": "'all' revokes every session of the caller's user",
+                                                "default": "current",
+                                            }
+                                        },
+                                        "type": "object",
+                                        "title": "Body",
+                                    }
+                                }
+                            },
+                            "required": False,
+                        },
+                        "responses": {
+                            "204": {"description": "Successful Response"},
+                            "422": {
+                                "description": "Validation Error",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "$ref": "#/components/schemas/HTTPValidationError"
+                                        }
+                                    }
+                                },
+                            },
+                        },
                     }
                 },
                 "/token": {

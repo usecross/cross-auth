@@ -219,6 +219,30 @@ class AuthRouter(APIRouter):
                     status_code=204,
                     operation_id="logout",
                     summary="Revoke the current session",
+                    read_body=True,
+                    openapi={
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "scope": {
+                                                "type": "string",
+                                                "enum": ["current", "all"],
+                                                "default": "current",
+                                                "description": (
+                                                    "'all' revokes every session "
+                                                    "of the caller's user"
+                                                ),
+                                            }
+                                        },
+                                    }
+                                }
+                            },
+                            "required": False,
+                        }
+                    },
                 )
             )
         if self.issuer is not None and oauth_server is not None:

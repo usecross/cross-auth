@@ -94,6 +94,8 @@ class AfterAuthenticateEvent:
 
 # "django_session" is a native Django session started by django.contrib.auth.
 LoginCredential = Literal["cookie", "bearer", "django_session"]
+# "current" revokes the request's session; "all" every session of its user.
+LogoutScope = Literal["current", "all"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +223,7 @@ class BeforeLogoutEvent:
     # The token sent as the session cookie or bearer credential. Return a
     # different one to revoke that session instead.
     session_token: str | None = None
+    scope: LogoutScope = "current"
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +231,8 @@ class AfterLogoutEvent:
     request: HTTPRequest
     response: Response
     session_record: SessionRecord | None
+    scope: LogoutScope = "current"
+    revoked_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,6 +416,7 @@ __all__ = [
     "BeforeTokenPasswordEvent",
     "BeforeUserCreateEvent",
     "LoginCredential",
+    "LogoutScope",
     "ProviderSnapshot",
     "SocialAccountSnapshot",
     "UserSnapshot",
