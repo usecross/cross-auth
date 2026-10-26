@@ -166,36 +166,7 @@ def test_logout_route_with_expired_token(
     assert response.status_code == 204
 
 
-def test_logout_before_hook_sets_session_token(
-    secondary_storage: SecondaryStorage,
-    accounts_storage: AccountsStorage,
-    session_storage: SessionStorage,
-):
-    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
-    session_token, session_record = auth.issue_session_token("test")
-    seen: list[AfterLogoutEvent] = []
-
-    @auth.before("logout")
-    def token_from_header(event: BeforeLogoutEvent) -> BeforeLogoutEvent:
-        assert event.session_token is None
-        assert event.session_record is None
-        return replace(event, session_token=event.request.headers["x-session-token"])
-
-    @auth.after("logout")
-    def capture(event: AfterLogoutEvent) -> None:
-        seen.append(event)
-
-    with TestClient(_make_app(auth)) as client:
-        response = client.post(
-            "/api/v1/logout", headers={"X-Session-Token": session_token}
-        )
-
-    assert response.status_code == 204
-    assert get_session(session_token, session_storage) is None
-    assert [event.session_record for event in seen] == [session_record]
-
-
-def test_logout_before_hook_session_record_wins_over_token(
+def test_logout_before_hook_replaces_session_record(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
     session_storage: SessionStorage,
@@ -206,7 +177,7 @@ def test_logout_before_hook_session_record_wins_over_token(
 
     @auth.before("logout")
     def pick_record(event: BeforeLogoutEvent) -> BeforeLogoutEvent:
-        return replace(event, session_token=None, session_record=chosen_record)
+        return replace(event, session_record=chosen_record)
 
     with TestClient(_make_app(auth)) as client:
         response = client.post(

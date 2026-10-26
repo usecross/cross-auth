@@ -62,8 +62,7 @@ from `Authorization: Bearer ...`, so it logs out browser sessions and tokens
 from `/token` or `auth.issue_session_token()` alike. It answers 204 also when
 the request has no token, or one that is unknown, expired, or already revoked:
 logging out never fails with 401, so a client that answers 401 by signing out
-again cannot loop. Use a `logout` before hook to read the token from somewhere
-else; see [Hooks](/docs/hooks#logout).
+again cannot loop.
 
 To log out everywhere, send `{"scope": "all"}` as the JSON body. The route then
 revokes every session of the caller's user (browser cookies and bearer tokens on

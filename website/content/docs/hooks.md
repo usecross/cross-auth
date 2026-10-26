@@ -228,18 +228,14 @@ def audit_login(event: AfterLoginEvent) -> None:
 ### `logout`
 
 Runs around session revocation by `auth.logout()` and the mounted `POST /logout`
-route. Use it to inspect or pick the session before it is revoked, then record
-logout activity or clean up related application state after revocation succeeds.
+route. Use it to inspect the session before it is revoked, then record logout
+activity or clean up related application state after revocation succeeds.
 
-The before event carries the `session_token` Cross-Auth found in the session
-cookie or `Authorization: Bearer` header, and the active `session_record` it
-resolves to. Both are `None` when the request has no token, and `session_record`
-is `None` for an unknown, expired, or revoked token. Return the event with a
-different `session_token` to revoke that session instead, for example when your
-client sends it in another header. A returned `session_record` is revoked as is
-and takes precedence over the token. The after event never carries the raw
-token. A before hook that raises `CrossAuthException` stops the logout, and the
-route answers with that error instead of 204.
+The before event carries the active `session_record` Cross-Auth resolved from
+the session cookie or `Authorization: Bearer` header. It is `None` when the
+request has no token, or one that is unknown, expired, or revoked. A before hook
+that raises `CrossAuthException` stops the logout, and the route answers with
+that error instead of 204.
 
 Both events carry the `scope`: `"current"` revokes the request's session and
 `"all"` every session of its user. A before hook may return a different scope,
@@ -254,11 +250,11 @@ from cross_auth.hooks import AfterLogoutEvent, BeforeLogoutEvent
 
 
 @auth.before("logout")
-def token_from_header(event: BeforeLogoutEvent) -> BeforeLogoutEvent | None:
-    if event.session_token is None:
-        return replace(
-            event, session_token=event.request.headers.get("x-session-token")
-        )
+def keep_admins_signed_in_elsewhere(
+    event: BeforeLogoutEvent,
+) -> BeforeLogoutEvent | None:
+    if event.scope == "all" and is_admin_session(event.session_record):
+        return replace(event, scope="current")
     return None
 
 

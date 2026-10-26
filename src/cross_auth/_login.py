@@ -235,8 +235,7 @@ def logout_session(
     """Revoke the request's session and clear the session cookie on ``response``.
 
     The session token comes from the session cookie, then from an
-    ``Authorization: Bearer`` header, and ``logout`` before hooks may replace
-    it. ``scope="all"`` revokes every session of that session's user. A
+    ``Authorization: Bearer`` header. ``scope="all"`` revokes every session of that session's user. A
     missing, unknown, expired or already revoked token revokes nothing.
     Returns the hook response; adapters decide how to send it and how to
     surface hook exceptions.
@@ -253,18 +252,15 @@ def logout_session(
 
     # Same precedence as resolve_current_session: a stale cookie does not hide
     # a valid bearer token.
-    session_token: str | None = None
     session_record: SessionRecord | None = None
-    for candidate in (
+    for session_token in (
         request.cookies.get(resolved["cookies"]["name"]),
         get_bearer_token(request),
     ):
-        if candidate is None:
-            continue
-        session_token = session_token or candidate
-        if (session_record := find(candidate)) is not None:
-            session_token = candidate
-            break
+        if session_token is not None:
+            session_record = find(session_token)
+            if session_record is not None:
+                break
 
     event = hooks.run_before(
         "logout",
@@ -272,19 +268,12 @@ def logout_session(
             request=request,
             response=response,
             session_record=session_record,
-            session_token=session_token,
             scope=scope,
         ),
     )
     if event.scope not in ("current", "all"):
         raise ValueError("logout before hooks must keep scope 'current' or 'all'")
     revoked_record = event.session_record
-    # A hook that picked another token, but left the record alone, revokes the
-    # session behind that token.
-    if event.session_token != session_token and revoked_record is session_record:
-        revoked_record = (
-            find(event.session_token) if event.session_token is not None else None
-        )
 
     # Without a session to revoke nothing is written, so the after hook
     # has no commit to wait for.

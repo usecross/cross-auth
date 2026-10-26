@@ -18,11 +18,6 @@ unknown, expired, or already revoked, so a client that answers 401 by logging
 out cannot loop. Only a `logout` before hook that raises `CrossAuthException`
 changes the response.
 
-`BeforeLogoutEvent` has a new `session_token` field with the token Cross-Auth
-found. Return the event with a different `session_token` to revoke that session
-instead, for example when your client sends the token in another header. A
-returned `session_record` still takes precedence.
-
 `auth.logout()` runs the same code as the route, so it now also revokes a
 session sent as `Authorization: Bearer ...` when the request has no valid
 session cookie. It no longer rolls a sliding session forward before revoking it.
