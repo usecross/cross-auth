@@ -16,12 +16,14 @@ provided; there is no cache or ``cached_db`` variant.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from asgiref.sync import sync_to_async
+from django.conf import settings
 from django.contrib.auth import (
     BACKEND_SESSION_KEY,
     HASH_SESSION_KEY,
@@ -58,17 +60,7 @@ LOGIN_METHOD_SESSION_KEY = "_cross_auth_login_method"
 
 _USER_AGENT_MAX_LENGTH = 512
 
-# Columns an update writes. public_id and created_at name one sign-in: an
-# update writes them only after a login.
-_UPDATED_FIELDS = [
-    "session_data",
-    "expire_date",
-    "user",
-    "login_method",
-    "last_activity",
-]
-_CLIENT_FIELDS = ["user_agent", "ip"]
-_SIGN_IN_FIELDS = ["public_id", "created_at"]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -82,18 +74,11 @@ class _Row:
     """What a store knows of the row it loaded or saved."""
 
     session_key: str
-    public_id: uuid.UUID
-    created_at: datetime
     last_activity: datetime
 
     @classmethod
     def of(cls, session: Session) -> _Row:
-        return cls(
-            session.session_key,
-            session.public_id,
-            session.created_at,
-            session.last_activity,
-        )
+        return cls(session.session_key, session.last_activity)
 
 
 def _clean_user_agent(value: str | None) -> str | None:
@@ -197,9 +182,9 @@ class SessionStore(_DatabaseSessionStore):
 
     def save(self, must_create: bool = False) -> None:
         # Django's save(), except that an update leaves public_id, created_at
-        # and, without a client, the device as they are, and only a clash of
-        # session keys is a CreateError: Django's create() retries those
-        # forever, which a user deleted mid-login must not cause.
+        # and, without a client, the device as they are (see _write), and
+        # only a clash of session keys is a CreateError: Django's create()
+        # retries those forever, which a user deleted mid-login must not cause.
         if self.session_key is None:
             return self.create()
         data = self._get_session(  # ty: ignore[unresolved-attribute]
@@ -207,21 +192,13 @@ class SessionStore(_DatabaseSessionStore):
         )
         session = self.create_model_instance(data)
         using = router.db_for_write(self.model, instance=session)
-        update_fields = None
-        if not must_create:
-            update_fields = list(_UPDATED_FIELDS)
-            if self._client is not None:
-                update_fields += _CLIENT_FIELDS
-            if self._login_pending:
-                update_fields += _SIGN_IN_FIELDS
         try:
             with transaction.atomic(using=using):
-                session.save(
-                    force_insert=must_create,
-                    force_update=not must_create,
-                    update_fields=update_fields,
-                    using=using,
-                )
+                if must_create:
+                    session.save(force_insert=True, using=using)
+                    written = True
+                else:
+                    written = self._write(session.session_key, session, using)
         except IntegrityError:
             if must_create and self.exists(session.session_key):
                 raise CreateError
@@ -230,43 +207,77 @@ class SessionStore(_DatabaseSessionStore):
             if not must_create:
                 raise UpdateError
             raise
-        row = self._row
-        if must_create or self._login_pending:
-            self._row = _Row.of(session)
-        elif row is not None and row.session_key == session.session_key:
-            self._row = replace(row, last_activity=session.last_activity)
-        else:
-            self._row = None
-        self._login_pending = False
+        if not written:
+            # Like Django: the row was deleted since this request loaded it.
+            raise UpdateError
+        self._saved(session)
 
     async def asave(self, must_create: bool = False) -> None:
         await sync_to_async(self.save)(must_create)
 
     def cycle_key(self) -> None:
-        # Django inserts a row under a new key, then deletes the old one. That
-        # is still the same sign-in, unless a login is about to start one, so
-        # the new row takes over the old row's public_id (unique, so only once
-        # the old row is gone) and created_at.
-        kept = None if self._login_pending else self._stored_row()
-        super().cycle_key()
-        row = self._row
-        if kept is None or row is None:
+        # Django saves the data under a new key and then deletes the old row.
+        # Moving the stored row to the new key instead keeps a single row for
+        # the session, with its public_id and created_at, and a session that
+        # was revoked meanwhile stays revoked: there is no row left to move.
+        data = self._session  # ty: ignore[unresolved-attribute]
+        key = self.session_key
+        if key is None:
+            # Nothing is stored under the cookie's key.
+            return super().cycle_key()
+        while True:
+            self._session_key = (
+                self._get_new_session_key()  # ty: ignore[unresolved-attribute]
+            )
+            session = self.create_model_instance(data)
+            using = router.db_for_write(self.model, instance=session)
+            try:
+                with transaction.atomic(using=using):
+                    moved = self._write(key, session, using)
+            except IntegrityError:
+                if self.exists(session.session_key):
+                    # Another session took the new key first.
+                    continue
+                raise
+            break
+        if not moved:
+            # Revoked or logged out since this request loaded it: start an
+            # empty session rather than bring the old one back.
+            self._session_cache = {}
+            self.create()
             return
-        self.model.objects.filter(session_key=row.session_key).update(
-            public_id=kept.public_id, created_at=kept.created_at
-        )
-        self._row = replace(row, public_id=kept.public_id, created_at=kept.created_at)
+        self.modified = True
+        self._saved(session)
 
     async def acycle_key(self) -> None:
         await sync_to_async(self.cycle_key)()
 
-    def _stored_row(self) -> _Row | None:
-        """The stored row of the current key, loading the session if needed."""
-        self._get_session()  # ty: ignore[unresolved-attribute]
-        row = self._row
-        if row is None or row.session_key != self.session_key:
-            return None
-        return row
+    def _write(self, key: str, session: Session, using: str) -> bool:
+        """Write ``session`` over the stored row of ``key``, if there is one.
+
+        The row moves to ``session``'s key if that differs. It keeps its
+        ``public_id`` and ``created_at`` unless a login is pending, and its
+        device unless the store has a client.
+        """
+        columns: dict[str, object] = {
+            "session_data": session.session_data,
+            "expire_date": session.expire_date,
+            "user_id": session.user_id,
+            "login_method": session.login_method,
+            "last_activity": session.last_activity,
+        }
+        if session.session_key != key:
+            columns["session_key"] = session.session_key
+        if self._client is not None:
+            columns.update(user_agent=session.user_agent, ip=session.ip)
+        if self._login_pending:
+            columns.update(public_id=session.public_id, created_at=session.created_at)
+        rows = self.model.objects.using(using).filter(session_key=key)
+        return rows.update(**columns) > 0
+
+    def _saved(self, session: Session) -> None:
+        self._row = _Row.of(session)
+        self._login_pending = False
 
     def _logged_in(self) -> None:
         self._login_pending = True
@@ -291,19 +302,33 @@ class SessionStore(_DatabaseSessionStore):
 
         Only for a session this store loaded or saved and still holds, so a
         request that never touched the session writes nothing. The interval is
-        ``CROSS_AUTH["SESSION_ACTIVITY_INTERVAL"]``.
+        ``CROSS_AUTH["SESSION_ACTIVITY_INTERVAL"]``. The update is best-effort:
+        a database error is logged, not raised.
         """
         row = self._row
         if row is None or row.session_key != self.session_key:
             return
         now = timezone.now()
-        if now - row.last_activity < get_settings().session_activity_interval:
+        since = now - get_settings().session_activity_interval
+        if row.last_activity > since:
             return
         changes: dict[str, object] = {"last_activity": now}
         if self._client is not None:
             changes.update(user_agent=self._client.user_agent, ip=self._client.ip)
-        self.model.objects.filter(session_key=row.session_key).update(**changes)
-        self._row = replace(row, last_activity=now)
+        using = router.db_for_write(self.model)
+        # Only if no other request of the session has updated it since, so
+        # concurrent requests write once, and never an older time.
+        rows = self.model.objects.using(using).filter(
+            session_key=row.session_key, last_activity__lte=since
+        )
+        try:
+            with transaction.atomic(using=using):
+                updated = rows.update(**changes)
+        except DatabaseError:
+            logger.warning("Could not record a session's activity", exc_info=True)
+            return
+        if updated:
+            self._row = replace(row, last_activity=now)
 
 
 def _start_sign_in(
@@ -379,19 +404,21 @@ def _store(request: HttpRequest) -> SessionStore:
 
 
 def _user(request: HttpRequest) -> AbstractBaseUser | None:
-    user = getattr(request, "user", None)
+    user = request.user
     if not isinstance(user, AbstractBaseUser) or not user.is_authenticated:
         return None
     return user
 
 
-def _hash_verifies(data: dict[str, Any], user: AbstractBaseUser) -> bool:
+def _signed_in(data: dict[str, Any], user: AbstractBaseUser) -> bool:
     """Whether Django's ``get_user()`` would still accept the session.
 
-    A password change leaves the user's other sessions in the table, but
-    their session hash no longer verifies, so Django logs them out on their
-    next request.
+    A password change, or removing the session's backend from
+    ``AUTHENTICATION_BACKENDS``, leaves the user's other sessions in the
+    table, but Django treats them as logged out on their next request.
     """
+    if data.get(BACKEND_SESSION_KEY) not in settings.AUTHENTICATION_BACKENDS:
+        return False
     session_hash = data.get(HASH_SESSION_KEY)
     if not session_hash:
         return False
@@ -406,7 +433,8 @@ def _hash_verifies(data: dict[str, Any], user: AbstractBaseUser) -> bool:
 def list_sessions(request: HttpRequest) -> list[SessionInfo]:
     """Return the signed-in user's active sessions, newest first.
 
-    Expired sessions, and sessions a password change ended, are left out.
+    Expired sessions, and sessions that a password change or a removed
+    authentication backend ended, are left out.
     Returns an empty list for anonymous requests.
     """
     store = _store(request)
@@ -428,7 +456,7 @@ def list_sessions(request: HttpRequest) -> list[SessionInfo]:
             is_current=session.session_key == store.session_key,
         )
         for session in sessions
-        if _hash_verifies(session.get_decoded(), user)
+        if _signed_in(session.get_decoded(), user)
     ]
 
 
@@ -447,18 +475,14 @@ def revoke_session(request: HttpRequest, session_id: str) -> bool:
         public_id = uuid.UUID(str(session_id))
     except ValueError:
         return False
-    session_key = (
-        store.model.objects.filter(user=user, public_id=public_id)
-        .values_list("session_key", flat=True)
-        .first()
-    )
-    if session_key is None:
-        return False
-    if session_key == store.session_key:
+    # By public_id, not session key: a session keeps its public_id when its
+    # key changes, even while it is being revoked.
+    sessions = store.model.objects.filter(user=user, public_id=public_id)
+    if sessions.filter(session_key=store.session_key).exists():
         logout(request)
-    else:
-        store.delete(session_key)
-    return True
+        return True
+    deleted, _ = sessions.delete()
+    return deleted > 0
 
 
 def revoke_other_sessions(request: HttpRequest) -> int:

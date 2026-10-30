@@ -90,6 +90,9 @@ _KNOWN_KEYS = frozenset(
     }
 )
 _ACCOUNT_LINKING_KEYS = frozenset({"enabled", "allow_different_emails"})
+# A year. Sessions compare their last_activity with now minus the interval,
+# which must stay a date that Python and the database can hold.
+_MAX_SESSION_ACTIVITY_INTERVAL = 365 * 24 * 60 * 60
 
 
 def _bool(
@@ -101,11 +104,18 @@ def _bool(
     return value
 
 
-def _seconds(raw: Mapping[str, object], key: str, default: int) -> timedelta:
+def _seconds(
+    raw: Mapping[str, object], key: str, default: int, *, maximum: int
+) -> timedelta:
     value = raw.get(key, default)
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 0 <= value <= maximum
+    ):
         raise ImproperlyConfigured(
-            f"CROSS_AUTH['{key}'] must be a number of seconds (an int >= 0)"
+            f"CROSS_AUTH['{key}'] must be a number of seconds, an int from 0 to "
+            f"{maximum}"
         )
     return timedelta(seconds=value)
 
@@ -184,7 +194,12 @@ def get_settings() -> CrossAuthSettings:
         account_linking=_account_linking(raw.get("ACCOUNT_LINKING", {})),
         require_verified_email=_bool(raw, "REQUIRE_VERIFIED_EMAIL", True),
         base_url=base_url,
-        session_activity_interval=_seconds(raw, "SESSION_ACTIVITY_INTERVAL", 60),
+        session_activity_interval=_seconds(
+            raw,
+            "SESSION_ACTIVITY_INTERVAL",
+            60,
+            maximum=_MAX_SESSION_ACTIVITY_INTERVAL,
+        ),
     )
 
 

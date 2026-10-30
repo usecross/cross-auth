@@ -121,7 +121,7 @@ def test_duplicate_providers_are_errors() -> None:
     assert "more than once" in errors[0].msg
 
 
-@pytest.mark.parametrize("value", [-1, 1.5, "60", True])
+@pytest.mark.parametrize("value", [-1, 1.5, "60", True, 31_536_001, 10**20])
 def test_session_activity_interval_must_be_seconds(value: object) -> None:
     with override_settings(CROSS_AUTH={"SESSION_ACTIVITY_INTERVAL": value}):
         errors = check_settings()
@@ -138,6 +138,8 @@ def test_session_activity_interval_defaults_to_a_minute() -> None:
     assert get_settings().session_activity_interval == timedelta(minutes=1)
     with override_settings(CROSS_AUTH={"SESSION_ACTIVITY_INTERVAL": 0}):
         assert get_settings().session_activity_interval == timedelta(0)
+    with override_settings(CROSS_AUTH={"SESSION_ACTIVITY_INTERVAL": 31_536_000}):
+        assert get_settings().session_activity_interval == timedelta(days=365)
 
 
 DJANGO_SESSION_MIDDLEWARE = "django.contrib.sessions.middleware.SessionMiddleware"
@@ -180,3 +182,18 @@ def test_session_engine_without_its_middleware_warns() -> None:
 def test_session_middleware_without_its_engine_warns() -> None:
     with override_settings(MIDDLEWARE=_with_session_middleware(SESSION_MIDDLEWARE)):
         assert _session_setup_ids() == ["cross_auth.W003"]
+
+
+def test_session_middleware_after_authentication_middleware_is_an_error() -> None:
+    authentication = "django.contrib.auth.middleware.AuthenticationMiddleware"
+    middleware = [
+        name
+        for name in _with_session_middleware(SESSION_MIDDLEWARE)
+        if name != authentication
+    ]
+    middleware.insert(middleware.index(SESSION_MIDDLEWARE), authentication)
+
+    with override_settings(
+        SESSION_ENGINE="cross_auth.django.sessions", MIDDLEWARE=middleware
+    ):
+        assert _session_setup_ids() == ["cross_auth.E005"]

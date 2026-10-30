@@ -607,7 +607,8 @@ in `INSTALLED_APPS`: its `clearsessions` command deletes expired sessions from
 Cross Auth's table too. Sessions in `django_session` are not moved, so everyone
 signs in again after you switch. Django's `check` command warns
 (`cross_auth.W002`, `cross_auth.W003`) when the engine and the middleware are
-not used together.
+not used together, and reports an error (`cross_auth.E005`) when the middleware
+comes after `AuthenticationMiddleware`.
 
 Each time Django saves a session, Cross Auth fills these columns of
 `cross_auth.django.models.Session`:
@@ -616,7 +617,7 @@ Each time Django saves a session, Cross Auth fills these columns of
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `user`          | The signed-in user, or `None` while the visitor is anonymous.                                                                                                                                                                                                                           |
 | `login_method`  | The provider, such as `"google"`, for a sign-in through Cross Auth; `None` for other logins, such as Django's password login. A later password login in the same browser sets it back to `None`.                                                                                        |
-| `user_agent`    | The browser's `User-Agent` header, without control characters and cut to 512 characters.                                                                                                                                                                                                |
+| `user_agent`    | The browser's `User-Agent` header, cleaned: unprintable characters become spaces, runs of whitespace become one space, and it is cut to 512 characters.                                                                                                                                 |
 | `ip`            | The request's `REMOTE_ADDR`; see [behind a proxy](#behind-a-proxy).                                                                                                                                                                                                                     |
 | `created_at`    | When the user signed in, or when an anonymous session started. Each login sets it again, even when Django keeps the session key. A new key without a login, such as after a password change, keeps it.                                                                                  |
 | `last_activity` | When a request last used the session. Saving the session sets it; otherwise it is updated at most once a minute (`SESSION_ACTIVITY_INTERVAL`), and only by requests that read the session or the user.                                                                                  |
@@ -633,8 +634,9 @@ sessions and know which one is current:
 - `list_sessions(request)` returns the user's sessions, newest first, as
   `SessionInfo` objects with `id`, `login_method`, `user_agent`, `ip`,
   `created_at`, `last_activity`, `expires_at` and `is_current`. Expired sessions
-  and sessions that a password change ended are left out. Anonymous requests get
-  an empty list.
+  are left out, and so are sessions that Django would log out: those that a
+  password change ended, or whose authentication backend is no longer in
+  `AUTHENTICATION_BACKENDS`. Anonymous requests get an empty list.
 - `revoke_session(request, session_id)` signs out the session whose `id` is
   `session_id` and returns whether it found one. Another user's session is never
   touched. Revoking the current session logs out with Django's `logout()`.
@@ -710,8 +712,8 @@ urlpatterns = [
 {% endblock %}
 ```
 
-`user_agent` is the header as the browser sent it. To show "Chrome on macOS",
-parse it with a library such as
+`user_agent` is that cleaned header, not a description. To show "Chrome on
+macOS", parse it with a library such as
 [`ua-parser`](https://pypi.org/project/ua-parser/). For staff tools, query the
 model directly; for example, `Session.objects.filter(user=user).delete()` signs
 a user out everywhere.
@@ -759,6 +761,9 @@ client's address on. There are two right fixes:
   Django's `db` engine.
 - A session's `user_agent` and `ip` are those of the request that last saved it
   or updated its activity.
+- Updating `last_activity` is best-effort: if the database refuses the update,
+  the `cross_auth.django.sessions` logger records a warning and the response is
+  sent as usual.
 
 ## Signals reference
 
@@ -862,15 +867,15 @@ def google_connected(sender, social_account, **kwargs):
 All settings live in the `CROSS_AUTH` dictionary. Django's `check` command
 reports invalid values.
 
-| Key                         | Default            | Meaning                                                                                                                                            |
-| --------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PROVIDERS`                 | `[]`               | Provider instances. Only `GoogleProvider` is supported.                                                                                            |
-| `CREATE_USER`               | Django's manager   | Dotted path of the user factory for first sign-ins.                                                                                                |
-| `PASSWORD_LOGIN`            | `True`             | Whether a usable Django password counts as a way to sign in when disconnecting.                                                                    |
-| `REQUIRE_VERIFIED_EMAIL`    | `True`             | Refuse to create users when Google does not report the email as verified.                                                                          |
-| `ACCOUNT_LINKING`           | `{}`               | `enabled`: attach a Google sign-in to the user with the same verified email. `allow_different_emails`: see Step 13.                                |
-| `BASE_URL`                  | the request's host | Public origin, such as `https://example.com`, used to build the redirect URI.                                                                      |
-| `SESSION_ACTIVITY_INTERVAL` | `60`               | Seconds between `last_activity` updates of a [session](#sessions) that nothing else saves. `0` updates it on every request that reads the session. |
+| Key                         | Default            | Meaning                                                                                                                                                            |
+| --------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PROVIDERS`                 | `[]`               | Provider instances. Only `GoogleProvider` is supported.                                                                                                            |
+| `CREATE_USER`               | Django's manager   | Dotted path of the user factory for first sign-ins.                                                                                                                |
+| `PASSWORD_LOGIN`            | `True`             | Whether a usable Django password counts as a way to sign in when disconnecting.                                                                                    |
+| `REQUIRE_VERIFIED_EMAIL`    | `True`             | Refuse to create users when Google does not report the email as verified.                                                                                          |
+| `ACCOUNT_LINKING`           | `{}`               | `enabled`: attach a Google sign-in to the user with the same verified email. `allow_different_emails`: see Step 13.                                                |
+| `BASE_URL`                  | the request's host | Public origin, such as `https://example.com`, used to build the redirect URI.                                                                                      |
+| `SESSION_ACTIVITY_INTERVAL` | `60`               | Seconds between `last_activity` updates of a [session](#sessions) that nothing else saves, from `0` (every request that reads the session) to `31536000` (a year). |
 
 `ACCOUNT_LINKING["enabled"]` is off by default. Turning it on lets anyone who
 controls a Google account with a matching, verified email sign in to an existing
@@ -961,7 +966,7 @@ cannot detect every setup.
 - **`KeyError: 'GOOGLE_CLIENT_ID'`:** the environment variables are not set in
   this shell; see Step 8.
 - **Django check errors `cross_auth.E00x`:** add the backend, keep database
-  sessions, or add the missing middleware, as the message says.
+  sessions, or add or reorder the middleware, as the message says.
 - **Django check warnings `cross_auth.W002` or `cross_auth.W003`:** use
   `SESSION_ENGINE = "cross_auth.django.sessions"` together with
   `cross_auth.django.sessions.SessionMiddleware`; see [Sessions](#sessions).

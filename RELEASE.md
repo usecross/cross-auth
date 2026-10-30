@@ -39,4 +39,5 @@ revoke_other_sessions(request)  # keeps the current one
 ```
 
 Django's `check` warns (`cross_auth.W002`, `cross_auth.W003`) when the engine is
-used without the middleware or the other way round.
+used without the middleware or the other way round, and reports an error
+(`cross_auth.E005`) when the middleware comes after `AuthenticationMiddleware`.

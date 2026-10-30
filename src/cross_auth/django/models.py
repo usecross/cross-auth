@@ -117,7 +117,7 @@ class Session(AbstractBaseSession):
     )
     # The provider of a Cross Auth sign-in; null for anonymous sessions and
     # other logins, such as Django's password login.
-    login_method = models.CharField(max_length=64, null=True, blank=True)
+    login_method = models.TextField(null=True, blank=True)
     user_agent = models.CharField(max_length=512, null=True, blank=True)
     ip = models.GenericIPAddressField(null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)

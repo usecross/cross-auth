@@ -35,10 +35,7 @@ class Migration(migrations.Migration):
                     "public_id",
                     models.UUIDField(default=uuid.uuid4, editable=False, unique=True),
                 ),
-                (
-                    "login_method",
-                    models.CharField(blank=True, max_length=64, null=True),
-                ),
+                ("login_method", models.TextField(blank=True, null=True)),
                 ("user_agent", models.CharField(blank=True, max_length=512, null=True)),
                 ("ip", models.GenericIPAddressField(blank=True, null=True)),
                 ("created_at", models.DateTimeField(default=django.utils.timezone.now)),

@@ -11,6 +11,7 @@ from .conf import get_settings
 BACKEND = "cross_auth.django.backends.CrossAuthBackend"
 SESSION_ENGINE = "cross_auth.django.sessions"
 SESSION_MIDDLEWARE = "cross_auth.django.sessions.SessionMiddleware"
+_AUTHENTICATION_MIDDLEWARE = "django.contrib.auth.middleware.AuthenticationMiddleware"
 _SESSION_ENGINES = {
     "django.contrib.sessions.backends.db",
     "django.contrib.sessions.backends.cached_db",
@@ -20,7 +21,7 @@ _SESSION_ENGINES = {
 _REQUIRED_MIDDLEWARE = (
     ("django.contrib.sessions.middleware.SessionMiddleware", SESSION_MIDDLEWARE),
     ("django.middleware.csrf.CsrfViewMiddleware",),
-    ("django.contrib.auth.middleware.AuthenticationMiddleware",),
+    (_AUTHENTICATION_MIDDLEWARE,),
 )
 # Apps whose presence suggests sign-in requires another factor. Provider
 # sign-in calls django.contrib.auth.login() directly and would skip it.
@@ -95,10 +96,11 @@ def check_login_setup(**kwargs: Any) -> list[checks.CheckMessage]:
 
 @checks.register(checks.Tags.compatibility)
 def check_session_setup(**kwargs: Any) -> list[checks.CheckMessage]:
+    messages: list[checks.CheckMessage] = []
     engine = settings.SESSION_ENGINE == SESSION_ENGINE
-    middleware = SESSION_MIDDLEWARE in settings.MIDDLEWARE
-    if engine and not middleware:
-        return [
+    middleware = list(settings.MIDDLEWARE)
+    if engine and SESSION_MIDDLEWARE not in middleware:
+        messages.append(
             checks.Warning(
                 f"SESSION_ENGINE is {SESSION_ENGINE!r}, but its SessionMiddleware "
                 "is not in MIDDLEWARE.",
@@ -109,9 +111,9 @@ def check_session_setup(**kwargs: Any) -> list[checks.CheckMessage]:
                 ),
                 id="cross_auth.W002",
             )
-        ]
-    if middleware and not engine:
-        return [
+        )
+    if SESSION_MIDDLEWARE in middleware and not engine:
+        messages.append(
             checks.Warning(
                 f"{SESSION_MIDDLEWARE!r} is in MIDDLEWARE, but SESSION_ENGINE is "
                 f"{settings.SESSION_ENGINE!r}.",
@@ -121,5 +123,22 @@ def check_session_setup(**kwargs: Any) -> list[checks.CheckMessage]:
                 ),
                 id="cross_auth.W003",
             )
-        ]
-    return []
+        )
+    if (
+        SESSION_MIDDLEWARE in middleware
+        and _AUTHENTICATION_MIDDLEWARE in middleware
+        and middleware.index(SESSION_MIDDLEWARE)
+        > middleware.index(_AUTHENTICATION_MIDDLEWARE)
+    ):
+        messages.append(
+            checks.Error(
+                f"{SESSION_MIDDLEWARE!r} must come before "
+                f"{_AUTHENTICATION_MIDDLEWARE!r} in MIDDLEWARE.",
+                hint=(
+                    "AuthenticationMiddleware reads request.session, which the "
+                    "session middleware sets, so every request fails."
+                ),
+                id="cross_auth.E005",
+            )
+        )
+    return messages

@@ -6,7 +6,8 @@ and its ``SessionMiddleware`` in place of Django's.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import logging
+from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -19,7 +20,7 @@ from django.contrib.auth import BACKEND_SESSION_KEY, SESSION_KEY, alogin, login
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
-from django.db import IntegrityError, connection
+from django.db import IntegrityError, OperationalError, connection
 from django.test import Client, RequestFactory, override_settings
 from django.test.utils import CaptureQueriesContext
 
@@ -100,6 +101,13 @@ def expire(client: Client) -> None:
     Session.objects.filter(pk=stored(client).pk).update(
         expire_date=T0 - timedelta(days=1)
     )
+
+
+def writes_to_sessions(sql: str, statement: str) -> bool:
+    return sql.startswith(statement) and "cross_auth_session" in sql
+
+
+Execute = Callable[[str, Any, bool, dict[str, Any]], Any]
 
 
 class TestColumns:
@@ -306,6 +314,72 @@ class TestLastActivity:
 
             assert stored(client).last_activity == T0 + timedelta(seconds=1)
 
+    def test_concurrent_requests_update_it_once_per_interval(self) -> None:
+        make_user("person@example.com", password="secret")
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            password_login(client, "person@example.com")
+            key = stored(client).session_key
+            # Two requests of the session that both loaded it at T0.
+            first, second = SessionStore(key), SessionStore(key)
+            first.load()
+            second.load()
+
+            clock.shift(90)
+            first.record_activity()
+            clock.shift(5)
+            second.record_activity()
+
+            assert stored(client).last_activity == T0 + timedelta(seconds=90)
+
+    def test_an_older_time_never_replaces_a_newer_one(self) -> None:
+        make_user("person@example.com", password="secret")
+        cross_auth = {**settings.CROSS_AUTH, "SESSION_ACTIVITY_INTERVAL": 0}
+        with (
+            override_settings(CROSS_AUTH=cross_auth),
+            time_machine.travel(T0, tick=False) as clock,
+        ):
+            client = browser()
+            password_login(client, "person@example.com")
+            key = stored(client).session_key
+            first, late = SessionStore(key), SessionStore(key)
+            first.load()
+            late.load()
+
+            clock.move_to(T0 + timedelta(seconds=90))
+            first.record_activity()
+            # A request whose clock read an earlier time finishes last.
+            clock.move_to(T0 + timedelta(seconds=70))
+            late.record_activity()
+
+            assert stored(client).last_activity == T0 + timedelta(seconds=90)
+
+    def test_a_failed_update_does_not_fail_the_response(
+        self, google: FakeGoogle, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        def fail_updates(
+            execute: Execute, sql: str, params: Any, many: bool, context: Any
+        ) -> Any:
+            if writes_to_sessions(sql, "UPDATE"):
+                raise OperationalError("database is locked")
+            return execute(sql, params, many, context)
+
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            sign_in(client, google)
+
+            clock.shift(60)
+            with (
+                connection.execute_wrapper(fail_updates),
+                caplog.at_level(logging.WARNING, "cross_auth.django.sessions"),
+            ):
+                assert whoami(client)["authenticated"] is True
+
+            assert stored(client).last_activity == T0
+            [record] = caplog.records
+            assert record.getMessage() == "Could not record a session's activity"
+            assert record.exc_info is not None
+
 
 class TestListing:
     def test_lists_own_active_sessions_newest_first(self, google: FakeGoogle) -> None:
@@ -385,6 +459,25 @@ class TestListing:
         assert [s["user_agent"] for s in listed(laptop)] == ["Laptop"]
         assert Session.objects.filter(user_agent="Phone").exists()
         assert whoami(phone)["authenticated"] is False
+
+    def test_sessions_of_a_removed_backend_are_not_listed(
+        self, google: FakeGoogle
+    ) -> None:
+        password_user()
+        with_password = browser(user_agent="Password")
+        with_google = browser(user_agent="Google")
+        password_login(with_password, "person@gmail.com")
+        sign_in(with_google, google)
+        backends = [
+            backend
+            for backend in settings.AUTHENTICATION_BACKENDS
+            if backend != PASSWORD_BACKEND
+        ]
+
+        with override_settings(AUTHENTICATION_BACKENDS=backends):
+            assert [s["user_agent"] for s in listed(with_google)] == ["Google"]
+            # Django logs it out too: its backend is gone.
+            assert whoami(with_password)["authenticated"] is False
 
     @override_settings(SESSION_ENGINE="django.contrib.sessions.backends.db")
     def test_needs_the_engine(self) -> None:
@@ -481,6 +574,57 @@ class TestRevoking:
         assert csrf_post(browser(), "/sessions/").json() == {"revoked": 0}
         assert whoami(signed_in)["authenticated"] is True
 
+    def test_a_session_whose_key_changes_while_it_is_revoked_is_revoked(
+        self,
+    ) -> None:
+        user = make_user("person@example.com", password="secret")
+        phone, laptop = browser(), browser()
+        password_login(phone, "person@example.com")
+        password_login(laptop, "person@example.com")
+        before = stored(phone)
+        # A request of the phone's, which changes its session key...
+        phone_request = SessionStore(before.session_key)
+        assert phone_request[SESSION_KEY] == str(user.pk)
+        rotated = False
+
+        def rotate_first(
+            execute: Execute, sql: str, params: Any, many: bool, context: Any
+        ) -> Any:
+            nonlocal rotated
+            if not rotated and writes_to_sessions(sql, "DELETE"):
+                rotated = True
+                phone_request.cycle_key()
+            return execute(sql, params, many, context)
+
+        # ...after the laptop's revoke found the session and before it deletes.
+        with connection.execute_wrapper(rotate_first):
+            response = csrf_post(laptop, "/sessions/", {"id": str(before.public_id)})
+
+        assert rotated
+        assert phone_request.session_key != before.session_key
+        assert response.json() == {"revoked": True}
+        assert list(Session.objects.filter(user=user)) == [stored(laptop)]
+
+    def test_a_session_revoked_before_its_key_changes_stays_revoked(self) -> None:
+        user = make_user("person@example.com", password="secret")
+        phone, laptop = browser(), browser()
+        password_login(phone, "person@example.com")
+        password_login(laptop, "person@example.com")
+        before = stored(phone)
+        # A request of the phone's has loaded its session...
+        phone_request = SessionStore(before.session_key)
+        assert phone_request[SESSION_KEY] == str(user.pk)
+        # ...when the laptop revokes it...
+        response = csrf_post(laptop, "/sessions/", {"id": str(before.public_id)})
+        assert response.json() == {"revoked": True}
+
+        # ...and then the phone's request changes the session's key.
+        phone_request.cycle_key()
+
+        assert SESSION_KEY not in phone_request
+        assert list(Session.objects.filter(user=user)) == [stored(laptop)]
+        assert not Session.objects.filter(public_id=before.public_id).exists()
+
 
 class TestLifecycle:
     def test_clearsessions_deletes_expired_sessions(self, google: FakeGoogle) -> None:
@@ -524,6 +668,23 @@ class TestLifecycle:
         assert session.user_id == other.pk
         assert "remembered" not in session.get_decoded()
         assert list(Session.objects.all()) == [session]
+
+    @pytest.mark.parametrize("gone", ["deleted", "expired"])
+    def test_a_cookie_without_a_session_starts_a_new_one(self, gone: str) -> None:
+        client = browser()
+        csrf_post(client, "/remember/", {"value": "old"})
+        old = stored(client)
+        if gone == "deleted":
+            old.delete()
+        else:
+            expire(client)
+
+        response = csrf_post(client, "/remember/", {"value": "new"})
+
+        assert response.status_code == 200
+        session = stored(client)
+        assert session.session_key != old.session_key
+        assert session.get_decoded() == {"remembered": "new"}
 
     def test_deleting_a_user_deletes_their_sessions(self, google: FakeGoogle) -> None:
         client = browser()
@@ -708,6 +869,18 @@ class TestStore:
         assert session.login_method == "google"
         assert (session.user_agent, session.ip) == (USER_AGENT, IP)
         assert data[SESSION_KEY] == str(user.pk)
+
+    def test_long_login_methods_are_stored(self) -> None:
+        user = make_user("person@example.com")
+        login_method = "an-identity-provider-" * 20
+        store = SessionStore()
+        store[SESSION_KEY] = str(user.pk)
+        store[BACKEND_SESSION_KEY] = BACKEND
+        store[LOGIN_METHOD_SESSION_KEY] = login_method
+
+        store.save()
+
+        assert Session.objects.get().login_method == login_method
 
     def test_login_method_needs_cross_auths_backend(self) -> None:
         store = SessionStore()
