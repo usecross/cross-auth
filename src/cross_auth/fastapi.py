@@ -359,7 +359,8 @@ class CrossAuth:
         created by the same core the web callback uses — normalized email
         lookup, the auto-link policy gate, and the accounts-storage signup
         hooks. Returns ``(user, created)``; pair it with
-        ``issue_session_token`` to hand the client a bearer token.
+        ``issue_session_token`` to hand the client a bearer token, passing
+        ``metadata={"login_method": provider}`` to record how it signed in.
 
         If the identity belongs to an existing social account with
         ``is_login_method=False``, raises ``CrossAuthException`` with
@@ -656,7 +657,8 @@ class CrossAuth:
         session lifetime (e.g. longer-lived mobile sessions than browser
         cookies). No cookie is set; the ``login`` hooks run around the
         creation with ``credential="bearer"``, and the raw token is never
-        exposed to them.
+        exposed to them. ``metadata["login_method"]`` records how the user
+        signed in, e.g. ``"password"`` after ``authenticate()``.
         """
         token, record, _ = issue_bearer_session(
             user_id,

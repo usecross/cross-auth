@@ -53,6 +53,9 @@
                       {% if session.current %}
                         <span class="pill ok">current</span>
                       {% endif %}
+                      {% if session.login_method %}
+                        <span class="muted-small">via {{ session.login_method }}</span>
+                      {% endif %}
                       {% if session.user_agent %}
                         <span class="muted-small">{{ session.user_agent }}</span>
                       {% endif %}

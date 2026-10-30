@@ -110,6 +110,10 @@ class AuthorizationCodeGrantData(BaseModel):
     code_challenge: str
     code_challenge_method: Literal["S256"]
 
+    # How the user authenticated, e.g. the provider id. Codes stored by an
+    # older version have no such field and parse with None.
+    login_method: str | None = None
+
     @property
     def is_expired(self) -> bool:
         return datetime.now(tz=timezone.utc) > self.expires_at
@@ -280,6 +284,7 @@ class Issuer:
                     grant_type="authorization_code",
                     scope=request.scope,
                     http_request=http_request,
+                    login_method=authorization_data.login_method,
                 )
             )
         except CrossAuthException as e:
@@ -354,6 +359,7 @@ class Issuer:
                     username=request.username,
                     http_request=http_request,
                     grant_type="password",
+                    login_method="password",
                 )
             )
         except CrossAuthException as e:

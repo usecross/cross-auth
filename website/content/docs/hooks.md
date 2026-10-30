@@ -193,6 +193,13 @@ and `metadata` are `None`, and setting either raises `ValueError` because
 Cross-Auth cannot apply them. Your issuer decides its token's lifetime and
 claims; the hooks can still deny the login before the issuer is called.
 
+`metadata["login_method"]` says how the user signed in: the provider id for a
+browser OAuth sign-in or an authorization code, `"password"` for the password
+grant, or what your code passed to `auth.login()` or
+`auth.issue_session_token()`. A `before` hook can replace it to change what the
+session records. A `token_issuer` reads it from `TokenIssueRequest.login_method`
+instead.
+
 `AfterLoginEvent` carries `user_id`, `credential`, `response` (cookie logins
 only), and `session_record`, which is `None` when a `token_issuer` minted the
 credential. The raw session token is never exposed to hooks. It runs once the

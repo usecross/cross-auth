@@ -17,6 +17,7 @@ from cross_auth.social_providers.github import GitHubProvider
 from cross_auth.social_providers.oauth import OAuth2Exception
 from cross_auth.social_providers.oidc import OIDCProvider
 
+from ..conftest import MemorySessionStorage
 from ..storage.conftest import make_sqlite_engine
 from ..storage.models import LeanAccountsStore
 
@@ -121,6 +122,31 @@ def test_creates_user_with_normalized_email_and_no_tokens(
     again, created_again = auth.sign_in_with_id_token("stub", VALID_TOKEN)
     assert created_again is False
     assert again.id == user.id
+
+
+def test_session_records_the_provider_the_app_passes(
+    secondary_storage: SecondaryStorage,
+    accounts_storage,
+):
+    # id_token sign-in does not create a session; the app's
+    # issue_session_token call names the provider as the login method.
+    provider = StubOIDCProvider(
+        {"sub": "native-1", "email": "native@example.com", "email_verified": True}
+    )
+    session_storage = MemorySessionStorage()
+    auth = _make_auth(
+        secondary_storage, accounts_storage, provider, session_storage=session_storage
+    )
+
+    user, _ = auth.sign_in_with_id_token("stub", VALID_TOKEN)
+    _, record = auth.issue_session_token(
+        str(user.id), metadata={"login_method": "stub"}
+    )
+
+    assert record.login_method == "stub"
+    assert [stored.login_method for stored in session_storage.records.values()] == [
+        "stub"
+    ]
 
 
 def test_repeat_sign_in_works_with_tokenless_sqlmodel_storage(

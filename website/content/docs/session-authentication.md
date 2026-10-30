@@ -259,6 +259,39 @@ handlers cover cookie logins, `/token` grants, and this path.
 Because bearer tokens are session records, they are revocable with the same
 session-management APIs. Cross-Auth does not issue JWT access tokens by default.
 
+### Login method
+
+A session's `login_method` records how the user signed in: `"password"`, or a
+social provider's id such as `"github"` or `"google"`. Use it to show "Signed in
+with GitHub" next to each session in a session list.
+
+Cross-Auth sets it on the sessions it creates:
+
+| Sign-in                                     | `login_method`                  |
+| ------------------------------------------- | ------------------------------- |
+| Browser sign-in through `/{provider}/login` | The provider id                 |
+| `/token` authorization code grant           | The provider the code came from |
+| `/token` password grant (deprecated)        | `"password"`                    |
+
+For sessions your code creates, pass it in `metadata`. The value is free-form,
+so you can also use your own, such as `"passkey"`:
+
+```python
+user = auth.authenticate(email, password)
+auth.login(str(user.id), response=response, metadata={"login_method": "password"})
+
+user, _ = auth.sign_in_with_id_token("google", id_token)
+token, record = auth.issue_session_token(
+    str(user.id), metadata={"login_method": "google"}
+)
+```
+
+Read it back as `record.login_method`. It is `None` for sessions created before
+Cross-Auth recorded it, and when your session storage does not store it: the
+SQLModel adapter writes it only to tables that declare the column (see
+[SQLModelSessionStorage](/docs/storage#sqlmodelsessionstorage)). A `login`
+before hook sees it in `event.metadata["login_method"]` and can replace it.
+
 ### Cookie Helpers
 
 Cross-Auth provides helpers to create properly configured session cookies:

@@ -106,8 +106,11 @@ class BeforeLoginEvent:
     login by raising but cannot change who is logged in. ``max_age`` and
     ``metadata`` describe the Cross Auth session that will be created and may
     be adjusted; both are ``None`` when an application ``token_issuer`` or the
-    web framework (``django_session``) creates the credential. ``response`` is
-    the HTTP response of a browser login and ``None`` for bearer logins.
+    web framework (``django_session``) creates the credential. Its
+    ``login_method`` says how the user signed in: the provider id after an
+    OAuth callback or authorization code, ``"password"`` for the password
+    grant, or what the application passed. ``response`` is the HTTP response of
+    a browser login and ``None`` for bearer logins.
     """
 
     user_id: str

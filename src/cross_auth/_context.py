@@ -131,6 +131,7 @@ class Context:
             metadata={
                 "client_id": request.client_id,
                 "user_agent": _get_header(request.http_request.headers, "user-agent"),
+                "login_method": request.login_method,
             },
         )
         return session_token, expires_in

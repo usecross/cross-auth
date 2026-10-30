@@ -328,6 +328,20 @@ names, or timezone-aware types. The inherited `status` property delegates to
 `session_status`, so it agrees with the adapter's active/expired/revoked
 filters.
 
+`login_method` (how the session signed in, see
+[Login method](/docs/session-authentication#login-method)) is an optional
+column. Declare it to record it, and add the column with a migration:
+
+```python
+class UserSession(SQLModelSession, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    login_method: str | None = None
+```
+
+Without the column the adapter does not write it and `record.login_method` is
+`None`, so tables created before it existed keep working without a migration.
+
 **Migration:** existing tables must inherit the corresponding base instead of
 `SQLModel`. Existing field declarations can remain as overrides; this
 inheritance change does not require a database migration when the resulting
@@ -776,6 +790,7 @@ class SessionRecord(Protocol):
     client_name: str | None
     user_agent: str | None
     ip: str | None
+    login_method: str | None
 
     @property
     def status(self) -> Literal["active", "expired", "revoked"]: ...
@@ -800,6 +815,7 @@ class SessionStorage(Protocol):
         user_agent: str | None = None,
         ip: str | None = None,
         last_active_at: AwareDatetime | None = None,
+        login_method: str | None = None,
     ) -> SessionRecord: ...
 
     def get(self, *, token_hash: str, now: AwareDatetime) -> SessionRecord | None: ...
@@ -813,6 +829,13 @@ class SessionStorage(Protocol):
 
 Both storage protocols use `on_commit` as described in
 [Commit callbacks](#commit-callbacks).
+
+Store `login_method` and return it on the record to support
+[Login method](/docs/session-authentication#login-method). Cross-Auth passes it
+only when `create` accepts a `login_method` argument (or `**kwargs`), so an
+adapter written before it existed keeps working and records nothing. Type
+checkers flag such an adapter against the protocol until it accepts the argument
+and its records have a `login_method` attribute.
 
 `refresh` must atomically update only a session whose `revoked_at` is null and
 whose current `expires_at` is at or after the supplied `updated_at`. This

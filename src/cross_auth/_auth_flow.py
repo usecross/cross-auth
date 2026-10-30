@@ -1727,7 +1727,10 @@ def _complete_session(
         hooks=context.hooks,
         session_storage=session_storage,
         session_config=context.session_config,
-        metadata={"user_agent": _get_header(request.headers, "user-agent")},
+        metadata={
+            "user_agent": _get_header(request.headers, "user-agent"),
+            "login_method": auth_request.provider_id,
+        },
     )
     return cast(Response, response)
 
@@ -1751,6 +1754,7 @@ def _complete_token(
         redirect_uri=auth_request.client_redirect_uri,
         code_challenge=auth_request.client_code_challenge,
         code_challenge_method=auth_request.client_code_challenge_method,
+        login_method=auth_request.provider_id,
     )
 
     context.secondary_storage.set(

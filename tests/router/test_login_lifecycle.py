@@ -167,7 +167,10 @@ def test_browser_login_runs_one_lifecycle_around_one_session_and_cookie(
     (after_event,) = after
     assert before_event.credential == "cookie"
     assert before_event.max_age == 86400
-    assert before_event.metadata == {"user_agent": "browser/1.0"}
+    assert before_event.metadata == {
+        "user_agent": "browser/1.0",
+        "login_method": "fake",
+    }
     assert after_event.user_id == record.user_id == before_event.user_id
     assert after_event.credential == "cookie"
     assert after_event.session_record is record
@@ -508,7 +511,11 @@ def test_password_grant_runs_one_login_lifecycle(
     (before_event,) = before
     (after_event,) = after
     assert before_event.credential == "bearer"
-    assert before_event.metadata == {"client_id": "app-client", "user_agent": "cli/3.0"}
+    assert before_event.metadata == {
+        "client_id": "app-client",
+        "user_agent": "cli/3.0",
+        "login_method": "password",
+    }
     assert after_event.session_record is record
     assert record.user_id == "test"
     assert record.token_hash == hash_session_token(resp.json()["access_token"])

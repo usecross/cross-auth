@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 from cross_web import HTTPRequest, Cookie
 
@@ -21,6 +22,9 @@ class SessionMetadata(TypedDict, total=False):
     client_name: str | None
     user_agent: str | None
     ip: str | None
+    # How the user signed in: "password", a social provider's id ("github",
+    # "google", ...) or any value the application chooses.
+    login_method: str | None
 
 
 class SessionCookieConfig(TypedDict, total=False):
@@ -95,6 +99,9 @@ def create_session(
     now = datetime.now(tz=timezone.utc)
     expires_at = now + timedelta(seconds=max_age)
     resolved_metadata = metadata or {}
+    optional: dict[str, Any] = {}
+    if _accepts_keyword(storage.create, "login_method"):
+        optional["login_method"] = resolved_metadata.get("login_method")
     session_record = storage.create(
         token_hash=hash_session_token(session_token, token_hasher),
         user_id=user_id,
@@ -106,8 +113,25 @@ def create_session(
         user_agent=resolved_metadata.get("user_agent"),
         ip=resolved_metadata.get("ip"),
         last_active_at=now,
+        **optional,
     )
     return session_token, session_record
+
+
+def _accepts_keyword(function: Callable[..., object], name: str) -> bool:
+    """Whether ``function`` takes the keyword argument ``name``.
+
+    Session storages written before an optional ``create`` argument existed
+    don't declare it; core leaves the argument out for them.
+    """
+    try:
+        parameters = inspect.signature(function).parameters
+    except (TypeError, ValueError):
+        return True
+    return name in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
 
 
 def get_session(

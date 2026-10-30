@@ -15,6 +15,7 @@ from cross_auth.storage.sqlmodel import SQLModelSessionStorage
 
 from .models import (
     IntUserIdSessionStore,
+    LoginMethodSessionStore,
     RenamedColumnSessionStore,
     SessionStore,
     TzAwareSessionStore,
@@ -638,3 +639,37 @@ def test_timezone_aware_columns_round_trip(engine):
     assert fetched.created_at == NOW
     assert fetched.expires_at == expires
     assert fetched.created_at.tzinfo is not None
+
+
+def test_login_method_is_stored_when_the_model_has_the_column(engine):
+    store = LoginMethodSessionStore(session_factory=lambda: Session(engine))
+    session_storage = cast(SessionStorage, store)
+
+    token, created = create_session(
+        "u1", session_storage, metadata={"login_method": "github"}
+    )
+
+    assert created.login_method == "github"
+    session = get_session(token, session_storage)
+    assert session is not None
+    assert session.login_method == "github"
+    (listed,) = store.list_for_user("u1", now=datetime.now(tz=timezone.utc)).records
+    assert listed.login_method == "github"
+
+
+def test_login_method_is_skipped_when_the_model_has_no_column(store):
+    # A table created before login_method existed: writing it must not fail,
+    # and the record reads it as None.
+    session_storage = cast(SessionStorage, store)
+
+    token, created = create_session(
+        "u1", session_storage, metadata={"login_method": "github"}
+    )
+
+    assert "login_method" not in UserSession.model_fields
+    assert created.login_method is None
+    session = get_session(token, session_storage)
+    assert session is not None
+    assert session.login_method is None
+    with pytest.raises(AttributeError):
+        getattr(session, "not_a_column")

@@ -139,6 +139,11 @@ class SessionRecord(Protocol):
     def ip(self) -> str | None: ...
 
     @property
+    def login_method(self) -> str | None:
+        """How the user signed in: ``"password"`` or a social provider's id."""
+        ...
+
+    @property
     def status(self) -> SessionStatus: ...
 
 
@@ -192,7 +197,15 @@ class SessionStorage(Protocol):
         user_agent: str | None = None,
         ip: str | None = None,
         last_active_at: AwareDatetime | None = None,
-    ) -> SessionRecord: ...
+        login_method: str | None = None,
+    ) -> SessionRecord:
+        """Store a new session.
+
+        Core passes ``login_method`` only to adapters whose ``create`` accepts
+        it (or ``**kwargs``), so adapters written before it existed keep working
+        and don't record it.
+        """
+        ...
 
     def get(
         self,

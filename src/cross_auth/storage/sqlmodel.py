@@ -419,9 +419,14 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
         user_agent: str | None = None,
         ip: str | None = None,
         last_active_at: datetime | None = None,
+        login_method: str | None = None,
     ) -> SessionModelT:
         model = self.SessionModel
         coerced_user_id = _coerce_id(model, "user_id", user_id)
+        # login_method is an optional column: tables without it read None.
+        optional: dict[str, object] = {}
+        if _column(model, "login_method") is not None:
+            optional["login_method"] = login_method
         record = _construct_record(
             model,
             token_hash=token_hash,
@@ -434,6 +439,7 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
             user_agent=user_agent,
             ip=ip,
             last_active_at=_bind_datetime(model, "last_active_at", last_active_at),
+            **optional,
         )
         with self._open_session() as session:
             session.add(record)

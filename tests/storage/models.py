@@ -29,6 +29,18 @@ class SessionStore(SQLModelSessionStorage[UserSession]):
     SessionModel = UserSession
 
 
+class LoginMethodUserSession(SQLModelSession, table=True):
+    """Session model that opts in to the optional ``login_method`` column."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True)
+    login_method: str | None = None
+
+
+class LoginMethodSessionStore(SQLModelSessionStorage[LoginMethodUserSession]):
+    SessionModel = LoginMethodUserSession
+
+
 class UuidUserSession(SQLModelSession, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     user_id: str = Field(index=True)

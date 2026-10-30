@@ -298,6 +298,24 @@ oauth_server = OAuthServer(get_client=clients.get, token_issuer=issue_token)
 
 The `login` hooks run around the call; Cross-Auth creates no session for it.
 
+`request.login_method` says how the user signed in: the provider id (such as
+`"github"`) for the authorization code grant, and `"password"` for the password
+grant. The provider travels inside the authorization code, so it is `None` for a
+code issued by a version of Cross-Auth that did not record it. An issuer that
+creates a session can store it there:
+
+```python
+def issue_token(request: TokenIssueRequest) -> tuple[str, int]:
+    token, _ = auth.issue_session_token(
+        request.user_id,
+        metadata={
+            "client_id": request.client_id,
+            "login_method": request.login_method,
+        },
+    )
+    return token, 86400
+```
+
 ### Password Grant (deprecated)
 
 The resource owner password grant is deprecated and will be removed in

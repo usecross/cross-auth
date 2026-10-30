@@ -123,6 +123,7 @@ class MemorySessionRecord:
     client_name: str | None = None
     user_agent: str | None = None
     ip: str | None = None
+    login_method: str | None = None
 
     @property
     def status(self) -> SessionStatus:
@@ -169,6 +170,7 @@ class MemorySessionStorage(SessionStorage):
         user_agent: str | None = None,
         ip: str | None = None,
         last_active_at: datetime | None = None,
+        login_method: str | None = None,
     ) -> MemorySessionRecord:
         record = MemorySessionRecord(
             id=str(uuid.uuid4()),
@@ -182,6 +184,7 @@ class MemorySessionStorage(SessionStorage):
             user_agent=user_agent,
             ip=ip,
             last_active_at=last_active_at,
+            login_method=login_method,
         )
         self.records[record.id] = record
         return record
