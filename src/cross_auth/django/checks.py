@@ -9,14 +9,18 @@ from django.core.exceptions import ImproperlyConfigured
 from .conf import get_settings
 
 BACKEND = "cross_auth.django.backends.CrossAuthBackend"
+SESSION_ENGINE = "cross_auth.django.sessions"
+SESSION_MIDDLEWARE = "cross_auth.django.sessions.SessionMiddleware"
 _SESSION_ENGINES = {
     "django.contrib.sessions.backends.db",
     "django.contrib.sessions.backends.cached_db",
+    SESSION_ENGINE,
 }
+# Each entry is satisfied by any one of its middleware.
 _REQUIRED_MIDDLEWARE = (
-    "django.contrib.sessions.middleware.SessionMiddleware",
-    "django.middleware.csrf.CsrfViewMiddleware",
-    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    ("django.contrib.sessions.middleware.SessionMiddleware", SESSION_MIDDLEWARE),
+    ("django.middleware.csrf.CsrfViewMiddleware",),
+    ("django.contrib.auth.middleware.AuthenticationMiddleware",),
 )
 # Apps whose presence suggests sign-in requires another factor. Provider
 # sign-in calls django.contrib.auth.login() directly and would skip it.
@@ -50,11 +54,18 @@ def check_login_setup(**kwargs: Any) -> list[checks.CheckMessage]:
         messages.append(
             checks.Error(
                 "Cross Auth's Django views need database-backed sessions.",
-                hint="Set SESSION_ENGINE to the db or cached_db backend.",
+                hint=(
+                    "Set SESSION_ENGINE to the db or cached_db backend, or to "
+                    f"{SESSION_ENGINE!r}."
+                ),
                 id="cross_auth.E003",
             )
         )
-    missing = [name for name in _REQUIRED_MIDDLEWARE if name not in settings.MIDDLEWARE]
+    missing = [
+        names[0]
+        for names in _REQUIRED_MIDDLEWARE
+        if not any(name in settings.MIDDLEWARE for name in names)
+    ]
     if missing:
         messages.append(
             checks.Error(
@@ -80,3 +91,35 @@ def check_login_setup(**kwargs: Any) -> list[checks.CheckMessage]:
             )
         )
     return messages
+
+
+@checks.register(checks.Tags.compatibility)
+def check_session_setup(**kwargs: Any) -> list[checks.CheckMessage]:
+    engine = settings.SESSION_ENGINE == SESSION_ENGINE
+    middleware = SESSION_MIDDLEWARE in settings.MIDDLEWARE
+    if engine and not middleware:
+        return [
+            checks.Warning(
+                f"SESSION_ENGINE is {SESSION_ENGINE!r}, but its SessionMiddleware "
+                "is not in MIDDLEWARE.",
+                hint=(
+                    "Replace django.contrib.sessions.middleware.SessionMiddleware "
+                    f"with {SESSION_MIDDLEWARE!r}, or sessions record no user "
+                    "agent, IP or recent activity."
+                ),
+                id="cross_auth.W002",
+            )
+        ]
+    if middleware and not engine:
+        return [
+            checks.Warning(
+                f"{SESSION_MIDDLEWARE!r} is in MIDDLEWARE, but SESSION_ENGINE is "
+                f"{settings.SESSION_ENGINE!r}.",
+                hint=(
+                    f"Set SESSION_ENGINE = {SESSION_ENGINE!r}; with other engines "
+                    "the middleware records nothing."
+                ),
+                id="cross_auth.W003",
+            )
+        ]
+    return []

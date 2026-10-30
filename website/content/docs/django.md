@@ -575,6 +575,179 @@ not call external services from it; use a `user_created` receiver, which runs
 after the transaction commits. `extra_fields` is always empty. Custom primary
 keys, such as UUIDs, are supported.
 
+## Sessions
+
+Django's session table has no user column and keeps everything in an encoded
+blob, so it cannot tell a user where they are signed in. Cross Auth's session
+engine stores Django's sessions in its own table instead, with the user, how
+they signed in, their browser and IP address, and when the session was last
+used. Your views can then list a user's sessions and sign any of them out.
+
+### Set up the session engine
+
+Point `SESSION_ENGINE` at Cross Auth and replace Django's `SessionMiddleware`
+with Cross Auth's, in the same place:
+
+```python
+SESSION_ENGINE = "cross_auth.django.sessions"
+
+MIDDLEWARE = [
+    "django.middleware.security.SecurityMiddleware",
+    # Instead of django.contrib.sessions.middleware.SessionMiddleware:
+    "cross_auth.django.sessions.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # ...
+]
+```
+
+`migrate` creates the `cross_auth_session` table. Keep `django.contrib.sessions`
+in `INSTALLED_APPS`: its `clearsessions` command deletes expired sessions from
+Cross Auth's table too. Sessions in `django_session` are not moved, so everyone
+signs in again after you switch. Django's `check` command warns
+(`cross_auth.W002`, `cross_auth.W003`) when the engine and the middleware are
+not used together.
+
+Each time Django saves a session, Cross Auth fills these columns of
+`cross_auth.django.models.Session`:
+
+| Column          | Value                                                                                                                                                                                                  |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `user`          | The signed-in user, or `None` while the visitor is anonymous.                                                                                                                                          |
+| `login_method`  | The provider, such as `"google"`, for a sign-in through Cross Auth; `None` for other logins, such as Django's password login. A later password login in the same browser sets it back to `None`.       |
+| `user_agent`    | The browser's `User-Agent` header, without control characters and cut to 512 characters.                                                                                                               |
+| `ip`            | The request's `REMOTE_ADDR`; see [behind a proxy](#behind-a-proxy).                                                                                                                                    |
+| `created_at`    | When the session started. Django gives a session a new key when someone signs in or changes their password, which starts a new row.                                                                    |
+| `last_activity` | When a request last used the session. Saving the session sets it; otherwise it is updated at most once a minute (`SESSION_ACTIVITY_INTERVAL`), and only by requests that read the session or the user. |
+| `public_id`     | A random ID that names the session on your pages, because `session_key` is the session cookie itself and must never be shown.                                                                          |
+
+Logging out, `clearsessions` and deleting a user delete their rows.
+
+### List and revoke sessions
+
+`cross_auth.django.sessions` has three helpers for the signed-in user's
+sessions. They take the request, so they always act on `request.user`'s own
+sessions and know which one is current:
+
+- `list_sessions(request)` returns the user's sessions, newest first, as
+  `SessionInfo` objects with `id`, `login_method`, `user_agent`, `ip`,
+  `created_at`, `last_activity`, `expires_at` and `is_current`. Expired sessions
+  and sessions that a password change ended are left out. Anonymous requests get
+  an empty list.
+- `revoke_session(request, session_id)` signs out the session whose `id` is
+  `session_id` and returns whether it found one. Another user's session is never
+  touched. Revoking the current session logs out with Django's `logout()`.
+- `revoke_other_sessions(request)` signs out all of the user's other sessions,
+  keeps the current one, and returns how many it revoked.
+
+For example, a page that lists the sessions with a button to sign out each one,
+and one to sign out everywhere else:
+
+```python
+# core/views.py
+from django.contrib.auth.decorators import login_required
+from django.shortcuts import redirect, render
+from django.views.decorators.http import require_POST
+
+from cross_auth.django.sessions import (
+    list_sessions,
+    revoke_other_sessions,
+    revoke_session,
+)
+
+
+@login_required
+def sessions(request):
+    return render(request, "core/sessions.html", {"sessions": list_sessions(request)})
+
+
+@require_POST
+@login_required
+def revoke(request):
+    if "session" in request.POST:
+        revoke_session(request, request.POST["session"])
+    else:
+        revoke_other_sessions(request)
+    return redirect("sessions")
+```
+
+```python
+# config/urls.py
+urlpatterns = [
+    # ...
+    path("sessions/", views.sessions, name="sessions"),
+    path("sessions/revoke/", views.revoke, name="revoke_session"),
+]
+```
+
+```html
+<!-- core/templates/core/sessions.html -->
+{% extends "core/base.html" %} {% block content %}
+<h1>Where you're signed in</h1>
+<ul>
+  {% for session in sessions %}
+  <li>
+    {{ session.user_agent|default:"Unknown browser" }} {% if
+    session.login_method %}· signed in with {{ session.login_method }}{% endif
+    %} · active {{ session.last_activity|timesince }} ago {% if session.ip %}·
+    {{ session.ip }}{% endif %} {% if session.is_current %} (this browser) {%
+    else %}
+    <form method="post" action="{% url 'revoke_session' %}">
+      {% csrf_token %}
+      <input type="hidden" name="session" value="{{ session.id }}" />
+      <button type="submit">Sign out</button>
+    </form>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+
+<form method="post" action="{% url 'revoke_session' %}">
+  {% csrf_token %}
+  <button type="submit">Sign out everywhere else</button>
+</form>
+{% endblock %}
+```
+
+`user_agent` is the header as the browser sent it. To show "Chrome on macOS",
+parse it with a library such as
+[`ua-parser`](https://pypi.org/project/ua-parser/). For staff tools, query the
+model directly; for example, `Session.objects.filter(user=user).delete()` signs
+a user out everywhere.
+
+### Behind a proxy
+
+The `ip` column is the request's `REMOTE_ADDR`. Behind a load balancer or
+reverse proxy, that is the proxy's address. Cross Auth never reads
+`X-Forwarded-For` itself, because clients can send that header too. If your
+proxy sets it, have your server use it (for example
+`uvicorn --proxy-headers --forwarded-allow-ips=...`), or copy the address your
+proxy added into `REMOTE_ADDR` in a middleware listed before Cross Auth's
+`SessionMiddleware`:
+
+```python
+# core/middleware.py
+def client_ip(get_response):
+    def middleware(request):
+        # Only behind exactly one proxy that always sets this header: the last
+        # address is the one it added; the others came from the client.
+        forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
+        if forwarded:
+            request.META["REMOTE_ADDR"] = forwarded.rsplit(",", 1)[-1].strip()
+        return get_response(request)
+
+    return middleware
+```
+
+### Limitations
+
+- Only the database engine is provided: there is no cache or `cached_db`
+  variant, so every request that reads the session queries the database, as with
+  Django's `db` engine.
+- A session's `user_agent` and `ip` are those of the request that last saved it
+  or updated its activity.
+
 ## Signals reference
 
 `cross_auth.django.signals` defines the signals below. Their sender is your user
@@ -677,14 +850,15 @@ def google_connected(sender, social_account, **kwargs):
 All settings live in the `CROSS_AUTH` dictionary. Django's `check` command
 reports invalid values.
 
-| Key                      | Default            | Meaning                                                                                                             |
-| ------------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| `PROVIDERS`              | `[]`               | Provider instances. Only `GoogleProvider` is supported.                                                             |
-| `CREATE_USER`            | Django's manager   | Dotted path of the user factory for first sign-ins.                                                                 |
-| `PASSWORD_LOGIN`         | `True`             | Whether a usable Django password counts as a way to sign in when disconnecting.                                     |
-| `REQUIRE_VERIFIED_EMAIL` | `True`             | Refuse to create users when Google does not report the email as verified.                                           |
-| `ACCOUNT_LINKING`        | `{}`               | `enabled`: attach a Google sign-in to the user with the same verified email. `allow_different_emails`: see Step 13. |
-| `BASE_URL`               | the request's host | Public origin, such as `https://example.com`, used to build the redirect URI.                                       |
+| Key                         | Default            | Meaning                                                                                                                                            |
+| --------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PROVIDERS`                 | `[]`               | Provider instances. Only `GoogleProvider` is supported.                                                                                            |
+| `CREATE_USER`               | Django's manager   | Dotted path of the user factory for first sign-ins.                                                                                                |
+| `PASSWORD_LOGIN`            | `True`             | Whether a usable Django password counts as a way to sign in when disconnecting.                                                                    |
+| `REQUIRE_VERIFIED_EMAIL`    | `True`             | Refuse to create users when Google does not report the email as verified.                                                                          |
+| `ACCOUNT_LINKING`           | `{}`               | `enabled`: attach a Google sign-in to the user with the same verified email. `allow_different_emails`: see Step 13.                                |
+| `BASE_URL`                  | the request's host | Public origin, such as `https://example.com`, used to build the redirect URI.                                                                      |
+| `SESSION_ACTIVITY_INTERVAL` | `60`               | Seconds between `last_activity` updates of a [session](#sessions) that nothing else saves. `0` updates it on every request that reads the session. |
 
 `ACCOUNT_LINKING["enabled"]` is off by default. Turning it on lets anyone who
 controls a Google account with a matching, verified email sign in to an existing
@@ -699,10 +873,11 @@ users. Even then, Cross Auth refuses when several users share the email.
   ID token's nonce instead. The `next` value must be a local path that Django's
   `url_has_allowed_host_and_scheme` accepts; anything else goes to
   `LOGIN_REDIRECT_URL`.
-- **Sessions.** Cross Auth requires the `db` or `cached_db` session engine, and
-  saves the session before sending `after_login`. Existing session data is kept
-  when an anonymous visitor signs in, and Django's usual rules apply to password
-  changes (`update_session_auth_hash`) and logout.
+- **Sessions.** Cross Auth requires the `db` or `cached_db` session engine, or
+  its own [session engine](#sessions), and saves the session before sending
+  `after_login`. Existing session data is kept when an anonymous visitor signs
+  in, and Django's usual rules apply to password changes
+  (`update_session_auth_hash`) and logout.
 - **Inactive users** cannot sign in with Google, and lose their existing
   sessions on the next request.
 - **Transactions.** Each step commits on its own. Cross Auth's views opt out of
@@ -775,6 +950,9 @@ cannot detect every setup.
   this shell; see Step 8.
 - **Django check errors `cross_auth.E00x`:** add the backend, keep database
   sessions, or add the missing middleware, as the message says.
+- **Django check warnings `cross_auth.W002` or `cross_auth.W003`:** use
+  `SESSION_ENGINE = "cross_auth.django.sessions"` together with
+  `cross_auth.django.sessions.SessionMiddleware`; see [Sessions](#sessions).
 
 ## Limitations and support
 
@@ -786,12 +964,12 @@ Tested in Cross Auth's CI:
 | Django    | 5.2 LTS (5.2.8 or later)                                   |
 | Databases | SQLite, PostgreSQL 16                                      |
 | Users     | `auth.User`; a custom UUID user with its own manager       |
-| Sessions  | `db` and `cached_db` engines                               |
+| Sessions  | `db` and `cached_db` engines; `cross_auth.django.sessions` |
 | Servers   | Synchronous views under WSGI and ASGI                      |
 | Providers | Google, against a mocked Google with real signed ID tokens |
 
 Not supported in this pilot: providers other than Google, Django 6, async views,
-sign-in when your project requires multi-factor authentication, listing or
-revoking a user's sessions across devices, sharing one Google account between
-several users, and storing Google access or refresh tokens. Logging out of
-Django does not sign you out of Google or revoke the app's access.
+sign-in when your project requires multi-factor authentication, sharing one
+Google account between several users, and storing Google access or refresh
+tokens. Logging out of Django does not sign you out of Google or revoke the
+app's access.

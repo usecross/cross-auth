@@ -59,6 +59,7 @@ from cross_auth.social_providers.oauth import OAuth2Provider, ValidatedUserInfo
 from . import models, signals
 from .backends import CrossAuthBackend
 from .conf import get_settings
+from .sessions import LOGIN_METHOD_SESSION_KEY
 from .storage import DjangoAccountsStorage, DjangoSecondaryStorage, DjangoUser
 
 BACKEND = "cross_auth.django.backends.CrossAuthBackend"
@@ -248,7 +249,7 @@ class DjangoLogin:
         if not isinstance(session, DatabaseSessionStore):
             raise ImproperlyConfigured(
                 "Cross Auth's Django views need database-backed sessions "
-                "(SESSION_ENGINE db or cached_db)"
+                "(SESSION_ENGINE db, cached_db or cross_auth.django.sessions)"
             )
         self.session = session
         self.alias = router.db_for_write(session.get_model_class())
@@ -274,6 +275,9 @@ class DjangoLogin:
         def issue(event: BeforeLoginEvent) -> tuple[CrossWebResponse, None]:
             assert event.response is not None
             django_login(self.request, native, backend=BACKEND)
+            # cross_auth.django.sessions records it as the session's login
+            # method while the session stays logged in with BACKEND.
+            self.session[LOGIN_METHOD_SESSION_KEY] = event.login_method
             # Persist the rotated session now, so after_login receivers see a
             # login that is stored rather than one waiting for SessionMiddleware.
             self.session.save()
