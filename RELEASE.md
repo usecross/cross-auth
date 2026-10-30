@@ -87,6 +87,4 @@ still redeem, with `login_method=None`.
 
 With `cross_auth.django`, a provider sign-in stores the provider in Django's
 session: `cross_auth.django.get_login_method(request)` returns it, or `None` for
-other logins such as Django's password login. The `before_login` and
-`after_login` signals have a new `login_method` argument, so a `before_login`
-receiver can refuse a login method by raising `PermissionDenied`.
+other logins such as Django's password login.

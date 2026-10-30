@@ -764,10 +764,9 @@ class TestSignals:
         assert before_account["provider_user_id"] == "google-sub-1"
         assert before_account["is_login_method"] is True
         before = payload("before_login")
-        assert before.keys() - common == {"user_id", "email", "login_method"}
+        assert before.keys() - common == {"user_id", "email"}
         assert before["user_id"] == user_id
         assert before["email"] == "person@gmail.com"
-        assert before["login_method"] == "google"
 
         signals.events.clear()
         sign_in(Client(enforce_csrf_checks=True), google)
@@ -830,8 +829,7 @@ class TestSignals:
         assert account["social_account"].pk == SocialAccount.objects.get().pk
         assert account["social_account"].user_id == native.pk
         after = payload("after_login")
-        assert after.keys() - common == {"user", "login_method"}
-        assert after["login_method"] == "google"
+        assert after.keys() - common == {"user"}
         assert type(after["user"]) is User
         assert after["user"].pk == native.pk
         assert seen == {
@@ -872,13 +870,13 @@ class TestSignals:
         assert sent() == RETURNING_SIGN_IN[:-1]
         assert Session.objects.count() == sessions
 
-    def test_before_login_can_refuse_a_login_method(
+    def test_before_login_can_refuse_a_provider(
         self, client: Client, google: FakeGoogle
     ) -> None:
         sign_in(Client(enforce_csrf_checks=True), google)
 
-        def retired_providers(login_method: str, **kwargs: Any) -> None:
-            if login_method == "google":
+        def retired_providers(provider: str, **kwargs: Any) -> None:
+            if provider == "google":
                 raise PermissionDenied("Sign in with your password instead.")
 
         signals.handlers["before_login"] = retired_providers

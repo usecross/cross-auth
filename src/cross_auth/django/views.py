@@ -228,17 +228,10 @@ class _Signals:
         """Return hooks that send the login signals around logging in ``user``."""
 
         def before(event: BeforeLoginEvent) -> None:
-            self.send(
-                signals.before_login,
-                user_id=event.user_id,
-                email=user.email,
-                login_method=event.login_method,
-            )
+            self.send(signals.before_login, user_id=event.user_id, email=user.email)
 
         def after(event: AfterLoginEvent) -> None:
-            self.send(
-                signals.after_login, user=user.native, login_method=event.login_method
-            )
+            self.send(signals.after_login, user=user.native)
 
         hooks = HookRegistry()
         hooks.register_before("login", before)

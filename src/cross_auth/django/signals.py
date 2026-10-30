@@ -100,9 +100,7 @@ Arguments: ``social_account``. Sign-ins and sign-ups never send it.
 before_login = Signal()
 """Sent before a provider sign-in logs a user in.
 
-Arguments: ``user_id`` (the primary key as a string), ``email`` and
-``login_method``, how the user signed in (the provider ID). Refusing here, for
-example for a login method you no longer accept, logs nobody in. On a first
+Arguments: ``user_id`` (the primary key as a string) and ``email``. On a first
 sign-in the user already exists; refuse in ``before_user_create`` to stop
 sign-ups.
 """
@@ -110,9 +108,8 @@ sign-ups.
 after_login = Signal()
 """Sent once the provider sign-in's session is saved.
 
-Arguments: ``user``, the native user, and ``login_method``, which the session
-also records (``cross_auth.django.get_login_method``). Django's
-``user_logged_in`` was sent before it. A failing receiver cannot undo the login.
+Arguments: ``user``, the native user. Django's ``user_logged_in`` was sent
+before it. A failing receiver cannot undo the login.
 """
 
 before_social_account_disconnect = Signal()

@@ -279,6 +279,8 @@ you can also use your own, such as `"passkey"`:
 
 ```python
 user = auth.authenticate(email, password)
+if user is None:
+    raise HTTPException(status_code=401, detail="Invalid email or password")
 auth.login(str(user.id), response=response, login_method="password")
 
 token, record = auth.issue_session_token(str(user.id), login_method="passkey")

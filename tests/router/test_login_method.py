@@ -103,7 +103,8 @@ def _store_code_without_login_method(secondary_storage: SecondaryStorage) -> str
     """Store an authorization code the way a version without the field did."""
     data = AuthorizationCodeGrantData(
         user_id="test",
-        expires_at=datetime.now(tz=timezone.utc) + timedelta(seconds=60),
+        # Long enough that a slow run can't expire it before the test redeems it.
+        expires_at=datetime.now(tz=timezone.utc) + timedelta(minutes=10),
         client_id="app-client",
         redirect_uri=_REDIRECT_URI,
         code_challenge=_CODE_CHALLENGE,
