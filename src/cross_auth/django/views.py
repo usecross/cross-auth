@@ -57,7 +57,6 @@ from cross_auth.hooks import (
 from cross_auth.social_providers.oauth import OAuth2Provider, ValidatedUserInfo
 
 from . import models, signals
-from ._login_method import LOGIN_METHOD_SESSION_KEY
 from .backends import CrossAuthBackend
 from .conf import get_settings
 from .storage import DjangoAccountsStorage, DjangoSecondaryStorage, DjangoUser
@@ -275,8 +274,6 @@ class DjangoLogin:
         def issue(event: BeforeLoginEvent) -> tuple[CrossWebResponse, None]:
             assert event.response is not None
             django_login(self.request, native, backend=BACKEND)
-            if event.login_method is not None:
-                self.session[LOGIN_METHOD_SESSION_KEY] = event.login_method
             # Persist the rotated session now, so after_login receivers see a
             # login that is stored rather than one waiting for SessionMiddleware.
             self.session.save()

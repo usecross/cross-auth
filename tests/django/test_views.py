@@ -28,7 +28,7 @@ from django.test import AsyncClient, Client, RequestFactory, override_settings
 
 from cross_auth._auth_flow import _create_social_account
 from cross_auth._context import Context
-from cross_auth.django import get_login_method, views
+from cross_auth.django import views
 from cross_auth.django.conf import get_settings
 from cross_auth.django.models import ExpiringValue, SocialAccount
 from cross_auth.django.storage import (
@@ -99,12 +99,6 @@ def sign_in(
     client: Client, google: FakeGoogle, account: Account | None = None
 ) -> HttpResponseBase:
     return google.callback(client, start_login(client, google), account)
-
-
-def login_method(client: Client) -> str | None:
-    request = RequestFactory().get("/")
-    request.session = client.session
-    return get_login_method(request)
 
 
 def error_of(response: HttpResponseBase) -> str:
@@ -256,27 +250,6 @@ class TestSignIn:
         get_user_model()._default_manager.update(is_active=False)
 
         assert whoami(client)["authenticated"] is False
-
-    def test_sign_in_records_the_provider_in_the_session(
-        self, client: Client, google: FakeGoogle
-    ) -> None:
-        sign_in(client, google)
-
-        assert login_method(client) == "google"
-
-    def test_later_password_login_forgets_the_provider(
-        self, client: Client, google: FakeGoogle
-    ) -> None:
-        user = make_user("person@gmail.com", password="secret")
-        connect(user)
-        sign_in(client, google)
-        assert login_method(client) == "google"
-
-        # Same user, same session: Django's login() keeps the session's data.
-        assert client.login(username="person@gmail.com", password="secret")
-
-        assert whoami(client)["user_id"] == str(user.pk)
-        assert login_method(client) is None
 
     def test_existing_email_is_not_linked_automatically(
         self, client: Client, google: FakeGoogle
@@ -885,7 +858,6 @@ class TestSignals:
 
         assert response.status_code == 403
         assert whoami(client)["authenticated"] is False
-        assert login_method(client) is None
         assert SocialAccount.objects.count() == 1
 
     def test_before_user_create_permission_denied_creates_nothing(
