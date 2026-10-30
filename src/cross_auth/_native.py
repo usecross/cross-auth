@@ -67,7 +67,7 @@ def verify_nonce(claims: dict[str, Any], nonce: str) -> None:
         )
 
 
-def sign_in_with_id_token(
+def resolve_id_token_user(
     *,
     context: Context,
     providers: Mapping[str, OAuth2Provider],

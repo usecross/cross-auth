@@ -686,9 +686,10 @@ or retried.
 
 The browser sign-in flow refuses to issue a credential while accounts storage
 defers callbacks, so an adapter that joins application transactions supports
-account changes made inside them, not a full sign-in. `sign_in_with_id_token`
-only verifies and resolves the user, so with such an adapter it may return
-records that are not committed yet: commit before you call `auth.login()`,
+account changes made inside them, not a full sign-in. So does
+`sign_in_with_id_token`, which issues a session. `resolve_id_token_user` only
+verifies and resolves the user, so with such an adapter it may return records
+that are not committed yet: commit before you call `auth.login()`,
 `auth.issue_session_token()`, or your own token issuance for that user.
 
 With a session storage that defers callbacks, cookie logins and a `logout` that

@@ -86,18 +86,18 @@ Each provider requires:
 
 Native apps don't redirect: Apple's ASAuthorization and Google's Credential
 Manager hand the app a signed **id_token** directly, and the app posts it to
-your API — a GraphQL sign-in mutation, a REST endpoint. Validate it and sign the
-user in with `sign_in_with_id_token`:
+your API — a GraphQL sign-in mutation, a REST endpoint. Validate it, sign the
+user in and issue a bearer session with `sign_in_with_id_token`:
 
 ```python
-user, created = auth.sign_in_with_id_token(
+token, record, user, created = auth.sign_in_with_id_token(
     "apple",
     identity_token,
     # Apple sends the name only on first authorization, outside the token.
     user_info={"first_name": first_name, "last_name": last_name},
     nonce=raw_nonce,  # optional; matched raw or SHA-256 against the claim
+    metadata={"client_name": "ios"},
 )
-token, record = auth.issue_session_token(str(user.id), metadata={"client_name": "ios"})
 ```
 
 The token is validated against the provider's JWKS (signature, issuer, audience,
@@ -106,12 +106,23 @@ same core the web callback uses: normalized email lookup, the account-linking
 policy gate, and your `user.create`, `social_account.create`, and
 `social_account.update` hooks. No OAuth token exchange happens, so no access or
 refresh tokens are stored on the social account. The `oauth.id_token` hooks also
-run around the outer flow.
+run around the outer flow. Then the `login` hooks run around a new session, like
+`issue_session_token`, and the session's `login_method` is the provider (see
+[Login method](/docs/session-authentication#login-method)). `max_age` and
+`metadata` are as for `issue_session_token`. Like the browser callback, it
+raises `RuntimeError` before verifying the token while your accounts storage
+defers its commits (an application transaction is open).
 
-`sign_in_with_id_token` only verifies the token and resolves the user; it does
-not log anyone in. If your accounts storage joins an application transaction,
-the returned records may not be committed yet, so commit before calling
-`issue_session_token`, `login`, or your own token issuance.
+If your application mints its own credential, use `resolve_id_token_user`
+instead. It verifies the token and finds or creates the user the same way,
+returns `(user, created)`, and logs nobody in:
+
+```python
+user, created = auth.resolve_id_token_user("apple", identity_token, nonce=raw_nonce)
+```
+
+It works inside an application transaction, so the returned records may not be
+committed yet: commit before issuing your credential for them.
 
 Only OIDC providers issue id_tokens, so this works for Apple and Google (and any
 `OIDCProvider` subclass); providers without an id_token, like GitHub, raise

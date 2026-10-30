@@ -21,6 +21,7 @@ from fastapi import Request as FastAPIRequest
 from fastapi import Response as FastAPIResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from ._auth_flow import _require_committed_accounts
 from ._config import Config
 from ._context import AccountsStorage, SecondaryStorage, User
 from ._login import (
@@ -28,7 +29,7 @@ from ._login import (
     login_with_session,
     logout_session,
 )
-from ._native import sign_in_with_id_token as _sign_in_with_id_token
+from ._native import resolve_id_token_user as _resolve_id_token_user
 from ._oauth_server import OAuthServer
 from ._password import authenticate
 from ._request import make_http_request
@@ -144,8 +145,9 @@ _COOKIE_SINK_STATE_KEY = "cross_auth_cookie_sink"
 _ROLLED_COOKIES_STATE_KEY = "cross_auth_rolled_cookies"
 
 
-class IdTokenSession(NamedTuple):
-    """The session ``CrossAuth.exchange_id_token`` issued, and its user."""
+class IdTokenSignIn(NamedTuple):
+    """What ``CrossAuth.sign_in_with_id_token`` returns: the bearer session it
+    issued and the user it signed in."""
 
     token: str
     session_record: SessionRecord
@@ -359,8 +361,10 @@ class CrossAuth:
         *,
         user_info: dict[str, Any] | None = None,
         nonce: str | None = None,
-    ) -> tuple[User, bool]:
-        """Sign in a native/SDK login by validating a provider ``id_token``.
+        max_age: int | None = None,
+        metadata: SessionMetadata | None = None,
+    ) -> IdTokenSignIn:
+        """Sign in a native/SDK login with a provider ``id_token``.
 
         The headless sibling of the OAuth callback: Apple's ASAuthorization or
         Google's Credential Manager hand the app a signed id_token, and the
@@ -368,9 +372,15 @@ class CrossAuth:
         is validated against the provider's JWKS, then the user is found or
         created by the same core the web callback uses — normalized email
         lookup, the auto-link policy gate, and the accounts-storage signup
-        hooks. Returns ``(user, created)`` and starts no session: use
-        ``exchange_id_token`` to also hand the client a bearer token, or this
-        method when the application mints its own credential.
+        hooks. Then the ``login`` hooks run around a new bearer session whose
+        ``login_method`` is ``provider``; ``max_age`` and ``metadata`` are as
+        for ``issue_session_token``. Returns the token, the session record, the
+        user and whether it was just created.
+
+        Like the browser callback, it refuses (``RuntimeError``) before
+        verifying anything when there is no ``session_storage`` or while the
+        accounts storage defers its commits, as one that joined an application
+        transaction does: the session could outlive a rolled-back user.
 
         If the identity belongs to an existing social account with
         ``is_login_method=False``, raises ``CrossAuthException`` with
@@ -388,48 +398,13 @@ class CrossAuth:
         token's nonce claim (raw or SHA-256 for SDK integrations that send a
         hash). The application must bind the expected nonce to the initiating
         login attempt and prevent reuse; this comparison does not consume it.
-        Runs the
-        ``oauth.id_token`` hooks.
-        """
-        resolved_user, _ = _sign_in_with_id_token(
-            context=self._context,
-            providers=self._setup.providers_by_id,
-            provider=provider,
-            id_token=id_token,
-            user_info=user_info,
-            nonce=nonce,
-        )
-        return resolved_user.user, resolved_user.created
-
-    def exchange_id_token(
-        self,
-        provider: str,
-        id_token: str,
-        *,
-        user_info: dict[str, Any] | None = None,
-        nonce: str | None = None,
-        max_age: int | None = None,
-        metadata: SessionMetadata | None = None,
-    ) -> IdTokenSession:
-        """Sign in with a provider ``id_token`` and issue a bearer session.
-
-        ``sign_in_with_id_token`` followed by ``issue_session_token``, for a
-        native app that sends the token to your API: the user is found or
-        created exactly as there, then the ``login`` hooks run around a new
-        session whose ``login_method`` is ``provider``. ``max_age`` and
-        ``metadata`` are as for ``issue_session_token``. Returns the bearer
-        token, the session record, the user and whether it was just created.
+        Runs the ``oauth.id_token`` hooks, then the ``login`` hooks.
         """
         session_storage = self._require_session_storage()
-        resolved_user, _ = _sign_in_with_id_token(
-            context=self._context,
-            providers=self._setup.providers_by_id,
-            provider=provider,
-            id_token=id_token,
-            user_info=user_info,
-            nonce=nonce,
+        _require_committed_accounts(self._context)
+        user, created = self.resolve_id_token_user(
+            provider, id_token, user_info=user_info, nonce=nonce
         )
-        user = resolved_user.user
         token, record, _ = issue_bearer_session(
             str(user.id),
             hooks=self._context.hooks,
@@ -439,7 +414,35 @@ class CrossAuth:
             metadata=metadata,
             login_method=provider,
         )
-        return IdTokenSession(token, record, user, resolved_user.created)
+        return IdTokenSignIn(token, record, user, created)
+
+    def resolve_id_token_user(
+        self,
+        provider: str,
+        id_token: str,
+        *,
+        user_info: dict[str, Any] | None = None,
+        nonce: str | None = None,
+    ) -> tuple[User, bool]:
+        """Verify a provider ``id_token`` and find or create its user.
+
+        ``sign_in_with_id_token`` without the session, for applications that
+        mint their own credential. Returns ``(user, created)`` and runs the
+        ``oauth.id_token`` hooks, not the ``login`` hooks. The application owns
+        the credential and its commit: with an accounts storage that joins an
+        application transaction, the returned records may not be committed
+        yet, so commit before issuing a credential for them. ``user_info`` and
+        ``nonce`` are as for ``sign_in_with_id_token``.
+        """
+        resolved_user, _ = _resolve_id_token_user(
+            context=self._context,
+            providers=self._setup.providers_by_id,
+            provider=provider,
+            id_token=id_token,
+            user_info=user_info,
+            nonce=nonce,
+        )
+        return resolved_user.user, resolved_user.created
 
     def authenticate(self, email: str, password: str) -> User | None:
         event = self._context.hooks.run_before(

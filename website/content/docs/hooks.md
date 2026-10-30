@@ -175,14 +175,14 @@ knows which user is being signed in:
 | ----------------------------------------------- | ------------ | ------------------------------------------------- |
 | Browser OAuth session callback, `auth.login()`  | `"cookie"`   | A session and its cookie on `response`            |
 | `auth.issue_session_token()`                    | `"bearer"`   | A session; its token is returned to your code     |
-| `auth.exchange_id_token()`                      | `"bearer"`   | A session; its token is returned to your code     |
+| `auth.sign_in_with_id_token()`                  | `"bearer"`   | A session; its token is returned to your code     |
 | `/token` password and authorization-code grants | `"bearer"`   | A session, or the token your `token_issuer` mints |
 
 For `/token`, the `login` hooks run inside the `token.password` or
 `token.authorization_code` hooks. Creating an authorization code in the browser
-callback is not a login; redeeming it at `/token` is. Verifying a native
-`id_token` (`sign_in_with_id_token`), connecting or linking an account, and
-refreshing a sliding session are not logins either.
+callback is not a login; redeeming it at `/token` is. Resolving the user of a
+native `id_token` without a session (`resolve_id_token_user`), connecting or
+linking an account, and refreshing a sliding session are not logins either.
 
 `BeforeLoginEvent` carries `user_id`, `credential`, `login_method`, `max_age`,
 `metadata`, and `response`. A `before` hook can deny the login by raising, or
@@ -196,7 +196,7 @@ its token's lifetime and claims; the hooks can still deny the login before the
 issuer is called.
 
 `login_method` says how the user signed in: the provider id for a browser OAuth
-sign-in, an authorization code or `exchange_id_token`, `"password"` for the
+sign-in, an authorization code or `sign_in_with_id_token`, `"password"` for the
 password grant, or what your code passed to `auth.login()` or
 `auth.issue_session_token()` (`None` if nothing). It is set on every login,
 including those a `token_issuer` mints. The value a `before` hook approves is

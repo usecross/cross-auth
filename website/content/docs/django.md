@@ -601,8 +601,8 @@ Google connection, with `user_id`, `provider_user_id`, `provider_email`,
 | `before_social_account_update`     | Before a connection is refreshed with Google's latest email: on every later sign-in, and when a link reconnects it.                                           | `social_account_id`, `user_id`, `provider_user_id`, the new `email` and `email_verified`, the stored `is_login_method`      |
 | `social_account_updated`           | After the refresh is committed.                                                                                                                               | `social_account`                                                                                                            |
 | `social_account_linked`            | After a link's connection is committed, following `social_account_created` or `social_account_updated`. Never sent by sign-ins.                               | `social_account`                                                                                                            |
-| `before_login`                     | Before Django's `login()`, once the user is known.                                                                                                            | `user_id`, `email` (the user's, or `None`)                                                                                  |
-| `after_login`                      | After `login()` and after the session is saved to the database.                                                                                               | `user`                                                                                                                      |
+| `before_login`                     | Before Django's `login()`, once the user is known.                                                                                                            | `user_id`, `email` (the user's, or `None`), `login_method` (the provider ID)                                                |
+| `after_login`                      | After `login()` and after the session is saved to the database.                                                                                               | `user`, `login_method`                                                                                                      |
 | `before_social_account_disconnect` | Before the disconnect view removes one of the signed-in user's connections.                                                                                   | `social_account_id`, `user_id`, `provider_user_id`                                                                          |
 | `social_account_disconnected`      | After the removal is committed. Not sent when the connection was the user's last way to sign in and stayed.                                                   | `social_account`, the removed row; its `pk` and `user_id` still name it                                                     |
 
@@ -624,6 +624,17 @@ The flows send them in this order:
   sign-up rolls back the new user too. Refusing in `before_login` on a first
   sign-in leaves the new user in place; refuse sign-ups in `before_user_create`
   instead, or a Google account before anything is written in `before_callback`.
+- **Refusing a login method.** `before_login` gets `login_method`, so it can
+  stop sign-ins with a provider you no longer accept while leaving users and
+  their connections in place:
+
+  ```python
+  @receiver(before_login)
+  def retired_providers(sender, login_method, **kwargs):
+      if login_method in RETIRED_LOGIN_METHODS:
+          raise PermissionDenied("Sign in with your password instead.")
+  ```
+
 - **Before the callback is verified** nothing is sent, so `before_callback` and
   the signals after it never see an unverified Google response. A denied
   consent, an expired or replayed callback, another browser's callback, or an
@@ -696,7 +707,8 @@ users. Even then, Cross Auth refuses when several users share the email.
   `cross_auth.django.get_login_method(request)` returns it (`"google"`), or
   `None` for any other login, such as Django's password login. Every
   `user_logged_in` clears it first, so a later password login in the same
-  session does not keep it.
+  session does not keep it. `before_login` and `after_login` receive it as
+  `login_method`.
 - **Inactive users** cannot sign in with Google, and lose their existing
   sessions on the next request.
 - **Transactions.** Each step commits on its own. Cross Auth's views opt out of

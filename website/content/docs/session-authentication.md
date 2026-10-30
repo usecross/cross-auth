@@ -272,7 +272,7 @@ Cross-Auth sets it on the sessions it creates:
 | Browser sign-in through `/{provider}/login` | The provider id                 |
 | `/token` authorization code grant           | The provider the code came from |
 | `/token` password grant (deprecated)        | `"password"`                    |
-| `auth.exchange_id_token(provider, ...)`     | `provider`                      |
+| `auth.sign_in_with_id_token(provider, ...)` | `provider`                      |
 
 For sessions your code creates, pass `login_method`. The value is free-form, so
 you can also use your own, such as `"passkey"`:
@@ -284,18 +284,16 @@ auth.login(str(user.id), response=response, login_method="password")
 token, record = auth.issue_session_token(str(user.id), login_method="passkey")
 ```
 
-For a native app that sends a provider `id_token`, `exchange_id_token` signs the
-user in and issues the bearer session in one call, recording the provider:
+For a native app that sends a provider `id_token`, `sign_in_with_id_token` signs
+the user in and issues the bearer session in one call, recording the provider
+(see Native Sign-In in [Social Providers](/docs/social-providers)):
 
 ```python
-token, record, user, created = auth.exchange_id_token(
+token, record, user, created = auth.sign_in_with_id_token(
     "apple", id_token, nonce=nonce, metadata={"client_name": "ios"}
 )
 # record.login_method == "apple"
 ```
-
-It takes the arguments of `sign_in_with_id_token` plus `max_age` and `metadata`.
-Keep `sign_in_with_id_token` for apps that mint their own credential.
 
 Read the value back as `record.login_method`; it is `None` for sessions created
 before Cross-Auth recorded it. Every `login` hook event carries it as
