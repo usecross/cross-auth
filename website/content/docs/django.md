@@ -692,6 +692,11 @@ users. Even then, Cross Auth refuses when several users share the email.
   saves the session before sending `after_login`. Existing session data is kept
   when an anonymous visitor signs in, and Django's usual rules apply to password
   changes (`update_session_auth_hash`) and logout.
+- **Login method.** A provider sign-in records the provider in the session.
+  `cross_auth.django.get_login_method(request)` returns it (`"google"`), or
+  `None` for any other login, such as Django's password login. Every
+  `user_logged_in` clears it first, so a later password login in the same
+  session does not keep it.
 - **Inactive users** cannot sign in with Google, and lose their existing
   sessions on the next request.
 - **Transactions.** Each step commits on its own. Cross Auth's views opt out of

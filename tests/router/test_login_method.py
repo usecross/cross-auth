@@ -1,8 +1,9 @@
-"""``login_method``: how a session signed in.
+"""``login_method``: how a login signed in.
 
-Cross Auth records the provider id or ``"password"`` on every session it
-creates, carries it through the authorization code to ``/token`` and hands it
-to an application ``token_issuer``.
+Every ``login`` event carries it: the provider id, ``"password"`` for the
+password grant, or what the application passed. Before hooks may replace it,
+and the approved value is what the session or the ``token_issuer`` gets. The
+authorization code carries the provider from the callback to ``/token``.
 """
 
 from __future__ import annotations
@@ -10,7 +11,6 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -22,9 +22,10 @@ from fastapi.testclient import TestClient
 from cross_auth._issuer import AuthorizationCodeGrantData
 from cross_auth._storage import SecondaryStorage
 from cross_auth._tokens import TokenIssueRequest
+from cross_auth.exceptions import CrossAuthException
 from cross_auth.fastapi import CrossAuth
-from cross_auth.hooks import BeforeLoginEvent
-from tests.conftest import TEST_PASSWORD, MemorySessionRecord, MemorySessionStorage
+from cross_auth.hooks import AfterLoginEvent, BeforeLoginEvent
+from tests.conftest import TEST_PASSWORD, MemorySessionStorage
 
 from ..conftest import legacy_password_grant
 from .conftest import (
@@ -113,6 +114,16 @@ def _store_code_without_login_method(secondary_storage: SecondaryStorage) -> str
     return "old-code"
 
 
+def _capture_login(
+    auth: CrossAuth,
+) -> tuple[list[BeforeLoginEvent], list[AfterLoginEvent]]:
+    before: list[BeforeLoginEvent] = []
+    after: list[AfterLoginEvent] = []
+    auth.before("login")(before.append)
+    auth.after("login")(after.append)
+    return before, after
+
+
 @pytest.fixture
 def issued() -> list[TokenIssueRequest]:
     return []
@@ -136,32 +147,35 @@ def issuer_auth(build_auth, issued: list[TokenIssueRequest]) -> CrossAuth:
 def test_browser_login_records_the_provider(
     auth: CrossAuth, session_storage: MemorySessionStorage
 ):
+    before, after = _capture_login(auth)
+
     with _client(auth) as client:
         resp = _browser_login(client)
 
     assert resp.status_code == 302
     (record,) = session_storage.records.values()
     assert record.login_method == "fake"
+    assert [event.login_method for event in before + after] == ["fake", "fake"]
 
 
 @respx.mock
-def test_login_hooks_see_and_can_override_the_login_method(
+def test_login_hooks_can_override_the_login_method(
     auth: CrossAuth, session_storage: MemorySessionStorage
 ):
-    seen: list[str | None] = []
+    _, after = _capture_login(auth)
 
     @auth.before("login")
     def rename(event: BeforeLoginEvent) -> BeforeLoginEvent:
-        assert event.metadata is not None
-        seen.append(event.metadata.get("login_method"))
-        return replace(event, metadata={**event.metadata, "login_method": "sso"})
+        assert event.login_method == "fake"
+        return replace(event, login_method="sso")
 
     with _client(auth) as client:
         _browser_login(client)
 
-    assert seen == ["fake"]
     (record,) = session_storage.records.values()
     assert record.login_method == "sso"
+    (after_event,) = after
+    assert after_event.login_method == "sso"
 
 
 @respx.mock
@@ -220,8 +234,14 @@ def test_token_issuer_reads_the_provider_from_the_authorization_code(
     issued: list[TokenIssueRequest],
     session_storage: MemorySessionStorage,
 ):
+    before, after = _capture_login(issuer_auth)
+
     with _client(issuer_auth) as client:
         resp = _redeem(client, _authorization_code(client))
+
+    (before_event,) = before
+    assert (before_event.login_method, before_event.metadata) == ("fake", None)
+    assert after[0].login_method == "fake"
 
     assert resp.status_code == 200
     (request,) = issued
@@ -256,18 +276,54 @@ def test_token_issuer_gets_none_for_an_older_authorization_code(
     assert request.login_method is None
 
 
+def test_token_issuer_gets_the_login_method_hooks_approved(
+    issuer_auth: CrossAuth, issued: list[TokenIssueRequest]
+):
+    _, after = _capture_login(issuer_auth)
+
+    @issuer_auth.before("login")
+    def rename(event: BeforeLoginEvent) -> BeforeLoginEvent:
+        return replace(event, login_method="legacy-password")
+
+    with _client(issuer_auth) as client:
+        resp = _password_grant(client)
+
+    assert resp.status_code == 200
+    (request,) = issued
+    assert request.login_method == "legacy-password"
+    (after_event,) = after
+    assert after_event.login_method == "legacy-password"
+
+
+@respx.mock
+def test_login_hooks_can_deny_a_login_method(
+    issuer_auth: CrossAuth, issued: list[TokenIssueRequest]
+):
+    @issuer_auth.before("login")
+    def no_passwords(event: BeforeLoginEvent) -> None:
+        if event.login_method == "password":
+            raise CrossAuthException("access_denied", "Sign in with a provider")
+
+    with _client(issuer_auth) as client:
+        denied = _password_grant(client)
+        allowed = _redeem(client, _authorization_code(client))
+
+    assert denied.status_code == 400
+    assert denied.json()["error"] == "access_denied"
+    assert allowed.status_code == 200
+    assert [request.login_method for request in issued] == ["fake"]
+
+
 # --- Sessions the application creates ----------------------------------------
 
 
-def test_application_sessions_take_login_method_from_metadata(
+def test_application_sessions_take_the_login_method_argument(
     auth: CrossAuth, session_storage: MemorySessionStorage
 ):
-    _, bearer = auth.issue_session_token("test", metadata={"login_method": "passkey"})
-    auth.login(
-        "test",
-        response=FastAPIResponse(),
-        metadata={"login_method": "password"},
-    )
+    before, _ = _capture_login(auth)
+
+    _, bearer = auth.issue_session_token("test", login_method="passkey")
+    auth.login("test", response=FastAPIResponse(), login_method="password")
     auth.issue_session_token("test")
 
     assert bearer.login_method == "passkey"
@@ -276,62 +332,4 @@ def test_application_sessions_take_login_method_from_metadata(
         "password",
         None,
     ]
-
-
-# --- Session storages written before login_method -----------------------------
-
-
-class StorageWithoutLoginMethod(MemorySessionStorage):
-    def create(  # ty: ignore[invalid-method-override]
-        self,
-        *,
-        token_hash: str,
-        user_id: Any,
-        created_at: datetime,
-        updated_at: datetime,
-        expires_at: datetime,
-        client_id: str | None = None,
-        client_name: str | None = None,
-        user_agent: str | None = None,
-        ip: str | None = None,
-        last_active_at: datetime | None = None,
-    ) -> MemorySessionRecord:
-        return super().create(
-            token_hash=token_hash,
-            user_id=user_id,
-            created_at=created_at,
-            updated_at=updated_at,
-            expires_at=expires_at,
-            client_id=client_id,
-            client_name=client_name,
-            user_agent=user_agent,
-            ip=ip,
-            last_active_at=last_active_at,
-        )
-
-
-class StorageWithKeywordArguments(MemorySessionStorage):
-    def create(self, **kwargs: Any) -> MemorySessionRecord:
-        return super().create(**kwargs)
-
-
-@pytest.mark.parametrize(
-    ("storage_class", "expected"),
-    [(StorageWithoutLoginMethod, None), (StorageWithKeywordArguments, "fake")],
-)
-@respx.mock
-def test_session_storage_create_without_login_method_keeps_working(
-    build_auth, storage_class: type[MemorySessionStorage], expected: str | None
-):
-    storage = storage_class()
-    auth = build_auth(session_storage=storage)
-
-    with _client(auth) as client:
-        resp = _browser_login(client)
-    auth.issue_session_token("test", metadata={"login_method": "password"})
-
-    assert resp.status_code == 302
-    assert [record.login_method for record in storage.records.values()] == [
-        expected,
-        None if expected is None else "password",
-    ]
+    assert [event.login_method for event in before] == ["passkey", "password", None]

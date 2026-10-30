@@ -3,6 +3,7 @@ native/SDK logins (Apple ASAuthorization, Google Credential Manager)."""
 
 import hashlib
 from dataclasses import replace
+from datetime import timedelta
 from typing import Any
 from unittest.mock import Mock
 
@@ -12,7 +13,12 @@ from sqlmodel import Session
 from cross_auth import AccountsStorage, SecondaryStorage
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.fastapi import CrossAuth
-from cross_auth.hooks import AfterOAuthIdTokenEvent, BeforeOAuthIdTokenEvent
+from cross_auth._session import get_session
+from cross_auth.hooks import (
+    AfterOAuthIdTokenEvent,
+    BeforeLoginEvent,
+    BeforeOAuthIdTokenEvent,
+)
 from cross_auth.social_providers.github import GitHubProvider
 from cross_auth.social_providers.oauth import OAuth2Exception
 from cross_auth.social_providers.oidc import OIDCProvider
@@ -124,12 +130,10 @@ def test_creates_user_with_normalized_email_and_no_tokens(
     assert again.id == user.id
 
 
-def test_session_records_the_provider_the_app_passes(
+def test_exchange_issues_a_session_that_records_the_provider(
     secondary_storage: SecondaryStorage,
     accounts_storage,
 ):
-    # id_token sign-in does not create a session; the app's
-    # issue_session_token call names the provider as the login method.
     provider = StubOIDCProvider(
         {"sub": "native-1", "email": "native@example.com", "email_verified": True}
     )
@@ -137,16 +141,41 @@ def test_session_records_the_provider_the_app_passes(
     auth = _make_auth(
         secondary_storage, accounts_storage, provider, session_storage=session_storage
     )
+    logins: list[BeforeLoginEvent] = []
+    auth.before("login")(logins.append)
 
-    user, _ = auth.sign_in_with_id_token("stub", VALID_TOKEN)
-    _, record = auth.issue_session_token(
-        str(user.id), metadata={"login_method": "stub"}
+    first = auth.exchange_id_token(
+        "stub", VALID_TOKEN, max_age=600, metadata={"client_name": "ios"}
     )
+    token, record, user, created = auth.exchange_id_token("stub", VALID_TOKEN)
 
-    assert record.login_method == "stub"
-    assert [stored.login_method for stored in session_storage.records.values()] == [
-        "stub"
-    ]
+    assert first.created is True
+    assert created is False
+    assert user.id == first.user.id
+    assert first.session_record.login_method == record.login_method == "stub"
+    assert first.session_record.client_name == "ios"
+    assert first.session_record.expires_at - first.session_record.created_at == (
+        timedelta(seconds=600)
+    )
+    assert [event.login_method for event in logins] == ["stub", "stub"]
+    assert [event.credential for event in logins] == ["bearer", "bearer"]
+    assert get_session(token, session_storage) == record
+
+
+def test_exchange_needs_session_storage_before_verifying(
+    secondary_storage: SecondaryStorage,
+    accounts_storage,
+):
+    provider = StubOIDCProvider(
+        {"sub": "native-1", "email": "native@example.com", "email_verified": True}
+    )
+    auth = _make_auth(secondary_storage, accounts_storage, provider)
+
+    with pytest.raises(RuntimeError, match="session_storage"):
+        auth.exchange_id_token("stub", VALID_TOKEN)
+
+    assert provider.validated_tokens == []
+    assert accounts_storage.find_user_by_email("native@example.com") is None
 
 
 def test_repeat_sign_in_works_with_tokenless_sqlmodel_storage(

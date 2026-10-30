@@ -305,7 +305,9 @@ Pass your session model to `SQLModelSessionStorage` — it implements every
 `SessionStorage` method, including keyset cursor pagination and status
 filtering. No storage subclass is needed unless you want to override behaviour.
 
-Inherit `SQLModelSession` to get the timestamps, client metadata, internal
+Inherit `SQLModelSession` to get the timestamps, client metadata, the
+`login_method` column (see
+[Login method](/docs/session-authentication#login-method)), internal
 `token_hash` column, and computed `status` property. Only the hash is stored,
 never the raw token. Define your own primary key and user ID column:
 
@@ -328,19 +330,15 @@ names, or timezone-aware types. The inherited `status` property delegates to
 `session_status`, so it agrees with the adapter's active/expired/revoked
 filters.
 
-`login_method` (how the session signed in, see
-[Login method](/docs/session-authentication#login-method)) is an optional
-column. Declare it to record it, and add the column with a migration:
+**Migration (0.42):** `SQLModelSession` gained a nullable `login_method` column.
+Add it to every session table before deploying, or every session read fails.
+Alembic's autogenerate picks it up; by hand:
 
 ```python
-class UserSession(SQLModelSession, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="user.id", index=True)
-    login_method: str | None = None
+op.add_column("usersession", sa.Column("login_method", sa.String(), nullable=True))
 ```
 
-Without the column the adapter does not write it and `record.login_method` is
-`None`, so tables created before it existed keep working without a migration.
+Existing rows keep `login_method = NULL`.
 
 **Migration:** existing tables must inherit the corresponding base instead of
 `SQLModel`. Existing field declarations can remain as overrides; this
@@ -830,12 +828,8 @@ class SessionStorage(Protocol):
 Both storage protocols use `on_commit` as described in
 [Commit callbacks](#commit-callbacks).
 
-Store `login_method` and return it on the record to support
-[Login method](/docs/session-authentication#login-method). Cross-Auth passes it
-only when `create` accepts a `login_method` argument (or `**kwargs`), so an
-adapter written before it existed keeps working and records nothing. Type
-checkers flag such an adapter against the protocol until it accepts the argument
-and its records have a `login_method` attribute.
+Cross-Auth always passes `login_method` to `create`; store it and return it on
+the record (see [Login method](/docs/session-authentication#login-method)).
 
 `refresh` must atomically update only a session whose `revoked_at` is null and
 whose current `expires_at` is at or after the supplied `updated_at`. This

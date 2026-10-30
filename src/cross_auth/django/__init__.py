@@ -7,3 +7,7 @@ passwords, permissions, sessions, login, and logout.
 This package does not import models at import time, so settings modules can
 import Cross Auth providers before Django's app registry is ready.
 """
+
+from ._login_method import get_login_method
+
+__all__ = ["get_login_method"]

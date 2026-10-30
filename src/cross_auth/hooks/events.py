@@ -106,11 +106,14 @@ class BeforeLoginEvent:
     login by raising but cannot change who is logged in. ``max_age`` and
     ``metadata`` describe the Cross Auth session that will be created and may
     be adjusted; both are ``None`` when an application ``token_issuer`` or the
-    web framework (``django_session``) creates the credential. Its
-    ``login_method`` says how the user signed in: the provider id after an
-    OAuth callback or authorization code, ``"password"`` for the password
-    grant, or what the application passed. ``response`` is the HTTP response of
-    a browser login and ``None`` for bearer logins.
+    web framework (``django_session``) creates the credential. ``response`` is
+    the HTTP response of a browser login and ``None`` for bearer logins.
+
+    ``login_method`` says how the user signed in: a provider's id, ``"password"``
+    for the password grant, or what the application passed. It is set on every
+    login, and a hook may replace it. The approved value is stored on the
+    session, passed to a ``token_issuer`` as ``TokenIssueRequest.login_method``,
+    or stored in the Django session.
     """
 
     user_id: str
@@ -118,16 +121,19 @@ class BeforeLoginEvent:
     max_age: int | None
     metadata: SessionMetadata | None
     response: Response | None = None
+    login_method: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class AfterLoginEvent:
     # The raw token is deliberately not exposed to hooks. ``session_record`` is
     # ``None`` when a ``token_issuer`` or the web framework created it.
+    # ``login_method`` is the value the before hooks approved.
     user_id: str
     credential: LoginCredential
     session_record: SessionRecord | None
     response: Response | None = None
+    login_method: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

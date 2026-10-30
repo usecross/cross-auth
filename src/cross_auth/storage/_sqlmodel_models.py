@@ -9,12 +9,7 @@ from cross_auth._storage import SessionStatus, session_status
 
 
 class SQLModelSession(SQLModel):
-    """Session fields; subclasses declare their primary key and user ID column.
-
-    ``login_method`` is optional: declare ``login_method: str | None = None`` on
-    the table to record how each session signed in. Without that column it
-    reads as ``None`` and the storage doesn't write it.
-    """
+    """Session fields; subclasses declare their primary key and user ID column."""
 
     # IDs belong to the application's schema. Declaring them only for typing
     # avoids imposing a SQL type, primary-key strategy, or foreign-key target.
@@ -22,17 +17,6 @@ class SQLModelSession(SQLModel):
     if TYPE_CHECKING:
         id: Any
         user_id: Any
-
-        @property
-        def login_method(self) -> str | None: ...
-
-    else:
-        # Not a base column, so tables created before it existed keep working
-        # without a migration; a subclass column takes precedence over this.
-        def __getattr__(self, name: str) -> Any:
-            if name == "login_method":
-                return None
-            return super().__getattr__(name)
 
     token_hash: str = Field(index=True)
     created_at: datetime
@@ -44,6 +28,7 @@ class SQLModelSession(SQLModel):
     client_name: str | None = None
     user_agent: str | None = None
     ip: str | None = None
+    login_method: str | None = None
 
     @property
     def status(self) -> SessionStatus:

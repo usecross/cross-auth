@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from dataclasses import replace
 
 from cross_web import HTTPRequest
 
@@ -80,6 +81,8 @@ class Context:
         self,
         user_id: str,
         metadata: SessionMetadata | None = None,
+        *,
+        login_method: str | None = None,
     ) -> tuple[str, SessionRecord]:
         session_storage = self.session_storage
         if session_storage is None:
@@ -92,6 +95,7 @@ class Context:
             max_age=resolved["max_age"],
             metadata=metadata,
             token_hasher=resolved["token_hasher"],
+            login_method=login_method,
         )
 
     def issue_token(self, request: TokenIssueRequest) -> tuple[str, int]:
@@ -108,9 +112,14 @@ class Context:
                     credential="bearer",
                     max_age=None,
                     metadata=None,
+                    login_method=request.login_method,
                 ),
                 hooks=self.hooks,
-                issue=lambda _event: (token_issuer(request), None),
+                # The issuer sees the login_method the before hooks approved.
+                issue=lambda event: (
+                    token_issuer(replace(request, login_method=event.login_method)),
+                    None,
+                ),
                 # A token_issuer's successful return is its commit point; core
                 # cannot see any transaction behind it.
                 on_commit=run_now,
@@ -131,8 +140,8 @@ class Context:
             metadata={
                 "client_id": request.client_id,
                 "user_agent": _get_header(request.http_request.headers, "user-agent"),
-                "login_method": request.login_method,
             },
+            login_method=request.login_method,
         )
         return session_token, expires_in
 

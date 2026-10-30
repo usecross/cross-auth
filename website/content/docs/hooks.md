@@ -175,6 +175,7 @@ knows which user is being signed in:
 | ----------------------------------------------- | ------------ | ------------------------------------------------- |
 | Browser OAuth session callback, `auth.login()`  | `"cookie"`   | A session and its cookie on `response`            |
 | `auth.issue_session_token()`                    | `"bearer"`   | A session; its token is returned to your code     |
+| `auth.exchange_id_token()`                      | `"bearer"`   | A session; its token is returned to your code     |
 | `/token` password and authorization-code grants | `"bearer"`   | A session, or the token your `token_issuer` mints |
 
 For `/token`, the `login` hooks run inside the `token.password` or
@@ -183,29 +184,32 @@ callback is not a login; redeeming it at `/token` is. Verifying a native
 `id_token` (`sign_in_with_id_token`), connecting or linking an account, and
 refreshing a sliding session are not logins either.
 
-`BeforeLoginEvent` carries `user_id`, `credential`, `max_age`, `metadata`, and
-`response`. A `before` hook can deny the login by raising, or return an updated
-event to change `max_age`, `metadata`, or the cookie login `response`. It cannot
-change who logs in: returning a different `user_id` (or `credential`, or
-adding/removing `response`) raises `ValueError` and nothing is issued. When a
-`token_issuer` mints the credential, Cross-Auth creates no session: `max_age`
-and `metadata` are `None`, and setting either raises `ValueError` because
-Cross-Auth cannot apply them. Your issuer decides its token's lifetime and
-claims; the hooks can still deny the login before the issuer is called.
+`BeforeLoginEvent` carries `user_id`, `credential`, `login_method`, `max_age`,
+`metadata`, and `response`. A `before` hook can deny the login by raising, or
+return an updated event to change `login_method`, `max_age`, `metadata`, or the
+cookie login `response`. It cannot change who logs in: returning a different
+`user_id` (or `credential`, or adding/removing `response`) raises `ValueError`
+and nothing is issued. When a `token_issuer` mints the credential, Cross-Auth
+creates no session: `max_age` and `metadata` are `None`, and setting either
+raises `ValueError` because Cross-Auth cannot apply them. Your issuer decides
+its token's lifetime and claims; the hooks can still deny the login before the
+issuer is called.
 
-`metadata["login_method"]` says how the user signed in: the provider id for a
-browser OAuth sign-in or an authorization code, `"password"` for the password
-grant, or what your code passed to `auth.login()` or
-`auth.issue_session_token()`. A `before` hook can replace it to change what the
-session records. A `token_issuer` reads it from `TokenIssueRequest.login_method`
-instead.
+`login_method` says how the user signed in: the provider id for a browser OAuth
+sign-in, an authorization code or `exchange_id_token`, `"password"` for the
+password grant, or what your code passed to `auth.login()` or
+`auth.issue_session_token()` (`None` if nothing). It is set on every login,
+including those a `token_issuer` mints. The value a `before` hook approves is
+what the session records, or what the issuer receives as
+`TokenIssueRequest.login_method`, and what `AfterLoginEvent.login_method`
+reports.
 
-`AfterLoginEvent` carries `user_id`, `credential`, `response` (cookie logins
-only), and `session_record`, which is `None` when a `token_issuer` minted the
-credential. The raw session token is never exposed to hooks. It runs once the
-session storage commits the new session, or as soon as your `token_issuer`
-returns: Cross-Auth cannot see a transaction inside the issuer, so an issuer
-that stores tokens must commit before returning.
+`AfterLoginEvent` carries `user_id`, `credential`, `login_method`, `response`
+(cookie logins only), and `session_record`, which is `None` when a
+`token_issuer` minted the credential. The raw session token is never exposed to
+hooks. It runs once the session storage commits the new session, or as soon as
+your `token_issuer` returns: Cross-Auth cannot see a transaction inside the
+issuer, so an issuer that stores tokens must commit before returning.
 
 ```python
 from dataclasses import replace
@@ -217,6 +221,8 @@ from cross_auth.hooks import AfterLoginEvent, BeforeLoginEvent
 def apply_login_policy(event: BeforeLoginEvent) -> BeforeLoginEvent | None:
     if event.user_id in suspended_users:
         raise CrossAuthException("access_denied", "Account suspended", 403)
+    if event.login_method == "password" and event.user_id in sso_only_users:
+        raise CrossAuthException("access_denied", "Sign in with SSO", 403)
     if event.max_age is not None and event.max_age > MAX_SESSION_TTL:
         return replace(event, max_age=MAX_SESSION_TTL)
     return None
@@ -229,7 +235,10 @@ def audit_login(event: AfterLoginEvent) -> None:
             **(event.response.headers or {}),
             "X-Session-User": event.user_id,
         }
-    metrics.increment("login", tags={"credential": event.credential})
+    metrics.increment(
+        "login",
+        tags={"credential": event.credential, "method": event.login_method},
+    )
 ```
 
 ### `logout`

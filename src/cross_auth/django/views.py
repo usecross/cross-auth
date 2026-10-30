@@ -57,6 +57,7 @@ from cross_auth.hooks import (
 from cross_auth.social_providers.oauth import OAuth2Provider, ValidatedUserInfo
 
 from . import models, signals
+from ._login_method import LOGIN_METHOD_SESSION_KEY
 from .backends import CrossAuthBackend
 from .conf import get_settings
 from .storage import DjangoAccountsStorage, DjangoSecondaryStorage, DjangoUser
@@ -256,7 +257,9 @@ class DjangoLogin:
     def on_commit(self, callback: CommitCallback) -> None:
         transaction.on_commit(callback, using=self.alias, robust=False)
 
-    def login(self, user: User, *, response: CrossWebResponse) -> CrossWebResponse:
+    def login(
+        self, user: User, *, response: CrossWebResponse, login_method: str
+    ) -> CrossWebResponse:
         if not isinstance(user, DjangoUser):
             raise TypeError("DjangoLogin needs users from DjangoAccountsStorage")
         native = user.native
@@ -272,6 +275,8 @@ class DjangoLogin:
         def issue(event: BeforeLoginEvent) -> tuple[CrossWebResponse, None]:
             assert event.response is not None
             django_login(self.request, native, backend=BACKEND)
+            if event.login_method is not None:
+                self.session[LOGIN_METHOD_SESSION_KEY] = event.login_method
             # Persist the rotated session now, so after_login receivers see a
             # login that is stored rather than one waiting for SessionMiddleware.
             self.session.save()
@@ -284,6 +289,7 @@ class DjangoLogin:
                 max_age=None,
                 metadata=None,
                 response=response,
+                login_method=login_method,
             ),
             hooks=self.bridge.login_hooks(user),
             issue=issue,

@@ -198,14 +198,7 @@ class SessionStorage(Protocol):
         ip: str | None = None,
         last_active_at: AwareDatetime | None = None,
         login_method: str | None = None,
-    ) -> SessionRecord:
-        """Store a new session.
-
-        Core passes ``login_method`` only to adapters whose ``create`` accepts
-        it (or ``**kwargs``), so adapters written before it existed keep working
-        and don't record it.
-        """
-        ...
+    ) -> SessionRecord: ...
 
     def get(
         self,

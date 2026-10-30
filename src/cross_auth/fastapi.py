@@ -7,6 +7,7 @@ from typing import (
     Any,
     Concatenate,
     Literal,
+    NamedTuple,
     ParamSpec,
     Protocol,
     TypeVar,
@@ -141,6 +142,15 @@ class _SocialAccountDecorator(
 # as they resolve; the middleware serializes them onto the outgoing response.
 _COOKIE_SINK_STATE_KEY = "cross_auth_cookie_sink"
 _ROLLED_COOKIES_STATE_KEY = "cross_auth_rolled_cookies"
+
+
+class IdTokenSession(NamedTuple):
+    """The session ``CrossAuth.exchange_id_token`` issued, and its user."""
+
+    token: str
+    session_record: SessionRecord
+    user: User
+    created: bool
 
 
 class CrossAuth:
@@ -358,9 +368,9 @@ class CrossAuth:
         is validated against the provider's JWKS, then the user is found or
         created by the same core the web callback uses — normalized email
         lookup, the auto-link policy gate, and the accounts-storage signup
-        hooks. Returns ``(user, created)``; pair it with
-        ``issue_session_token`` to hand the client a bearer token, passing
-        ``metadata={"login_method": provider}`` to record how it signed in.
+        hooks. Returns ``(user, created)`` and starts no session: use
+        ``exchange_id_token`` to also hand the client a bearer token, or this
+        method when the application mints its own credential.
 
         If the identity belongs to an existing social account with
         ``is_login_method=False``, raises ``CrossAuthException`` with
@@ -390,6 +400,46 @@ class CrossAuth:
             nonce=nonce,
         )
         return resolved_user.user, resolved_user.created
+
+    def exchange_id_token(
+        self,
+        provider: str,
+        id_token: str,
+        *,
+        user_info: dict[str, Any] | None = None,
+        nonce: str | None = None,
+        max_age: int | None = None,
+        metadata: SessionMetadata | None = None,
+    ) -> IdTokenSession:
+        """Sign in with a provider ``id_token`` and issue a bearer session.
+
+        ``sign_in_with_id_token`` followed by ``issue_session_token``, for a
+        native app that sends the token to your API: the user is found or
+        created exactly as there, then the ``login`` hooks run around a new
+        session whose ``login_method`` is ``provider``. ``max_age`` and
+        ``metadata`` are as for ``issue_session_token``. Returns the bearer
+        token, the session record, the user and whether it was just created.
+        """
+        session_storage = self._require_session_storage()
+        resolved_user, _ = _sign_in_with_id_token(
+            context=self._context,
+            providers=self._setup.providers_by_id,
+            provider=provider,
+            id_token=id_token,
+            user_info=user_info,
+            nonce=nonce,
+        )
+        user = resolved_user.user
+        token, record, _ = issue_bearer_session(
+            str(user.id),
+            hooks=self._context.hooks,
+            session_storage=session_storage,
+            session_config=self._context.session_config,
+            max_age=max_age,
+            metadata=metadata,
+            login_method=provider,
+        )
+        return IdTokenSession(token, record, user, resolved_user.created)
 
     def authenticate(self, email: str, password: str) -> User | None:
         event = self._context.hooks.run_before(
@@ -646,6 +696,7 @@ class CrossAuth:
         *,
         max_age: int | None = None,
         metadata: SessionMetadata | None = None,
+        login_method: str | None = None,
     ) -> tuple[str, SessionRecord]:
         """Create a session and return its bearer token with the record.
 
@@ -657,8 +708,8 @@ class CrossAuth:
         session lifetime (e.g. longer-lived mobile sessions than browser
         cookies). No cookie is set; the ``login`` hooks run around the
         creation with ``credential="bearer"``, and the raw token is never
-        exposed to them. ``metadata["login_method"]`` records how the user
-        signed in, e.g. ``"password"`` after ``authenticate()``.
+        exposed to them. ``login_method`` records how the user signed in, e.g.
+        ``"password"`` after ``authenticate()``.
         """
         token, record, _ = issue_bearer_session(
             user_id,
@@ -667,6 +718,7 @@ class CrossAuth:
             session_config=self._context.session_config,
             max_age=max_age,
             metadata=metadata,
+            login_method=login_method,
         )
         return token, record
 
@@ -676,6 +728,7 @@ class CrossAuth:
         *,
         response: FastAPIResponse,
         metadata: SessionMetadata | None = None,
+        login_method: str | None = None,
     ) -> None:
         session_storage = self._require_session_storage()
         hook_response = login_with_session(
@@ -685,6 +738,7 @@ class CrossAuth:
             session_storage=session_storage,
             session_config=self._context.session_config,
             metadata=metadata,
+            login_method=login_method,
         )
         self._apply_hook_response(hook_response, response)
 

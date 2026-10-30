@@ -167,8 +167,6 @@ class User(SQLModelUser, table=True):
 class SessionRecord(SQLModelSession, table=True):
     id: int | None = Field(default=None, primary_key=True)
     user_id: str = Field(index=True)
-    # Optional column: how each session signed in ("password", "github", ...).
-    login_method: str | None = None
 
 
 # In-memory SQLite. StaticPool keeps a single shared connection (a fresh
@@ -601,10 +599,8 @@ def login(
     auth.login(
         str(user.id),
         response=response,
-        metadata={
-            "user_agent": request.headers.get("User-Agent"),
-            "login_method": "password",
-        },
+        metadata={"user_agent": request.headers.get("User-Agent")},
+        login_method="password",
     )
     return response
 

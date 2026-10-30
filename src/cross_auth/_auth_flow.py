@@ -1706,7 +1706,14 @@ def _complete_session(
 ) -> Response:
     next_url = auth_request.next_url or context.default_next_url
     if login is not None:
-        return cast(Response, login.login(user, response=Response.redirect(next_url)))
+        return cast(
+            Response,
+            login.login(
+                user,
+                response=Response.redirect(next_url),
+                login_method=auth_request.provider_id,
+            ),
+        )
 
     if not context.cookie_auth_enabled:
         return Response.error(
@@ -1727,10 +1734,8 @@ def _complete_session(
         hooks=context.hooks,
         session_storage=session_storage,
         session_config=context.session_config,
-        metadata={
-            "user_agent": _get_header(request.headers, "user-agent"),
-            "login_method": auth_request.provider_id,
-        },
+        metadata={"user_agent": _get_header(request.headers, "user-agent")},
+        login_method=auth_request.provider_id,
     )
     return cast(Response, response)
 
