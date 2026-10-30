@@ -718,27 +718,39 @@ a user out everywhere.
 
 ### Behind a proxy
 
-The `ip` column is the request's `REMOTE_ADDR`. Behind a load balancer or
-reverse proxy, that is the proxy's address. Cross Auth never reads
-`X-Forwarded-For` itself, because clients can send that header too. If your
-proxy sets it, have your server use it (for example
-`uvicorn --proxy-headers --forwarded-allow-ips=...`), or copy the address your
-proxy added into `REMOTE_ADDR` in a middleware listed before Cross Auth's
-`SessionMiddleware`:
+`ip` is always `request.META["REMOTE_ADDR"]`: the address that opened the
+connection to your server. Django has no setting for trusted proxies, and Cross
+Auth does not read `X-Forwarded-For`, because any client can send that header
+with whatever address it likes. Behind a reverse proxy or load balancer, every
+session therefore records the proxy's address until your deployment passes the
+client's address on. There are two right fixes:
 
-```python
-# core/middleware.py
-def client_ip(get_response):
-    def middleware(request):
-        # Only behind exactly one proxy that always sets this header: the last
-        # address is the one it added; the others came from the client.
-        forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
-        if forwarded:
-            request.META["REMOTE_ADDR"] = forwarded.rsplit(",", 1)[-1].strip()
-        return get_response(request)
+- **Configure the server** to set `REMOTE_ADDR` from your proxies' headers.
+  uvicorn does this with `--proxy-headers --forwarded-allow-ips=<your proxies>`,
+  and so do gunicorn's uvicorn workers with gunicorn's `--forwarded-allow-ips`.
+  Gunicorn's own workers always keep the proxy's address in `REMOTE_ADDR`; their
+  `--forwarded-allow-ips` only decides which proxies' `X-Forwarded-*` headers
+  they trust, such as the scheme. When nginx itself sits behind a load balancer,
+  `set_real_ip_from` and `real_ip_header` make nginx see the client, and pass
+  the right address on in `X-Forwarded-For`.
+- **Or use [django-ipware](https://github.com/adamchainz/django-ipware)** in a
+  small middleware listed before Cross Auth's `SessionMiddleware`:
 
-    return middleware
-```
+  ```python
+  # core/middleware.py
+  from ipware import get_client_ip
+
+
+  def client_ip(get_response):
+      def middleware(request):
+          # Your proxies' addresses: only their headers are believed.
+          ip, _ = get_client_ip(request, proxy_trusted_ips=["10.0.0.2"])
+          if ip is not None:
+              request.META["REMOTE_ADDR"] = ip
+          return get_response(request)
+
+      return middleware
+  ```
 
 ### Limitations
 
