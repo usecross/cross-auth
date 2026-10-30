@@ -56,6 +56,8 @@ auth = CrossAuth(
 # Authenticate + login: creates session + sets cookie on the response
 async def login_endpoint(email: str, password: str):
     user = auth.authenticate(email, password)
+    if user is None:
+        return JSONResponse({"error": "Invalid email or password"}, status_code=401)
     response = JSONResponse({"user": user.id})
     auth.login(str(user.id), response=response)
     return response

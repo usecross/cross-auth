@@ -624,6 +624,17 @@ The flows send them in this order:
   sign-up rolls back the new user too. Refusing in `before_login` on a first
   sign-in leaves the new user in place; refuse sign-ups in `before_user_create`
   instead, or a Google account before anything is written in `before_callback`.
+- **Refusing a provider.** Like every signal, `before_login` gets `provider`, so
+  it can stop sign-ins with a provider you no longer accept while leaving users
+  and their connections in place:
+
+  ```python
+  @receiver(before_login)
+  def retired_providers(sender, provider, **kwargs):
+      if provider in RETIRED_PROVIDERS:
+          raise PermissionDenied("Sign in with your password instead.")
+  ```
+
 - **Before the callback is verified** nothing is sent, so `before_callback` and
   the signals after it never see an unverified Google response. A denied
   consent, an expired or replayed callback, another browser's callback, or an

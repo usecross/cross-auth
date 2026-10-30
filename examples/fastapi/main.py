@@ -279,6 +279,7 @@ def serialize_session(
         "client_name": record.client_name,
         "user_agent": record.user_agent,
         "ip": record.ip,
+        "login_method": record.login_method,
         # Int PK vs. the string id resolved from the cookie — compare as strings.
         "current": str(record.id) == current_session_id,
     }
@@ -599,6 +600,7 @@ def login(
         str(user.id),
         response=response,
         metadata={"user_agent": request.headers.get("User-Agent")},
+        login_method="password",
     )
     return response
 

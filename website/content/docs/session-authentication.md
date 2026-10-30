@@ -259,6 +259,49 @@ handlers cover cookie logins, `/token` grants, and this path.
 Because bearer tokens are session records, they are revocable with the same
 session-management APIs. Cross-Auth does not issue JWT access tokens by default.
 
+### Login method
+
+A session's `login_method` records how the user signed in: `"password"`, or a
+social provider's id such as `"github"` or `"google"`. Use it to show "Signed in
+with GitHub" next to each session in a session list.
+
+Cross-Auth sets it on the sessions it creates:
+
+| Sign-in                                     | `login_method`                  |
+| ------------------------------------------- | ------------------------------- |
+| Browser sign-in through `/{provider}/login` | The provider id                 |
+| `/token` authorization code grant           | The provider the code came from |
+| `/token` password grant (deprecated)        | `"password"`                    |
+| `auth.sign_in_with_id_token(provider, ...)` | `provider`                      |
+
+For sessions your code creates, pass `login_method`. The value is free-form, so
+you can also use your own, such as `"passkey"`:
+
+```python
+user = auth.authenticate(email, password)
+if user is None:
+    raise HTTPException(status_code=401, detail="Invalid email or password")
+auth.login(str(user.id), response=response, login_method="password")
+
+token, record = auth.issue_session_token(str(user.id), login_method="passkey")
+```
+
+For a native app that sends a provider `id_token`, `sign_in_with_id_token` signs
+the user in and issues the bearer session in one call, recording the provider
+(see Native Sign-In in [Social Providers](/docs/social-providers)):
+
+```python
+token, record, user, created = auth.sign_in_with_id_token(
+    "apple", id_token, nonce=nonce, metadata={"client_name": "ios"}
+)
+# record.login_method == "apple"
+```
+
+Read the value back as `record.login_method`; it is `None` for sessions created
+before Cross-Auth recorded it. Every `login` hook event carries it as
+`event.login_method`, and a `before` hook can replace it (see
+[`login`](/docs/hooks#login)).
+
 ### Cookie Helpers
 
 Cross-Auth provides helpers to create properly configured session cookies:

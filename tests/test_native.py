@@ -14,7 +14,7 @@ import pytest
 
 from cross_auth import SecondaryStorage
 from cross_auth._context import Context
-from cross_auth._native import sign_in_with_id_token
+from cross_auth._native import resolve_id_token_user
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.hooks._types import HookEventName
 from cross_auth.social_providers.github import GitHubProvider
@@ -40,7 +40,7 @@ class StubOIDCProvider(OIDCProvider):
 
 
 def _sign_in(context: Context, provider: OIDCProvider, **kwargs: Any):
-    return sign_in_with_id_token(
+    return resolve_id_token_user(
         context=context,
         providers={provider.id: provider},
         provider=provider.id,
@@ -224,7 +224,7 @@ def test_rejects_unknown_and_non_oidc_providers(context: Context):
 
     for name in ("missing", "github"):
         with pytest.raises(CrossAuthException) as excinfo:
-            sign_in_with_id_token(
+            resolve_id_token_user(
                 context=context,
                 providers={"github": github},
                 provider=name,
@@ -256,7 +256,7 @@ _IMPORT_ISOLATION_SCRIPT = textwrap.dedent(
     from cross_web import HTTPRequest, Response
     from cross_auth._login import issue_bearer_session, login_with_session
     from cross_auth._tokens import TokenIssueRequest
-    from cross_auth._native import sign_in_with_id_token
+    from cross_auth._native import resolve_id_token_user
     from cross_auth._setup import build_auth_setup
     from cross_auth import OAuthServer
     from tests.conftest import (
@@ -276,7 +276,7 @@ _IMPORT_ISOLATION_SCRIPT = textwrap.dedent(
         get_user_from_request=lambda request: None,
         oauth_server=OAuthServer(),
     )
-    user, _ = sign_in_with_id_token(
+    user, _ = resolve_id_token_user(
         context=setup.context,
         providers=setup.providers_by_id,
         provider=provider.id,

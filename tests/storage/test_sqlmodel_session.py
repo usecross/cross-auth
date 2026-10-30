@@ -538,6 +538,7 @@ def test_model_missing_status_property_raises_at_construction(engine):
         client_name = None
         user_agent = None
         ip = None
+        login_method = None
 
     class BadStore(SQLModelSessionStorage):
         SessionModel = NoStatusSession
@@ -638,3 +639,16 @@ def test_timezone_aware_columns_round_trip(engine):
     assert fetched.created_at == NOW
     assert fetched.expires_at == expires
     assert fetched.created_at.tzinfo is not None
+
+
+def test_login_method_is_stored_and_read_back(store):
+    session_storage = cast(SessionStorage, store)
+
+    token, created = create_session("u1", session_storage, login_method="github")
+
+    assert created.login_method == "github"
+    session = get_session(token, session_storage)
+    assert session is not None
+    assert session.login_method == "github"
+    (listed,) = store.list_for_user("u1", now=datetime.now(tz=timezone.utc)).records
+    assert listed.login_method == "github"

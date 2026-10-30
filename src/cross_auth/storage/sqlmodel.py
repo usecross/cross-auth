@@ -401,6 +401,7 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
                 "client_name",
                 "user_agent",
                 "ip",
+                "login_method",
                 "status",
             ),
         ),
@@ -419,6 +420,7 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
         user_agent: str | None = None,
         ip: str | None = None,
         last_active_at: datetime | None = None,
+        login_method: str | None = None,
     ) -> SessionModelT:
         model = self.SessionModel
         coerced_user_id = _coerce_id(model, "user_id", user_id)
@@ -434,6 +436,7 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
             user_agent=user_agent,
             ip=ip,
             last_active_at=_bind_datetime(model, "last_active_at", last_active_at),
+            login_method=login_method,
         )
         with self._open_session() as session:
             session.add(record)

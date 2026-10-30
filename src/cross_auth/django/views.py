@@ -256,7 +256,9 @@ class DjangoLogin:
     def on_commit(self, callback: CommitCallback) -> None:
         transaction.on_commit(callback, using=self.alias, robust=False)
 
-    def login(self, user: User, *, response: CrossWebResponse) -> CrossWebResponse:
+    def login(
+        self, user: User, *, response: CrossWebResponse, login_method: str
+    ) -> CrossWebResponse:
         if not isinstance(user, DjangoUser):
             raise TypeError("DjangoLogin needs users from DjangoAccountsStorage")
         native = user.native
@@ -284,6 +286,7 @@ class DjangoLogin:
                 max_age=None,
                 metadata=None,
                 response=response,
+                login_method=login_method,
             ),
             hooks=self.bridge.login_hooks(user),
             issue=issue,

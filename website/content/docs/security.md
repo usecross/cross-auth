@@ -10,8 +10,9 @@ section: Guides
 
 Cross-Auth does not install general CSRF protection or rate limiting. Apply both
 at your application's HTTP boundary, including routes you write around
-`authenticate()`, `sign_in_with_id_token()`, `login()`, `logout()`, and session
-revocation. `SessionCookieMiddleware` only delivers refreshed session cookies.
+`authenticate()`, `sign_in_with_id_token()`, `resolve_id_token_user()`,
+`login()`, `logout()`, and session revocation. `SessionCookieMiddleware` only
+delivers refreshed session cookies.
 
 Browser OAuth callbacks have their own protection: expiring, single-use state,
 an initiating-browser binding cookie, provider binding, PKCE where supported,

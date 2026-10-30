@@ -1,8 +1,13 @@
-"""sign_in_with_id_token: the headless sibling of the OAuth callback for
-native/SDK logins (Apple ASAuthorization, Google Credential Manager)."""
+"""Native/SDK id_token sign-in (Apple ASAuthorization, Google Credential
+Manager), the headless sibling of the OAuth callback.
+
+``sign_in_with_id_token`` verifies the token, resolves the user and issues a
+bearer session; ``resolve_id_token_user`` stops at the user. Most tests cover
+the shared resolution through ``resolve_id_token_user``."""
 
 import hashlib
 from dataclasses import replace
+from datetime import timedelta
 from typing import Any
 from unittest.mock import Mock
 
@@ -12,11 +17,18 @@ from sqlmodel import Session
 from cross_auth import AccountsStorage, SecondaryStorage
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.fastapi import CrossAuth
-from cross_auth.hooks import AfterOAuthIdTokenEvent, BeforeOAuthIdTokenEvent
+from cross_auth._session import get_session
+from cross_auth.hooks import (
+    AfterOAuthIdTokenEvent,
+    BeforeLoginEvent,
+    BeforeOAuthIdTokenEvent,
+)
 from cross_auth.social_providers.github import GitHubProvider
 from cross_auth.social_providers.oauth import OAuth2Exception
 from cross_auth.social_providers.oidc import OIDCProvider
 
+from ..conftest import MemorySessionStorage
+from ..router.test_commit_callbacks import TransactionalAccountsStorage
 from ..storage.conftest import make_sqlite_engine
 from ..storage.models import LeanAccountsStore
 
@@ -53,7 +65,7 @@ def test_connected_account_cannot_sign_in(
         seen_after.append(event)
 
     with pytest.raises(CrossAuthException, match="^access_denied$"):
-        auth.sign_in_with_id_token("stub", VALID_TOKEN)
+        auth.resolve_id_token_user("stub", VALID_TOKEN)
 
     update.assert_not_called()
     assert not seen_after
@@ -102,7 +114,7 @@ def test_creates_user_with_normalized_email_and_no_tokens(
     )
     auth = _make_auth(secondary_storage, accounts_storage, provider)
 
-    user, created = auth.sign_in_with_id_token("stub", VALID_TOKEN)
+    user, created = auth.resolve_id_token_user("stub", VALID_TOKEN)
 
     assert created is True
     assert provider.validated_tokens == [VALID_TOKEN]
@@ -118,9 +130,100 @@ def test_creates_user_with_normalized_email_and_no_tokens(
     assert account.refresh_token is None
 
     # Same token again: existing social account resolves to the same user.
-    again, created_again = auth.sign_in_with_id_token("stub", VALID_TOKEN)
+    again, created_again = auth.resolve_id_token_user("stub", VALID_TOKEN)
     assert created_again is False
     assert again.id == user.id
+
+
+def test_sign_in_issues_a_session_that_records_the_provider(
+    secondary_storage: SecondaryStorage,
+    accounts_storage,
+):
+    provider = StubOIDCProvider(
+        {"sub": "native-1", "email": "native@example.com", "email_verified": True}
+    )
+    session_storage = MemorySessionStorage()
+    auth = _make_auth(
+        secondary_storage, accounts_storage, provider, session_storage=session_storage
+    )
+    logins: list[BeforeLoginEvent] = []
+    auth.before("login")(logins.append)
+
+    first = auth.sign_in_with_id_token(
+        "stub", VALID_TOKEN, max_age=600, metadata={"client_name": "ios"}
+    )
+    token, record, user, created = auth.sign_in_with_id_token("stub", VALID_TOKEN)
+
+    assert first.created is True
+    assert created is False
+    assert user.id == first.user.id
+    assert first.session_record.login_method == record.login_method == "stub"
+    assert first.session_record.client_name == "ios"
+    assert first.session_record.expires_at - first.session_record.created_at == (
+        timedelta(seconds=600)
+    )
+    assert [event.login_method for event in logins] == ["stub", "stub"]
+    assert [event.credential for event in logins] == ["bearer", "bearer"]
+    assert get_session(token, session_storage) == record
+
+
+def test_sign_in_needs_session_storage_before_verifying(
+    secondary_storage: SecondaryStorage,
+    accounts_storage,
+):
+    provider = StubOIDCProvider(
+        {"sub": "native-1", "email": "native@example.com", "email_verified": True}
+    )
+    auth = _make_auth(secondary_storage, accounts_storage, provider)
+
+    with pytest.raises(RuntimeError, match="session_storage"):
+        auth.sign_in_with_id_token("stub", VALID_TOKEN)
+
+    assert provider.validated_tokens == []
+    assert accounts_storage.find_user_by_email("native@example.com") is None
+
+
+def test_sign_in_refuses_while_account_changes_are_uncommitted(
+    secondary_storage: SecondaryStorage, test_password_hash: str
+):
+    # Like the browser callback: a session must not outlive a user that the
+    # application's transaction could still roll back.
+    accounts = TransactionalAccountsStorage(test_password_hash)
+    provider = StubOIDCProvider(
+        {"sub": "native-1", "email": "native@example.com", "email_verified": True}
+    )
+    session_storage = MemorySessionStorage()
+    auth = _make_auth(
+        secondary_storage, accounts, provider, session_storage=session_storage
+    )
+
+    with pytest.raises(RuntimeError, match="uncommitted"), accounts.atomic():
+        auth.sign_in_with_id_token("stub", VALID_TOKEN)
+
+    assert provider.validated_tokens == []
+    assert accounts.find_user_by_email("native@example.com") is None
+    assert session_storage.records == {}
+
+
+def test_resolve_id_token_user_works_inside_an_application_transaction(
+    secondary_storage: SecondaryStorage, test_password_hash: str
+):
+    accounts = TransactionalAccountsStorage(test_password_hash)
+    provider = StubOIDCProvider(
+        {"sub": "native-1", "email": "native@example.com", "email_verified": True}
+    )
+    auth = _make_auth(secondary_storage, accounts, provider)
+    signed_in: list[AfterOAuthIdTokenEvent] = []
+    auth.after("oauth.id_token")(signed_in.append)
+
+    with accounts.atomic():
+        user, created = auth.resolve_id_token_user("stub", VALID_TOKEN)
+        assert created is True
+        # The application owns the commit; after hooks wait for it.
+        assert signed_in == []
+
+    assert [event.user for event in signed_in] == [user]
+    assert accounts.find_user_by_email("native@example.com") is not None
 
 
 def test_repeat_sign_in_works_with_tokenless_sqlmodel_storage(
@@ -145,8 +248,8 @@ def test_repeat_sign_in_works_with_tokenless_sqlmodel_storage(
         assert account is not None
         committed_users.append(persisted_user.id)
 
-    user, created = auth.sign_in_with_id_token("stub", VALID_TOKEN)
-    again, created_again = auth.sign_in_with_id_token("stub", VALID_TOKEN)
+    user, created = auth.resolve_id_token_user("stub", VALID_TOKEN)
+    again, created_again = auth.resolve_id_token_user("stub", VALID_TOKEN)
 
     assert created is True
     assert committed_users == [user.id]
@@ -181,7 +284,7 @@ def test_unsigned_metadata_cannot_select_another_identity(
         provider,
         config={"account_linking": {"enabled": True}},
     )
-    victim, _ = auth.sign_in_with_id_token("stub", VALID_TOKEN)
+    victim, _ = auth.resolve_id_token_user("stub", VALID_TOKEN)
     provider.claims = {
         "sub": "attacker",
         "email": "attacker@example.com",
@@ -211,7 +314,7 @@ def test_unsigned_metadata_cannot_select_another_identity(
         def supply_metadata(event: BeforeOAuthIdTokenEvent):
             return replace(event, user_info=metadata)
 
-    user, created = auth.sign_in_with_id_token(
+    user, created = auth.resolve_id_token_user(
         "stub", VALID_TOKEN, user_info=None if via_hook else metadata
     )
 
@@ -258,7 +361,7 @@ def test_metadata_cannot_satisfy_verified_email_policy(
     )
 
     with pytest.raises(CrossAuthException, match="^email_not_verified$"):
-        auth.sign_in_with_id_token(
+        auth.resolve_id_token_user(
             "stub", VALID_TOKEN, user_info={"email_verified": True}
         )
 
@@ -276,7 +379,7 @@ def test_metadata_cannot_supply_missing_provider_email(
     )
 
     with pytest.raises(OAuth2Exception, match="^No email found in user info$"):
-        auth.sign_in_with_id_token(
+        auth.resolve_id_token_user(
             "stub",
             VALID_TOKEN,
             user_info={"email": "test@example.com", "email_verified": True},
@@ -293,7 +396,7 @@ def test_links_to_existing_account_only_when_linking_enabled(
 
     strict = _make_auth(secondary_storage, accounts_storage, StubOIDCProvider(claims))
     with pytest.raises(CrossAuthException) as excinfo:
-        strict.sign_in_with_id_token("stub", VALID_TOKEN)
+        strict.resolve_id_token_user("stub", VALID_TOKEN)
     assert excinfo.value.error == "account_not_linked"
 
     linking = _make_auth(
@@ -303,7 +406,7 @@ def test_links_to_existing_account_only_when_linking_enabled(
         config={"account_linking": {"enabled": True}},
     )
     existing = accounts_storage.find_user_by_email("test@example.com")
-    user, created = linking.sign_in_with_id_token("stub", VALID_TOKEN)
+    user, created = linking.resolve_id_token_user("stub", VALID_TOKEN)
     assert created is False
     assert user.id == existing.id
 
@@ -316,11 +419,11 @@ def test_rejects_unknown_and_non_oidc_providers(
     auth = _make_auth(secondary_storage, accounts_storage, github)
 
     with pytest.raises(CrossAuthException) as excinfo:
-        auth.sign_in_with_id_token("missing", VALID_TOKEN)
+        auth.resolve_id_token_user("missing", VALID_TOKEN)
     assert excinfo.value.error == "invalid_request"
 
     with pytest.raises(CrossAuthException) as excinfo:
-        auth.sign_in_with_id_token("github", VALID_TOKEN)
+        auth.resolve_id_token_user("github", VALID_TOKEN)
     assert "id_token" in str(excinfo.value.error_description)
 
 
@@ -359,7 +462,7 @@ def test_hooks_can_rewrite_user_info_block_and_observe(
     def observe(event: AfterOAuthIdTokenEvent) -> None:
         seen_after.append(event)
 
-    user, created = auth.sign_in_with_id_token("stub", VALID_TOKEN)
+    user, created = auth.resolve_id_token_user("stub", VALID_TOKEN)
 
     assert created is True
     # The overlay from the before hook reached account storage.
@@ -374,7 +477,7 @@ def test_hooks_can_rewrite_user_info_block_and_observe(
         raise CrossAuthException("access_denied")
 
     with pytest.raises(CrossAuthException):
-        auth.sign_in_with_id_token("stub", VALID_TOKEN)
+        auth.resolve_id_token_user("stub", VALID_TOKEN)
 
 
 def test_nonce_matches_raw_or_hashed_claim(
@@ -392,11 +495,11 @@ def test_nonce_matches_raw_or_hashed_claim(
         secondary_storage, accounts_storage, StubOIDCProvider(hashed_claims)
     )
 
-    user, _ = auth.sign_in_with_id_token("stub", VALID_TOKEN, nonce=raw)
+    user, _ = auth.resolve_id_token_user("stub", VALID_TOKEN, nonce=raw)
     assert user.email == "nonce@example.com"
 
     with pytest.raises(OAuth2Exception):
-        auth.sign_in_with_id_token("stub", VALID_TOKEN, nonce="wrong-nonce")
+        auth.resolve_id_token_user("stub", VALID_TOKEN, nonce="wrong-nonce")
 
     no_nonce = _make_auth(
         secondary_storage,
@@ -406,7 +509,7 @@ def test_nonce_matches_raw_or_hashed_claim(
         ),
     )
     with pytest.raises(OAuth2Exception):
-        no_nonce.sign_in_with_id_token("stub", VALID_TOKEN, nonce=raw)
+        no_nonce.resolve_id_token_user("stub", VALID_TOKEN, nonce=raw)
 
 
 def test_token_less_sign_in_preserves_credentials_from_a_web_flow(
@@ -440,7 +543,7 @@ def test_token_less_sign_in_preserves_credentials_from_a_web_flow(
         is_login_method=True,
     )
 
-    user, created = auth.sign_in_with_id_token("stub", VALID_TOKEN)
+    user, created = auth.resolve_id_token_user("stub", VALID_TOKEN)
 
     assert created is False
     assert user.id == web_user.id
@@ -479,7 +582,7 @@ def test_invalid_native_nonce_is_rejected_before_account_creation(
     auth = _make_auth(secondary_storage, accounts_storage, provider)
 
     with pytest.raises(OAuth2Exception, match=message):
-        auth.sign_in_with_id_token("stub", VALID_TOKEN, nonce=nonce)
+        auth.resolve_id_token_user("stub", VALID_TOKEN, nonce=nonce)
 
     assert accounts_storage.find_user_by_email("nonce@example.com") is None
 
@@ -500,7 +603,7 @@ def test_native_nonce_accepts_raw_and_sdk_hashed_unicode_values(
     )
     auth = _make_auth(secondary_storage, accounts_storage, provider)
 
-    user, created = auth.sign_in_with_id_token("stub", VALID_TOKEN, nonce=nonce)
+    user, created = auth.resolve_id_token_user("stub", VALID_TOKEN, nonce=nonce)
 
     assert created is True
     assert user.email == "nonce@example.com"

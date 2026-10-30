@@ -843,6 +843,23 @@ class TestSignals:
         assert sent() == RETURNING_SIGN_IN[:-1]
         assert Session.objects.count() == sessions
 
+    def test_before_login_can_refuse_a_provider(
+        self, client: Client, google: FakeGoogle
+    ) -> None:
+        sign_in(Client(enforce_csrf_checks=True), google)
+
+        def retired_providers(provider: str, **kwargs: Any) -> None:
+            if provider == "google":
+                raise PermissionDenied("Sign in with your password instead.")
+
+        signals.handlers["before_login"] = retired_providers
+
+        response = sign_in(client, google)
+
+        assert response.status_code == 403
+        assert whoami(client)["authenticated"] is False
+        assert SocialAccount.objects.count() == 1
+
     def test_before_user_create_permission_denied_creates_nothing(
         self, client: Client, google: FakeGoogle
     ) -> None:

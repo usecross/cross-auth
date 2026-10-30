@@ -139,6 +139,11 @@ class SessionRecord(Protocol):
     def ip(self) -> str | None: ...
 
     @property
+    def login_method(self) -> str | None:
+        """How the user signed in: ``"password"`` or a social provider's id."""
+        ...
+
+    @property
     def status(self) -> SessionStatus: ...
 
 
@@ -192,6 +197,7 @@ class SessionStorage(Protocol):
         user_agent: str | None = None,
         ip: str | None = None,
         last_active_at: AwareDatetime | None = None,
+        login_method: str | None = None,
     ) -> SessionRecord: ...
 
     def get(

@@ -298,6 +298,29 @@ oauth_server = OAuthServer(get_client=clients.get, token_issuer=issue_token)
 
 The `login` hooks run around the call; Cross-Auth creates no session for it.
 
+`request.login_method` says how the user signed in: the provider id (such as
+`"github"`) for the authorization code grant, and `"password"` for the password
+grant, as approved by the `login` before hooks, which may replace it. The
+provider travels inside the authorization code, so it is `None` for a code
+issued by a version of Cross-Auth that did not record it. An issuer can carry it
+in the credential it mints, for example as a claim:
+
+```python
+def issue_token(request: TokenIssueRequest) -> tuple[str, int]:
+    token = mint_jwt(
+        subject=request.user_id,
+        audience=request.client_id,
+        login_method=request.login_method,
+    )
+    return token, 900
+```
+
+Don't call `auth.issue_session_token()` from a `token_issuer`: the `login` hooks
+already ran around the issuer, and `issue_session_token()` runs them a second
+time for the same grant. To issue Cross-Auth sessions from `/token`, leave
+`token_issuer` unset. The built-in issuer creates the session and records its
+`login_method` itself.
+
 ### Password Grant (deprecated)
 
 The resource owner password grant is deprecated and will be removed in

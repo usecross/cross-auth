@@ -54,6 +54,7 @@ def run_login(
         credential=approved.credential,
         session_record=session_record,
         response=approved.response,
+        login_method=approved.login_method,
     )
     on_commit(lambda: hooks.run_after("login", after_event))
     return issued, approved
@@ -66,11 +67,11 @@ class BrowserLogin(Protocol):
     provider identity is verified and the user's account changes committed.
     """
 
-    def login(self, user: User, *, response: Response) -> Response:
+    def login(self, user: User, *, response: Response, login_method: str) -> Response:
         """Log ``user`` in through ``run_login`` and return the response.
 
-        Raise ``CrossAuthException`` to refuse a user the framework does not
-        allow to sign in.
+        ``login_method`` is the provider's id. Raise ``CrossAuthException`` to
+        refuse a user the framework does not allow to sign in.
         """
         ...
 
@@ -139,6 +140,7 @@ def login_with_session(
     session_storage: SessionStorage,
     session_config: SessionConfig | None,
     metadata: SessionMetadata | None = None,
+    login_method: str | None = None,
 ) -> Response:
     """Log in with one new session and its cookie appended to ``response``.
 
@@ -160,6 +162,7 @@ def login_with_session(
             max_age=event.max_age,
             metadata=event.metadata,
             token_hasher=resolved["token_hasher"],
+            login_method=event.login_method,
         )
         if event.response.cookies is None:
             event.response.cookies = []
@@ -175,6 +178,7 @@ def login_with_session(
             max_age=resolved["max_age"],
             metadata=metadata,
             response=response,
+            login_method=login_method,
         ),
         hooks=hooks,
         issue=issue,
@@ -191,6 +195,7 @@ def issue_bearer_session(
     session_config: SessionConfig | None,
     max_age: int | None = None,
     metadata: SessionMetadata | None = None,
+    login_method: str | None = None,
 ) -> tuple[str, SessionRecord, int]:
     """Log in with one new session; return its bearer token, record and max_age."""
     resolved = resolve_config(session_config)
@@ -205,6 +210,7 @@ def issue_bearer_session(
             max_age=event.max_age,
             metadata=event.metadata,
             token_hasher=resolved["token_hasher"],
+            login_method=event.login_method,
         )
         return (session_token, session_record), session_record
 
@@ -214,6 +220,7 @@ def issue_bearer_session(
             credential="bearer",
             max_age=max_age if max_age is not None else resolved["max_age"],
             metadata=metadata,
+            login_method=login_method,
         ),
         hooks=hooks,
         issue=issue,

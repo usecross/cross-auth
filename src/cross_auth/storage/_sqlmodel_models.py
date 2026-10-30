@@ -28,6 +28,7 @@ class SQLModelSession(SQLModel):
     client_name: str | None = None
     user_agent: str | None = None
     ip: str | None = None
+    login_method: str | None = None
 
     @property
     def status(self) -> SessionStatus:

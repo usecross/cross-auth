@@ -305,7 +305,9 @@ Pass your session model to `SQLModelSessionStorage` — it implements every
 `SessionStorage` method, including keyset cursor pagination and status
 filtering. No storage subclass is needed unless you want to override behaviour.
 
-Inherit `SQLModelSession` to get the timestamps, client metadata, internal
+Inherit `SQLModelSession` to get the timestamps, client metadata, the
+`login_method` column (see
+[Login method](/docs/session-authentication#login-method)), internal
 `token_hash` column, and computed `status` property. Only the hash is stored,
 never the raw token. Define your own primary key and user ID column:
 
@@ -327,6 +329,16 @@ key. Override inherited fields when you need different indexes, database column
 names, or timezone-aware types. The inherited `status` property delegates to
 `session_status`, so it agrees with the adapter's active/expired/revoked
 filters.
+
+**Migration (0.42):** `SQLModelSession` gained a nullable `login_method` column.
+Add it to every session table before deploying, or every session read fails.
+Alembic's autogenerate picks it up; by hand:
+
+```python
+op.add_column("usersession", sa.Column("login_method", sa.String(), nullable=True))
+```
+
+Existing rows keep `login_method = NULL`.
 
 **Migration:** existing tables must inherit the corresponding base instead of
 `SQLModel`. Existing field declarations can remain as overrides; this
@@ -674,9 +686,10 @@ or retried.
 
 The browser sign-in flow refuses to issue a credential while accounts storage
 defers callbacks, so an adapter that joins application transactions supports
-account changes made inside them, not a full sign-in. `sign_in_with_id_token`
-only verifies and resolves the user, so with such an adapter it may return
-records that are not committed yet: commit before you call `auth.login()`,
+account changes made inside them, not a full sign-in. So does
+`sign_in_with_id_token`, which issues a session. `resolve_id_token_user` only
+verifies and resolves the user, so with such an adapter it may return records
+that are not committed yet: commit before you call `auth.login()`,
 `auth.issue_session_token()`, or your own token issuance for that user.
 
 With a session storage that defers callbacks, cookie logins and a `logout` that
@@ -776,6 +789,7 @@ class SessionRecord(Protocol):
     client_name: str | None
     user_agent: str | None
     ip: str | None
+    login_method: str | None
 
     @property
     def status(self) -> Literal["active", "expired", "revoked"]: ...
@@ -800,6 +814,7 @@ class SessionStorage(Protocol):
         user_agent: str | None = None,
         ip: str | None = None,
         last_active_at: AwareDatetime | None = None,
+        login_method: str | None = None,
     ) -> SessionRecord: ...
 
     def get(self, *, token_hash: str, now: AwareDatetime) -> SessionRecord | None: ...
@@ -813,6 +828,9 @@ class SessionStorage(Protocol):
 
 Both storage protocols use `on_commit` as described in
 [Commit callbacks](#commit-callbacks).
+
+Cross-Auth always passes `login_method` to `create`; store it and return it on
+the record (see [Login method](/docs/session-authentication#login-method)).
 
 `refresh` must atomically update only a session whose `revoked_at` is null and
 whose current `expires_at` is at or after the supplied `updated_at`. This

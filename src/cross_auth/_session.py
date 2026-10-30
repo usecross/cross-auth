@@ -90,6 +90,7 @@ def create_session(
     *,
     metadata: SessionMetadata | None = None,
     token_hasher: SessionTokenHasher | None = None,
+    login_method: str | None = None,
 ) -> tuple[str, SessionRecord]:
     session_token = secrets.token_urlsafe(32)
     now = datetime.now(tz=timezone.utc)
@@ -106,6 +107,7 @@ def create_session(
         user_agent=resolved_metadata.get("user_agent"),
         ip=resolved_metadata.get("ip"),
         last_active_at=now,
+        login_method=login_method,
     )
     return session_token, session_record
 
