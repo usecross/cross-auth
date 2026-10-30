@@ -15,7 +15,7 @@ import respx
 import time_machine
 from asgiref.sync import async_to_sync
 from django.conf import settings
-from django.contrib.auth import BACKEND_SESSION_KEY, SESSION_KEY, alogin
+from django.contrib.auth import BACKEND_SESSION_KEY, SESSION_KEY, alogin, login
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
@@ -513,7 +513,6 @@ class TestLifecycle:
 
         session = stored(client)
         assert session.session_key != anonymous.session_key
-        assert session.public_id != anonymous.public_id
         assert session.get_decoded()["remembered"] == "yes"
         assert list(Session.objects.all()) == [session]
 
@@ -526,26 +525,6 @@ class TestLifecycle:
         assert "remembered" not in session.get_decoded()
         assert list(Session.objects.all()) == [session]
 
-    def test_password_change_rotates_the_key_without_leaving_rows(self) -> None:
-        make_user("person@example.com", password="secret")
-        client = browser()
-        password_login(client, "person@example.com")
-        before = stored(client)
-
-        csrf_post(
-            client,
-            "/accounts/password_change/",
-            {
-                "old_password": "secret",
-                "new_password1": "a new password",
-                "new_password2": "a new password",
-            },
-        )
-
-        assert whoami(client)["authenticated"] is True
-        assert stored(client).session_key != before.session_key
-        assert Session.objects.count() == 1
-
     def test_deleting_a_user_deletes_their_sessions(self, google: FakeGoogle) -> None:
         client = browser()
         sign_in(client, google)
@@ -555,6 +534,143 @@ class TestLifecycle:
         user.delete()
 
         assert not Session.objects.exists()
+
+
+def change_password(client: Client) -> None:
+    response = csrf_post(
+        client,
+        "/accounts/password_change/",
+        {
+            "old_password": "secret",
+            "new_password1": "a new password",
+            "new_password2": "a new password",
+        },
+    )
+    assert response.status_code == 302, response.status_code
+
+
+class TestSignInIdentity:
+    """public_id and created_at: new for each login, kept by other new keys."""
+
+    def test_login_starts_a_new_sign_in(self, google: FakeGoogle) -> None:
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            csrf_post(client, "/remember/")
+            anonymous = stored(client)
+
+            clock.shift(60)
+            sign_in(client, google)
+
+            session = stored(client)
+            assert session.created_at == T0 + timedelta(seconds=60)
+            assert session.public_id != anonymous.public_id
+
+            clock.shift(60)
+            other = make_user("other@example.com", password="secret")
+            password_login(client, "other@example.com")
+
+            switched = stored(client)
+            assert switched.user_id == other.pk
+            assert switched.created_at == T0 + timedelta(seconds=120)
+            assert switched.public_id != session.public_id
+
+    def test_logging_in_again_without_a_new_key_starts_a_new_sign_in(
+        self, google: FakeGoogle
+    ) -> None:
+        password_user()
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            password_login(client, "person@gmail.com")
+            first = stored(client)
+
+            # Same user, valid session: Django's login() keeps the key.
+            clock.shift(60)
+            password_login(client, "person@gmail.com")
+
+            again = stored(client)
+            assert again.session_key == first.session_key
+            assert again.created_at == T0 + timedelta(seconds=60)
+            assert again.public_id != first.public_id
+
+            clock.shift(60)
+            sign_in(client, google)
+
+            with_google = stored(client)
+            assert with_google.created_at == T0 + timedelta(seconds=120)
+            assert with_google.public_id != again.public_id
+            assert with_google.login_method == "google"
+        assert Session.objects.count() == 1
+
+    def test_password_change_keeps_the_sign_in(self) -> None:
+        make_user("person@example.com", password="secret")
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            password_login(client, "person@example.com")
+            before = stored(client)
+            [listed_before] = listed(client)
+
+            clock.shift(60)
+            change_password(client)
+
+            session = stored(client)
+            assert whoami(client)["authenticated"] is True
+            assert session.session_key != before.session_key
+            assert (session.public_id, session.created_at) == (before.public_id, T0)
+            assert session.last_activity == T0 + timedelta(seconds=60)
+            assert list(Session.objects.all()) == [session]
+            [listed_after] = listed(client)
+            assert listed_after["id"] == listed_before["id"]
+
+    @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+    def test_cycle_key_keeps_the_sign_in(self, asynchronous: bool) -> None:
+        user = make_user("person@example.com", password="secret")
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            password_login(client, "person@example.com")
+            before = stored(client)
+
+            clock.shift(60)
+            store = SessionStore(before.session_key)
+            if asynchronous:
+                async_to_sync(store.acycle_key)()
+            else:
+                store.cycle_key()
+
+        assert store.session_key is not None
+        assert store.session_key != before.session_key
+        session = Session.objects.get()
+        assert session.session_key == store.session_key
+        assert (session.public_id, session.created_at) == (before.public_id, T0)
+        assert session.user_id == user.pk
+        assert session.get_decoded()[SESSION_KEY] == str(user.pk)
+
+    def test_cycle_key_of_an_unsaved_session_starts_one(self) -> None:
+        store = SessionStore()
+        store["cart"] = "kept"
+
+        store.cycle_key()
+
+        session = Session.objects.get()
+        assert session.session_key == store.session_key
+        assert session.get_decoded() == {"cart": "kept"}
+
+    def test_cycle_key_after_a_login_keeps_the_new_sign_in(self) -> None:
+        user = make_user("person@example.com", password="secret")
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            password_login(client, "person@example.com")
+            before = stored(client)
+
+            # A login whose session an app rotates again before it is saved.
+            clock.shift(60)
+            request = RequestFactory().get("/")
+            request.session = SessionStore(before.session_key)
+            login(request, user, backend=PASSWORD_BACKEND)
+            request.session.cycle_key()
+
+        session = Session.objects.get()
+        assert session.created_at == T0 + timedelta(seconds=60)
+        assert session.public_id != before.public_id
 
 
 class TestStore:

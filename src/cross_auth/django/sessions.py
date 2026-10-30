@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import ipaddress
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -58,7 +58,8 @@ LOGIN_METHOD_SESSION_KEY = "_cross_auth_login_method"
 
 _USER_AGENT_MAX_LENGTH = 512
 
-# Columns an update writes; public_id and created_at keep their first value.
+# Columns an update writes. public_id and created_at name one sign-in: an
+# update writes them only after a login.
 _UPDATED_FIELDS = [
     "session_data",
     "expire_date",
@@ -67,12 +68,32 @@ _UPDATED_FIELDS = [
     "last_activity",
 ]
 _CLIENT_FIELDS = ["user_agent", "ip"]
+_SIGN_IN_FIELDS = ["public_id", "created_at"]
 
 
 @dataclass(frozen=True)
 class _Client:
     user_agent: str | None
     ip: str | None
+
+
+@dataclass(frozen=True)
+class _Row:
+    """What a store knows of the row it loaded or saved."""
+
+    session_key: str
+    public_id: uuid.UUID
+    created_at: datetime
+    last_activity: datetime
+
+    @classmethod
+    def of(cls, session: Session) -> _Row:
+        return cls(
+            session.session_key,
+            session.public_id,
+            session.created_at,
+            session.last_activity,
+        )
 
 
 def _clean_user_agent(value: str | None) -> str | None:
@@ -112,13 +133,20 @@ class SessionStore(_DatabaseSessionStore):
     login recorded while the session is logged in with ``CrossAuthBackend``,
     ``None`` for any other backend. A later password login in the same
     session therefore clears it.
+
+    ``public_id`` and ``created_at`` belong to a sign-in: each login (any
+    ``user_logged_in``) starts new ones, and a new session key without a
+    login, such as ``update_session_auth_hash()`` after a password change,
+    keeps them.
     """
 
     def __init__(self, session_key: str | None = None) -> None:
         super().__init__(session_key)
         self._client: _Client | None = None
-        # The stored row's key and last_activity, once loaded or saved.
-        self._activity: tuple[str, datetime] | None = None
+        # The row this store loaded or saved, if it knows it.
+        self._row: _Row | None = None
+        # Set by user_logged_in until the next save writes a new sign-in.
+        self._login_pending = False
 
     @classmethod
     def get_model_class(cls) -> type[Session]:
@@ -184,6 +212,8 @@ class SessionStore(_DatabaseSessionStore):
             update_fields = list(_UPDATED_FIELDS)
             if self._client is not None:
                 update_fields += _CLIENT_FIELDS
+            if self._login_pending:
+                update_fields += _SIGN_IN_FIELDS
         try:
             with transaction.atomic(using=using):
                 session.save(
@@ -200,10 +230,46 @@ class SessionStore(_DatabaseSessionStore):
             if not must_create:
                 raise UpdateError
             raise
-        self._activity = (session.session_key, session.last_activity)
+        row = self._row
+        if must_create or self._login_pending:
+            self._row = _Row.of(session)
+        elif row is not None and row.session_key == session.session_key:
+            self._row = replace(row, last_activity=session.last_activity)
+        else:
+            self._row = None
+        self._login_pending = False
 
     async def asave(self, must_create: bool = False) -> None:
         await sync_to_async(self.save)(must_create)
+
+    def cycle_key(self) -> None:
+        # Django inserts a row under a new key, then deletes the old one. That
+        # is still the same sign-in, unless a login is about to start one, so
+        # the new row takes over the old row's public_id (unique, so only once
+        # the old row is gone) and created_at.
+        kept = None if self._login_pending else self._stored_row()
+        super().cycle_key()
+        row = self._row
+        if kept is None or row is None:
+            return
+        self.model.objects.filter(session_key=row.session_key).update(
+            public_id=kept.public_id, created_at=kept.created_at
+        )
+        self._row = replace(row, public_id=kept.public_id, created_at=kept.created_at)
+
+    async def acycle_key(self) -> None:
+        await sync_to_async(self.cycle_key)()
+
+    def _stored_row(self) -> _Row | None:
+        """The stored row of the current key, loading the session if needed."""
+        self._get_session()  # ty: ignore[unresolved-attribute]
+        row = self._row
+        if row is None or row.session_key != self.session_key:
+            return None
+        return row
+
+    def _logged_in(self) -> None:
+        self._login_pending = True
 
     def _get_session_from_db(self) -> Session | None:
         session = super()._get_session_from_db()  # ty: ignore[unresolved-attribute]
@@ -218,7 +284,7 @@ class SessionStore(_DatabaseSessionStore):
 
     def _loaded(self, session: Session | None) -> None:
         if session is not None:
-            self._activity = (session.session_key, session.last_activity)
+            self._row = _Row.of(session)
 
     def record_activity(self) -> None:
         """Update the stored ``last_activity``, at most once per interval.
@@ -227,19 +293,30 @@ class SessionStore(_DatabaseSessionStore):
         request that never touched the session writes nothing. The interval is
         ``CROSS_AUTH["SESSION_ACTIVITY_INTERVAL"]``.
         """
-        if self._activity is None:
-            return
-        session_key, last_activity = self._activity
-        if session_key != self.session_key:
+        row = self._row
+        if row is None or row.session_key != self.session_key:
             return
         now = timezone.now()
-        if now - last_activity < get_settings().session_activity_interval:
+        if now - row.last_activity < get_settings().session_activity_interval:
             return
         changes: dict[str, object] = {"last_activity": now}
         if self._client is not None:
             changes.update(user_agent=self._client.user_agent, ip=self._client.ip)
-        self.model.objects.filter(session_key=session_key).update(**changes)
-        self._activity = (session_key, now)
+        self.model.objects.filter(session_key=row.session_key).update(**changes)
+        self._row = replace(row, last_activity=now)
+
+
+def _start_sign_in(
+    sender: object, request: HttpRequest | None = None, **kwargs: Any
+) -> None:
+    """``user_logged_in`` receiver: the login's session gets a new sign-in.
+
+    Django's ``login()`` sends it after giving the session its new key, so
+    the save that follows writes a new ``public_id`` and ``created_at``.
+    """
+    session = getattr(request, "session", None)
+    if isinstance(session, SessionStore):
+        session._logged_in()
 
 
 class SessionMiddleware(DjangoSessionMiddleware):

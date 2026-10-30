@@ -612,15 +612,15 @@ not used together.
 Each time Django saves a session, Cross Auth fills these columns of
 `cross_auth.django.models.Session`:
 
-| Column          | Value                                                                                                                                                                                                  |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `user`          | The signed-in user, or `None` while the visitor is anonymous.                                                                                                                                          |
-| `login_method`  | The provider, such as `"google"`, for a sign-in through Cross Auth; `None` for other logins, such as Django's password login. A later password login in the same browser sets it back to `None`.       |
-| `user_agent`    | The browser's `User-Agent` header, without control characters and cut to 512 characters.                                                                                                               |
-| `ip`            | The request's `REMOTE_ADDR`; see [behind a proxy](#behind-a-proxy).                                                                                                                                    |
-| `created_at`    | When the session started. Django gives a session a new key when someone signs in or changes their password, which starts a new row.                                                                    |
-| `last_activity` | When a request last used the session. Saving the session sets it; otherwise it is updated at most once a minute (`SESSION_ACTIVITY_INTERVAL`), and only by requests that read the session or the user. |
-| `public_id`     | A random ID that names the session on your pages, because `session_key` is the session cookie itself and must never be shown.                                                                          |
+| Column          | Value                                                                                                                                                                                                                                                                                   |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `user`          | The signed-in user, or `None` while the visitor is anonymous.                                                                                                                                                                                                                           |
+| `login_method`  | The provider, such as `"google"`, for a sign-in through Cross Auth; `None` for other logins, such as Django's password login. A later password login in the same browser sets it back to `None`.                                                                                        |
+| `user_agent`    | The browser's `User-Agent` header, without control characters and cut to 512 characters.                                                                                                                                                                                                |
+| `ip`            | The request's `REMOTE_ADDR`; see [behind a proxy](#behind-a-proxy).                                                                                                                                                                                                                     |
+| `created_at`    | When the user signed in, or when an anonymous session started. Each login sets it again, even when Django keeps the session key. A new key without a login, such as after a password change, keeps it.                                                                                  |
+| `last_activity` | When a request last used the session. Saving the session sets it; otherwise it is updated at most once a minute (`SESSION_ACTIVITY_INTERVAL`), and only by requests that read the session or the user.                                                                                  |
+| `public_id`     | A random ID that names the session on your pages, because `session_key` is the session cookie itself and must never be shown. Like `created_at`, each login gives a new one and a new key without a login keeps it, so a page listing the sessions stays valid after a password change. |
 
 Logging out, `clearsessions` and deleting a user delete their rows.
 
