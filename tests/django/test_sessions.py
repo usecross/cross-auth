@@ -1,0 +1,890 @@
+"""cross_auth.django.sessions through Django's test client and middleware.
+
+Every test here runs with ``SESSION_ENGINE = "cross_auth.django.sessions"``
+and its ``SessionMiddleware`` in place of Django's.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable, Iterator
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import pytest
+import respx
+import time_machine
+from asgiref.sync import async_to_sync
+from django.conf import settings
+from django.contrib.auth import BACKEND_SESSION_KEY, SESSION_KEY, alogin, login
+from django.contrib.auth.base_user import AbstractBaseUser
+from django.core.exceptions import ImproperlyConfigured
+from django.core.management import call_command
+from django.db import IntegrityError, OperationalError, connection
+from django.test import Client, RequestFactory, override_settings
+from django.test.utils import CaptureQueriesContext
+
+from cross_auth.django.models import Session
+from cross_auth.django.sessions import (
+    LOGIN_METHOD_SESSION_KEY,
+    SessionStore,
+    _clean_ip,
+    _clean_user_agent,
+)
+
+from .conftest import connect, make_user
+from .fake_google import FakeGoogle
+from .test_views import csrf_post, sign_in, whoami
+
+pytestmark = pytest.mark.django_db(transaction=True)
+
+BACKEND = "cross_auth.django.backends.CrossAuthBackend"
+PASSWORD_BACKEND = "django.contrib.auth.backends.ModelBackend"
+USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) Chrome/130.0"
+IP = "203.0.113.7"
+T0 = datetime(2026, 10, 30, 12, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def cross_auth_sessions() -> Iterator[None]:
+    middleware = [
+        "cross_auth.django.sessions.SessionMiddleware"
+        if name == "django.contrib.sessions.middleware.SessionMiddleware"
+        else name
+        for name in settings.MIDDLEWARE
+    ]
+    with override_settings(
+        SESSION_ENGINE="cross_auth.django.sessions", MIDDLEWARE=middleware
+    ):
+        yield
+
+
+@pytest.fixture
+def google() -> Iterator[FakeGoogle]:
+    with respx.mock(assert_all_called=False) as router:
+        fake = FakeGoogle(router)
+        fake.install()
+        yield fake
+
+
+def browser(user_agent: str | None = USER_AGENT, ip: str = IP) -> Client:
+    headers = {"User-Agent": user_agent} if user_agent is not None else {}
+    return Client(enforce_csrf_checks=True, headers=headers, REMOTE_ADDR=ip)
+
+
+def stored(client: Client) -> Session:
+    """The row of the client's session cookie."""
+    return Session.objects.get(
+        session_key=client.cookies[settings.SESSION_COOKIE_NAME].value
+    )
+
+
+def password_login(client: Client, email: str) -> None:
+    response = csrf_post(
+        client, "/accounts/login/", {"username": email, "password": "secret"}
+    )
+    assert response.status_code == 302, response.status_code
+
+
+def password_user(email: str = "person@gmail.com") -> AbstractBaseUser:
+    """A password user whom the default fake Google account signs in to."""
+    user = make_user(email, password="secret")
+    connect(user)
+    return user
+
+
+def listed(client: Client) -> list[dict[str, Any]]:
+    return client.get("/sessions/").json()["sessions"]
+
+
+def expire(client: Client) -> None:
+    Session.objects.filter(pk=stored(client).pk).update(
+        expire_date=T0 - timedelta(days=1)
+    )
+
+
+def writes_to_sessions(sql: str, statement: str) -> bool:
+    return sql.startswith(statement) and "cross_auth_session" in sql
+
+
+Execute = Callable[[str, Any, bool, dict[str, Any]], Any]
+
+
+class TestColumns:
+    def test_provider_sign_in(self, google: FakeGoogle) -> None:
+        client = browser()
+
+        sign_in(client, google)
+
+        session = stored(client)
+        assert str(session.user_id) == whoami(client)["user_id"]
+        assert session.login_method == "google"
+        assert session.user_agent == USER_AGENT
+        assert session.ip == IP
+        assert session.created_at <= session.last_activity
+        assert Session.objects.count() == 1
+
+    def test_password_login(self) -> None:
+        user = make_user("person@example.com", password="secret")
+        client = browser()
+
+        password_login(client, "person@example.com")
+
+        session = stored(client)
+        assert session.user_id == user.pk
+        assert session.login_method is None
+        assert (session.user_agent, session.ip) == (USER_AGENT, IP)
+
+    def test_later_password_login_clears_the_provider(self, google: FakeGoogle) -> None:
+        user = password_user()
+        client = browser()
+        sign_in(client, google)
+        assert stored(client).login_method == "google"
+
+        # Same user, same session: Django's login() keeps the session's data,
+        # including the provider Cross Auth recorded.
+        password_login(client, "person@gmail.com")
+
+        assert whoami(client)["backend"] == PASSWORD_BACKEND
+        session = stored(client)
+        assert session.user_id == user.pk
+        assert session.login_method is None
+        assert session.get_decoded()[LOGIN_METHOD_SESSION_KEY] == "google"
+        assert Session.objects.count() == 1
+
+        sign_in(client, google)
+
+        assert stored(client).login_method == "google"
+
+    def test_anonymous_session(self) -> None:
+        client = browser()
+
+        csrf_post(client, "/remember/")
+
+        session = stored(client)
+        assert session.user_id is None
+        assert session.login_method is None
+        assert (session.user_agent, session.ip) == (USER_AGENT, IP)
+
+    def test_sanitized_user_agent_is_stored(self) -> None:
+        client = browser(user_agent="Mozilla/5.0\x00 (X11;\r\n Linux)\t" + "x" * 600)
+
+        csrf_post(client, "/remember/")
+
+        user_agent = stored(client).user_agent
+        assert user_agent is not None
+        assert user_agent.startswith("Mozilla/5.0 (X11; Linux) xxx")
+        assert len(user_agent) == 512
+
+    def test_missing_user_agent_and_ip(self) -> None:
+        client = browser(user_agent=None, ip="")
+
+        csrf_post(client, "/remember/")
+
+        assert (stored(client).user_agent, stored(client).ip) == (None, None)
+
+    def test_store_without_a_request_keeps_the_device(self) -> None:
+        client = browser()
+        csrf_post(client, "/remember/")
+
+        # Django's test client, like code outside a request, saves through a
+        # store that never saw the request.
+        session = client.session
+        session["more"] = "data"
+        session.save()
+
+        assert (stored(client).user_agent, stored(client).ip) == (USER_AGENT, IP)
+        assert stored(client).get_decoded()["more"] == "data"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (USER_AGENT, USER_AGENT),
+        (
+            "  Mozilla/5.0\x00\x1b[31m (X11)\r\n\tFirefox  ",
+            "Mozilla/5.0 [31m (X11) Firefox",
+        ),
+        ("Bad\u2028line\u200bbreaks", "Bad line breaks"),
+        ("x" * 513, "x" * 512),
+        ("\x00\r\n ", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_user_agent_is_sanitized(value: str | None, expected: str | None) -> None:
+    assert _clean_user_agent(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("198.51.100.7", "198.51.100.7"),
+        ("2001:DB8:0:0::1", "2001:db8::1"),
+        ("::ffff:198.51.100.7", "198.51.100.7"),
+        ("fe80::1%eth0", "fe80::1"),
+        (" 198.51.100.7 ", "198.51.100.7"),
+        ("198.51.100.7, 10.0.0.1", None),
+        ("unknown", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_ip_is_normalized(value: str | None, expected: str | None) -> None:
+    assert _clean_ip(value) == expected
+
+
+class TestLastActivity:
+    def test_updates_at_most_once_per_interval(self, google: FakeGoogle) -> None:
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            sign_in(client, google)
+            assert stored(client).last_activity == T0
+
+            clock.shift(59)
+            with CaptureQueriesContext(connection) as queries:
+                assert whoami(client)["authenticated"] is True
+            assert not [q for q in queries if q["sql"].startswith("UPDATE")]
+            assert stored(client).last_activity == T0
+
+            clock.shift(1)
+            whoami(client)
+            assert stored(client).last_activity == T0 + timedelta(seconds=60)
+
+            clock.shift(30)
+            whoami(client)
+            assert stored(client).last_activity == T0 + timedelta(seconds=60)
+
+    def test_activity_update_records_the_new_device(self, google: FakeGoogle) -> None:
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            sign_in(client, google)
+
+            clock.shift(120)
+            client.get("/", headers={"User-Agent": "Phone"}, REMOTE_ADDR="::1")
+
+            session = stored(client)
+            assert session.last_activity == T0 + timedelta(seconds=120)
+            assert (session.user_agent, session.ip) == ("Phone", "::1")
+            # Activity alone does not move the start of the session.
+            assert session.created_at == T0
+
+    def test_saving_the_session_records_activity(self, google: FakeGoogle) -> None:
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            sign_in(client, google)
+
+            before = stored(client)
+
+            clock.shift(10)
+            csrf_post(client, "/remember/")
+
+            session = stored(client)
+            assert session.last_activity == T0 + timedelta(seconds=10)
+            # Saves keep what only an insert sets.
+            assert (session.public_id, session.created_at) == (
+                before.public_id,
+                T0,
+            )
+
+    def test_requests_that_do_not_use_the_session_write_nothing(
+        self, google: FakeGoogle
+    ) -> None:
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            sign_in(client, google)
+
+            clock.shift(3600)
+            with CaptureQueriesContext(connection) as queries:
+                assert client.get("/missing/").status_code == 404
+
+            assert not [q for q in queries if "cross_auth_session" in q["sql"]]
+
+    def test_interval_is_a_setting(self, google: FakeGoogle) -> None:
+        cross_auth = {**settings.CROSS_AUTH, "SESSION_ACTIVITY_INTERVAL": 0}
+        with (
+            override_settings(CROSS_AUTH=cross_auth),
+            time_machine.travel(T0, tick=False) as clock,
+        ):
+            client = browser()
+            sign_in(client, google)
+
+            clock.shift(1)
+            whoami(client)
+
+            assert stored(client).last_activity == T0 + timedelta(seconds=1)
+
+    def test_concurrent_requests_update_it_once_per_interval(self) -> None:
+        make_user("person@example.com", password="secret")
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            password_login(client, "person@example.com")
+            key = stored(client).session_key
+            # Two requests of the session that both loaded it at T0.
+            first, second = SessionStore(key), SessionStore(key)
+            first.load()
+            second.load()
+
+            clock.shift(90)
+            first.record_activity()
+            clock.shift(5)
+            second.record_activity()
+
+            assert stored(client).last_activity == T0 + timedelta(seconds=90)
+
+    def test_an_older_time_never_replaces_a_newer_one(self) -> None:
+        make_user("person@example.com", password="secret")
+        cross_auth = {**settings.CROSS_AUTH, "SESSION_ACTIVITY_INTERVAL": 0}
+        with (
+            override_settings(CROSS_AUTH=cross_auth),
+            time_machine.travel(T0, tick=False) as clock,
+        ):
+            client = browser()
+            password_login(client, "person@example.com")
+            key = stored(client).session_key
+            first, late = SessionStore(key), SessionStore(key)
+            first.load()
+            late.load()
+
+            clock.move_to(T0 + timedelta(seconds=90))
+            first.record_activity()
+            # A request whose clock read an earlier time finishes last.
+            clock.move_to(T0 + timedelta(seconds=70))
+            late.record_activity()
+
+            assert stored(client).last_activity == T0 + timedelta(seconds=90)
+
+    def test_a_failed_update_does_not_fail_the_response(
+        self, google: FakeGoogle, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        def fail_updates(
+            execute: Execute, sql: str, params: Any, many: bool, context: Any
+        ) -> Any:
+            if writes_to_sessions(sql, "UPDATE"):
+                raise OperationalError("database is locked")
+            return execute(sql, params, many, context)
+
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            sign_in(client, google)
+
+            clock.shift(60)
+            with (
+                connection.execute_wrapper(fail_updates),
+                caplog.at_level(logging.WARNING, "cross_auth.django.sessions"),
+            ):
+                assert whoami(client)["authenticated"] is True
+
+            assert stored(client).last_activity == T0
+            [record] = caplog.records
+            assert record.getMessage() == "Could not record a session's activity"
+            assert record.exc_info is not None
+
+
+class TestListing:
+    def test_lists_own_active_sessions_newest_first(self, google: FakeGoogle) -> None:
+        user = password_user()
+        other = make_user("other@example.com", password="secret")
+        with time_machine.travel(T0, tick=False) as clock:
+            phone = browser(user_agent="Phone", ip="198.51.100.1")
+            sign_in(phone, google)
+            clock.shift(60)
+            old = browser(user_agent="Old")
+            sign_in(old, google)
+            expire(old)
+            clock.shift(60)
+            laptop = browser(user_agent="Laptop")
+            password_login(laptop, "person@gmail.com")
+            someone_else = browser(user_agent="Someone else")
+            password_login(someone_else, "other@example.com")
+            anonymous = browser(user_agent="Anonymous")
+            csrf_post(anonymous, "/remember/")
+
+            sessions = listed(laptop)
+
+        assert [
+            (s["user_agent"], s["login_method"], s["is_current"]) for s in sessions
+        ] == [("Laptop", None, True), ("Phone", "google", False)]
+        phone_row = stored(phone)
+        assert sessions[1] == {
+            "id": str(phone_row.public_id),
+            "login_method": "google",
+            "user_agent": "Phone",
+            "ip": "198.51.100.1",
+            "created_at": "2026-10-30T12:00:00Z",
+            "last_activity": "2026-10-30T12:00:00Z",
+            "expires_at": phone_row.expire_date.isoformat().replace("+00:00", "Z"),
+            "is_current": False,
+        }
+        assert Session.objects.filter(user=user).count() == 3
+        assert [s["user_agent"] for s in listed(someone_else)] == ["Someone else"]
+        assert Session.objects.get(user=other).user_agent == "Someone else"
+
+    def test_session_keys_are_never_listed(self, google: FakeGoogle) -> None:
+        password_user()
+        phone, laptop = browser(), browser()
+        sign_in(phone, google)
+        sign_in(laptop, google)
+
+        body = laptop.get("/sessions/").content.decode()
+
+        for client in (phone, laptop):
+            assert client.cookies[settings.SESSION_COOKIE_NAME].value not in body
+
+    def test_anonymous_request_lists_nothing(self) -> None:
+        client = browser()
+        csrf_post(client, "/remember/")
+
+        assert listed(client) == []
+
+    def test_sessions_a_password_change_ended_are_not_listed(self) -> None:
+        make_user("person@example.com", password="secret")
+        phone, laptop = browser(user_agent="Phone"), browser(user_agent="Laptop")
+        password_login(phone, "person@example.com")
+        password_login(laptop, "person@example.com")
+
+        response = csrf_post(
+            laptop,
+            "/accounts/password_change/",
+            {
+                "old_password": "secret",
+                "new_password1": "a new password",
+                "new_password2": "a new password",
+            },
+        )
+
+        assert response.status_code == 302
+        # Django keeps the laptop signed in and logs the phone out on its next
+        # request; until then its row is still there.
+        assert [s["user_agent"] for s in listed(laptop)] == ["Laptop"]
+        assert Session.objects.filter(user_agent="Phone").exists()
+        assert whoami(phone)["authenticated"] is False
+
+    def test_sessions_of_a_removed_backend_are_not_listed(
+        self, google: FakeGoogle
+    ) -> None:
+        password_user()
+        with_password = browser(user_agent="Password")
+        with_google = browser(user_agent="Google")
+        password_login(with_password, "person@gmail.com")
+        sign_in(with_google, google)
+        backends = [
+            backend
+            for backend in settings.AUTHENTICATION_BACKENDS
+            if backend != PASSWORD_BACKEND
+        ]
+
+        with override_settings(AUTHENTICATION_BACKENDS=backends):
+            assert [s["user_agent"] for s in listed(with_google)] == ["Google"]
+            # Django logs it out too: its backend is gone.
+            assert whoami(with_password)["authenticated"] is False
+
+    @override_settings(SESSION_ENGINE="django.contrib.sessions.backends.db")
+    def test_needs_the_engine(self) -> None:
+        client = Client(raise_request_exception=True)
+
+        with pytest.raises(ImproperlyConfigured, match="cross_auth.django.sessions"):
+            client.get("/sessions/")
+
+
+class TestRevoking:
+    def test_revokes_one_of_the_users_sessions(self, google: FakeGoogle) -> None:
+        password_user()
+        phone, laptop = browser(), browser()
+        sign_in(phone, google)
+        sign_in(laptop, google)
+
+        response = csrf_post(laptop, "/sessions/", {"id": str(stored(phone).public_id)})
+
+        assert response.json() == {"revoked": True}
+        assert whoami(phone)["authenticated"] is False
+        assert whoami(laptop)["authenticated"] is True
+        assert Session.objects.filter(user__isnull=False).count() == 1
+
+    def test_never_revokes_another_users_session(self, google: FakeGoogle) -> None:
+        password_user()
+        make_user("other@example.com", password="secret")
+        mine, theirs = browser(), browser()
+        sign_in(mine, google)
+        password_login(theirs, "other@example.com")
+        their_id = str(stored(theirs).public_id)
+
+        assert csrf_post(mine, "/sessions/", {"id": their_id}).json() == {
+            "revoked": False
+        }
+        assert whoami(theirs)["authenticated"] is True
+
+        anonymous = browser()
+        assert csrf_post(anonymous, "/sessions/", {"id": their_id}).json() == {
+            "revoked": False
+        }
+        assert whoami(theirs)["authenticated"] is True
+
+    @pytest.mark.parametrize(
+        "session_id", ["not-a-uuid", "", "00000000-0000-0000-0000-000000000000"]
+    )
+    def test_unknown_ids_revoke_nothing(
+        self, google: FakeGoogle, session_id: str
+    ) -> None:
+        client = browser()
+        sign_in(client, google)
+
+        assert csrf_post(client, "/sessions/", {"id": session_id}).json() == {
+            "revoked": False
+        }
+        assert whoami(client)["authenticated"] is True
+
+    def test_revoking_the_current_session_logs_out(self, google: FakeGoogle) -> None:
+        client = browser()
+        sign_in(client, google)
+
+        response = csrf_post(
+            client, "/sessions/", {"id": str(stored(client).public_id)}
+        )
+
+        assert response.json() == {"revoked": True}
+        assert response.cookies[settings.SESSION_COOKIE_NAME].value == ""
+        assert whoami(client)["authenticated"] is False
+        assert not Session.objects.exists()
+
+    def test_revokes_the_other_sessions(self, google: FakeGoogle) -> None:
+        password_user()
+        make_user("other@example.com", password="secret")
+        current, phone, tablet, old = browser(), browser(), browser(), browser()
+        for client in (current, phone, tablet, old):
+            sign_in(client, google)
+        expire(old)
+        theirs = browser()
+        password_login(theirs, "other@example.com")
+
+        response = csrf_post(current, "/sessions/")
+
+        assert response.json() == {"revoked": 2}
+        assert whoami(current)["authenticated"] is True
+        assert whoami(phone)["authenticated"] is False
+        assert whoami(tablet)["authenticated"] is False
+        assert whoami(theirs)["authenticated"] is True
+        # Expired sessions are left for clearsessions.
+        assert Session.objects.filter(pk=stored(old).pk).exists()
+
+    def test_anonymous_request_revokes_nothing(self, google: FakeGoogle) -> None:
+        signed_in = browser()
+        sign_in(signed_in, google)
+
+        assert csrf_post(browser(), "/sessions/").json() == {"revoked": 0}
+        assert whoami(signed_in)["authenticated"] is True
+
+    def test_a_session_whose_key_changes_while_it_is_revoked_is_revoked(
+        self,
+    ) -> None:
+        user = make_user("person@example.com", password="secret")
+        phone, laptop = browser(), browser()
+        password_login(phone, "person@example.com")
+        password_login(laptop, "person@example.com")
+        before = stored(phone)
+        # A request of the phone's, which changes its session key...
+        phone_request = SessionStore(before.session_key)
+        assert phone_request[SESSION_KEY] == str(user.pk)
+        rotated = False
+
+        def rotate_first(
+            execute: Execute, sql: str, params: Any, many: bool, context: Any
+        ) -> Any:
+            nonlocal rotated
+            if not rotated and writes_to_sessions(sql, "DELETE"):
+                rotated = True
+                phone_request.cycle_key()
+            return execute(sql, params, many, context)
+
+        # ...after the laptop's revoke found the session and before it deletes.
+        with connection.execute_wrapper(rotate_first):
+            response = csrf_post(laptop, "/sessions/", {"id": str(before.public_id)})
+
+        assert rotated
+        assert phone_request.session_key != before.session_key
+        assert response.json() == {"revoked": True}
+        assert list(Session.objects.filter(user=user)) == [stored(laptop)]
+
+    def test_a_session_revoked_before_its_key_changes_stays_revoked(self) -> None:
+        user = make_user("person@example.com", password="secret")
+        phone, laptop = browser(), browser()
+        password_login(phone, "person@example.com")
+        password_login(laptop, "person@example.com")
+        before = stored(phone)
+        # A request of the phone's has loaded its session...
+        phone_request = SessionStore(before.session_key)
+        assert phone_request[SESSION_KEY] == str(user.pk)
+        # ...when the laptop revokes it...
+        response = csrf_post(laptop, "/sessions/", {"id": str(before.public_id)})
+        assert response.json() == {"revoked": True}
+
+        # ...and then the phone's request changes the session's key.
+        phone_request.cycle_key()
+
+        assert SESSION_KEY not in phone_request
+        assert list(Session.objects.filter(user=user)) == [stored(laptop)]
+        assert not Session.objects.filter(public_id=before.public_id).exists()
+
+
+class TestLifecycle:
+    def test_clearsessions_deletes_expired_sessions(self, google: FakeGoogle) -> None:
+        active, expired = browser(), browser()
+        sign_in(active, google)
+        sign_in(expired, google)
+        expire(expired)
+
+        call_command("clearsessions")
+
+        assert list(Session.objects.values_list("pk", flat=True)) == [stored(active).pk]
+
+    def test_logout_deletes_the_session(self, google: FakeGoogle) -> None:
+        client = browser()
+        sign_in(client, google)
+
+        csrf_post(client, "/accounts/logout/")
+
+        assert whoami(client)["authenticated"] is False
+        assert not Session.objects.exists()
+
+    def test_login_rotates_the_key_without_leaving_rows(
+        self, google: FakeGoogle
+    ) -> None:
+        client = browser()
+        csrf_post(client, "/remember/")
+        anonymous = stored(client)
+
+        sign_in(client, google)
+
+        session = stored(client)
+        assert session.session_key != anonymous.session_key
+        assert session.get_decoded()["remembered"] == "yes"
+        assert list(Session.objects.all()) == [session]
+
+        # Another user in the same browser: Django flushes the session.
+        other = make_user("other@example.com", password="secret")
+        password_login(client, "other@example.com")
+
+        session = stored(client)
+        assert session.user_id == other.pk
+        assert "remembered" not in session.get_decoded()
+        assert list(Session.objects.all()) == [session]
+
+    @pytest.mark.parametrize("gone", ["deleted", "expired"])
+    def test_a_cookie_without_a_session_starts_a_new_one(self, gone: str) -> None:
+        client = browser()
+        csrf_post(client, "/remember/", {"value": "old"})
+        old = stored(client)
+        if gone == "deleted":
+            old.delete()
+        else:
+            expire(client)
+
+        response = csrf_post(client, "/remember/", {"value": "new"})
+
+        assert response.status_code == 200
+        session = stored(client)
+        assert session.session_key != old.session_key
+        assert session.get_decoded() == {"remembered": "new"}
+
+    def test_deleting_a_user_deletes_their_sessions(self, google: FakeGoogle) -> None:
+        client = browser()
+        sign_in(client, google)
+        user = stored(client).user
+        assert user is not None
+
+        user.delete()
+
+        assert not Session.objects.exists()
+
+
+def change_password(client: Client) -> None:
+    response = csrf_post(
+        client,
+        "/accounts/password_change/",
+        {
+            "old_password": "secret",
+            "new_password1": "a new password",
+            "new_password2": "a new password",
+        },
+    )
+    assert response.status_code == 302, response.status_code
+
+
+class TestSignInIdentity:
+    """public_id and created_at: new for each login, kept by other new keys."""
+
+    def test_login_starts_a_new_sign_in(self, google: FakeGoogle) -> None:
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            csrf_post(client, "/remember/")
+            anonymous = stored(client)
+
+            clock.shift(60)
+            sign_in(client, google)
+
+            session = stored(client)
+            assert session.created_at == T0 + timedelta(seconds=60)
+            assert session.public_id != anonymous.public_id
+
+            clock.shift(60)
+            other = make_user("other@example.com", password="secret")
+            password_login(client, "other@example.com")
+
+            switched = stored(client)
+            assert switched.user_id == other.pk
+            assert switched.created_at == T0 + timedelta(seconds=120)
+            assert switched.public_id != session.public_id
+
+    def test_logging_in_again_without_a_new_key_starts_a_new_sign_in(
+        self, google: FakeGoogle
+    ) -> None:
+        password_user()
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            password_login(client, "person@gmail.com")
+            first = stored(client)
+
+            # Same user, valid session: Django's login() keeps the key.
+            clock.shift(60)
+            password_login(client, "person@gmail.com")
+
+            again = stored(client)
+            assert again.session_key == first.session_key
+            assert again.created_at == T0 + timedelta(seconds=60)
+            assert again.public_id != first.public_id
+
+            clock.shift(60)
+            sign_in(client, google)
+
+            with_google = stored(client)
+            assert with_google.created_at == T0 + timedelta(seconds=120)
+            assert with_google.public_id != again.public_id
+            assert with_google.login_method == "google"
+        assert Session.objects.count() == 1
+
+    def test_password_change_keeps_the_sign_in(self) -> None:
+        make_user("person@example.com", password="secret")
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            password_login(client, "person@example.com")
+            before = stored(client)
+            [listed_before] = listed(client)
+
+            clock.shift(60)
+            change_password(client)
+
+            session = stored(client)
+            assert whoami(client)["authenticated"] is True
+            assert session.session_key != before.session_key
+            assert (session.public_id, session.created_at) == (before.public_id, T0)
+            assert session.last_activity == T0 + timedelta(seconds=60)
+            assert list(Session.objects.all()) == [session]
+            [listed_after] = listed(client)
+            assert listed_after["id"] == listed_before["id"]
+
+    @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+    def test_cycle_key_keeps_the_sign_in(self, asynchronous: bool) -> None:
+        user = make_user("person@example.com", password="secret")
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            password_login(client, "person@example.com")
+            before = stored(client)
+
+            clock.shift(60)
+            store = SessionStore(before.session_key)
+            if asynchronous:
+                async_to_sync(store.acycle_key)()
+            else:
+                store.cycle_key()
+
+        assert store.session_key is not None
+        assert store.session_key != before.session_key
+        session = Session.objects.get()
+        assert session.session_key == store.session_key
+        assert (session.public_id, session.created_at) == (before.public_id, T0)
+        assert session.user_id == user.pk
+        assert session.get_decoded()[SESSION_KEY] == str(user.pk)
+
+    def test_cycle_key_of_an_unsaved_session_starts_one(self) -> None:
+        store = SessionStore()
+        store["cart"] = "kept"
+
+        store.cycle_key()
+
+        session = Session.objects.get()
+        assert session.session_key == store.session_key
+        assert session.get_decoded() == {"cart": "kept"}
+
+    def test_cycle_key_after_a_login_keeps_the_new_sign_in(self) -> None:
+        user = make_user("person@example.com", password="secret")
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            password_login(client, "person@example.com")
+            before = stored(client)
+
+            # A login whose session an app rotates again before it is saved.
+            clock.shift(60)
+            request = RequestFactory().get("/")
+            request.session = SessionStore(before.session_key)
+            login(request, user, backend=PASSWORD_BACKEND)
+            request.session.cycle_key()
+
+        session = Session.objects.get()
+        assert session.created_at == T0 + timedelta(seconds=60)
+        assert session.public_id != before.public_id
+
+
+class TestStore:
+    def test_session_of_a_missing_user_fails_instead_of_retrying(self) -> None:
+        user = make_user("gone@example.com")
+        user_id = str(user.pk)
+        user.delete()
+        store = SessionStore()
+        store[SESSION_KEY] = user_id
+        store[BACKEND_SESSION_KEY] = BACKEND
+
+        with pytest.raises(IntegrityError):
+            store.save()
+
+        assert not Session.objects.exists()
+
+    def test_async_login_fills_the_columns(self) -> None:
+        user = make_user("person@example.com")
+        request = RequestFactory().get("/")
+        store = SessionStore()
+        store.set_client(user_agent=USER_AGENT, ip=IP)
+        request.session = store
+
+        async def login() -> dict[str, Any]:
+            await alogin(request, user, backend=BACKEND)
+            await store.aset(LOGIN_METHOD_SESSION_KEY, "google")
+            await store.asave()
+            assert store.session_key is not None
+            return await SessionStore(store.session_key).aload()
+
+        data = async_to_sync(login)()
+
+        session = Session.objects.get()
+        assert session.user_id == user.pk
+        assert session.login_method == "google"
+        assert (session.user_agent, session.ip) == (USER_AGENT, IP)
+        assert data[SESSION_KEY] == str(user.pk)
+
+    def test_long_login_methods_are_stored(self) -> None:
+        user = make_user("person@example.com")
+        login_method = "an-identity-provider-" * 20
+        store = SessionStore()
+        store[SESSION_KEY] = str(user.pk)
+        store[BACKEND_SESSION_KEY] = BACKEND
+        store[LOGIN_METHOD_SESSION_KEY] = login_method
+
+        store.save()
+
+        assert Session.objects.get().login_method == login_method
+
+    def test_login_method_needs_cross_auths_backend(self) -> None:
+        store = SessionStore()
+        store[LOGIN_METHOD_SESSION_KEY] = "google"
+        store[BACKEND_SESSION_KEY] = PASSWORD_BACKEND
+
+        assert store.create_model_instance(dict(store.items())).login_method is None

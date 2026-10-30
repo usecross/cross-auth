@@ -119,3 +119,81 @@ def test_duplicate_providers_are_errors() -> None:
         errors = check_settings()
 
     assert "more than once" in errors[0].msg
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, "60", True, 31_536_001, 10**20])
+def test_session_activity_interval_must_be_seconds(value: object) -> None:
+    with override_settings(CROSS_AUTH={"SESSION_ACTIVITY_INTERVAL": value}):
+        errors = check_settings()
+
+    assert [error.id for error in errors] == ["cross_auth.E001"]
+    assert "SESSION_ACTIVITY_INTERVAL'] must be a number of seconds" in errors[0].msg
+
+
+def test_session_activity_interval_defaults_to_a_minute() -> None:
+    from datetime import timedelta
+
+    from cross_auth.django.conf import get_settings
+
+    assert get_settings().session_activity_interval == timedelta(minutes=1)
+    with override_settings(CROSS_AUTH={"SESSION_ACTIVITY_INTERVAL": 0}):
+        assert get_settings().session_activity_interval == timedelta(0)
+    with override_settings(CROSS_AUTH={"SESSION_ACTIVITY_INTERVAL": 31_536_000}):
+        assert get_settings().session_activity_interval == timedelta(days=365)
+
+
+DJANGO_SESSION_MIDDLEWARE = "django.contrib.sessions.middleware.SessionMiddleware"
+SESSION_MIDDLEWARE = "cross_auth.django.sessions.SessionMiddleware"
+
+
+def _with_session_middleware(name: str) -> list[str]:
+    from django.conf import settings
+
+    return [
+        name if entry == DJANGO_SESSION_MIDDLEWARE else entry
+        for entry in settings.MIDDLEWARE
+    ]
+
+
+def _session_setup_ids() -> list[str]:
+    from cross_auth.django.checks import check_session_setup
+
+    return [message.id or "" for message in check_session_setup()]
+
+
+def test_cross_auth_sessions_pass() -> None:
+    with override_settings(
+        SESSION_ENGINE="cross_auth.django.sessions",
+        MIDDLEWARE=_with_session_middleware(SESSION_MIDDLEWARE),
+    ):
+        assert _login_setup_ids() == []
+        assert _session_setup_ids() == []
+
+
+def test_django_sessions_pass() -> None:
+    assert _session_setup_ids() == []
+
+
+def test_session_engine_without_its_middleware_warns() -> None:
+    with override_settings(SESSION_ENGINE="cross_auth.django.sessions"):
+        assert _session_setup_ids() == ["cross_auth.W002"]
+
+
+def test_session_middleware_without_its_engine_warns() -> None:
+    with override_settings(MIDDLEWARE=_with_session_middleware(SESSION_MIDDLEWARE)):
+        assert _session_setup_ids() == ["cross_auth.W003"]
+
+
+def test_session_middleware_after_authentication_middleware_is_an_error() -> None:
+    authentication = "django.contrib.auth.middleware.AuthenticationMiddleware"
+    middleware = [
+        name
+        for name in _with_session_middleware(SESSION_MIDDLEWARE)
+        if name != authentication
+    ]
+    middleware.insert(middleware.index(SESSION_MIDDLEWARE), authentication)
+
+    with override_settings(
+        SESSION_ENGINE="cross_auth.django.sessions", MIDDLEWARE=middleware
+    ):
+        assert _session_setup_ids() == ["cross_auth.E005"]

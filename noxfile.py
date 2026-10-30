@@ -63,3 +63,33 @@ def django(session: nox.Session, database: str, user_model: str) -> None:
             "CROSS_AUTH_TEST_USER_MODEL": user_model,
         },
     )
+
+
+# Django's development branch, so a change to the session store internals that
+# cross_auth.django.sessions overrides shows up before a release ships it. Not
+# tagged "tests": .github/workflows/django-main.yml runs it on pull requests,
+# without blocking them, and weekly.
+@nox.session(python=["3.14"], tags=["django-main"])
+@nox.parametrize("database", ["sqlite", "postgres"])
+def django_main(session: nox.Session, database: str) -> None:
+    session.run_install(
+        "uv",
+        "sync",
+        "--frozen",
+        "--package",
+        "cross-auth",
+        "--group",
+        "dev",
+        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
+    )
+    session.install("git+https://github.com/django/django@main")
+    session.run("python", "-m", "django", "--version")
+    session.run(
+        "pytest",
+        "tests/django",
+        *session.posargs,
+        env={
+            "CROSS_AUTH_TEST_DATABASE": database,
+            "CROSS_AUTH_TEST_USER_MODEL": "default",
+        },
+    )

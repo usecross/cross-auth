@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 from functools import cache
 from typing import Any, Protocol
 
@@ -72,6 +73,9 @@ class CrossAuthSettings:
     require_verified_email: bool
     # Public origin used for provider callback URLs instead of the request's.
     base_url: str | None
+    # How stale cross_auth.django.sessions lets a session's last_activity get
+    # before a request that does not save the session updates it.
+    session_activity_interval: timedelta
 
 
 _KNOWN_KEYS = frozenset(
@@ -82,9 +86,13 @@ _KNOWN_KEYS = frozenset(
         "ACCOUNT_LINKING",
         "REQUIRE_VERIFIED_EMAIL",
         "BASE_URL",
+        "SESSION_ACTIVITY_INTERVAL",
     }
 )
 _ACCOUNT_LINKING_KEYS = frozenset({"enabled", "allow_different_emails"})
+# A year. Sessions compare their last_activity with now minus the interval,
+# which must stay a date that Python and the database can hold.
+_MAX_SESSION_ACTIVITY_INTERVAL = 365 * 24 * 60 * 60
 
 
 def _bool(
@@ -94,6 +102,22 @@ def _bool(
     if not isinstance(value, bool):
         raise ImproperlyConfigured(f"CROSS_AUTH{prefix}['{key}'] must be a bool")
     return value
+
+
+def _seconds(
+    raw: Mapping[str, object], key: str, default: int, *, maximum: int
+) -> timedelta:
+    value = raw.get(key, default)
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 0 <= value <= maximum
+    ):
+        raise ImproperlyConfigured(
+            f"CROSS_AUTH['{key}'] must be a number of seconds, an int from 0 to "
+            f"{maximum}"
+        )
+    return timedelta(seconds=value)
 
 
 def _providers(value: object) -> dict[str, OAuth2Provider]:
@@ -170,6 +194,12 @@ def get_settings() -> CrossAuthSettings:
         account_linking=_account_linking(raw.get("ACCOUNT_LINKING", {})),
         require_verified_email=_bool(raw, "REQUIRE_VERIFIED_EMAIL", True),
         base_url=base_url,
+        session_activity_interval=_seconds(
+            raw,
+            "SESSION_ACTIVITY_INTERVAL",
+            60,
+            maximum=_MAX_SESSION_ACTIVITY_INTERVAL,
+        ),
     )
 
 

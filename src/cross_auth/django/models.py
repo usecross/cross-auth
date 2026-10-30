@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from django.conf import settings
+from django.contrib.sessions.base_session import AbstractBaseSession
 from django.db import models
+from django.utils import timezone
+
+if TYPE_CHECKING:
+    from .sessions import SessionStore
 
 
 class SocialAccount(models.Model):
@@ -82,3 +88,46 @@ class ExpiringValue(models.Model):
 
     def __str__(self) -> str:
         return self.key
+
+
+class Session(AbstractBaseSession):
+    """A Django session that knows its user, login method and device.
+
+    The session store of ``SESSION_ENGINE = "cross_auth.django.sessions"``
+    keeps sessions here instead of in ``django_session``, and fills the
+    columns from the session's data and its request each time it saves.
+    Read them, but change sessions through Django or the helpers in
+    ``cross_auth.django.sessions``.
+
+    ``session_key`` is the session cookie's value: never show it. Pages and
+    forms name a session by ``public_id``.
+    """
+
+    if TYPE_CHECKING:
+        user_id: Any
+
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    # Null while the session is anonymous.
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="cross_auth_sessions",
+    )
+    # The provider of a Cross Auth sign-in; null for anonymous sessions and
+    # other logins, such as Django's password login.
+    login_method = models.TextField(null=True, blank=True)
+    user_agent = models.CharField(max_length=512, null=True, blank=True)
+    ip = models.GenericIPAddressField(null=True, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    last_activity = models.DateTimeField(default=timezone.now)
+
+    def __str__(self) -> str:
+        return str(self.public_id)
+
+    @classmethod
+    def get_session_store_class(cls) -> type[SessionStore]:
+        from .sessions import SessionStore
+
+        return SessionStore

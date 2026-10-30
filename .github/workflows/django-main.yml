@@ -1,0 +1,42 @@
+name: 🦄 Django main
+
+# tests/django against Django's main branch (nox -t django-main, SQLite and
+# PostgreSQL), so a change to the session store internals that
+# cross_auth.django.sessions overrides shows up before a release ships it.
+#
+# On pull requests a failure shows as a failed job but does not fail the run:
+# Django main itself is sometimes broken, and that must not block unrelated
+# merges. The weekly run fails normally, so GitHub reports it.
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays, 05:17 UTC.
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: django-main-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  FORCE_COLOR: "1"
+
+jobs:
+  django-main:
+    name: 🔬 django main
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - run: uv run --frozen --group dev --package cross-auth nox -t django-main
