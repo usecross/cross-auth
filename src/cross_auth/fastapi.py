@@ -36,6 +36,7 @@ from ._request import make_http_request
 from ._session import (
     SessionMetadata,
     get_current_user,
+    get_user_session,
     make_session_cookie,
     resolve_config,
     resolve_current_session,
@@ -327,10 +328,9 @@ class CrossAuth:
         )
 
     def get_session(self, session_id: Any, *, user_id: Any) -> SessionRecord | None:
-        session = self._require_session_storage().get_any(session_id)
-        if session is None or str(session.user_id) != str(user_id):
-            return None
-        return session
+        return get_user_session(
+            session_id, self._require_session_storage(), user_id=user_id
+        )
 
     def revoke_session(self, session_id: Any, *, user_id: Any) -> None:
         session = self.get_session(session_id, user_id=user_id)

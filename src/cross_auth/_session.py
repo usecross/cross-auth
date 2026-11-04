@@ -159,6 +159,20 @@ def _get_session(
     return refreshed, True
 
 
+def get_user_session(
+    session_id: object, storage: SessionStorage, *, user_id: object
+) -> SessionRecord | None:
+    """Return the session ``session_id`` if ``user_id`` owns it, in any status.
+
+    Another user's session answers ``None``, like a missing one, so a caller
+    cannot tell the two apart.
+    """
+    session = storage.get_any(session_id)
+    if session is None or str(session.user_id) != str(user_id):
+        return None
+    return session
+
+
 def delete_session(
     session_token: str,
     storage: SessionStorage,

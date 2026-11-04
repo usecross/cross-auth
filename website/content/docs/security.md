@@ -32,6 +32,7 @@ Route paths below are relative to where you include `auth.router`:
 | `GET /{provider}/login`, `GET /{provider}/authorize`          | Rate-limit authorization starts and temporary-state allocation.                                                                                                                |
 | `POST /token`                                                 | Rate-limit credential verification and token issuance. This endpoint returns a bearer token; it does not authenticate through the browser's session cookie or set that cookie. |
 | `POST /logout`                                                | Require CSRF protection when the session cookie authenticates the request. A request that only sends `Authorization: Bearer` carries no ambient credential.                    |
+| `DELETE /sessions/{id}`, `POST /sessions/revoke-others`       | Require CSRF protection when the session cookie authenticates the request, as for `/logout`. `GET /sessions` changes nothing.                                                  |
 | Your password/native login, logout, session-revocation routes | Apply CSRF checks to browser endpoints, including login before a user has a session. Use POST or DELETE for mutations. Apply rate limits before calling Cross-Auth.            |
 
 ## Protect browser requests in FastAPI
