@@ -23,6 +23,36 @@ logger = logging.getLogger(__name__)
 DEFAULT_TOKEN_EXCHANGE_TIMEOUT = 10.0
 RECOVERABLE_TOKEN_EXCHANGE_ERRORS = {"bad_verification_code"}
 _TOKEN_RESPONSE_ADAPTER = TypeAdapter(TokenResponse | TokenErrorResponse)
+_TOKEN_ERROR_LOCATION_PARTS = frozenset(
+    (
+        "TokenResponse",
+        "TokenErrorResponse",
+        *TokenResponse.model_fields,
+        *TokenErrorResponse.model_fields,
+    )
+)
+
+
+def _describe_validation_error(error: ValidationError) -> str:
+    """Name known token fields and error types, never provider-supplied keys.
+
+    Validation locations can contain extra-field names and dictionary keys
+    from a token response, so they are secret-bearing just like input values.
+    """
+    descriptions = []
+    for detail in error.errors(
+        include_url=False, include_context=False, include_input=False
+    ):
+        location = ".".join(
+            part
+            for part in detail["loc"]
+            if isinstance(part, str) and part in _TOKEN_ERROR_LOCATION_PARTS
+        )
+        descriptions.append(
+            f"{location}={detail['type']}" if location else detail["type"]
+        )
+
+    return ", ".join(descriptions)
 
 
 class UserInfo(TypedDict, total=True):
@@ -78,7 +108,7 @@ class OAuth2Provider:
         self,
         client_id: str,
         client_secret: str | None = None,
-        trust_email: bool = True,
+        trust_email: bool = False,
         *,
         extra_authorization_params: dict[str, str] | None = None,
         token_exchange_timeout: float | httpx.Timeout | None = (
@@ -92,9 +122,11 @@ class OAuth2Provider:
             client_id: OAuth2 client ID.
             client_secret: OAuth2 client secret. None for providers that generate
                 secrets dynamically (e.g., Apple).
-            trust_email: If True, emails from this provider are trusted for account
-                linking even without explicit email_verified=True. Set to False for
-                providers that don't verify email ownership.
+            trust_email: If True, an email this provider sends without an
+                email_verified claim counts as verified for linking to an existing
+                account. An email the provider reports as unverified
+                (email_verified=False) never does. Defaults to False, so linking
+                requires email_verified=True.
             extra_authorization_params: Additional query parameters to append to
                 the authorization URL (e.g., Google's ``access_type=offline``,
                 ``prompt=consent``, ``hd``, ``include_granted_scopes``). Keys that
@@ -111,15 +143,23 @@ class OAuth2Provider:
     def can_auto_link(self, context: Context, email_verified: bool | None) -> bool:
         """Check if auto-linking by email is allowed.
 
-        Auto-linking requires account linking to be enabled AND either:
-        - The provider is trusted (trust_email=True), OR
-        - The email is verified by the provider
+        Auto-linking requires account linking to be enabled AND an email that
+        proves ownership (see trusts_email).
         """
         account_linking = context.config.get("account_linking", {})
 
-        return account_linking.get("enabled", False) and (
-            self.trust_email or email_verified is True
+        return account_linking.get("enabled", False) and self.trusts_email(
+            email_verified
         )
+
+    def trusts_email(self, email_verified: bool | None) -> bool:
+        """Check if the provider's email proves the user owns it.
+
+        True when the provider reports the email verified, or when it sends no
+        verification claim and trust_email=True. An email the provider reports
+        as unverified is never trusted.
+        """
+        return email_verified is True or (self.trust_email and email_verified is None)
 
     def allows_different_emails(
         self, context: Context, provider_email: str | None, user_email: str | None
@@ -303,7 +343,9 @@ class OAuth2Provider:
         """Parse token exchange response.
 
         Override this method to handle different response formats. Overrides must
-        return a TokenResponse or TokenErrorResponse directly.
+        return a TokenResponse or TokenErrorResponse directly. Raise
+        OAuth2Exception from a ValidationError so exchange_code logs which fields
+        failed, without their values.
 
         Raises:
             OAuth2Exception: If the response cannot be parsed.
@@ -331,7 +373,12 @@ class OAuth2Provider:
 
         Raises:
             OAuth2Exception: If the token exchange fails
+
+        Token responses carry credentials, so failures are logged without the
+        response body or validation inputs, and the raised exception does not
+        chain them.
         """
+        provider_error: str | None = None
         try:
             params = self.build_token_exchange_params(code, redirect_uri, code_verifier)
 
@@ -342,11 +389,15 @@ class OAuth2Provider:
                 if response.is_error:
                     response.raise_for_status()
 
+                cause = e.__cause__
                 logger.error(
-                    "Failed to parse token response: %s",
-                    e.__cause__ or e.error_description,
+                    "Failed to parse token response (%s)",
+                    _describe_validation_error(cause)
+                    if isinstance(cause, ValidationError)
+                    else e.error,
+                    extra={"oauth_provider": self.id},
                 )
-                raise
+                raise e from None
 
             if isinstance(token_response, TokenErrorResponse):
                 if token_response.error in RECOVERABLE_TOKEN_EXCHANGE_ERRORS:
@@ -364,6 +415,7 @@ class OAuth2Provider:
                         or "The authorization code is invalid or expired. Please try again.",
                     )
 
+                provider_error = token_response.error
                 response.raise_for_status()
                 logger.error("Token exchange failed: %s", token_response.error)
 
@@ -385,14 +437,19 @@ class OAuth2Provider:
 
         except httpx.HTTPStatusError as e:
             logger.warning(
-                "HTTP error during token exchange: %s - %s",
+                "HTTP error during token exchange (status=%s, error=%s)",
                 e.response.status_code,
-                e.response.text,
+                provider_error,
+                extra={
+                    "oauth_provider": self.id,
+                    "oauth_status_code": e.response.status_code,
+                    "oauth_error": provider_error,
+                },
             )
             raise OAuth2Exception(
                 error="server_error",
                 error_description="Token exchange failed",
-            ) from e
+            ) from None
         except httpx.TimeoutException as e:
             logger.warning(
                 "Token exchange timed out",
@@ -408,12 +465,27 @@ class OAuth2Provider:
                     "flow."
                 ),
             ) from e
-        except (httpx.RequestError, ValidationError) as e:
-            logger.error("Failed to exchange code for token: %s", e)
+        except httpx.RequestError as e:
+            logger.error(
+                "Failed to exchange code for token: %s",
+                e,
+                extra={"oauth_provider": self.id},
+            )
             raise OAuth2Exception(
                 error="server_error",
                 error_description="Failed to exchange code for token",
             ) from e
+        except ValidationError as e:
+            # Raised by custom token parsers.
+            logger.error(
+                "Failed to exchange code for token (%s)",
+                _describe_validation_error(e),
+                extra={"oauth_provider": self.id},
+            )
+            raise OAuth2Exception(
+                error="server_error",
+                error_description="Failed to exchange code for token",
+            ) from None
 
     def validate_auth_request(self, auth_request: "AuthRequest") -> None:
         """Validate the stored request before processing a browser callback.

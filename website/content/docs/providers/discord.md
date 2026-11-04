@@ -20,6 +20,10 @@ discord = DiscordProvider(
 )
 ```
 
+Discord reports whether the user's email is verified. Linking a Discord sign-in
+to an existing user by email requires a verified email; see
+[Linking by email](/docs/social-providers#linking-by-email).
+
 ## Discord Setup
 
 ### Create an Application

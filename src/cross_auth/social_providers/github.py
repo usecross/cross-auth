@@ -27,7 +27,7 @@ class GitHubProvider(OAuth2Provider):
         self,
         client_id: str,
         client_secret: str,
-        trust_email: bool = True,
+        trust_email: bool = False,
         *,
         authorization_endpoint: str | None = None,
         token_endpoint: str | None = None,
@@ -42,8 +42,9 @@ class GitHubProvider(OAuth2Provider):
         Args:
             client_id: OAuth2 client ID.
             client_secret: OAuth2 client secret.
-            trust_email: If True, emails from this provider are trusted for account
-                linking even without explicit email_verified=True.
+            trust_email: If True, an email GitHub sends without a verification
+                status counts as verified for linking to an existing account. An
+                email GitHub reports as unverified never does. Defaults to False.
             authorization_endpoint: Custom authorization URL (for browser redirects).
             token_endpoint: Custom token exchange URL (for server-to-server calls).
             api_base_url: Custom API base URL for user info and emails

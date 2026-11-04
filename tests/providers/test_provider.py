@@ -1,15 +1,20 @@
 import json
 import logging
+import traceback
+from typing import Any
 
 import httpx
 import pytest
 import respx
 from cross_web import HTTPRequest, TestingHTTPRequestAdapter
+from pydantic import ConfigDict, Field, ValidationError
 
 from cross_auth import TokenResponse
 from cross_auth._auth_flow import handle_callback, start_token_flow
 from cross_auth._context import Context
 from cross_auth.models.oauth_token_response import TokenErrorResponse
+from cross_auth.social_providers.discord import DiscordProvider
+from cross_auth.social_providers.github import GitHubProvider
 from cross_auth.social_providers.oauth import (
     OAuth2Exception,
     OAuth2Provider,
@@ -50,6 +55,30 @@ def example_provider() -> ExampleProvider:
     return ExampleProvider(
         client_id="test_client_id", client_secret="test_client_secret"
     )
+
+
+@pytest.mark.parametrize(
+    "provider_class", [ExampleProvider, GitHubProvider, DiscordProvider]
+)
+def test_providers_do_not_trust_unverified_emails_by_default(
+    provider_class: type[OAuth2Provider],
+) -> None:
+    provider = provider_class(client_id="client", client_secret="secret")
+
+    assert provider.trust_email is False
+    assert provider.trusts_email(True) is True
+    assert provider.trusts_email(None) is False
+    assert provider.trusts_email(False) is False
+
+
+def test_trust_email_trusts_only_emails_without_a_verification_claim() -> None:
+    provider = ExampleProvider(
+        client_id="client", client_secret="secret", trust_email=True
+    )
+
+    assert provider.trusts_email(True) is True
+    assert provider.trusts_email(None) is True
+    assert provider.trusts_email(False) is False
 
 
 @respx.mock
@@ -157,8 +186,10 @@ def test_exchange_code_github_down(
     assert len(provider_records) == 1
     assert provider_records[0].levelno == logging.WARNING
     assert provider_records[0].getMessage() == (
-        "HTTP error during token exchange: 503 - "
+        "HTTP error during token exchange (status=503, error=None)"
     )
+    assert provider_records[0].__dict__["oauth_provider"] == "example"
+    assert provider_records[0].__dict__["oauth_status_code"] == 503
 
 
 @respx.mock
@@ -186,11 +217,206 @@ def test_exchange_code_logs_malformed_success_response(
     ]
     assert len(provider_records) == 1
     assert provider_records[0].levelno == logging.ERROR
-    assert (
-        provider_records[0]
-        .getMessage()
-        .startswith("Failed to parse token response: 2 validation errors")
+    assert provider_records[0].getMessage() == (
+        "Failed to parse token response "
+        "(TokenResponse.token_type=missing, TokenErrorResponse.error=missing)"
     )
+    assert provider_records[0].__dict__["oauth_provider"] == "example"
+
+
+def _secret_tokens(length: int) -> dict[str, str]:
+    # Every value shares a marker, so a truncated echo of a long token is still
+    # caught.
+    return {
+        kind: f"sentinel-{kind}-" + "x" * length
+        for kind in ("access_token", "refresh_token", "id_token")
+    }
+
+
+def _token_response_cases() -> list[object]:
+    cases = []
+    for length in (8, 400):
+        tokens = _secret_tokens(length)
+        cases += [
+            pytest.param(
+                200,
+                {"json": {"access_token": tokens["access_token"]}},
+                "Failed to parse token response "
+                "(TokenResponse.token_type=missing, TokenErrorResponse.error=missing)",
+                id=f"success-without-token-type-{length}",
+            ),
+            pytest.param(
+                200,
+                {"json": {"refresh_token": tokens["refresh_token"]}},
+                "Failed to parse token response (TokenResponse.token_type=missing, "
+                "TokenResponse.access_token=missing, TokenErrorResponse.error=missing)",
+                id=f"refresh-token-only-{length}",
+            ),
+            pytest.param(
+                200,
+                {"json": {**tokens, "token_type": ["bearer"]}},
+                "Failed to parse token response "
+                "(TokenResponse.token_type=string_type, TokenErrorResponse.error=missing)",
+                id=f"all-tokens-wrong-token-type-{length}",
+            ),
+            pytest.param(
+                200,
+                {"text": "&".join(f"{kind}={value}" for kind, value in tokens.items())},
+                "Failed to parse token response (json_invalid)",
+                id=f"form-encoded-{length}",
+            ),
+            pytest.param(
+                400,
+                {"json": tokens},
+                "HTTP error during token exchange (status=400, error=None)",
+                id=f"http-error-malformed-{length}",
+            ),
+            pytest.param(
+                400,
+                {"json": {**tokens, "token_type": "bearer"}},
+                "HTTP error during token exchange (status=400, error=None)",
+                id=f"http-error-with-tokens-{length}",
+            ),
+            pytest.param(
+                400,
+                {
+                    "json": {
+                        "error": "invalid_grant",
+                        "error_description": tokens["access_token"],
+                    }
+                },
+                "HTTP error during token exchange (status=400, error=invalid_grant)",
+                id=f"http-error-description-{length}",
+            ),
+        ]
+    return cases
+
+
+def _assert_no_secrets(caplog: pytest.LogCaptureFixture, error: BaseException) -> None:
+    logged = caplog.text + "".join(repr(vars(record)) for record in caplog.records)
+    raised = "".join(traceback.format_exception(error))
+    assert "sentinel" not in logged
+    assert "sentinel" not in raised
+
+
+@pytest.mark.parametrize(("status_code", "body", "message"), _token_response_cases())
+@respx.mock
+def test_exchange_code_never_logs_token_response_values(
+    example_provider: ExampleProvider,
+    caplog: pytest.LogCaptureFixture,
+    status_code: int,
+    body: dict[str, Any],
+    message: str,
+) -> None:
+    respx.post(example_provider.token_endpoint).mock(
+        return_value=respx.MockResponse(status_code, **body)
+    )
+
+    with (
+        caplog.at_level(logging.DEBUG),
+        pytest.raises(OAuth2Exception) as exc_info,
+    ):
+        example_provider.exchange_code("test_code", "https://example.com/callback")
+
+    assert exc_info.value.error == "server_error"
+    _assert_no_secrets(caplog, exc_info.value)
+    provider_records = [
+        record for record in caplog.records if record.name == logger.name
+    ]
+    assert [record.getMessage() for record in provider_records] == [message]
+
+
+@pytest.mark.parametrize("length", [8, 400])
+@respx.mock
+def test_exchange_code_never_logs_custom_parser_validation_input(
+    caplog: pytest.LogCaptureFixture, length: int
+) -> None:
+    provider = ExampleProviderWithCustomTokenParser(
+        client_id="test_client_id", client_secret="test_client_secret"
+    )
+    tokens = _secret_tokens(length)
+    respx.post(provider.token_endpoint).mock(
+        return_value=respx.MockResponse(200, json={"tokens": tokens})
+    )
+
+    with (
+        caplog.at_level(logging.DEBUG),
+        pytest.raises(OAuth2Exception) as exc_info,
+    ):
+        provider.exchange_code("test_code", "https://example.com/callback")
+
+    assert exc_info.value.error_description == "Failed to exchange code for token"
+    _assert_no_secrets(caplog, exc_info.value)
+    provider_records = [
+        record for record in caplog.records if record.name == logger.name
+    ]
+    assert [record.getMessage() for record in provider_records] == [
+        "Failed to exchange code for token (token_type=missing)"
+    ]
+
+
+@pytest.mark.parametrize("length", [8, 400])
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize(
+    ("location", "error_type"),
+    [("extra", "extra_forbidden"), ("dictionary", "int_parsing")],
+)
+@respx.mock
+def test_exchange_code_never_logs_provider_keys_in_validation_locations(
+    caplog: pytest.LogCaptureFixture,
+    length: int,
+    wrapped: bool,
+    location: str,
+    error_type: str,
+) -> None:
+    class CustomTokenResponse(TokenResponse):
+        model_config = ConfigDict(extra="forbid")
+
+        metadata: dict[str, int] = Field(default_factory=dict)
+
+    class CustomProvider(ExampleProvider):
+        def parse_token_response(
+            self, response: httpx.Response
+        ) -> TokenResponse | TokenErrorResponse:
+            try:
+                return CustomTokenResponse.model_validate(response.json())
+            except ValidationError as error:
+                if wrapped:
+                    raise OAuth2Exception(
+                        "server_error", "Invalid token response"
+                    ) from error
+                raise
+
+    provider = CustomProvider(client_id="test-client")
+    secret_key = "sentinel-provider-key-" + "x" * length
+    body: dict[str, Any] = {"token_type": "Bearer", "access_token": "fake-token"}
+    if location == "extra":
+        body[secret_key] = "unexpected"
+    else:
+        body["metadata"] = {secret_key: "invalid-integer"}
+
+    respx.post(provider.token_endpoint).mock(
+        return_value=httpx.Response(200, json=body)
+    )
+
+    with (
+        caplog.at_level(logging.DEBUG),
+        pytest.raises(OAuth2Exception) as exc_info,
+    ):
+        provider.exchange_code("fake-code", "https://example.com/callback")
+
+    _assert_no_secrets(caplog, exc_info.value)
+    prefix = (
+        "Failed to parse token response"
+        if wrapped
+        else "Failed to exchange code for token"
+    )
+    provider_records = [
+        record for record in caplog.records if record.name == logger.name
+    ]
+    assert [record.getMessage() for record in provider_records] == [
+        f"{prefix} ({error_type})"
+    ]
 
 
 @respx.mock
@@ -319,11 +545,10 @@ def test_exchange_code_preserves_nonrecoverable_http_error_handling(
     assert exc_info.value.error_description == "Token exchange failed"
     assert len(caplog.records) == 1
     assert caplog.records[0].levelno == logging.WARNING
-    assert (
-        caplog.records[0]
-        .getMessage()
-        .startswith("HTTP error during token exchange: 400 - ")
+    assert caplog.records[0].getMessage() == (
+        "HTTP error during token exchange (status=400, error=invalid_grant)"
     )
+    assert caplog.records[0].__dict__["oauth_error"] == "invalid_grant"
 
 
 @pytest.fixture

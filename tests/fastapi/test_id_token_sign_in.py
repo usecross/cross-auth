@@ -411,6 +411,41 @@ def test_links_to_existing_account_only_when_linking_enabled(
     assert user.id == existing.id
 
 
+@pytest.mark.parametrize("require_verified_email", [False, True])
+@pytest.mark.parametrize("email_verified", [False, None])
+def test_unverified_email_cannot_sign_in_as_existing_user(
+    secondary_storage: SecondaryStorage,
+    accounts_storage,
+    email_verified: bool | None,
+    require_verified_email: bool,
+):
+    claims: dict[str, Any] = {"sub": "native-2", "email": "test@example.com"}
+    if email_verified is not None:
+        claims["email_verified"] = email_verified
+    session_storage = MemorySessionStorage()
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        StubOIDCProvider(claims),
+        session_storage=session_storage,
+        config={
+            "account_linking": {"enabled": True},
+            "require_verified_email": require_verified_email,
+        },
+    )
+
+    with pytest.raises(CrossAuthException, match="^account_not_linked$"):
+        auth.sign_in_with_id_token("stub", VALID_TOKEN)
+
+    assert (
+        accounts_storage.find_social_account(
+            provider="stub", provider_user_id="native-2"
+        )
+        is None
+    )
+    assert session_storage.records == {}
+
+
 def test_rejects_unknown_and_non_oidc_providers(
     secondary_storage: SecondaryStorage,
     accounts_storage,

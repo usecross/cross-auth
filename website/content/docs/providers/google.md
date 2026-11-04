@@ -23,12 +23,13 @@ google = GoogleProvider(
 
 ### Account linking and `trust_email`
 
-Unlike other providers, `GoogleProvider` defaults `trust_email=False`. Google
-always returns an `email_verified` claim in the ID token, so auto-linking uses
-that claim instead of blanket-trusting the email. If account linking is enabled
-and a user's `email_verified` is `False` (rare, but possible for federated
-Google accounts), linking will be skipped. Pass `trust_email=True` explicitly
-only if you want to override this.
+Google returns an `email_verified` claim in the ID token, and linking a Google
+sign-in to an existing user by email requires it to be `True`. If a user's
+`email_verified` is `False` (rare, but possible for federated Google accounts),
+the sign-in fails with `account_not_linked`. Like every provider,
+`GoogleProvider` defaults to `trust_email=False`; `trust_email=True` only
+accepts an email sent without the claim and never overrides `False`. See
+[Linking by email](/docs/social-providers#linking-by-email).
 
 ### Requesting a refresh token
 
