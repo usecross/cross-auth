@@ -66,7 +66,9 @@ revoked sessions.
 
 Revokes all sessions for a user and returns the number of revoked sessions.
 
-Session methods require `session_storage` to be configured.
+Session methods require `session_storage` to be configured. `auth.router` serves
+the caller's own sessions over HTTP with the same storage; see
+[List and Revoke Sessions](/docs/session-authentication#list-and-revoke-sessions).
 
 ---
 

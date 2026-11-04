@@ -22,6 +22,7 @@ from ._context import AccountsStorage, Context, SecondaryStorage, User
 from ._issuer import Issuer
 from ._oauth_server import OAuthServer
 from ._route import Route
+from ._session_routes import session_routes
 from ._setup import AuthSetup, build_auth_setup
 from ._storage import SessionStorage
 from .hooks import HookRegistry
@@ -245,6 +246,7 @@ class AuthRouter(APIRouter):
                     },
                 )
             )
+            provider_routes.extend(session_routes())
         if self.issuer is not None and oauth_server is not None:
             provider_routes.extend(
                 self.issuer.routes(password_grant=oauth_server.password_grant)

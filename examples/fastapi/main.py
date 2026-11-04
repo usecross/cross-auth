@@ -770,28 +770,10 @@ def api_sessions(
     )
 
 
-@app.post("/api/sessions/{session_id}/revoke")
-def api_revoke_session(
-    session_id: str,
-    user: Annotated[UserProtocol, Depends(auth.require_current_user)],
-) -> JSONResponse:
-    auth.revoke_session(session_id, user_id=str(user.id))
-    return JSONResponse({"ok": True})
-
-
-@app.post("/api/sessions/revoke-other")
-def api_revoke_other_sessions(
-    request: Request,
-    user: Annotated[UserProtocol, Depends(auth.require_current_user)],
-) -> JSONResponse:
-    current_session = auth.get_current_session(request)
-    revoked = 0
-    if current_session is not None:
-        revoked = auth.revoke_other_sessions(
-            user_id=str(user.id),
-            keep_session_id=current_session.id,
-        )
-    return JSONResponse({"ok": True, "revoked": revoked})
+# auth.router serves JSON clients the caller's sessions as well:
+# GET /auth/sessions, DELETE /auth/sessions/{session_id} and
+# POST /auth/sessions/revoke-others. /api/sessions above adds the demo's
+# display fields and status filter for the session dashboard's e2e test.
 
 
 @app.post("/api/sessions/revoke-all")

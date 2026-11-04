@@ -46,6 +46,87 @@ def test_router(test_app: FastAPI):
                         },
                     }
                 },
+                "/sessions": {
+                    "get": {
+                        "summary": "List the caller's active sessions",
+                        "operationId": "list_sessions",
+                        "responses": {
+                            "200": {
+                                "description": "Successful Response",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "$ref": "#/components/schemas/SessionList"
+                                        }
+                                    }
+                                },
+                            },
+                            "400": {"description": "Invalid limit or cursor"},
+                            "401": {"description": "Not logged in"},
+                        },
+                        "parameters": [
+                            {
+                                "name": "limit",
+                                "in": "query",
+                                "required": False,
+                                "schema": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 100,
+                                    "default": 50,
+                                    "title": "Limit",
+                                },
+                            },
+                            {
+                                "name": "cursor",
+                                "in": "query",
+                                "required": False,
+                                "schema": {"type": "string", "title": "Cursor"},
+                                "description": "The next_cursor of the previous page",
+                            },
+                        ],
+                    }
+                },
+                "/sessions/revoke-others": {
+                    "post": {
+                        "summary": "Revoke the caller's other sessions",
+                        "operationId": "revoke_other_sessions",
+                        "responses": {
+                            "200": {
+                                "description": "Successful Response",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "$ref": "#/components/schemas/RevokedSessions"
+                                        }
+                                    }
+                                },
+                            },
+                            "401": {"description": "Not logged in"},
+                        },
+                    }
+                },
+                "/sessions/{session_id}": {
+                    "delete": {
+                        "summary": "Revoke one of the caller's sessions",
+                        "operationId": "revoke_session",
+                        "responses": {
+                            "204": {"description": "Successful Response"},
+                            "401": {"description": "Not logged in"},
+                            "404": {
+                                "description": "No session with this id belongs to the caller"
+                            },
+                        },
+                        "parameters": [
+                            {
+                                "name": "session_id",
+                                "in": "path",
+                                "required": True,
+                                "schema": {"type": "string", "title": "Session Id"},
+                            }
+                        ],
+                    }
+                },
                 "/token": {
                     "post": {
                         "summary": "OAuth 2.0 token endpoint",
@@ -292,6 +373,92 @@ def test_router(test_app: FastAPI):
                             "code_verifier",
                         ],
                         "title": "AuthorizationCodeGrantRequest",
+                    },
+                    "RevokedSessions": {
+                        "properties": {
+                            "revoked": {
+                                "type": "integer",
+                                "title": "Revoked",
+                                "description": "How many sessions were revoked, including expired ones that had not been revoked yet",
+                            }
+                        },
+                        "type": "object",
+                        "required": ["revoked"],
+                        "title": "RevokedSessions",
+                    },
+                    "SessionInfo": {
+                        "properties": {
+                            "id": {"type": "string", "title": "Id"},
+                            "client_id": {
+                                "anyOf": [{"type": "string"}, {"type": "null"}],
+                                "title": "Client Id",
+                                "description": "The OAuth client that started the session, if any",
+                            },
+                            "client_name": {
+                                "anyOf": [{"type": "string"}, {"type": "null"}],
+                                "title": "Client Name",
+                            },
+                            "user_agent": {
+                                "anyOf": [{"type": "string"}, {"type": "null"}],
+                                "title": "User Agent",
+                            },
+                            "ip": {
+                                "anyOf": [{"type": "string"}, {"type": "null"}],
+                                "title": "Ip",
+                            },
+                            "login_method": {
+                                "anyOf": [{"type": "string"}, {"type": "null"}],
+                                "title": "Login Method",
+                                "description": 'How the user signed in: a provider id, "password", or what the application recorded',
+                            },
+                            "created_at": {
+                                "type": "string",
+                                "format": "date-time",
+                                "title": "Created At",
+                            },
+                            "expires_at": {
+                                "type": "string",
+                                "format": "date-time",
+                                "title": "Expires At",
+                            },
+                            "current": {
+                                "type": "boolean",
+                                "title": "Current",
+                                "description": "Whether this is the session that authenticated the request",
+                            },
+                        },
+                        "type": "object",
+                        "required": [
+                            "id",
+                            "client_id",
+                            "client_name",
+                            "user_agent",
+                            "ip",
+                            "login_method",
+                            "created_at",
+                            "expires_at",
+                            "current",
+                        ],
+                        "title": "SessionInfo",
+                        "description": "One of the caller's active sessions. Never carries its token or hash.",
+                    },
+                    "SessionList": {
+                        "properties": {
+                            "sessions": {
+                                "items": {"$ref": "#/components/schemas/SessionInfo"},
+                                "type": "array",
+                                "title": "Sessions",
+                                "description": "Newest first",
+                            },
+                            "next_cursor": {
+                                "anyOf": [{"type": "string"}, {"type": "null"}],
+                                "title": "Next Cursor",
+                                "description": "Pass as `cursor` to fetch the next page; null on the last page",
+                            },
+                        },
+                        "type": "object",
+                        "required": ["sessions", "next_cursor"],
+                        "title": "SessionList",
                     },
                     "HTTPValidationError": {
                         "properties": {

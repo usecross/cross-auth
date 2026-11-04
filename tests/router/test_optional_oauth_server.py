@@ -87,7 +87,12 @@ def _expected(
         for path, method in per_provider
     }
     if session_storage:
-        routes.add(("/logout", "POST"))
+        routes |= {
+            ("/logout", "POST"),
+            ("/sessions", "GET"),
+            ("/sessions/{session_id}", "DELETE"),
+            ("/sessions/revoke-others", "POST"),
+        }
     return routes | ({("/token", "POST")} if oauth_server else set())
 
 

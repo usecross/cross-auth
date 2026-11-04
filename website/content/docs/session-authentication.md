@@ -69,7 +69,7 @@ revokes every session of the caller's user (browser cookies and bearer tokens on
 every device), still answering 204. Without a valid session there is no user to
 log out, and nothing is revoked. An unknown `scope` answers
 `400 invalid_request`. To revoke a user's other sessions while keeping the
-current one, call `auth.revoke_other_sessions()` from your own route.
+current one, use [`POST /sessions/revoke-others`](#list-and-revoke-sessions).
 
 To log out from your own route, call `logout()`; the route runs the same code:
 
@@ -83,6 +83,66 @@ auth.logout(request, response=response)
 # Or revoke every session of the user
 auth.logout(request, response=response, scope="all")
 ```
+
+### List and Revoke Sessions
+
+With `session_storage` configured, `auth.router` also mounts JSON routes that
+let users see where they are signed in and sign other devices out. Paths are
+relative to where you include the router:
+
+| Route                           | Response                    | Operation ID            |
+| ------------------------------- | --------------------------- | ----------------------- |
+| `GET /sessions`                 | `200` with a `SessionList`  | `list_sessions`         |
+| `DELETE /sessions/{session_id}` | `204 No Content`            | `revoke_session`        |
+| `POST /sessions/revoke-others`  | `200` with `{"revoked": n}` | `revoke_other_sessions` |
+
+Like `/logout`, these routes act on the session that authenticates the request
+(the session cookie, then `Authorization: Bearer ...`) and on that session's
+user. A request without a valid session answers `401 unauthorized`.
+
+`GET /sessions` lists the caller's active sessions, newest first. It never
+returns session tokens or their hashes:
+
+```json
+{
+  "sessions": [
+    {
+      "id": "8b0c…",
+      "client_id": null,
+      "client_name": null,
+      "user_agent": "Mozilla/5.0 …",
+      "ip": "203.0.113.7",
+      "login_method": "github",
+      "created_at": "2026-11-04T09:12:44Z",
+      "expires_at": "2026-11-05T09:12:44Z",
+      "current": true
+    }
+  ],
+  "next_cursor": null
+}
+```
+
+`current` marks the session that authenticated the request. Pages hold 50
+sessions; pass `limit` (1 to 100) to change that, and send a page's
+`next_cursor` back as `cursor` to get the next one. An invalid `limit` or
+`cursor` answers `400 invalid_request`.
+
+`DELETE /sessions/{session_id}` revokes one of the caller's sessions, including
+the current one. Revoking the current cookie session also clears the cookie, as
+`/logout` does. An id that does not exist and another user's session both answer
+the same `404 session_not_found`, so nobody can probe for sessions. Revoking a
+session that is already revoked or expired answers 204.
+
+`POST /sessions/revoke-others` revokes every session of the caller except the
+current one. `revoked` counts expired sessions that had not been revoked yet
+too, so it can be higher than the number of sessions `GET /sessions` listed.
+
+These routes do not run hooks; `logout` hooks run only for `/logout` and
+`auth.logout()`. `DELETE` and `POST` change state, so protect them from CSRF
+when the session cookie can authenticate them, like `/logout`: see
+[Security Integration](/docs/security). To build your own pages instead, use
+`auth.list_sessions()`, `auth.get_session()`, `auth.revoke_session()`,
+`auth.revoke_other_sessions()` and `auth.revoke_all_sessions()`.
 
 ### Get Current User
 
