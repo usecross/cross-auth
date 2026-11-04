@@ -556,15 +556,25 @@ class TestLinking:
         assert error_of(response) == "email_mismatch"
         assert not SocialAccount.objects.exists()
 
+    # trust_email never overrides an email the provider reports as unverified.
+    @pytest.mark.parametrize("trust_email", [False, True])
     def test_unverified_provider_email_cannot_be_linked(
-        self, client: Client, google: FakeGoogle
+        self,
+        client: Client,
+        google: FakeGoogle,
+        monkeypatch: pytest.MonkeyPatch,
+        trust_email: bool,
     ) -> None:
+        monkeypatch.setattr(
+            get_settings().providers["google"], "trust_email", trust_email
+        )
         self.login_with_password(client)
         authorization = google.authorize(csrf_post(client, "/auth/google/link/"))
 
         response = google.callback(client, authorization, Account(email_verified=False))
 
         assert error_of(response) == "email_not_verified"
+        assert not SocialAccount.objects.exists()
 
     def test_linking_promotes_an_existing_connection(
         self, client: Client, google: FakeGoogle

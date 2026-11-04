@@ -20,6 +20,10 @@ github = GitHubProvider(
 )
 ```
 
+GitHub reports whether the user's primary email is verified. Linking a GitHub
+sign-in to an existing user by email requires a verified primary email; see
+[Linking by email](/docs/social-providers#linking-by-email).
+
 ## GitHub Setup
 
 ### Create an OAuth App

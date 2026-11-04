@@ -1683,7 +1683,7 @@ def _check_login_link_email(
     user: User,
 ) -> None:
     """Require a verified provider email, matching the user's unless allowed."""
-    if not provider.trust_email and validated.email_verified is not True:
+    if not provider.trusts_email(validated.email_verified):
         raise CrossAuthException(
             "email_not_verified",
             "Cannot link account: email not verified by provider.",

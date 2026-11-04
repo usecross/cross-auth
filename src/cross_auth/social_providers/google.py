@@ -42,9 +42,9 @@ class GoogleProvider(OIDCProvider):
         Args:
             client_id: OAuth2 client ID.
             client_secret: OAuth2 client secret.
-            trust_email: If True, emails from this provider are trusted for account
-                linking even without explicit email_verified=True. Defaults to False
-                because Google provides an email_verified claim.
+            trust_email: If True, an email Google sends without an email_verified
+                claim counts as verified for linking to an existing account. An
+                email Google reports as unverified never does. Defaults to False.
             extra_authorization_params: Additional query parameters for the
                 authorization URL. Common Google-specific values:
                 ``{"access_type": "offline", "prompt": "consent"}`` to receive a

@@ -166,7 +166,7 @@ def test_callback_hook_cannot_change_the_provider_id(
             lambda: client.get("/fake/callback", params={"code": "c", "state": state})
         )
 
-    _assert_provider_unchanged(fake_provider, trust_email=True)
+    _assert_provider_unchanged(fake_provider, trust_email=False)
     assert list(accounts_storage.data) == ["test"]
     assert session_storage.records == {}
     assert effects == []
@@ -191,9 +191,10 @@ def test_callback_hook_cannot_trust_the_provider_email(
         with _attempt(deny=deny):
             event.provider.trust_email = True
 
-    # An unverified email of an existing user must not auto-link.
+    # Without a verification claim, only trust_email would auto-link the
+    # existing user's email.
     mock_token_and_userinfo(
-        email="test@example.com", email_verified=False, provider_user_id="new-id"
+        email="test@example.com", email_verified=None, provider_user_id="new-id"
     )
     with _client(auth) as client:
         _, state = start_provider_auth(client, "/fake/login")
@@ -209,7 +210,7 @@ def test_callback_hook_cannot_trust_the_provider_email(
 
 @pytest.mark.parametrize(
     "changes",
-    [{"id": "other-provider"}, {"trust_email": False}],
+    [{"id": "other-provider"}, {"trust_email": True}],
     ids=["id", "trust_email"],
 )
 @respx.mock
@@ -245,7 +246,7 @@ def test_authorize_hook_cannot_change_the_provider(
     with _client(auth) as client:
         result = _run(lambda: client.get("/fake/authorize", params=_AUTHZ_PARAMS))
 
-    _assert_provider_unchanged(fake_provider, trust_email=True)
+    _assert_provider_unchanged(fake_provider, trust_email=False)
     assert not any(key.startswith("oauth:") for key in secondary_storage.data)
     _assert_rejected(result, deny=deny)
 
@@ -650,7 +651,10 @@ def test_custom_claim_mapping_and_profile_metadata_keep_working(
         resp = client.get("/fake/callback", params={"code": "c", "state": state})
 
     assert resp.status_code == 302
-    assert seen == [("oauth.callback", "fake", True), ("user.create", "alice", "Alice")]
+    assert seen == [
+        ("oauth.callback", "fake", False),
+        ("user.create", "alice", "Alice"),
+    ]
     assert accounts_storage.last_user_extra_fields == {"full_name": "Alice"}
     [account] = accounts_storage.data["alice"].social_accounts
     assert account.provider_user_id == "mapped:alice"

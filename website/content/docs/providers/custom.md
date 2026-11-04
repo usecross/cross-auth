@@ -62,6 +62,12 @@ class CustomProvider(OAuth2Provider):
         }
 ```
 
+Report `email_verified` as the provider states it: `True`, `False`, or `None`
+when it does not say. Linking a sign-in to an existing user by email requires
+`True`. If the provider verifies every email but never says so, pass
+`trust_email=True` to `super().__init__()` so `None` counts as verified; see
+[Linking by email](/docs/social-providers#linking-by-email).
+
 ### Required Class Attributes
 
 | Attribute                | Description                                       |
@@ -257,6 +263,11 @@ def parse_token_response(
 
     return TokenResponse.model_validate(data["tokens"])
 ```
+
+Token responses carry credentials, so Cross Auth never logs their body or the
+values a `ValidationError` holds. When a parser raises a `ValidationError`, or
+an `OAuth2Exception` from one, Cross Auth logs only the failing fields and error
+types. Keep response bodies out of your own parser's logs too.
 
 Custom parsers written for Cross Auth 0.22 or earlier may return an
 `OAuth2TokenEndpointResponse` wrapper. That wrapper has been removed. Update the

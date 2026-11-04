@@ -58,6 +58,33 @@ Cross-Auth supports linking multiple social accounts to a single user. If a user
 signs in with GitHub and later connects their Google account, both providers are
 linked to the same user record via the `SocialAccount` model.
 
+### Linking by email
+
+When a sign-in's provider email matches an existing user, Cross-Auth can add the
+provider to that user as a way to sign in. Enable it with:
+
+```python
+config = {"account_linking": {"enabled": True}}
+```
+
+The provider must report the email as verified (`email_verified=True`).
+Otherwise the sign-in fails with `account_not_linked`: nothing is attached and
+nobody is signed in. GitHub reports whether the primary email is verified,
+Discord its `verified` field, and Google and Apple their `email_verified` claim.
+
+All providers default to `trust_email=False`. Pass `trust_email=True` only for a
+provider that verifies email ownership but does not say so: an email it sends
+without a verification claim then counts as verified. An email the provider
+reports as unverified never links, whatever `trust_email` says. The same rule
+applies when a signed-in user links a provider with `finalize-link`, or connects
+it as a login method, which fail with `email_not_verified`.
+
+This only decides whether an existing user is linked. `require_verified_email`
+decides whether a new user can sign up, and a provider identity that is already
+linked signs in by its provider user ID, whatever its email status.
+
+### Linking a signed-in user
+
 The `POST /{provider}/link` endpoint handles account linking for authenticated
 users. It is part of the [OAuth server](/docs/oauth#the-oauth-server); without
 the OAuth server, `GET /{provider}/connect` attaches an integration-only

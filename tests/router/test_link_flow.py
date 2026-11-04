@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+import pytest
 import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -333,25 +334,50 @@ def test_finalize_link_reports_userinfo_failure(
     assert resp.json()["error_description"] == "Failed to fetch user info"
 
 
+# trust_email never overrides an email the provider reports as unverified; it
+# only accepts an email sent without a verification claim.
+@pytest.mark.parametrize(
+    ("trust_email", "email_verified", "error"),
+    [
+        (False, False, "email_not_verified"),
+        (True, False, "email_not_verified"),
+        (False, None, "email_not_verified"),
+        (True, None, None),
+    ],
+)
 @respx.mock
-def test_finalize_link_requires_verified_email_for_untrusted_provider(
+def test_finalize_link_requires_verified_email(
     build_auth,
     secondary_storage: SecondaryStorage,
+    accounts_storage,
     fake_provider,
+    trust_email: bool,
+    email_verified: bool | None,
+    error: str | None,
 ):
-    fake_provider.trust_email = False
+    fake_provider.trust_email = trust_email
     link_code = _store_link_code(secondary_storage, code="unverified-email")
-    mock_token_and_userinfo(email="test@example.com", email_verified=False)
+    mock_token_and_userinfo(email="test@example.com", email_verified=email_verified)
 
     with _auth_enabled_client(build_auth) as c:
         resp = c.post(
             "/fake/finalize-link",
             headers={"Authorization": "Bearer test"},
-            json={"link_code": link_code, "code_verifier": _LINK_CODE_VERIFIER},
+            json={
+                "link_code": link_code,
+                "code_verifier": _LINK_CODE_VERIFIER,
+                "allow_login": True,
+            },
         )
 
-    assert resp.status_code == 400
-    assert resp.json()["error"] == "email_not_verified"
+    if error is None:
+        assert resp.status_code == 200
+        [account] = accounts_storage.data["test"].social_accounts
+        assert account.is_login_method is True
+    else:
+        assert resp.status_code == 400
+        assert resp.json()["error"] == error
+        assert accounts_storage.data["test"].social_accounts == []
 
 
 @respx.mock
