@@ -23,21 +23,36 @@ logger = logging.getLogger(__name__)
 DEFAULT_TOKEN_EXCHANGE_TIMEOUT = 10.0
 RECOVERABLE_TOKEN_EXCHANGE_ERRORS = {"bad_verification_code"}
 _TOKEN_RESPONSE_ADAPTER = TypeAdapter(TokenResponse | TokenErrorResponse)
+_TOKEN_ERROR_LOCATION_PARTS = frozenset(
+    (
+        "TokenResponse",
+        "TokenErrorResponse",
+        *TokenResponse.model_fields,
+        *TokenErrorResponse.model_fields,
+    )
+)
 
 
 def _describe_validation_error(error: ValidationError) -> str:
-    """Name each failing field and error type, never the input values.
+    """Name known token fields and error types, never provider-supplied keys.
 
-    A token response's input is its credentials, which must stay out of logs.
+    Validation locations can contain extra-field names and dictionary keys
+    from a token response, so they are secret-bearing just like input values.
     """
-    return ", ".join(
-        ".".join(str(part) for part in detail["loc"]) + f"={detail['type']}"
-        if detail["loc"]
-        else detail["type"]
-        for detail in error.errors(
-            include_url=False, include_context=False, include_input=False
+    descriptions = []
+    for detail in error.errors(
+        include_url=False, include_context=False, include_input=False
+    ):
+        location = ".".join(
+            part
+            for part in detail["loc"]
+            if isinstance(part, str) and part in _TOKEN_ERROR_LOCATION_PARTS
         )
-    )
+        descriptions.append(
+            f"{location}={detail['type']}" if location else detail["type"]
+        )
+
+    return ", ".join(descriptions)
 
 
 class UserInfo(TypedDict, total=True):

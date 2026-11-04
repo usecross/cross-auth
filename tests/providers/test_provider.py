@@ -7,6 +7,7 @@ import httpx
 import pytest
 import respx
 from cross_web import HTTPRequest, TestingHTTPRequestAdapter
+from pydantic import ConfigDict, Field, ValidationError
 
 from cross_auth import TokenResponse
 from cross_auth._auth_flow import handle_callback, start_token_flow
@@ -351,6 +352,70 @@ def test_exchange_code_never_logs_custom_parser_validation_input(
     ]
     assert [record.getMessage() for record in provider_records] == [
         "Failed to exchange code for token (token_type=missing)"
+    ]
+
+
+@pytest.mark.parametrize("length", [8, 400])
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize(
+    ("location", "error_type"),
+    [("extra", "extra_forbidden"), ("dictionary", "int_parsing")],
+)
+@respx.mock
+def test_exchange_code_never_logs_provider_keys_in_validation_locations(
+    caplog: pytest.LogCaptureFixture,
+    length: int,
+    wrapped: bool,
+    location: str,
+    error_type: str,
+) -> None:
+    class CustomTokenResponse(TokenResponse):
+        model_config = ConfigDict(extra="forbid")
+
+        metadata: dict[str, int] = Field(default_factory=dict)
+
+    class CustomProvider(ExampleProvider):
+        def parse_token_response(
+            self, response: httpx.Response
+        ) -> TokenResponse | TokenErrorResponse:
+            try:
+                return CustomTokenResponse.model_validate(response.json())
+            except ValidationError as error:
+                if wrapped:
+                    raise OAuth2Exception(
+                        "server_error", "Invalid token response"
+                    ) from error
+                raise
+
+    provider = CustomProvider(client_id="test-client")
+    secret_key = "sentinel-provider-key-" + "x" * length
+    body: dict[str, Any] = {"token_type": "Bearer", "access_token": "fake-token"}
+    if location == "extra":
+        body[secret_key] = "unexpected"
+    else:
+        body["metadata"] = {secret_key: "invalid-integer"}
+
+    respx.post(provider.token_endpoint).mock(
+        return_value=httpx.Response(200, json=body)
+    )
+
+    with (
+        caplog.at_level(logging.DEBUG),
+        pytest.raises(OAuth2Exception) as exc_info,
+    ):
+        provider.exchange_code("fake-code", "https://example.com/callback")
+
+    _assert_no_secrets(caplog, exc_info.value)
+    prefix = (
+        "Failed to parse token response"
+        if wrapped
+        else "Failed to exchange code for token"
+    )
+    provider_records = [
+        record for record in caplog.records if record.name == logger.name
+    ]
+    assert [record.getMessage() for record in provider_records] == [
+        f"{prefix} ({error_type})"
     ]
 
 
