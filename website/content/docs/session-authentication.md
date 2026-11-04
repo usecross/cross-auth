@@ -96,10 +96,9 @@ relative to where you include the router:
 | `DELETE /sessions/{session_id}` | `204 No Content`            | `revoke_session`        |
 | `POST /sessions/revoke-others`  | `200` with `{"revoked": n}` | `revoke_other_sessions` |
 
-The caller is whoever your `get_user_from_request` resolves, and a request
-without a user answers `401 unauthorized`. A resolver that also accepts other
-credentials, such as tokens from an older auth system, works: those requests
-have no current session.
+Like `/logout`, these routes act on the session that authenticates the request
+(the session cookie, then `Authorization: Bearer ...`) and on that session's
+user. A request without a valid session answers `401 unauthorized`.
 
 `GET /sessions` lists the caller's active sessions, newest first. It never
 returns session tokens or their hashes:
@@ -123,10 +122,10 @@ returns session tokens or their hashes:
 }
 ```
 
-`current` marks the session that authenticated the request (from the session
-cookie, then `Authorization: Bearer ...`). Pages hold 50 sessions; pass `limit`
-(1 to 100) to change that, and send a page's `next_cursor` back as `cursor` to
-get the next one. An invalid `limit` or `cursor` answers `400 invalid_request`.
+`current` marks the session that authenticated the request. Pages hold 50
+sessions; pass `limit` (1 to 100) to change that, and send a page's
+`next_cursor` back as `cursor` to get the next one. An invalid `limit` or
+`cursor` answers `400 invalid_request`.
 
 `DELETE /sessions/{session_id}` revokes one of the caller's sessions, including
 the current one. Revoking the current cookie session also clears the cookie, as
@@ -135,10 +134,8 @@ the same `404 session_not_found`, so nobody can probe for sessions. Revoking a
 session that is already revoked or expired answers 204.
 
 `POST /sessions/revoke-others` revokes every session of the caller except the
-current one. Without a current session (the caller used another credential),
-every session is another one, so it revokes them all. `revoked` counts expired
-sessions that had not been revoked yet too, so it can be higher than the number
-of sessions `GET /sessions` listed.
+current one. `revoked` counts expired sessions that had not been revoked yet
+too, so it can be higher than the number of sessions `GET /sessions` listed.
 
 These routes do not run hooks; `logout` hooks run only for `/logout` and
 `auth.logout()`. `DELETE` and `POST` change state, so protect them from CSRF

@@ -2,18 +2,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 import time_machine
-from cross_web import HTTPRequest
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
-from cross_auth import AccountsStorage, SecondaryStorage, SessionStorage, User
-from cross_auth._session import (
-    create_session,
-    get_bearer_token,
-    get_current_user,
-    get_session,
-)
+from cross_auth import AccountsStorage, SecondaryStorage, SessionStorage
+from cross_auth._session import create_session, get_session
 from cross_auth._storage import SessionRecord
 from cross_auth.fastapi import CrossAuth
 
@@ -65,28 +59,6 @@ def _make_auth(
         accounts_storage=accounts_storage,
         session_storage=session_storage,
         **kwargs,
-    )
-
-
-def _make_legacy_auth(
-    secondary_storage: SecondaryStorage,
-    accounts_storage: AccountsStorage,
-    session_storage: SessionStorage,
-) -> CrossAuth:
-    """A resolver that also accepts a credential that is not a session, like
-    FastAPI Cloud's legacy JWTs."""
-
-    def resolve(request: HTTPRequest) -> User | None:
-        token = get_bearer_token(request)
-        if token is not None and token.startswith("legacy:"):
-            return accounts_storage.find_user_by_id(token.removeprefix("legacy:"))
-        return get_current_user(request, session_storage, accounts_storage)
-
-    return _make_auth(
-        secondary_storage,
-        accounts_storage,
-        session_storage,
-        get_user_from_request=resolve,
     )
 
 
@@ -190,25 +162,6 @@ def test_list_shows_only_the_callers_active_sessions(
     assert [s["id"] for s in response.json()["sessions"]] == [current.id]
 
 
-def test_list_with_a_credential_that_is_not_a_session(
-    secondary_storage: SecondaryStorage,
-    accounts_storage: AccountsStorage,
-    session_storage: SessionStorage,
-):
-    auth = _make_legacy_auth(secondary_storage, accounts_storage, session_storage)
-    _, first = _session(session_storage, minutes_ago=2)
-    _, second = _session(session_storage, minutes_ago=1)
-
-    with _client(auth) as client:
-        response = client.get("/api/v1/sessions", headers=_bearer("legacy:test"))
-
-    assert response.status_code == 200
-    assert [(s["id"], s["current"]) for s in response.json()["sessions"]] == [
-        (second.id, False),
-        (first.id, False),
-    ]
-
-
 def test_list_marks_the_cookie_session_current(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
@@ -228,23 +181,21 @@ def test_list_marks_the_cookie_session_current(
     ]
 
 
-def test_list_ignores_a_session_cookie_of_another_user(
+def test_list_prefers_the_cookie_session_over_a_bearer_token(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
     session_storage: SessionStorage,
 ):
-    auth = _make_legacy_auth(secondary_storage, accounts_storage, session_storage)
-    other_user_token, _ = create_session("other", session_storage)
-    _, record = create_session("test", session_storage)
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
+    cookie_token, cookie_session = create_session("other", session_storage)
+    bearer_token, _ = create_session("test", session_storage)
 
     with _client(auth) as client:
-        client.cookies.set("session_id", other_user_token)
-        response = client.get("/api/v1/sessions", headers=_bearer("legacy:test"))
+        client.cookies.set("session_id", cookie_token)
+        response = client.get("/api/v1/sessions", headers=_bearer(bearer_token))
 
-    # The resolver took the bearer credential: the cookie's session is not
-    # the caller's, so none of the caller's sessions is current.
     assert [(s["id"], s["current"]) for s in response.json()["sessions"]] == [
-        (record.id, False)
+        (cookie_session.id, True)
     ]
 
 
@@ -519,43 +470,6 @@ def test_revoke_others_keeps_the_current_cookie_session(
     assert get_session(other_token, session_storage) is None
 
 
-def test_revoke_others_with_a_credential_that_is_not_a_session(
-    secondary_storage: SecondaryStorage,
-    accounts_storage: AccountsStorage,
-    session_storage: SessionStorage,
-):
-    auth = _make_legacy_auth(secondary_storage, accounts_storage, session_storage)
-    session_token, _ = create_session("test", session_storage)
-
-    with _client(auth) as client:
-        response = client.post(
-            "/api/v1/sessions/revoke-others", headers=_bearer("legacy:test")
-        )
-
-    assert response.json() == {"revoked": 1}
-    assert get_session(session_token, session_storage) is None
-
-
-def test_revoke_others_ignores_a_session_cookie_of_another_user(
-    secondary_storage: SecondaryStorage,
-    accounts_storage: AccountsStorage,
-    session_storage: SessionStorage,
-):
-    auth = _make_legacy_auth(secondary_storage, accounts_storage, session_storage)
-    other_user_token, _ = create_session("other", session_storage)
-    session_token, _ = create_session("test", session_storage)
-
-    with _client(auth) as client:
-        client.cookies.set("session_id", other_user_token)
-        response = client.post(
-            "/api/v1/sessions/revoke-others", headers=_bearer("legacy:test")
-        )
-
-    assert response.json() == {"revoked": 1}
-    assert get_session(session_token, session_storage) is None
-    assert get_session(other_user_token, session_storage) is not None
-
-
 @pytest.mark.parametrize(
     ("method", "path"),
     [
@@ -564,8 +478,8 @@ def test_revoke_others_ignores_a_session_cookie_of_another_user(
         ("POST", "/api/v1/sessions/revoke-others"),
     ],
 )
-@pytest.mark.parametrize("headers", [{}, _bearer("unknown"), _bearer("legacy:nobody")])
-def test_unauthenticated_requests(
+@pytest.mark.parametrize("headers", [{}, _bearer("unknown")])
+def test_requests_without_a_session_are_unauthorized(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
     session_storage: SessionStorage,
@@ -573,7 +487,14 @@ def test_unauthenticated_requests(
     path: str,
     headers: dict[str, str],
 ):
-    auth = _make_legacy_auth(secondary_storage, accounts_storage, session_storage)
+    # Like /logout, the routes need a session: a get_user_from_request that
+    # accepts another credential does not authenticate them.
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        session_storage,
+        get_user_from_request=lambda request: accounts_storage.find_user_by_id("test"),
+    )
     session_token, record = create_session("test", session_storage)
 
     with _client(auth) as client:

@@ -17,19 +17,19 @@ app.include_router(auth.router, prefix="/api/v1")
 # GET /api/v1/sessions?limit=50&cursor=...
 ```
 
-The caller is whoever your `get_user_from_request` resolves; without a user the
-routes answer `401`. `GET /sessions` returns the caller's active sessions newest
-first, as `{"sessions": [...], "next_cursor": ...}`. Each session has `id`,
-`client_id`, `client_name`, `user_agent`, `ip`, `login_method`, `created_at`,
-`expires_at` and `current`, which marks the session that authenticated the
-request; session tokens and their hashes are never included. Pages hold 50
-sessions by default and up to 100 with `limit`.
+Like `/logout`, the routes act on the session that authenticates the request
+(cookie, then bearer token); without one they answer `401`. `GET /sessions`
+returns the caller's active sessions newest first, as
+`{"sessions": [...], "next_cursor": ...}`. Each session has `id`, `client_id`,
+`client_name`, `user_agent`, `ip`, `login_method`, `created_at`, `expires_at`
+and `current`, which marks the session that authenticated the request; session
+tokens and their hashes are never included. Pages hold 50 sessions by default
+and up to 100 with `limit`.
 
 `DELETE /sessions/{session_id}` answers the same `404 session_not_found` for an
 unknown id and for another user's session. Revoking the current cookie session
-clears the cookie, as `/logout` does. `POST /sessions/revoke-others` keeps the
-current session; when the request has none, because your resolver accepted
-another credential, it revokes every session of the caller.
+clears the cookie, as `/logout` does. `POST /sessions/revoke-others` revokes
+every other session of the caller and keeps the current one.
 
 The routes run no hooks. If you protect `auth.router` with a CSRF dependency,
 cookie requests to `revoke_session` and `revoke_other_sessions` need the same

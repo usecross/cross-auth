@@ -1,9 +1,8 @@
 """JSON routes that list and revoke the caller's own sessions.
 
 ``AuthRouter`` mounts them next to ``POST /logout`` when ``session_storage`` is
-configured. The caller is whoever ``get_user_from_request`` resolves, so a
-resolver that also accepts credentials other than Cross Auth sessions (such as
-legacy JWTs) works: such a request has no current session.
+configured. Like ``/logout`` they act on the session behind the request
+(cookie first, then bearer token) and on that session's user.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ from ._session import (
     make_session_cookie,
     resolve_current_session,
 )
-from ._storage import SessionRecord, SessionStorage, User
+from ._storage import SessionRecord, SessionStorage
 from .exceptions import InvalidCursorError
 from .utils._response import Response
 
@@ -66,25 +65,10 @@ class RevokedSessions(BaseModel):
     )
 
 
-def _caller(
-    request: HTTPRequest, context: Context
-) -> tuple[User, ResolvedSession | None] | None:
-    """Return the caller and the Cross Auth session behind the request, if any.
-
-    The session is looked up before the resolver runs: with sliding sessions
-    the default resolver would otherwise roll the record forward first, and
-    this lookup could no longer tell that the cookie needs rolling too. A
-    resolver may accept another credential while the request also carries
-    another user's session; every route works on the caller's sessions only,
-    so that session never counts as current.
-    """
-    current = resolve_current_session(
+def _current_session(request: HTTPRequest, context: Context) -> ResolvedSession | None:
+    return resolve_current_session(
         request, _session_storage(context), context.session_config
     )
-    user = context.get_user_from_request(request)
-    if user is None:
-        return None
-    return user, current
 
 
 def _session_storage(context: Context) -> SessionStorage:
@@ -107,10 +91,10 @@ def _json(model: BaseModel) -> Response:
 
 
 def _roll_cookie(
-    response: Response, current: ResolvedSession | None, context: Context
+    response: Response, current: ResolvedSession, context: Context
 ) -> Response:
     """Re-send a sliding session's cookie that this request rolled forward."""
-    if current is not None and current.source == "cookie" and current.refreshed:
+    if current.source == "cookie" and current.refreshed:
         response.cookies = [
             *(response.cookies or []),
             make_session_cookie(current.token, context.session_config),
@@ -128,7 +112,7 @@ def _parse_limit(value: str | None) -> int | None:
     return limit if 1 <= limit <= MAX_PAGE_SIZE else None
 
 
-def _session_info(record: SessionRecord, *, current_id: str | None) -> SessionInfo:
+def _session_info(record: SessionRecord, *, current_id: str) -> SessionInfo:
     return SessionInfo(
         id=str(record.id),
         client_id=record.client_id,
@@ -144,10 +128,9 @@ def _session_info(record: SessionRecord, *, current_id: str | None) -> SessionIn
 
 def list_sessions(request: HTTPRequest, context: Context) -> Response:
     """GET /sessions — the caller's active sessions, newest first."""
-    caller = _caller(request, context)
-    if caller is None:
+    current = _current_session(request, context)
+    if current is None:
         return _unauthorized()
-    user, current = caller
 
     limit = _parse_limit(request.query_params.get("limit"))
     if limit is None:
@@ -157,7 +140,7 @@ def list_sessions(request: HTTPRequest, context: Context) -> Response:
         )
     try:
         result = _session_storage(context).list_for_user(
-            user.id,
+            current.record.user_id,
             now=datetime.now(tz=timezone.utc),
             status="active",
             order_by="created_at_desc",
@@ -167,7 +150,7 @@ def list_sessions(request: HTTPRequest, context: Context) -> Response:
     except InvalidCursorError:
         return Response.error("invalid_request", error_description="Invalid cursor")
 
-    current_id = str(current.record.id) if current is not None else None
+    current_id = str(current.record.id)
     session_list = SessionList(
         sessions=[
             _session_info(record, current_id=current_id) for record in result.records
@@ -183,14 +166,15 @@ def revoke_session(request: HTTPRequest, context: Context) -> Response:
     Another user's session answers 404 like an unknown id. Revoking the
     current cookie session also clears the cookie, as ``/logout`` does.
     """
-    caller = _caller(request, context)
-    if caller is None:
+    current = _current_session(request, context)
+    if current is None:
         return _unauthorized()
-    user, current = caller
 
     session_storage = _session_storage(context)
     session = get_user_session(
-        request.path_params["session_id"], session_storage, user_id=user.id
+        request.path_params["session_id"],
+        session_storage,
+        user_id=current.record.user_id,
     )
     if session is None:
         return Response.error(
@@ -201,7 +185,7 @@ def revoke_session(request: HTTPRequest, context: Context) -> Response:
     session_storage.revoke(session.id, revoked_at=datetime.now(tz=timezone.utc))
 
     response = Response(status_code=204)
-    if current is not None and str(current.record.id) == str(session.id):
+    if str(current.record.id) == str(session.id):
         if current.source == "cookie":
             response.cookies = [make_clear_cookie(context.session_config)]
         return response
@@ -209,20 +193,15 @@ def revoke_session(request: HTTPRequest, context: Context) -> Response:
 
 
 def revoke_other_sessions(request: HTTPRequest, context: Context) -> Response:
-    """POST /sessions/revoke-others — revoke all the caller's other sessions.
-
-    Without a current session (the resolver accepted another credential),
-    every session of the caller is another one, so all of them are revoked.
-    """
-    caller = _caller(request, context)
-    if caller is None:
+    """POST /sessions/revoke-others — revoke all the caller's other sessions."""
+    current = _current_session(request, context)
+    if current is None:
         return _unauthorized()
-    user, current = caller
 
     revoked = _session_storage(context).revoke_all_for_user(
-        user.id,
+        current.record.user_id,
         revoked_at=datetime.now(tz=timezone.utc),
-        except_session_id=current.record.id if current is not None else None,
+        except_session_id=current.record.id,
     )
     return _roll_cookie(_json(RevokedSessions(revoked=revoked)), current, context)
 
