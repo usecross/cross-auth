@@ -199,11 +199,25 @@ def test_list_prefers_the_cookie_session_over_a_bearer_token(
     ]
 
 
-def test_list_rolls_a_sliding_cookie_session(
+@pytest.mark.parametrize(
+    ("method", "path", "status_code"),
+    [
+        ("GET", "/api/v1/sessions", 200),
+        ("GET", "/api/v1/sessions?limit=0", 400),
+        ("DELETE", "/api/v1/sessions/does-not-exist", 404),
+        ("POST", "/api/v1/sessions/revoke-others", 200),
+    ],
+)
+def test_routes_roll_a_sliding_cookie_session(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
     session_storage: SessionStorage,
+    method: str,
+    path: str,
+    status_code: int,
 ):
+    # The lookup extends the stored session, so every answer, errors
+    # included, re-sends the cookie with the new lifetime.
     auth = _make_auth(
         secondary_storage,
         accounts_storage,
@@ -214,9 +228,9 @@ def test_list_rolls_a_sliding_cookie_session(
 
     with _client(auth) as client:
         client.cookies.set("session_id", cookie_token)
-        response = client.get("/api/v1/sessions")
+        response = client.request(method, path)
 
-    assert response.status_code == 200
+    assert response.status_code == status_code
     set_cookie = response.headers["set-cookie"]
     assert set_cookie.startswith(f"session_id={cookie_token};")
     assert "Max-Age=86400" in set_cookie

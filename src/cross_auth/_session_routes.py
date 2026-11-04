@@ -134,10 +134,11 @@ def list_sessions(request: HTTPRequest, context: Context) -> Response:
 
     limit = _parse_limit(request.query_params.get("limit"))
     if limit is None:
-        return Response.error(
+        error = Response.error(
             "invalid_request",
             error_description=f"limit must be an integer from 1 to {MAX_PAGE_SIZE}",
         )
+        return _roll_cookie(error, current, context)
     try:
         result = _session_storage(context).list_for_user(
             current.record.user_id,
@@ -148,7 +149,8 @@ def list_sessions(request: HTTPRequest, context: Context) -> Response:
             cursor=request.query_params.get("cursor"),
         )
     except InvalidCursorError:
-        return Response.error("invalid_request", error_description="Invalid cursor")
+        error = Response.error("invalid_request", error_description="Invalid cursor")
+        return _roll_cookie(error, current, context)
 
     current_id = str(current.record.id)
     session_list = SessionList(
@@ -177,11 +179,12 @@ def revoke_session(request: HTTPRequest, context: Context) -> Response:
         user_id=current.record.user_id,
     )
     if session is None:
-        return Response.error(
+        error = Response.error(
             "session_not_found",
             error_description="Session not found",
             status_code=404,
         )
+        return _roll_cookie(error, current, context)
     session_storage.revoke(session.id, revoked_at=datetime.now(tz=timezone.utc))
 
     response = Response(status_code=204)
