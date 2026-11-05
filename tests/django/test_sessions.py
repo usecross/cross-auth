@@ -1009,6 +1009,45 @@ class TestRevokeSignals:
         assert whoami(phone)["authenticated"] is True
         assert "session_revoked" not in [name for name, _ in signals.events]
 
+    def test_a_session_that_expires_while_receivers_run_is_not_revoked(
+        self, google: FakeGoogle
+    ) -> None:
+        password_user()
+        phone, laptop = browser(), browser()
+        sign_in(phone, google)
+        sign_in(laptop, google)
+        signals.handlers["before_session_revoke"] = lambda **kwargs: expire(phone)
+
+        response = csrf_post(laptop, "/sessions/", {"id": str(stored(phone).public_id)})
+
+        assert response.json() == {"revoked": False}
+        assert "session_revoked" not in [name for name, _ in signals.events]
+
+    def test_sessions_django_logged_out_are_not_revoked_or_counted(self) -> None:
+        make_user("person@example.com", password="secret")
+        phone, laptop = browser(user_agent="Phone"), browser(user_agent="Laptop")
+        password_login(phone, "person@example.com")
+        password_login(laptop, "person@example.com")
+        csrf_post(
+            laptop,
+            "/accounts/password_change/",
+            {
+                "old_password": "secret",
+                "new_password1": "a new password",
+                "new_password2": "a new password",
+            },
+        )
+        phone_id = str(stored(phone).public_id)
+        signals.events.clear()
+
+        # The password change ended the phone's session: it is not listed,
+        # so revoking it, or the laptop's other sessions, revokes nothing.
+        assert csrf_post(laptop, "/sessions/", {"id": phone_id}).json() == {
+            "revoked": False
+        }
+        assert csrf_post(laptop, "/sessions/").json() == {"revoked": 0}
+        assert "session_revoked" not in [name for name, _ in signals.events]
+
     def test_sessions_it_cannot_revoke_send_nothing(self, google: FakeGoogle) -> None:
         password_user()
         make_user("other@example.com", password="secret")

@@ -268,6 +268,9 @@ class AfterSessionRevokeEvent:
 
     Sent only when at least one session was revoked: ``revoked_count`` is 1
     for scope ``"one"`` and the number of active sessions revoked otherwise.
+    ``session_record`` is the record as it was read before the revocation, so
+    its ``revoked_at`` may still be ``None``; re-read it with
+    ``SessionStorage.get_any`` if you need the stored state.
     """
 
     user_id: Any

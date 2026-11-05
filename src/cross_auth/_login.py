@@ -374,12 +374,15 @@ def _revoke_sessions(
     hooks: HookRegistry,
     session_storage: SessionStorage,
 ) -> int:
+    # Fix the target first: a hook may refuse the revocation, but changing
+    # the live record must not make it revoke another session.
+    session_id = None if event.session_record is None else event.session_record.id
     # Hook exceptions propagate: a before hook that raises revokes nothing.
     hooks.run_before("session.revoke", event)
 
     revoked_at = datetime.now(tz=timezone.utc)
-    if event.session_record is not None:
-        revoked = session_storage.revoke(event.session_record.id, revoked_at=revoked_at)
+    if session_id is not None:
+        revoked = session_storage.revoke(session_id, revoked_at=revoked_at)
         revoked_count = 1 if revoked else 0
     else:
         revoked_count = session_storage.revoke_all_for_user(

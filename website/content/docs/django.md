@@ -638,11 +638,13 @@ sessions and know which one is current:
   password change ended, or whose authentication backend is no longer in
   `AUTHENTICATION_BACKENDS`. Anonymous requests get an empty list.
 - `revoke_session(request, session_id)` signs out the active session whose `id`
-  is `session_id` and returns whether it found one. Another user's session, or
-  an expired one, is never touched. Revoking the current session logs out with
+  is `session_id` and returns whether it found one. Another user's session, an
+  expired one, or one that `list_sessions` leaves out because Django already
+  logs it out is never touched. Revoking the current session logs out with
   Django's `logout()`.
-- `revoke_other_sessions(request)` signs out all of the user's other active
-  sessions, keeps the current one, and returns how many it revoked.
+- `revoke_other_sessions(request)` signs out all of the user's other sessions
+  that `list_sessions` shows, keeps the current one, and returns how many it
+  revoked.
 
 Both send the
 [`before_session_revoke` and `session_revoked`](#signals-reference) signals, so

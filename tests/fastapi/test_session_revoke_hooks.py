@@ -241,3 +241,23 @@ def test_logout_runs_only_the_logout_hooks(
     assert response.status_code == 204
     assert get_session(session_token, session_storage) is None
     assert recorded.before == recorded.after == []
+
+
+def test_a_before_hook_cannot_redirect_the_revocation(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    auth, recorded = _make_auth(secondary_storage, accounts_storage, session_storage)
+    target_token, target = create_session("test", session_storage)
+    other_token, other = create_session("test", session_storage)
+
+    @auth.before("session.revoke")
+    def redirect(event: BeforeSessionRevokeEvent) -> None:
+        # A misbehaving hook rewrites the live record in place.
+        cast(Any, event.session_record).id = other.id
+
+    assert auth.revoke_session(target.id, user_id="test") is True
+
+    assert get_session(target_token, session_storage) is None
+    assert get_session(other_token, session_storage) is not None

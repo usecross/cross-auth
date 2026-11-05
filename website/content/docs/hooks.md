@@ -299,10 +299,13 @@ code calls an `auth.revoke_*()` method. A before hook that raises
 error. A before hook cannot change what is revoked.
 
 The before hook runs for every revocation, as the policy check for the request.
-The after hook runs only once at least one session was revoked, and its
-`revoked_count` says how many: `1` for `"one"`. Expired sessions are never
-revoked, so revoking an expired or already revoked session, or the other
-sessions of a user who has none, runs only the before hook.
+Cross-Auth fixes which session it revokes before the hook runs, so a hook can
+refuse a revocation but not redirect it. The after hook runs only once at least
+one session was revoked, and its `revoked_count` says how many: `1` for `"one"`.
+Its `session_record` is the record as it was read before the revocation, so its
+`revoked_at` may still be `None`. Expired sessions are never revoked, so
+revoking an expired or already revoked session, or the other sessions of a user
+who has none, runs only the before hook.
 
 ```python
 from cross_auth.exceptions import CrossAuthException
