@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 from cross_web import HTTPRequest, Response
 
@@ -20,8 +20,10 @@ from ._storage import CommitCallback, SessionRecord, SessionStorage, User
 from .hooks import (
     AfterLoginEvent,
     AfterLogoutEvent,
+    AfterSessionRevokeEvent,
     BeforeLoginEvent,
     BeforeLogoutEvent,
+    BeforeSessionRevokeEvent,
     HookRegistry,
     LogoutScope,
 )
@@ -282,9 +284,6 @@ def logout_session(
         raise ValueError("logout before hooks must keep scope 'current' or 'all'")
     revoked_record = event.session_record
 
-    # Without a session to revoke nothing is written, so the after hook
-    # has no commit to wait for.
-    on_commit = run_now
     revoked_count = 0
     if revoked_record is not None:
         require_immediate_commit(
@@ -297,13 +296,16 @@ def logout_session(
                 revoked_record.user_id, revoked_at=revoked_at
             )
         else:
-            session_storage.revoke(revoked_record.id, revoked_at=revoked_at)
-            revoked_count = 1
-        on_commit = session_storage.on_commit
+            revoked = session_storage.revoke(revoked_record.id, revoked_at=revoked_at)
+            revoked_count = 1 if revoked else 0
 
     if event.response.cookies is None:
         event.response.cookies = []
     event.response.cookies.append(make_clear_cookie(session_config))
+    # Like session.revoke, the after hook reports revocations only: a logout
+    # that revoked nothing still clears the cookie but runs no after hook.
+    if revoked_record is None or revoked_count == 0:
+        return event.response
     after_event = AfterLogoutEvent(
         request=event.request,
         response=event.response,
@@ -311,5 +313,94 @@ def logout_session(
         scope=event.scope,
         revoked_count=revoked_count,
     )
-    on_commit(lambda: hooks.run_after("logout", after_event))
+    session_storage.on_commit(lambda: hooks.run_after("logout", after_event))
     return event.response
+
+
+def revoke_user_session(
+    session_record: SessionRecord,
+    *,
+    hooks: HookRegistry,
+    session_storage: SessionStorage,
+    request: HTTPRequest | None = None,
+) -> int:
+    """Revoke one session around the ``session.revoke`` hooks.
+
+    The caller has checked who owns the session. Returns 1 if the session was
+    still active, else 0: an expired or revoked session is left as it is.
+    """
+    return _revoke_sessions(
+        BeforeSessionRevokeEvent(
+            user_id=session_record.user_id,
+            scope="one",
+            session_record=session_record,
+            keep_session_id=None,
+            request=request,
+        ),
+        hooks=hooks,
+        session_storage=session_storage,
+    )
+
+
+def revoke_user_sessions(
+    user_id: Any,
+    *,
+    hooks: HookRegistry,
+    session_storage: SessionStorage,
+    keep_session_id: Any | None = None,
+    request: HTTPRequest | None = None,
+) -> int:
+    """Revoke the user's active sessions around the ``session.revoke`` hooks.
+
+    ``keep_session_id`` is left alone (scope ``"others"``); without it every
+    session is revoked (scope ``"all"``). Returns how many were revoked.
+    """
+    return _revoke_sessions(
+        BeforeSessionRevokeEvent(
+            user_id=user_id,
+            scope="all" if keep_session_id is None else "others",
+            session_record=None,
+            keep_session_id=keep_session_id,
+            request=request,
+        ),
+        hooks=hooks,
+        session_storage=session_storage,
+    )
+
+
+def _revoke_sessions(
+    event: BeforeSessionRevokeEvent,
+    *,
+    hooks: HookRegistry,
+    session_storage: SessionStorage,
+) -> int:
+    # Fix the target first: a hook may refuse the revocation, but changing
+    # the live record must not make it revoke another session.
+    session_id = None if event.session_record is None else event.session_record.id
+    # Hook exceptions propagate: a before hook that raises revokes nothing.
+    hooks.run_before("session.revoke", event)
+
+    revoked_at = datetime.now(tz=timezone.utc)
+    if session_id is not None:
+        revoked = session_storage.revoke(session_id, revoked_at=revoked_at)
+        revoked_count = 1 if revoked else 0
+    else:
+        revoked_count = session_storage.revoke_all_for_user(
+            event.user_id,
+            revoked_at=revoked_at,
+            except_session_id=event.keep_session_id,
+        )
+
+    # Nothing written, nothing to report: after hooks only see revocations.
+    if revoked_count == 0:
+        return 0
+    after_event = AfterSessionRevokeEvent(
+        user_id=event.user_id,
+        scope=event.scope,
+        session_record=event.session_record,
+        keep_session_id=event.keep_session_id,
+        request=event.request,
+        revoked_count=revoked_count,
+    )
+    session_storage.on_commit(lambda: hooks.run_after("session.revoke", after_event))
+    return revoked_count

@@ -1,9 +1,11 @@
-"""Signals sent around Cross Auth's provider sign-in, linking and disconnecting.
+"""Signals sent around Cross Auth's provider sign-in, linking and disconnecting,
+and around revoking sessions.
 
 Connect receivers with ``@receiver`` in a module that your app's
 ``AppConfig.ready()`` imports. Each signal's sender is the user model, and
-every receiver gets ``request`` (the view's ``HttpRequest``) and ``provider``
-(the provider ID, such as ``"google"``) besides the arguments listed below.
+every receiver gets ``request`` (the view's ``HttpRequest``) besides the
+arguments listed below. The provider flows' signals also get ``provider`` (the
+provider ID, such as ``"google"``).
 
 ``before_*`` receivers get plain values: IDs are strings, and nothing is a
 model instance. Raise ``PermissionDenied`` to refuse that step; Django answers
@@ -15,7 +17,8 @@ notifications carry native model instances.
 Signals are sent with ``Signal.send()``: a receiver's exception propagates and
 return values are ignored.
 
-They cover only Cross Auth's provider flows. Django emits ``user_logged_in``
+Apart from the session signals, they cover only Cross Auth's provider flows.
+Django emits ``user_logged_in``
 and ``user_logged_out`` through its native login and logout functions, including
 password flows. Provider failures do not emit Django's ``user_login_failed``;
 that signal belongs to failed calls to Django's ``authenticate()``.
@@ -125,4 +128,23 @@ user's last way to sign in and stayed.
 
 Arguments: ``social_account``, the removed ``cross_auth.SocialAccount``; its
 ``pk`` and ``user_id`` still name what it was.
+"""
+
+before_session_revoke = Signal()
+"""Sent by ``revoke_session`` and ``revoke_other_sessions`` in
+``cross_auth.django.sessions`` before they sign out any session.
+
+Arguments: ``user_id``, ``scope`` (``"one"`` for ``revoke_session``,
+``"others"`` for ``revoke_other_sessions``) and ``session_id``, the session's
+``id`` for ``"one"`` and ``None`` for ``"others"``. ``revoke_session`` sends it
+only for an active session of the signed-in user. No ``provider``. Refusing
+signs nothing out.
+"""
+
+session_revoked = Signal()
+"""Sent once sessions were signed out; not sent when none were.
+
+Arguments: ``user`` (``request.user``, as Django's ``user_logged_out`` sends
+it), ``scope``, ``session_id`` and ``revoked_count``, how many sessions were
+signed out. No ``provider``.
 """

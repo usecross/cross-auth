@@ -16,9 +16,16 @@ import respx
 import time_machine
 from asgiref.sync import async_to_sync
 from django.conf import settings
-from django.contrib.auth import BACKEND_SESSION_KEY, SESSION_KEY, alogin, login
+from django.contrib.auth import (
+    BACKEND_SESSION_KEY,
+    SESSION_KEY,
+    alogin,
+    get_user_model,
+    login,
+)
+from django.contrib.auth.signals import user_logged_out
 from django.contrib.auth.base_user import AbstractBaseUser
-from django.core.exceptions import ImproperlyConfigured
+from django.core.exceptions import ImproperlyConfigured, PermissionDenied
 from django.core.management import call_command
 from django.db import IntegrityError, OperationalError, connection
 from django.test import Client, RequestFactory, override_settings
@@ -34,6 +41,7 @@ from cross_auth.django.sessions import (
 
 from .conftest import connect, make_user
 from .fake_google import FakeGoogle
+from .testapp import signals
 from .test_views import csrf_post, sign_in, whoami
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -888,3 +896,174 @@ class TestStore:
         store[BACKEND_SESSION_KEY] = PASSWORD_BACKEND
 
         assert store.create_model_instance(dict(store.items())).login_method is None
+
+
+class TestRevokeSignals:
+    @pytest.fixture(autouse=True)
+    def recorded(self) -> Iterator[None]:
+        signals.events.clear()
+        signals.handlers.clear()
+        yield
+        signals.events.clear()
+        signals.handlers.clear()
+
+    @staticmethod
+    def session_signals() -> list[tuple[str, dict[str, Any]]]:
+        names = {"before_session_revoke", "session_revoked", "user_logged_out"}
+        return [(name, kwargs) for name, kwargs in signals.events if name in names]
+
+    def test_revoking_one_session_sends_both(self, google: FakeGoogle) -> None:
+        user = password_user()
+        phone, laptop = browser(), browser()
+        sign_in(phone, google)
+        sign_in(laptop, google)
+        session_id = str(stored(phone).public_id)
+        signals.events.clear()
+
+        csrf_post(laptop, "/sessions/", {"id": session_id})
+
+        events = self.session_signals()
+        assert [name for name, _ in events] == [
+            "before_session_revoke",
+            "session_revoked",
+        ]
+        [(_, before), (_, after)] = events
+        common = {"sender", "signal", "request"}
+        assert before.keys() - common == {"user_id", "scope", "session_id"}
+        assert (before["user_id"], before["scope"], before["session_id"]) == (
+            str(user.pk),
+            "one",
+            session_id,
+        )
+        assert after.keys() - common == {"user", "scope", "session_id", "revoked_count"}
+        # request.user, as Django's own user_logged_out sends it.
+        assert isinstance(after["user"], get_user_model())
+        assert after["user"].pk == user.pk
+        assert (after["scope"], after["session_id"], after["revoked_count"]) == (
+            "one",
+            session_id,
+            1,
+        )
+
+    def test_revoking_the_current_session_logs_out_in_between(
+        self, google: FakeGoogle
+    ) -> None:
+        client = browser()
+        sign_in(client, google)
+        signals.events.clear()
+
+        def native_logout(sender: object, **kwargs: Any) -> None:
+            signals.events.append(("user_logged_out", kwargs))
+
+        user_logged_out.connect(native_logout)
+        try:
+            csrf_post(client, "/sessions/", {"id": str(stored(client).public_id)})
+        finally:
+            user_logged_out.disconnect(native_logout)
+
+        assert [name for name, _ in self.session_signals()] == [
+            "before_session_revoke",
+            "user_logged_out",
+            "session_revoked",
+        ]
+
+    def test_revoking_the_other_sessions_sends_both(self, google: FakeGoogle) -> None:
+        password_user()
+        current, phone, tablet, old = browser(), browser(), browser(), browser()
+        for client in (current, phone, tablet, old):
+            sign_in(client, google)
+        expire(old)
+        signals.events.clear()
+
+        assert csrf_post(current, "/sessions/").json() == {"revoked": 2}
+        # Nothing left to revoke: only the policy signal.
+        assert csrf_post(current, "/sessions/").json() == {"revoked": 0}
+
+        events = self.session_signals()
+        assert [name for name, _ in events] == [
+            "before_session_revoke",
+            "session_revoked",
+            "before_session_revoke",
+        ]
+        [(_, first), (_, revoked), (_, second)] = events
+        assert (first["scope"], first["session_id"]) == ("others", None)
+        assert (revoked["scope"], revoked["revoked_count"]) == ("others", 2)
+        assert second["scope"] == "others"
+
+    @pytest.mark.parametrize("target", ["one", "others"])
+    def test_refusing_revokes_nothing(self, google: FakeGoogle, target: str) -> None:
+        password_user()
+        phone, laptop = browser(), browser()
+        sign_in(phone, google)
+        sign_in(laptop, google)
+
+        def refuse(**kwargs: Any) -> None:
+            raise PermissionDenied("Sessions are locked")
+
+        signals.handlers["before_session_revoke"] = refuse
+        data = {"id": str(stored(phone).public_id)} if target == "one" else None
+
+        response = csrf_post(laptop, "/sessions/", data)
+
+        assert response.status_code == 403
+        assert whoami(phone)["authenticated"] is True
+        assert "session_revoked" not in [name for name, _ in signals.events]
+
+    def test_a_session_that_expires_while_receivers_run_is_not_revoked(
+        self, google: FakeGoogle
+    ) -> None:
+        password_user()
+        phone, laptop = browser(), browser()
+        sign_in(phone, google)
+        sign_in(laptop, google)
+        signals.handlers["before_session_revoke"] = lambda **kwargs: expire(phone)
+
+        response = csrf_post(laptop, "/sessions/", {"id": str(stored(phone).public_id)})
+
+        assert response.json() == {"revoked": False}
+        assert "session_revoked" not in [name for name, _ in signals.events]
+
+    def test_sessions_django_logged_out_are_not_revoked_or_counted(self) -> None:
+        make_user("person@example.com", password="secret")
+        phone, laptop = browser(user_agent="Phone"), browser(user_agent="Laptop")
+        password_login(phone, "person@example.com")
+        password_login(laptop, "person@example.com")
+        csrf_post(
+            laptop,
+            "/accounts/password_change/",
+            {
+                "old_password": "secret",
+                "new_password1": "a new password",
+                "new_password2": "a new password",
+            },
+        )
+        phone_id = str(stored(phone).public_id)
+        signals.events.clear()
+
+        # The password change ended the phone's session: it is not listed,
+        # so revoking it, or the laptop's other sessions, revokes nothing.
+        assert csrf_post(laptop, "/sessions/", {"id": phone_id}).json() == {
+            "revoked": False
+        }
+        assert csrf_post(laptop, "/sessions/").json() == {"revoked": 0}
+        assert "session_revoked" not in [name for name, _ in signals.events]
+
+    def test_sessions_it_cannot_revoke_send_nothing(self, google: FakeGoogle) -> None:
+        password_user()
+        make_user("other@example.com", password="secret")
+        mine, old, theirs = browser(), browser(), browser()
+        sign_in(mine, google)
+        sign_in(old, google)
+        expire(old)
+        password_login(theirs, "other@example.com")
+        signals.events.clear()
+
+        for client in (old, theirs):
+            response = csrf_post(
+                mine, "/sessions/", {"id": str(stored(client).public_id)}
+            )
+            assert response.json() == {"revoked": False}
+
+        assert self.session_signals() == []
+        # The expired session is left for clearsessions.
+        assert Session.objects.filter(pk=stored(old).pk).exists()

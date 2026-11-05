@@ -507,10 +507,7 @@ def audit_login(event: AfterLoginEvent) -> None:
 
 @auth.after("logout")
 def audit_session_logout(event: AfterLogoutEvent) -> None:
-    record_hook_event(
-        "after:logout",
-        session_id="" if event.session_record is None else str(event.session_record.id),
-    )
+    record_hook_event("after:logout", session_id=str(event.session_record.id))
 
 
 @auth.before("oauth.callback")

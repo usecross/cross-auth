@@ -253,10 +253,12 @@ class MemorySessionStorage(SessionStorage):
             record.last_active_at = last_active_at
         return record
 
-    def revoke(self, session_id: Any, *, revoked_at: datetime) -> None:
+    def revoke(self, session_id: Any, *, revoked_at: datetime) -> bool:
         record = self.get_any(session_id)
-        if record is not None and record.revoked_at is None:
-            record.revoked_at = revoked_at
+        if record is None or session_status(record, now=revoked_at) != "active":
+            return False
+        record.revoked_at = revoked_at
+        return True
 
     def revoke_all_for_user(
         self,
@@ -271,7 +273,7 @@ class MemorySessionStorage(SessionStorage):
                 continue
             if except_session_id is not None and record.id == str(except_session_id):
                 continue
-            if record.revoked_at is None:
+            if session_status(record, now=revoked_at) == "active":
                 record.revoked_at = revoked_at
                 count += 1
         return count

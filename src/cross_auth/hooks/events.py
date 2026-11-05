@@ -96,6 +96,9 @@ class AfterAuthenticateEvent:
 LoginCredential = Literal["cookie", "bearer", "django_session"]
 # "current" revokes the request's session; "all" every session of its user.
 LogoutScope = Literal["current", "all"]
+# "one" revokes ``session_record``; "others" every session of the user except
+# ``keep_session_id``; "all" every session of the user.
+SessionRevokeScope = Literal["one", "others", "all"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,11 +237,55 @@ class BeforeLogoutEvent:
 
 @dataclass(frozen=True, slots=True)
 class AfterLogoutEvent:
+    """A logout that revoked at least one session.
+
+    A logout without a session, or whose session was already gone, still
+    clears the cookie but sends no after event. ``session_record`` is the
+    request's session as read before it was revoked.
+    """
+
     request: HTTPRequest
     response: Response
-    session_record: SessionRecord | None
+    session_record: SessionRecord
     scope: LogoutScope = "current"
     revoked_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeSessionRevokeEvent:
+    """Sessions of ``user_id`` that are about to be revoked.
+
+    A hook may deny the revocation by raising; it cannot change what is
+    revoked. ``session_record`` is the session for scope ``"one"`` and
+    ``keep_session_id`` the session that ``"others"`` keeps; both are ``None``
+    otherwise. ``request`` is ``None`` when the application calls a
+    ``CrossAuth.revoke_*`` method.
+    """
+
+    user_id: Any
+    scope: SessionRevokeScope
+    session_record: SessionRecord | None
+    keep_session_id: Any | None
+    request: HTTPRequest | None
+
+
+@dataclass(frozen=True, slots=True)
+class AfterSessionRevokeEvent:
+    """Sessions of ``user_id`` that were revoked.
+
+    Sent only when at least one session was revoked: ``revoked_count`` is 1
+    for scope ``"one"`` and the number of active sessions revoked otherwise.
+    ``session_record`` is the record as it was read before the revocation, so
+    its ``revoked_at`` may still be ``None``; re-read it with
+    ``SessionStorage.get_any`` if you need the stored state.
+    """
+
+    user_id: Any
+    scope: SessionRevokeScope
+    session_record: SessionRecord | None
+    keep_session_id: Any | None
+    request: HTTPRequest | None
+    revoked_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -402,6 +449,7 @@ __all__ = [
     "AfterOAuthFinalizeLinkEvent",
     "AfterOAuthIdTokenEvent",
     "AfterOAuthLinkEvent",
+    "AfterSessionRevokeEvent",
     "AfterSocialAccountCreateEvent",
     "AfterSocialAccountUpdateEvent",
     "AfterTokenAuthorizationCodeEvent",
@@ -416,6 +464,7 @@ __all__ = [
     "BeforeOAuthFinalizeLinkEvent",
     "BeforeOAuthIdTokenEvent",
     "BeforeOAuthLinkEvent",
+    "BeforeSessionRevokeEvent",
     "BeforeSocialAccountCreateEvent",
     "BeforeSocialAccountUpdateEvent",
     "BeforeTokenAuthorizationCodeEvent",
@@ -424,6 +473,7 @@ __all__ = [
     "LoginCredential",
     "LogoutScope",
     "ProviderSnapshot",
+    "SessionRevokeScope",
     "SocialAccountSnapshot",
     "UserSnapshot",
 ]

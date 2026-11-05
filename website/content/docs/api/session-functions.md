@@ -55,16 +55,22 @@ or belongs to a different user.
 
 ### `revoke_session(session_id, user_id=...)`
 
-Revokes one session record owned by the user.
+Revokes one session record owned by the user and returns whether it did. An
+expired or already revoked session is left as it is.
 
 ### `revoke_other_sessions(user_id=..., keep_session_id=...)`
 
-Revokes all of a user's sessions except one session ID and returns the number of
-revoked sessions.
+Revokes all of a user's active sessions except one session ID and returns the
+number of revoked sessions.
 
 ### `revoke_all_sessions(user_id=...)`
 
-Revokes all sessions for a user and returns the number of revoked sessions.
+Revokes all active sessions for a user and returns the number of revoked
+sessions.
+
+The three revoke methods run the
+[`session.revoke` hooks](/docs/hooks#sessionrevoke) with `request` set to
+`None`. Expired sessions keep their `expired` status and are not counted.
 
 Session methods require `session_storage` to be configured. `auth.router` serves
 the caller's own sessions over HTTP with the same storage; see

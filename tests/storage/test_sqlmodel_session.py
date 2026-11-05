@@ -185,21 +185,32 @@ def test_refresh_missing_returns_none(store):
 def test_revoke_one(store):
     record = _make(store)
 
-    store.revoke(record.id, revoked_at=NOW)
+    assert store.revoke(record.id, revoked_at=NOW) is True
 
     assert store.get_any(record.id).revoked_at is not None
 
 
 def test_revoke_missing_is_noop(store):
-    store.revoke(99999, revoked_at=NOW)  # should not raise
-    store.revoke("abc", revoked_at=NOW)  # uncastable id: also a no-op
+    assert store.revoke(99999, revoked_at=NOW) is False
+    # An uncastable id is also a no-op.
+    assert store.revoke("abc", revoked_at=NOW) is False
+
+
+def test_revoke_leaves_an_expired_session_expired(store):
+    record = _make(store, expires=NOW - timedelta(days=1))
+
+    assert store.revoke(record.id, revoked_at=NOW) is False
+
+    stored = store.get_any(record.id)
+    assert stored.revoked_at is None
+    assert stored.status == "expired"
 
 
 def test_revoke_twice_preserves_original_timestamp(store):
     record = _make(store)
 
-    store.revoke(record.id, revoked_at=NOW)
-    store.revoke(record.id, revoked_at=NOW + timedelta(hours=1))
+    assert store.revoke(record.id, revoked_at=NOW) is True
+    assert store.revoke(record.id, revoked_at=NOW + timedelta(hours=1)) is False
 
     assert store.get_any(record.id).revoked_at == NOW
 
@@ -235,6 +246,22 @@ def test_revoke_all_only_counts_active(store):
     count = store.revoke_all_for_user("u1", revoked_at=NOW + timedelta(hours=1))
 
     assert count == 0
+
+
+def test_revoke_all_leaves_expired_sessions_expired(store):
+    active = _make(store, token_hash="a", user_id="u1")
+    expired = _make(
+        store, token_hash="b", user_id="u1", expires=NOW - timedelta(days=1)
+    )
+    # Still active at the exact expiry instant, like session_status.
+    at_expiry = _make(store, token_hash="c", user_id="u1", expires=NOW)
+
+    count = store.revoke_all_for_user("u1", revoked_at=NOW)
+
+    assert count == 2
+    assert store.get_any(active.id).status == "revoked"
+    assert store.get_any(at_expiry.id).status == "revoked"
+    assert store.get_any(expired.id).revoked_at is None
 
 
 def test_list_by_status(store):

@@ -7,6 +7,7 @@ HookEventName: TypeAlias = Literal[
     "authenticate",
     "login",
     "logout",
+    "session.revoke",
     "user.create",
     "social_account.create",
     "social_account.update",

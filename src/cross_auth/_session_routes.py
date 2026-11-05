@@ -14,6 +14,7 @@ from cross_web import HTTPRequest
 from pydantic import BaseModel, Field
 
 from ._context import Context
+from ._login import revoke_user_session, revoke_user_sessions
 from ._route import Route
 from ._session import (
     ResolvedSession,
@@ -22,18 +23,26 @@ from ._session import (
     make_session_cookie,
     resolve_current_session,
 )
-from ._storage import SessionRecord, SessionStorage
-from .exceptions import InvalidCursorError
+from ._storage import SessionRecord, SessionStatus, SessionStorage, session_status
+from .exceptions import CrossAuthException, InvalidCursorError
 from .utils._response import Response
 
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 100
+# The ?status= values GET /sessions accepts, and the storage filter for each.
+STATUS_FILTERS: dict[str, SessionStatus | None] = {
+    "active": "active",
+    "expired": "expired",
+    "revoked": "revoked",
+    "all": None,
+}
 
 
 class SessionInfo(BaseModel):
-    """One of the caller's active sessions. Never carries its token or hash."""
+    """One of the caller's sessions. Never carries its token or hash."""
 
     id: str
+    status: SessionStatus
     client_id: str | None = Field(
         description="The OAuth client that started the session, if any"
     )
@@ -45,7 +54,12 @@ class SessionInfo(BaseModel):
         "what the application recorded"
     )
     created_at: datetime
+    last_active_at: datetime | None = Field(
+        description="When the session was last used: its sign-in, or its latest "
+        "sliding refresh (recorded at most once per update_age)"
+    )
     expires_at: datetime
+    revoked_at: datetime | None
     current: bool = Field(
         description="Whether this is the session that authenticated the request"
     )
@@ -60,8 +74,7 @@ class SessionList(BaseModel):
 
 class RevokedSessions(BaseModel):
     revoked: int = Field(
-        description="How many sessions were revoked, including expired ones "
-        "that had not been revoked yet"
+        description="How many active sessions were revoked; expired ones stay expired"
     )
 
 
@@ -112,26 +125,53 @@ def _parse_limit(value: str | None) -> int | None:
     return limit if 1 <= limit <= MAX_PAGE_SIZE else None
 
 
-def _session_info(record: SessionRecord, *, current_id: str) -> SessionInfo:
+def _session_info(
+    record: SessionRecord, *, current_id: str, now: datetime
+) -> SessionInfo:
     return SessionInfo(
         id=str(record.id),
+        status=session_status(record, now=now),
         client_id=record.client_id,
         client_name=record.client_name,
         user_agent=record.user_agent,
         ip=record.ip,
         login_method=record.login_method,
         created_at=record.created_at,
+        last_active_at=record.last_active_at,
         expires_at=record.expires_at,
+        revoked_at=record.revoked_at,
         current=str(record.id) == current_id,
     )
 
 
+def _hook_error(
+    error: CrossAuthException, current: ResolvedSession, context: Context
+) -> Response:
+    response = Response.error(
+        error.error,
+        error_description=error.error_description,
+        status_code=error.status_code,
+    )
+    return _roll_cookie(response, current, context)
+
+
 def list_sessions(request: HTTPRequest, context: Context) -> Response:
-    """GET /sessions — the caller's active sessions, newest first."""
+    """GET /sessions — the caller's sessions, newest first.
+
+    ``?status=`` picks ``active`` (the default), ``expired``, ``revoked`` or
+    ``all`` of them.
+    """
     current = _current_session(request, context)
     if current is None:
         return _unauthorized()
 
+    status = request.query_params.get("status", "active")
+    if status not in STATUS_FILTERS:
+        error = Response.error(
+            "invalid_request",
+            error_description="status must be one of " + ", ".join(STATUS_FILTERS),
+        )
+        return _roll_cookie(error, current, context)
     limit = _parse_limit(request.query_params.get("limit"))
     if limit is None:
         error = Response.error(
@@ -139,11 +179,12 @@ def list_sessions(request: HTTPRequest, context: Context) -> Response:
             error_description=f"limit must be an integer from 1 to {MAX_PAGE_SIZE}",
         )
         return _roll_cookie(error, current, context)
+    now = datetime.now(tz=timezone.utc)
     try:
         result = _session_storage(context).list_for_user(
             current.record.user_id,
-            now=datetime.now(tz=timezone.utc),
-            status="active",
+            now=now,
+            status=STATUS_FILTERS[status],
             order_by="created_at_desc",
             limit=limit,
             cursor=request.query_params.get("cursor"),
@@ -155,7 +196,8 @@ def list_sessions(request: HTTPRequest, context: Context) -> Response:
     current_id = str(current.record.id)
     session_list = SessionList(
         sessions=[
-            _session_info(record, current_id=current_id) for record in result.records
+            _session_info(record, current_id=current_id, now=now)
+            for record in result.records
         ],
         next_cursor=result.next_cursor,
     )
@@ -185,7 +227,15 @@ def revoke_session(request: HTTPRequest, context: Context) -> Response:
             status_code=404,
         )
         return _roll_cookie(error, current, context)
-    session_storage.revoke(session.id, revoked_at=datetime.now(tz=timezone.utc))
+    try:
+        revoke_user_session(
+            session,
+            hooks=context.hooks,
+            session_storage=session_storage,
+            request=request,
+        )
+    except CrossAuthException as e:
+        return _hook_error(e, current, context)
 
     response = Response(status_code=204)
     if str(current.record.id) == str(session.id):
@@ -201,11 +251,16 @@ def revoke_other_sessions(request: HTTPRequest, context: Context) -> Response:
     if current is None:
         return _unauthorized()
 
-    revoked = _session_storage(context).revoke_all_for_user(
-        current.record.user_id,
-        revoked_at=datetime.now(tz=timezone.utc),
-        except_session_id=current.record.id,
-    )
+    try:
+        revoked = revoke_user_sessions(
+            current.record.user_id,
+            keep_session_id=current.record.id,
+            hooks=context.hooks,
+            session_storage=_session_storage(context),
+            request=request,
+        )
+    except CrossAuthException as e:
+        return _hook_error(e, current, context)
     return _roll_cookie(_json(RevokedSessions(revoked=revoked)), current, context)
 
 
@@ -226,9 +281,21 @@ def session_routes() -> list[Route]:
             function=list_sessions,
             response_model=SessionList,
             operation_id="list_sessions",
-            summary="List the caller's active sessions",
+            summary="List the caller's sessions",
             openapi={
                 "parameters": [
+                    {
+                        "name": "status",
+                        "in": "query",
+                        "required": False,
+                        "schema": {
+                            "type": "string",
+                            "enum": list(STATUS_FILTERS),
+                            "default": "active",
+                            "title": "Status",
+                        },
+                        "description": "Which sessions to list",
+                    },
                     {
                         "name": "limit",
                         "in": "query",
@@ -250,7 +317,7 @@ def session_routes() -> list[Route]:
                     },
                 ],
                 **_responses(
-                    {"400": "Invalid limit or cursor", "401": "Not logged in"}
+                    {"400": "Invalid status, limit or cursor", "401": "Not logged in"}
                 ),
             },
         ),

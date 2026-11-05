@@ -600,25 +600,28 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
             session.commit()
         return _prepare_session_record(record)
 
-    def revoke(self, session_id: object, *, revoked_at: datetime) -> None:
+    def revoke(self, session_id: object, *, revoked_at: datetime) -> bool:
         model = self.SessionModel
 
         session_id = _coerce_id(model, "id", session_id)
         if session_id is _NO_MATCH:
-            return
+            return False
         with self._open_session() as session:
             statement = (
                 update(model)
                 .where(
                     col(model.id) == session_id,
                     # Don't shift the audit timestamp of an already-revoked
-                    # session.
+                    # session, and leave an expired one expired.
                     col(model.revoked_at) == None,  # noqa: E711
+                    col(model.expires_at)
+                    >= _bind_datetime(model, "expires_at", revoked_at),
                 )
                 .values(revoked_at=_bind_datetime(model, "revoked_at", revoked_at))
             )
-            session.exec(statement)  # type: ignore[call-overload]
+            result = session.exec(statement)  # type: ignore[call-overload]
             session.commit()
+            return result.rowcount > 0
 
     def revoke_all_for_user(
         self,
@@ -638,6 +641,8 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
                 .where(
                     col(model.user_id) == user_id,
                     col(model.revoked_at) == None,  # noqa: E711
+                    col(model.expires_at)
+                    >= _bind_datetime(model, "expires_at", revoked_at),
                 )
                 .values(revoked_at=_bind_datetime(model, "revoked_at", revoked_at))
             )
@@ -1189,8 +1194,7 @@ class SQLModelAccountsStorage(
         if conflicts:
             fields = sorted(conflicts)
             raise ValueError(
-                "user.create extra_fields cannot replace standard "
-                f"field(s) {fields!r}"
+                f"user.create extra_fields cannot replace standard field(s) {fields!r}"
             )
         values.update(extra_fields)
 
