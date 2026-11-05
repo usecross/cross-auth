@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request, Response
@@ -115,8 +116,40 @@ def test_logout_route_without_token(
 
     assert response.status_code == 204
     _assert_clears_cookie(response)
-    assert [event.session_record for event in seen] == [None]
+    # Nothing was revoked: the after hook only reports revocations.
+    assert seen == []
     assert get_session(other_token, session_storage) is not None
+
+
+def test_logout_of_a_session_revoked_meanwhile_runs_no_after_hook(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
+    session_token, _ = auth.issue_session_token("test")
+    seen: list[AfterLogoutEvent] = []
+
+    @auth.before("logout")
+    def revoked_elsewhere(event: BeforeLogoutEvent) -> None:
+        # Another request revokes the session between lookup and revoke.
+        assert event.session_record is not None
+        session_storage.revoke(
+            event.session_record.id, revoked_at=datetime.now(tz=timezone.utc)
+        )
+
+    @auth.after("logout")
+    def capture(event: AfterLogoutEvent) -> None:
+        seen.append(event)
+
+    with TestClient(_make_app(auth)) as client:
+        response = client.post(
+            "/api/v1/logout", headers={"Authorization": f"Bearer {session_token}"}
+        )
+
+    assert response.status_code == 204
+    _assert_clears_cookie(response)
+    assert seen == []
 
 
 def test_logout_route_with_unknown_token(

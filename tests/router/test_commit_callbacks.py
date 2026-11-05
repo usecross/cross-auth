@@ -407,7 +407,7 @@ def test_logout_refuses_a_session_record_injected_by_a_before_hook(build_auth):
     assert trace == []
 
 
-def test_logout_without_a_session_runs_its_hooks_at_once(build_auth):
+def test_logout_without_a_session_runs_no_after_hook(build_auth):
     session_storage = DeferredSessionStorage()
     auth = build_auth(session_storage=session_storage)
     trace = _trace_after_hooks(auth)
@@ -415,11 +415,12 @@ def test_logout_without_a_session_runs_its_hooks_at_once(build_auth):
 
     response = _cookie_app(auth, session_storage).post("/logout")
 
-    # Nothing was written, so nothing waits for the store to commit.
-    assert trace == ["logout"]
-    assert response.headers["x-after"] == "1"
+    # Nothing was written or revoked: the cookie is cleared, and neither a
+    # commit nor an after hook is involved.
+    assert trace == []
+    assert "x-after" not in response.headers
     cookies = response.headers.get_list("set-cookie")
-    assert any(cookie.startswith("after=1") for cookie in cookies)
+    assert not any(cookie.startswith("after=1") for cookie in cookies)
     assert any(cookie.startswith('session_id=""') for cookie in cookies)
 
 

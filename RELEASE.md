@@ -24,6 +24,10 @@ a session runs the new `session.revoke` hooks (Django: signals).
   routes answer with that error. The after hook runs only when at least one
   session was revoked, and its `revoked_count` says how many. Logging out still
   runs only the `logout` hooks.
+- `logout` after hooks now follow the same rule: they run only when the logout
+  revoked a session. A logout without a session, or whose session was already
+  revoked or expired, still answers 204, clears the cookie and runs the before
+  hook. `AfterLogoutEvent.session_record` is therefore never `None`.
 - Django: `cross_auth.django.sessions.revoke_session()` and
   `revoke_other_sessions()` send the new `before_session_revoke` and
   `session_revoked` signals. Raise `PermissionDenied` from a

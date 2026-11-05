@@ -237,9 +237,16 @@ class BeforeLogoutEvent:
 
 @dataclass(frozen=True, slots=True)
 class AfterLogoutEvent:
+    """A logout that revoked at least one session.
+
+    A logout without a session, or whose session was already gone, still
+    clears the cookie but sends no after event. ``session_record`` is the
+    request's session as read before it was revoked.
+    """
+
     request: HTTPRequest
     response: Response
-    session_record: SessionRecord | None
+    session_record: SessionRecord
     scope: LogoutScope = "current"
     revoked_count: int = 0
 

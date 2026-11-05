@@ -284,9 +284,6 @@ def logout_session(
         raise ValueError("logout before hooks must keep scope 'current' or 'all'")
     revoked_record = event.session_record
 
-    # Without a session to revoke nothing is written, so the after hook
-    # has no commit to wait for.
-    on_commit = run_now
     revoked_count = 0
     if revoked_record is not None:
         require_immediate_commit(
@@ -301,11 +298,14 @@ def logout_session(
         else:
             revoked = session_storage.revoke(revoked_record.id, revoked_at=revoked_at)
             revoked_count = 1 if revoked else 0
-        on_commit = session_storage.on_commit
 
     if event.response.cookies is None:
         event.response.cookies = []
     event.response.cookies.append(make_clear_cookie(session_config))
+    # Like session.revoke, the after hook reports revocations only: a logout
+    # that revoked nothing still clears the cookie but runs no after hook.
+    if revoked_record is None or revoked_count == 0:
+        return event.response
     after_event = AfterLogoutEvent(
         request=event.request,
         response=event.response,
@@ -313,7 +313,7 @@ def logout_session(
         scope=event.scope,
         revoked_count=revoked_count,
     )
-    on_commit(lambda: hooks.run_after("logout", after_event))
+    session_storage.on_commit(lambda: hooks.run_after("logout", after_event))
     return event.response
 
 

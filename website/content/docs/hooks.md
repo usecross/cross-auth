@@ -112,8 +112,8 @@ queue, or observability code.
   a session raise `RuntimeError` before writing anything, or changing the
   response, when the session storage defers `on_commit` callbacks: their after
   hooks may change the response, which is built before an application
-  transaction could commit. A `logout` without a session writes nothing, so its
-  after hook runs immediately.
+  transaction could commit. A `logout` without a session writes nothing and runs
+  no after hook.
 - A bearer session (`auth.issue_session_token()`, `/token`) from a session
   storage that defers callbacks is issued before it is committed. Commit before
   you deliver the token; after a rollback the token does not work and no success
@@ -258,9 +258,13 @@ that error instead of 204.
 
 Both events carry the `scope`: `"current"` revokes the request's session and
 `"all"` every session of its user. A before hook may return a different scope,
-for example to refuse logging out everywhere for some accounts. The after
-event's `revoked_count` is the number of sessions the logout revoked: `0`
-without a session, `1` for `"current"`.
+for example to refuse logging out everywhere for some accounts. The after hook
+runs only when the logout revoked at least one session, like
+[`session.revoke`](#sessionrevoke): a logout without a session, or with one that
+is already revoked or expired, still answers 204 and clears the cookie, but runs
+only the before hook. The after event's `session_record` is then always set, and
+`revoked_count` is the number of sessions the logout revoked: `1` for
+`"current"`.
 
 ```python
 from dataclasses import replace
@@ -279,8 +283,7 @@ def keep_admins_signed_in_elsewhere(
 
 @auth.after("logout")
 def audit_logout(event: AfterLogoutEvent) -> None:
-    session_id = None if event.session_record is None else event.session_record.id
-    audit_log.record("session_logout", session_id=session_id)
+    audit_log.record("session_logout", session_id=event.session_record.id)
 ```
 
 ### `session.revoke`

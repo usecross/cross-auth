@@ -278,7 +278,7 @@ def test_logout_hooks_without_session_cookie(
 
     @auth.after("logout")
     def capture_after(event: AfterLogoutEvent) -> None:
-        seen["after"] = str(event.session_record.id) if event.session_record else None
+        seen["after"] = str(event.session_record.id)
 
     request = Request(
         {
@@ -292,7 +292,8 @@ def test_logout_hooks_without_session_cookie(
     response = Response()
     auth.logout(request, response=response)
 
-    assert seen == {"before": None, "after": None}
+    # Nothing was revoked, so only the before hook ran.
+    assert seen == {"before": None}
 
 
 def test_sync_events_reject_async_hooks(
