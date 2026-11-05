@@ -5,12 +5,66 @@ from datetime import datetime, timedelta, timezone
 from typing import assert_type
 
 import pytest
+from sqlalchemy import inspect
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from cross_auth.hooks import SocialAccountSnapshot, UserSnapshot
 from cross_auth.storage.sqlmodel import SQLModelSessionStorage
 
-from .models import AliasedVerifiedUser, LeanSocialAccount, UserSession
+from .models import (
+    AliasedVerifiedUser,
+    IntUserIdSession,
+    LeanSocialAccount,
+    RenamedColumnSession,
+    TzAwareUserSession,
+    UserSession,
+    UuidUserSession,
+)
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        UserSession,
+        UuidUserSession,
+        IntUserIdSession,
+        RenamedColumnSession,
+        TzAwareUserSession,
+    ],
+)
+def test_inherited_token_hash_has_a_unique_index(engine, model):
+    # Every request looks its session up by token_hash, so the base makes the
+    # database enforce one session per hash; subclasses that don't redeclare
+    # the column inherit that.
+    indexes = inspect(engine).get_indexes(model.__tablename__)
+
+    token_hash_indexes = [
+        index for index in indexes if index["column_names"] == ["token_hash"]
+    ]
+    assert len(token_hash_indexes) == 1
+    assert token_hash_indexes[0]["unique"]
+
+
+def test_duplicate_token_hash_is_rejected(engine):
+    storage = SQLModelSessionStorage(
+        UserSession, session_factory=lambda: Session(engine)
+    )
+    now = datetime.now(timezone.utc)
+
+    def create(user_id: str) -> None:
+        storage.create(
+            token_hash="duplicate-hash",
+            user_id=user_id,
+            created_at=now,
+            updated_at=now,
+            expires_at=now + timedelta(days=1),
+        )
+
+    create("user-1")
+
+    with pytest.raises(IntegrityError):
+        create("user-2")
 
 
 def test_inherited_session_fields_roundtrip(engine):

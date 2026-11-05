@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from typing import cast
 
 import pytest
+from sqlalchemy import inspect
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine
 
 from cross_auth._session import create_session, get_session
@@ -25,6 +27,7 @@ from .models import (
     AccountsStore,
     RenamedColumnSessionStore,
     SessionStore,
+    UserSession,
     UuidSessionStore,
 )
 
@@ -127,6 +130,22 @@ def test_roundtrip_preserves_utc_instants(store):
     assert persisted.updated_at == new_updated
     assert persisted.expires_at == new_expires
     assert persisted.last_active_at == new_updated
+
+
+def test_token_hash_is_unique(pg_engine, store):
+    indexes = inspect(pg_engine).get_indexes(UserSession.__tablename__)
+    token_hash_indexes = [
+        index for index in indexes if index["column_names"] == ["token_hash"]
+    ]
+    assert len(token_hash_indexes) == 1
+    assert token_hash_indexes[0]["unique"]
+
+    now = datetime.now(tz=timezone.utc)
+    token_hash = f"{_uid()}-shared"
+    _make(store, user_id=_uid(), now=now, token_hash=token_hash)
+
+    with pytest.raises(IntegrityError):
+        _make(store, user_id=_uid(), now=now, token_hash=token_hash)
 
 
 def test_core_sliding_refresh_window_arithmetic(store):

@@ -309,7 +309,10 @@ Inherit `SQLModelSession` to get the timestamps, client metadata, the
 `login_method` column (see
 [Login method](/docs/session-authentication#login-method)), internal
 `token_hash` column, and computed `status` property. Only the hash is stored,
-never the raw token. Define your own primary key and user ID column:
+never the raw token. `token_hash` has a unique index: every authenticated
+request looks its session up by the hash, so the database makes sure each hash
+belongs to exactly one session. Define only your own primary key and user ID
+column:
 
 ```python
 from sqlmodel import Field
@@ -325,10 +328,33 @@ class UserSession(SQLModelSession, table=True):
 Cross-Auth passes user IDs to the session layer as strings
 (`login(user_id: str)`), but the adapter coerces them to your column's type.
 Declare `user_id` as `str`, `int`, or `UUID` to match your user table's primary
-key. Override inherited fields when you need different indexes, database column
-names, or timezone-aware types. The inherited `status` property delegates to
+key. Override inherited fields when you need other indexes, database column
+names, or timezone-aware types. If you redeclare `token_hash`, keep it unique
+(`Field(unique=True, index=True)`). The inherited `status` property delegates to
 `session_status`, so it agrees with the adapter's active/expired/revoked
 filters.
+
+**Migration (0.47):** the `token_hash` index of `SQLModelSession` is now unique.
+Tables created by earlier versions keep their non-unique index until you migrate
+them, and Alembic's autogenerate reports the change as a dropped and re-added
+`ix_<table>_token_hash`. Session tokens are random, so no two sessions should
+share a hash, but check before migrating, and delete any rows this query finds;
+the devices using them have to sign in again:
+
+```sql
+SELECT token_hash, COUNT(*) FROM usersession GROUP BY token_hash HAVING COUNT(*) > 1;
+```
+
+Then recreate the index as unique:
+
+```python
+op.drop_index("ix_usersession_token_hash", table_name="usersession")
+op.create_index("ix_usersession_token_hash", "usersession", ["token_hash"], unique=True)
+```
+
+If your model already redeclared
+`token_hash: str = Field(unique=True, index=True)`, the table already has this
+index: drop the override, nothing changes in the database.
 
 **Migration (0.42):** `SQLModelSession` gained a nullable `login_method` column.
 Add it to every session table before deploying, or every session read fails.
