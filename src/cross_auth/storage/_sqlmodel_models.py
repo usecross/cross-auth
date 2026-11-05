@@ -18,7 +18,7 @@ class SQLModelSession(SQLModel):
         id: Any
         user_id: Any
 
-    token_hash: str = Field(index=True)
+    token_hash: str = Field(unique=True, index=True)
     created_at: datetime
     updated_at: datetime
     expires_at: datetime
