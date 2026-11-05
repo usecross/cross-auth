@@ -100,21 +100,24 @@ Like `/logout`, these routes act on the session that authenticates the request
 (the session cookie, then `Authorization: Bearer ...`) and on that session's
 user. A request without a valid session answers `401 unauthorized`.
 
-`GET /sessions` lists the caller's active sessions, newest first. It never
-returns session tokens or their hashes:
+`GET /sessions` lists the caller's sessions, newest first. It never returns
+session tokens or their hashes:
 
 ```json
 {
   "sessions": [
     {
       "id": "8b0c…",
+      "status": "active",
       "client_id": null,
       "client_name": null,
       "user_agent": "Mozilla/5.0 …",
       "ip": "203.0.113.7",
       "login_method": "github",
       "created_at": "2026-11-04T09:12:44Z",
+      "last_active_at": "2026-11-04T17:40:02Z",
       "expires_at": "2026-11-05T09:12:44Z",
+      "revoked_at": null,
       "current": true
     }
   ],
@@ -122,27 +125,36 @@ returns session tokens or their hashes:
 }
 ```
 
+By default it lists active sessions only. Pass `status=expired`,
+`status=revoked` or `status=all` to show a history instead, for example a list
+that also shows signed-out devices with when they expired or were revoked. Each
+session's `status` is `active`, `expired` or `revoked`. `last_active_at` is the
+sign-in time, then the latest sliding refresh, so with `update_age` it is
+accurate to within that interval.
+
 `current` marks the session that authenticated the request. Pages hold 50
 sessions; pass `limit` (1 to 100) to change that, and send a page's
-`next_cursor` back as `cursor` to get the next one. An invalid `limit` or
-`cursor` answers `400 invalid_request`.
+`next_cursor` back as `cursor` to get the next one, with the same `status`. An
+invalid `status`, `limit` or `cursor` answers `400 invalid_request`.
 
 `DELETE /sessions/{session_id}` revokes one of the caller's sessions, including
 the current one. Revoking the current cookie session also clears the cookie, as
 `/logout` does. An id that does not exist and another user's session both answer
 the same `404 session_not_found`, so nobody can probe for sessions. Revoking a
-session that is already revoked or expired answers 204.
+session that is already revoked or expired answers 204 and leaves it as it was,
+so an expired session keeps its `expired` status.
 
-`POST /sessions/revoke-others` revokes every session of the caller except the
-current one. `revoked` counts expired sessions that had not been revoked yet
-too, so it can be higher than the number of sessions `GET /sessions` listed.
+`POST /sessions/revoke-others` revokes every active session of the caller except
+the current one, and `revoked` says how many. Expired sessions stay expired and
+are not counted.
 
-These routes do not run hooks; `logout` hooks run only for `/logout` and
-`auth.logout()`. `DELETE` and `POST` change state, so protect them from CSRF
-when the session cookie can authenticate them, like `/logout`: see
-[Security Integration](/docs/security). To build your own pages instead, use
-`auth.list_sessions()`, `auth.get_session()`, `auth.revoke_session()`,
-`auth.revoke_other_sessions()` and `auth.revoke_all_sessions()`.
+Both run the [`session.revoke` hooks](/docs/hooks#sessionrevoke), so a before
+hook can refuse a revocation and an after hook can audit it. `DELETE` and `POST`
+change state, so protect them from CSRF when the session cookie can authenticate
+them, like `/logout`: see [Security Integration](/docs/security). To build your
+own pages instead, use `auth.list_sessions()`, `auth.get_session()`,
+`auth.revoke_session()`, `auth.revoke_other_sessions()` and
+`auth.revoke_all_sessions()`; the revoke methods run the same hooks.
 
 ### Get Current User
 

@@ -18,13 +18,16 @@ from ..storage.models import SessionStore
 
 SESSION_FIELDS = {
     "id",
+    "status",
     "client_id",
     "client_name",
     "user_agent",
     "ip",
     "login_method",
     "created_at",
+    "last_active_at",
     "expires_at",
+    "revoked_at",
     "current",
 }
 
@@ -70,6 +73,10 @@ def _client(auth: CrossAuth) -> TestClient:
 
 def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _iso(value: datetime) -> str:
+    return value.isoformat().replace("+00:00", "Z")
 
 
 def _session(
@@ -131,15 +138,19 @@ def test_list_describes_each_session_without_its_token(
 
     [session] = response.json()["sessions"]
     assert set(session) == SESSION_FIELDS
+    assert record.last_active_at is not None
     assert session == {
         "id": record.id,
+        "status": "active",
         "client_id": "cli",
         "client_name": "Command line",
         "user_agent": "curl/8",
         "ip": "203.0.113.7",
         "login_method": "github",
-        "created_at": record.created_at.isoformat().replace("+00:00", "Z"),
-        "expires_at": record.expires_at.isoformat().replace("+00:00", "Z"),
+        "created_at": _iso(record.created_at),
+        "last_active_at": _iso(record.last_active_at),
+        "expires_at": _iso(record.expires_at),
+        "revoked_at": None,
         "current": True,
     }
 
@@ -160,6 +171,43 @@ def test_list_shows_only_the_callers_active_sessions(
         response = client.get("/api/v1/sessions", headers=_bearer(session_token))
 
     assert [s["id"] for s in response.json()["sessions"]] == [current.id]
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (None, ["active"]),
+        ("active", ["active"]),
+        ("expired", ["expired"]),
+        ("revoked", ["revoked"]),
+        ("all", ["active", "revoked", "expired"]),
+    ],
+)
+def test_list_filters_by_status(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+    status: str | None,
+    expected: list[str],
+):
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
+    _session(session_storage, minutes_ago=3, max_age=60)  # expired
+    _, revoked = _session(session_storage, minutes_ago=2)
+    session_storage.revoke(revoked.id, revoked_at=datetime.now(tz=timezone.utc))
+    session_token, _ = _session(session_storage, minutes_ago=1)
+
+    with _client(auth) as client:
+        response = client.get(
+            "/api/v1/sessions",
+            params={} if status is None else {"status": status},
+            headers=_bearer(session_token),
+        )
+
+    sessions = response.json()["sessions"]
+    assert [s["status"] for s in sessions] == expected
+    revoked_at = {s["status"]: s["revoked_at"] for s in sessions}.get("revoked")
+    if "revoked" in expected:
+        assert revoked_at is not None
 
 
 def test_list_marks_the_cookie_session_current(
@@ -268,7 +316,13 @@ def test_list_pages_with_a_cursor(
 
 @pytest.mark.parametrize(
     "params",
-    [{"limit": "0"}, {"limit": "101"}, {"limit": "many"}, {"cursor": "not-a-cursor"}],
+    [
+        {"limit": "0"},
+        {"limit": "101"},
+        {"limit": "many"},
+        {"cursor": "not-a-cursor"},
+        {"status": "deleted"},
+    ],
 )
 def test_list_rejects_an_invalid_page(
     secondary_storage: SecondaryStorage,
@@ -421,6 +475,26 @@ def test_revoking_another_session_keeps_the_cookie(
     assert get_session(cookie_token, session_storage) is not None
 
 
+def test_revoking_an_expired_session_leaves_it_expired(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
+    session_token, _ = create_session("test", session_storage)
+    _, expired = _session(session_storage, minutes_ago=2, max_age=60)
+
+    with _client(auth) as client:
+        response = client.delete(
+            f"/api/v1/sessions/{expired.id}", headers=_bearer(session_token)
+        )
+
+    assert response.status_code == 204
+    stored = session_storage.get_any(expired.id)
+    assert stored is not None
+    assert stored.revoked_at is None
+
+
 def test_revoking_an_already_revoked_session(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
@@ -463,6 +537,34 @@ def test_revoke_others_keeps_the_current_session(
     assert get_session(first_token, session_storage) is None
     assert get_session(second_token, session_storage) is None
     assert get_session(other_user_token, session_storage) is not None
+
+
+def test_revoke_others_counts_only_active_sessions(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
+    current_token, _ = create_session("test", session_storage)
+    other_token, _ = create_session("test", session_storage)
+    _, expired = _session(session_storage, minutes_ago=2, max_age=60)
+
+    with _client(auth) as client:
+        response = client.post(
+            "/api/v1/sessions/revoke-others", headers=_bearer(current_token)
+        )
+        listed = client.get(
+            "/api/v1/sessions",
+            params={"status": "expired"},
+            headers=_bearer(current_token),
+        )
+
+    assert response.json() == {"revoked": 1}
+    assert get_session(other_token, session_storage) is None
+    # The expired session was not revoked: it still reads as expired.
+    assert [(s["id"], s["status"]) for s in listed.json()["sessions"]] == [
+        (expired.id, "expired")
+    ]
 
 
 def test_revoke_others_keeps_the_current_cookie_session(

@@ -28,6 +28,8 @@ from ._login import (
     issue_bearer_session,
     login_with_session,
     logout_session,
+    revoke_user_session,
+    revoke_user_sessions,
 )
 from ._native import resolve_id_token_user as _resolve_id_token_user
 from ._oauth_server import OAuthServer
@@ -59,6 +61,7 @@ from .hooks import (
     AfterOAuthFinalizeLinkEvent,
     AfterOAuthIdTokenEvent,
     AfterOAuthLinkEvent,
+    AfterSessionRevokeEvent,
     AfterSocialAccountCreateEvent,
     AfterSocialAccountUpdateEvent,
     AfterTokenAuthorizationCodeEvent,
@@ -73,6 +76,7 @@ from .hooks import (
     BeforeOAuthFinalizeLinkEvent,
     BeforeOAuthIdTokenEvent,
     BeforeOAuthLinkEvent,
+    BeforeSessionRevokeEvent,
     BeforeSocialAccountCreateEvent,
     BeforeSocialAccountUpdateEvent,
     BeforeTokenAuthorizationCodeEvent,
@@ -333,25 +337,40 @@ class CrossAuth:
         )
 
     def revoke_session(self, session_id: Any, *, user_id: Any) -> None:
+        """Revoke one of the user's sessions; another user's session is ignored.
+
+        Runs the ``session.revoke`` hooks, with ``request`` set to ``None``.
+        """
         session = self.get_session(session_id, user_id=user_id)
         if session is None:
             return
-        self._require_session_storage().revoke(
-            session.id,
-            revoked_at=datetime.now(tz=timezone.utc),
+        revoke_user_session(
+            session,
+            hooks=self._context.hooks,
+            session_storage=self._require_session_storage(),
         )
 
     def revoke_other_sessions(self, *, user_id: Any, keep_session_id: Any) -> int:
-        return self._require_session_storage().revoke_all_for_user(
+        """Revoke the user's active sessions except ``keep_session_id``.
+
+        Runs the ``session.revoke`` hooks and returns how many were revoked.
+        """
+        return revoke_user_sessions(
             user_id,
-            revoked_at=datetime.now(tz=timezone.utc),
-            except_session_id=keep_session_id,
+            keep_session_id=keep_session_id,
+            hooks=self._context.hooks,
+            session_storage=self._require_session_storage(),
         )
 
     def revoke_all_sessions(self, *, user_id: Any) -> int:
-        return self._require_session_storage().revoke_all_for_user(
+        """Revoke all the user's active sessions.
+
+        Runs the ``session.revoke`` hooks and returns how many were revoked.
+        """
+        return revoke_user_sessions(
             user_id,
-            revoked_at=datetime.now(tz=timezone.utc),
+            hooks=self._context.hooks,
+            session_storage=self._require_session_storage(),
         )
 
     def sign_in_with_id_token(
@@ -512,6 +531,11 @@ class CrossAuth:
 
     @overload
     def before(
+        self, event: Literal["session.revoke"]
+    ) -> _HookDecorator[BeforeSessionRevokeEvent, None]: ...
+
+    @overload
+    def before(
         self, event: Literal["oauth.authorize"]
     ) -> _HookDecorator[
         BeforeOAuthAuthorizeEvent, BeforeOAuthAuthorizeEvent | None
@@ -602,6 +626,11 @@ class CrossAuth:
     def after(
         self, event: Literal["logout"]
     ) -> _HookDecorator[AfterLogoutEvent, None]: ...
+
+    @overload
+    def after(
+        self, event: Literal["session.revoke"]
+    ) -> _HookDecorator[AfterSessionRevokeEvent, None]: ...
 
     @overload
     def after(

@@ -844,6 +844,11 @@ followed by an unconditional update allows revocation to race the refresh.
 Callers must supply the current time as `updated_at`; core reads the clock again
 after the initial lookup before attempting a sliding refresh.
 
+`revoke` and `revoke_all_for_user` revoke only sessions that are still active at
+the supplied `revoked_at`: leave revoked and expired sessions unchanged, so an
+expired session keeps its `expired` status. `revoke_all_for_user` returns how
+many sessions it revoked.
+
 If `list_for_user` supports cursor pagination, raise
 `cross_auth.exceptions.InvalidCursorError` for malformed or mismatched cursors,
 so applications can handle bad cursors the same way for every backend.

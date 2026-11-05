@@ -241,7 +241,13 @@ class SessionStorage(Protocol):
         session_id: Any,
         *,
         revoked_at: AwareDatetime,
-    ) -> None: ...
+    ) -> None:
+        """Revoke the session if it is still active at revoked_at.
+
+        A missing, revoked or expired session is left unchanged, so an
+        expired session keeps its ``expired`` status.
+        """
+        ...
 
     def revoke_all_for_user(
         self,
@@ -249,7 +255,13 @@ class SessionStorage(Protocol):
         *,
         revoked_at: AwareDatetime,
         except_session_id: Any | None = None,
-    ) -> int: ...
+    ) -> int:
+        """Revoke the user's sessions that are still active at revoked_at.
+
+        Leave except_session_id, revoked sessions and expired sessions
+        unchanged. Return how many sessions were revoked.
+        """
+        ...
 
     def on_commit(self, callback: CommitCallback) -> None:
         """Run callback once the writes this storage just returned are committed.

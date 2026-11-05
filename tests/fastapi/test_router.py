@@ -48,7 +48,7 @@ def test_router(test_app: FastAPI):
                 },
                 "/sessions": {
                     "get": {
-                        "summary": "List the caller's active sessions",
+                        "summary": "List the caller's sessions",
                         "operationId": "list_sessions",
                         "responses": {
                             "200": {
@@ -61,10 +61,22 @@ def test_router(test_app: FastAPI):
                                     }
                                 },
                             },
-                            "400": {"description": "Invalid limit or cursor"},
+                            "400": {"description": "Invalid status, limit or cursor"},
                             "401": {"description": "Not logged in"},
                         },
                         "parameters": [
+                            {
+                                "name": "status",
+                                "in": "query",
+                                "required": False,
+                                "schema": {
+                                    "type": "string",
+                                    "enum": ["active", "expired", "revoked", "all"],
+                                    "default": "active",
+                                    "title": "Status",
+                                },
+                                "description": "Which sessions to list",
+                            },
                             {
                                 "name": "limit",
                                 "in": "query",
@@ -379,7 +391,7 @@ def test_router(test_app: FastAPI):
                             "revoked": {
                                 "type": "integer",
                                 "title": "Revoked",
-                                "description": "How many sessions were revoked, including expired ones that had not been revoked yet",
+                                "description": "How many active sessions were revoked; expired ones stay expired",
                             }
                         },
                         "type": "object",
@@ -389,6 +401,11 @@ def test_router(test_app: FastAPI):
                     "SessionInfo": {
                         "properties": {
                             "id": {"type": "string", "title": "Id"},
+                            "status": {
+                                "type": "string",
+                                "enum": ["active", "expired", "revoked"],
+                                "title": "Status",
+                            },
                             "client_id": {
                                 "anyOf": [{"type": "string"}, {"type": "null"}],
                                 "title": "Client Id",
@@ -416,10 +433,25 @@ def test_router(test_app: FastAPI):
                                 "format": "date-time",
                                 "title": "Created At",
                             },
+                            "last_active_at": {
+                                "anyOf": [
+                                    {"type": "string", "format": "date-time"},
+                                    {"type": "null"},
+                                ],
+                                "title": "Last Active At",
+                                "description": "When the session was last used: its sign-in, or its latest sliding refresh (recorded at most once per update_age)",
+                            },
                             "expires_at": {
                                 "type": "string",
                                 "format": "date-time",
                                 "title": "Expires At",
+                            },
+                            "revoked_at": {
+                                "anyOf": [
+                                    {"type": "string", "format": "date-time"},
+                                    {"type": "null"},
+                                ],
+                                "title": "Revoked At",
                             },
                             "current": {
                                 "type": "boolean",
@@ -430,17 +462,20 @@ def test_router(test_app: FastAPI):
                         "type": "object",
                         "required": [
                             "id",
+                            "status",
                             "client_id",
                             "client_name",
                             "user_agent",
                             "ip",
                             "login_method",
                             "created_at",
+                            "last_active_at",
                             "expires_at",
+                            "revoked_at",
                             "current",
                         ],
                         "title": "SessionInfo",
-                        "description": "One of the caller's active sessions. Never carries its token or hash.",
+                        "description": "One of the caller's sessions. Never carries its token or hash.",
                     },
                     "SessionList": {
                         "properties": {

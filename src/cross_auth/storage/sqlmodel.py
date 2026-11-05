@@ -612,8 +612,10 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
                 .where(
                     col(model.id) == session_id,
                     # Don't shift the audit timestamp of an already-revoked
-                    # session.
+                    # session, and leave an expired one expired.
                     col(model.revoked_at) == None,  # noqa: E711
+                    col(model.expires_at)
+                    >= _bind_datetime(model, "expires_at", revoked_at),
                 )
                 .values(revoked_at=_bind_datetime(model, "revoked_at", revoked_at))
             )
@@ -638,6 +640,8 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
                 .where(
                     col(model.user_id) == user_id,
                     col(model.revoked_at) == None,  # noqa: E711
+                    col(model.expires_at)
+                    >= _bind_datetime(model, "expires_at", revoked_at),
                 )
                 .values(revoked_at=_bind_datetime(model, "revoked_at", revoked_at))
             )
@@ -1189,8 +1193,7 @@ class SQLModelAccountsStorage(
         if conflicts:
             fields = sorted(conflicts)
             raise ValueError(
-                "user.create extra_fields cannot replace standard "
-                f"field(s) {fields!r}"
+                f"user.create extra_fields cannot replace standard field(s) {fields!r}"
             )
         values.update(extra_fields)
 

@@ -43,9 +43,10 @@ queue, or observability code.
   mutable event fields documented below.
 - Use `after` hooks for post-success work such as audit logs, metrics, welcome
   emails, or provisioning records.
-- Session and account hooks (`authenticate`, `login`, `logout`, `user.create`,
-  `social_account.create`, `social_account.update`) are synchronous. OAuth and
-  token hooks may be synchronous or asynchronous.
+- Session and account hooks (`authenticate`, `login`, `logout`,
+  `session.revoke`, `user.create`, `social_account.create`,
+  `social_account.update`) are synchronous. OAuth and token hooks may be
+  synchronous or asynchronous.
 - Hook events use framework-neutral `cross_web` request and response objects at
   the hook boundary.
 - Do not enforce security policy in an `after` hook. If an operation should be
@@ -68,9 +69,10 @@ queue, or observability code.
   `validated_user_info` is a frozen `ValidatedUserInfo`. Assigning to any of
   them raises `dataclasses.FrozenInstanceError`. Returning an event that changes
   an established identity raises `ValueError` before anything is resolved or
-  saved, and policy-only before hooks (`oauth.link`, `oauth.disconnect`,
-  `token.password`, `token.authorization_code`) raise `TypeError` for any
-  returned event. `after` hooks still receive the stored objects.
+  saved, and policy-only before hooks (`session.revoke`, `oauth.link`,
+  `oauth.disconnect`, `token.password`, `token.authorization_code`) raise
+  `TypeError` for any returned event. `after` hooks still receive the stored
+  objects.
 - These rules cover the data Cross-Auth passes to hooks. Hooks are trusted
   application code: Cross-Auth does not sandbox or undo a hook that changes
   global state, writes to storage directly, or calls an external service, even
@@ -83,15 +85,15 @@ queue, or observability code.
   committed it. Cross-Auth hands each hook to that storage's `on_commit`: the
   accounts storage for user and social-account changes (`user.create`,
   `social_account.*`, `oauth.id_token`, `oauth.finalize_link`,
-  `oauth.disconnect`), and the session storage for `login`, `logout`, and the
-  browser `oauth.callback` and `token.*` events that issue a session. Built-in
-  adapters commit each operation before returning, so their hooks run
-  immediately, in the order shown on this page. An adapter whose writes join
-  your application's transaction runs them after the outermost transaction
-  commits and drops them on rollback. Hooks after a custom `token_issuer` run
-  when the issuer returns. `authenticate` writes nothing, and `oauth.authorize`
-  and `oauth.link` follow secondary-storage writes that have already completed,
-  so their hooks run immediately.
+  `oauth.disconnect`), and the session storage for `login`, `logout`,
+  `session.revoke`, and the browser `oauth.callback` and `token.*` events that
+  issue a session. Built-in adapters commit each operation before returning, so
+  their hooks run immediately, in the order shown on this page. An adapter whose
+  writes join your application's transaction runs them after the outermost
+  transaction commits and drops them on rollback. Hooks after a custom
+  `token_issuer` run when the issuer returns. `authenticate` writes nothing, and
+  `oauth.authorize` and `oauth.link` follow secondary-storage writes that have
+  already completed, so their hooks run immediately.
 - Accounts, sessions, secondary storage, and a custom `token_issuer` commit
   separately; a login is not one transaction across them. `user.create` and
   `social_account.create` run as one callback after signup, so a failing
@@ -128,6 +130,7 @@ Use this as a quick guide when deciding where custom logic belongs.
 | `authenticate`             | Customize password-based sign-in checks before a session is created     | Normalize email addresses, block specific accounts, enforce tenant-specific password login rules            | Audit successful and failed password authentication attempts                             |
 | `login`                    | Control every cookie or bearer login before its credential is issued    | Block login for service or suspended users, clamp session lifetimes, adjust the cookie login response       | Audit logins, add headers or cookies, publish "user logged in" telemetry                 |
 | `logout`                   | Control session deletion and post-logout side effects                   | Require an active session, prevent logout in special flows, capture session context before deletion         | Audit logout activity, revoke related application state, trigger notifications           |
+| `session.revoke`           | Control signing out sessions from a session list                        | Refuse revoking protected sessions, require recent sign-in before signing out other devices                 | Audit revoked sessions, notify the user that devices were signed out                     |
 | `user.create`              | Apply policy and side effects around creation of a local user           | Enforce signup eligibility or invitation requirements                                                       | Send welcome events, create telemetry, start post-signup provisioning                    |
 | `social_account.create`    | Customize and observe creation of a provider account                    | Add app-specific storage fields, normalize provider metadata, block creation                                | Audit new linked accounts, trigger downstream provisioning                               |
 | `social_account.update`    | Customize and observe updates to an existing provider account           | Refresh app-specific storage fields, normalize provider metadata, block an update                           | Audit linked-account changes, trigger downstream metadata updates                        |
@@ -278,6 +281,48 @@ def keep_admins_signed_in_elsewhere(
 def audit_logout(event: AfterLogoutEvent) -> None:
     session_id = None if event.session_record is None else event.session_record.id
     audit_log.record("session_logout", session_id=session_id)
+```
+
+### `session.revoke`
+
+Runs around revoking sessions by id: the mounted `DELETE /sessions/{session_id}`
+and `POST /sessions/revoke-others` routes, and `auth.revoke_session()`,
+`auth.revoke_other_sessions()` and `auth.revoke_all_sessions()`. Logging out
+runs the [`logout`](#logout) hooks instead, so each revocation runs one of the
+two.
+
+Both events carry the `user_id` and the `scope`: `"one"` revokes
+`session_record`, `"others"` every session of the user except `keep_session_id`,
+and `"all"` all of them. `request` is the route's request, or `None` when your
+code calls an `auth.revoke_*()` method. A before hook that raises
+`CrossAuthException` refuses the revocation, and the route answers with that
+error. A before hook cannot change what is revoked.
+
+The after event's `revoked_count` is how many active sessions were revoked.
+Expired sessions are never revoked, so revoking an expired or already revoked
+session runs the hooks with `revoked_count=0`.
+
+```python
+from cross_auth.exceptions import CrossAuthException
+from cross_auth.hooks import AfterSessionRevokeEvent, BeforeSessionRevokeEvent
+
+
+@auth.before("session.revoke")
+def keep_support_sessions(event: BeforeSessionRevokeEvent) -> None:
+    if event.scope == "one" and is_support_session(event.session_record):
+        raise CrossAuthException(
+            "session_locked", "Support sessions end on their own", status_code=403
+        )
+
+
+@auth.after("session.revoke")
+def audit_revocation(event: AfterSessionRevokeEvent) -> None:
+    audit_log.record(
+        "sessions_revoked",
+        user_id=event.user_id,
+        scope=event.scope,
+        count=event.revoked_count,
+    )
 ```
 
 ## Account Hooks
