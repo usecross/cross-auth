@@ -336,19 +336,21 @@ class CrossAuth:
             session_id, self._require_session_storage(), user_id=user_id
         )
 
-    def revoke_session(self, session_id: Any, *, user_id: Any) -> None:
+    def revoke_session(self, session_id: Any, *, user_id: Any) -> bool:
         """Revoke one of the user's sessions; another user's session is ignored.
 
         Runs the ``session.revoke`` hooks, with ``request`` set to ``None``.
+        Returns whether an active session was revoked.
         """
         session = self.get_session(session_id, user_id=user_id)
         if session is None:
-            return
-        revoke_user_session(
+            return False
+        revoked = revoke_user_session(
             session,
             hooks=self._context.hooks,
             session_storage=self._require_session_storage(),
         )
+        return revoked > 0
 
     def revoke_other_sessions(self, *, user_id: Any, keep_session_id: Any) -> int:
         """Revoke the user's active sessions except ``keep_session_id``.

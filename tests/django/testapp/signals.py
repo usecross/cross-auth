@@ -11,6 +11,7 @@ from cross_auth.django.signals import (
     before_authorization,
     before_callback,
     before_login,
+    before_session_revoke,
     before_social_account_create,
     before_social_account_disconnect,
     before_social_account_update,
@@ -18,6 +19,7 @@ from cross_auth.django.signals import (
     social_account_created,
     social_account_disconnected,
     social_account_linked,
+    session_revoked,
     social_account_updated,
     user_created,
 )
@@ -101,3 +103,13 @@ def on_before_social_account_disconnect(sender: object, **kwargs: Any) -> object
 @receiver(social_account_disconnected)
 def on_social_account_disconnected(sender: object, **kwargs: Any) -> object:
     return _record("social_account_disconnected", sender, kwargs)
+
+
+@receiver(before_session_revoke)
+def on_before_session_revoke(sender: object, **kwargs: Any) -> object:
+    return _record("before_session_revoke", sender, kwargs)
+
+
+@receiver(session_revoked)
+def on_session_revoked(sender: object, **kwargs: Any) -> object:
+    return _record("session_revoked", sender, kwargs)

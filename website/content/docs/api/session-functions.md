@@ -55,8 +55,8 @@ or belongs to a different user.
 
 ### `revoke_session(session_id, user_id=...)`
 
-Revokes one session record owned by the user. An expired or already revoked
-session is left as it is.
+Revokes one session record owned by the user and returns whether it did. An
+expired or already revoked session is left as it is.
 
 ### `revoke_other_sessions(user_id=..., keep_session_id=...)`
 

@@ -16,13 +16,7 @@ from ._session import (
     make_clear_cookie,
     resolve_config,
 )
-from ._storage import (
-    CommitCallback,
-    SessionRecord,
-    SessionStorage,
-    User,
-    session_status,
-)
+from ._storage import CommitCallback, SessionRecord, SessionStorage, User
 from .hooks import (
     AfterLoginEvent,
     AfterLogoutEvent,
@@ -305,8 +299,8 @@ def logout_session(
                 revoked_record.user_id, revoked_at=revoked_at
             )
         else:
-            session_storage.revoke(revoked_record.id, revoked_at=revoked_at)
-            revoked_count = 1
+            revoked = session_storage.revoke(revoked_record.id, revoked_at=revoked_at)
+            revoked_count = 1 if revoked else 0
         on_commit = session_storage.on_commit
 
     if event.response.cookies is None:
@@ -385,9 +379,8 @@ def _revoke_sessions(
 
     revoked_at = datetime.now(tz=timezone.utc)
     if event.session_record is not None:
-        was_active = session_status(event.session_record, now=revoked_at) == "active"
-        session_storage.revoke(event.session_record.id, revoked_at=revoked_at)
-        revoked_count = 1 if was_active else 0
+        revoked = session_storage.revoke(event.session_record.id, revoked_at=revoked_at)
+        revoked_count = 1 if revoked else 0
     else:
         revoked_count = session_storage.revoke_all_for_user(
             event.user_id,
@@ -395,6 +388,9 @@ def _revoke_sessions(
             except_session_id=event.keep_session_id,
         )
 
+    # Nothing written, nothing to report: after hooks only see revocations.
+    if revoked_count == 0:
+        return 0
     after_event = AfterSessionRevokeEvent(
         user_id=event.user_id,
         scope=event.scope,

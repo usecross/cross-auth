@@ -39,10 +39,12 @@ from django.contrib.sessions.middleware import (
 )
 from django.core.exceptions import ImproperlyConfigured
 from django.db import DatabaseError, IntegrityError, router, transaction
+from django.dispatch import Signal
 from django.http import HttpRequest, HttpResponse
 from django.utils import timezone
 from django.utils.crypto import constant_time_compare
 
+from . import signals
 from .checks import BACKEND
 from .conf import get_settings
 
@@ -460,12 +462,41 @@ def list_sessions(request: HttpRequest) -> list[SessionInfo]:
     ]
 
 
-def revoke_session(request: HttpRequest, session_id: str) -> bool:
-    """Sign out one of the signed-in user's sessions, named by its ``id``.
+def _send(signal: Signal, request: HttpRequest, **kwargs: object) -> None:
+    signal.send(sender=get_user_model(), request=request, **kwargs)
 
-    Another user's session is never touched. Revoking the current session
-    logs the request out with Django's ``logout()``. Returns whether a
-    session was revoked.
+
+def _revoked(
+    request: HttpRequest,
+    store: SessionStore,
+    user: AbstractBaseUser,
+    *,
+    scope: str,
+    session_id: str | None,
+    revoked_count: int,
+) -> None:
+    """Send ``session_revoked`` once the deletion is committed."""
+    transaction.on_commit(
+        lambda: _send(
+            signals.session_revoked,
+            request,
+            user=user,
+            scope=scope,
+            session_id=session_id,
+            revoked_count=revoked_count,
+        ),
+        using=router.db_for_write(store.model),
+        robust=False,
+    )
+
+
+def revoke_session(request: HttpRequest, session_id: str) -> bool:
+    """Sign out one of the signed-in user's active sessions, named by its ``id``.
+
+    Another user's session, or an expired one, is never touched. Revoking the
+    current session logs the request out with Django's ``logout()``. Sends
+    ``before_session_revoke`` and, once the session is signed out,
+    ``session_revoked``. Returns whether a session was revoked.
     """
     store = _store(request)
     user = _user(request)
@@ -477,26 +508,59 @@ def revoke_session(request: HttpRequest, session_id: str) -> bool:
         return False
     # By public_id, not session key: a session keeps its public_id when its
     # key changes, even while it is being revoked.
-    sessions = store.model.objects.filter(user=user, public_id=public_id)
+    sessions = store.model.objects.filter(
+        user=user, public_id=public_id, expire_date__gt=timezone.now()
+    )
+    if not sessions.exists():
+        return False
+    _send(
+        signals.before_session_revoke,
+        request,
+        user_id=str(user.pk),
+        scope="one",
+        session_id=str(public_id),
+    )
     if sessions.filter(session_key=store.session_key).exists():
         logout(request)
-        return True
-    deleted, _ = sessions.delete()
-    return deleted > 0
+        revoked = 1
+    else:
+        revoked, _ = sessions.delete()
+    if revoked:
+        _revoked(
+            request,
+            store,
+            user,
+            scope="one",
+            session_id=str(public_id),
+            revoked_count=revoked,
+        )
+    return revoked > 0
 
 
 def revoke_other_sessions(request: HttpRequest) -> int:
     """Sign out the signed-in user's other active sessions, keeping this one.
 
-    Returns how many were revoked. Expired ones are left for
-    ``clearsessions``.
+    Sends ``before_session_revoke`` and, if any session was signed out,
+    ``session_revoked``. Returns how many were revoked. Expired ones are left
+    for ``clearsessions``.
     """
     store = _store(request)
     user = _user(request)
     if user is None:
         return 0
+    _send(
+        signals.before_session_revoke,
+        request,
+        user_id=str(user.pk),
+        scope="others",
+        session_id=None,
+    )
     sessions = store.model.objects.filter(user=user, expire_date__gt=timezone.now())
     if store.session_key is not None:
         sessions = sessions.exclude(session_key=store.session_key)
     deleted, _ = sessions.delete()
+    if deleted:
+        _revoked(
+            request, store, user, scope="others", session_id=None, revoked_count=deleted
+        )
     return deleted

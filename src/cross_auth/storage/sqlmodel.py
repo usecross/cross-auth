@@ -600,12 +600,12 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
             session.commit()
         return _prepare_session_record(record)
 
-    def revoke(self, session_id: object, *, revoked_at: datetime) -> None:
+    def revoke(self, session_id: object, *, revoked_at: datetime) -> bool:
         model = self.SessionModel
 
         session_id = _coerce_id(model, "id", session_id)
         if session_id is _NO_MATCH:
-            return
+            return False
         with self._open_session() as session:
             statement = (
                 update(model)
@@ -619,8 +619,9 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
                 )
                 .values(revoked_at=_bind_datetime(model, "revoked_at", revoked_at))
             )
-            session.exec(statement)  # type: ignore[call-overload]
+            result = session.exec(statement)  # type: ignore[call-overload]
             session.commit()
+            return result.rowcount > 0
 
     def revoke_all_for_user(
         self,

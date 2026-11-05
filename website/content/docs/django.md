@@ -637,11 +637,16 @@ sessions and know which one is current:
   are left out, and so are sessions that Django would log out: those that a
   password change ended, or whose authentication backend is no longer in
   `AUTHENTICATION_BACKENDS`. Anonymous requests get an empty list.
-- `revoke_session(request, session_id)` signs out the session whose `id` is
-  `session_id` and returns whether it found one. Another user's session is never
-  touched. Revoking the current session logs out with Django's `logout()`.
-- `revoke_other_sessions(request)` signs out all of the user's other sessions,
-  keeps the current one, and returns how many it revoked.
+- `revoke_session(request, session_id)` signs out the active session whose `id`
+  is `session_id` and returns whether it found one. Another user's session, or
+  an expired one, is never touched. Revoking the current session logs out with
+  Django's `logout()`.
+- `revoke_other_sessions(request)` signs out all of the user's other active
+  sessions, keeps the current one, and returns how many it revoked.
+
+Both send the
+[`before_session_revoke` and `session_revoked`](#signals-reference) signals, so
+a receiver can refuse a revocation or record it.
 
 For example, a page that lists the sessions with a button to sign out each one,
 and one to sign out everywhere else:
@@ -768,9 +773,10 @@ client's address on. There are two right fixes:
 ## Signals reference
 
 `cross_auth.django.signals` defines the signals below. Their sender is your user
-model. Every receiver gets `request`, the view's `HttpRequest`, and `provider`,
-such as `"google"`, plus the arguments listed. Write receivers with `**kwargs`
-so that new arguments do not break them.
+model. Every receiver gets `request`, the view's `HttpRequest`, plus the
+arguments listed, and the provider flows' signals also get `provider`, such as
+`"google"`. Write receivers with `**kwargs` so that new arguments do not break
+them.
 
 `before_*` signals get plain values: IDs are strings and nothing is a model
 instance, so a receiver cannot change what Cross Auth is about to do except by
@@ -795,25 +801,30 @@ Google connection, with `user_id`, `provider_user_id`, `provider_email`,
 | `after_login`                      | After `login()` and after the session is saved to the database.                                                                                               | `user`                                                                                                                      |
 | `before_social_account_disconnect` | Before the disconnect view removes one of the signed-in user's connections.                                                                                   | `social_account_id`, `user_id`, `provider_user_id`                                                                          |
 | `social_account_disconnected`      | After the removal is committed. Not sent when the connection was the user's last way to sign in and stayed.                                                   | `social_account`, the removed row; its `pk` and `user_id` still name it                                                     |
+| `before_session_revoke`            | Before `revoke_session` or `revoke_other_sessions` signs out sessions. `revoke_session` sends it only for an active session of the signed-in user.            | `user_id`, `scope` (`"one"` or `"others"`), `session_id` (the `id` for `"one"`, `None` for `"others"`)                      |
+| `session_revoked`                  | After sessions were signed out and the deletion is committed. Not sent when none were.                                                                        | `user` (`request.user`), `scope`, `session_id`, `revoked_count`                                                             |
 
 The flows send them in this order:
 
-| Flow           | Signals                                                                                                                                                                                                                                                                            |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| First sign-in  | `before_authorization`, `authorization_started`, `before_callback`, `before_user_create`, `before_social_account_create`, `user_created`, `social_account_created`, `before_login`, `user_logged_in`, `after_login`                                                                |
-| Later sign-in  | `before_authorization`, `authorization_started`, `before_callback`, `before_social_account_update`, `social_account_updated`, `before_login`, `user_logged_in`, `after_login`                                                                                                      |
-| Connect Google | `before_authorization`, `authorization_started`, `before_callback`, `before_social_account_create`, `social_account_created`, `social_account_linked`; for a connection the user already has, `before_social_account_update` and `social_account_updated` instead of the first two |
-| Disconnect     | `before_social_account_disconnect`, `social_account_disconnected`                                                                                                                                                                                                                  |
+| Flow                  | Signals                                                                                                                                                                                                                                                                            |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| First sign-in         | `before_authorization`, `authorization_started`, `before_callback`, `before_user_create`, `before_social_account_create`, `user_created`, `social_account_created`, `before_login`, `user_logged_in`, `after_login`                                                                |
+| Later sign-in         | `before_authorization`, `authorization_started`, `before_callback`, `before_social_account_update`, `social_account_updated`, `before_login`, `user_logged_in`, `after_login`                                                                                                      |
+| Connect Google        | `before_authorization`, `authorization_started`, `before_callback`, `before_social_account_create`, `social_account_created`, `social_account_linked`; for a connection the user already has, `before_social_account_update` and `social_account_updated` instead of the first two |
+| Disconnect            | `before_social_account_disconnect`, `social_account_disconnected`                                                                                                                                                                                                                  |
+| Revoke a session      | `before_session_revoke`, `session_revoked`; for the current session `user_logged_out` in between                                                                                                                                                                                   |
+| Revoke other sessions | `before_session_revoke`, then `session_revoked` if any session was signed out                                                                                                                                                                                                      |
 
 `user_logged_in` is Django's own signal, sent by `login()`.
 
 - **Refusing.** Raise `PermissionDenied` from any `before_*` receiver. Django
   answers with its 403 page and the step does not happen: no state is stored,
-  nobody is created, connected, refreshed, logged in or disconnected, and the
-  later signals are not sent. Refusing in `before_social_account_create` at
-  sign-up rolls back the new user too. Refusing in `before_login` on a first
-  sign-in leaves the new user in place; refuse sign-ups in `before_user_create`
-  instead, or a Google account before anything is written in `before_callback`.
+  nobody is created, connected, refreshed, logged in, disconnected or signed
+  out, and the later signals are not sent. Refusing in
+  `before_social_account_create` at sign-up rolls back the new user too.
+  Refusing in `before_login` on a first sign-in leaves the new user in place;
+  refuse sign-ups in `before_user_create` instead, or a Google account before
+  anything is written in `before_callback`.
 - **Refusing a provider.** Like every signal, `before_login` gets `provider`, so
   it can stop sign-ins with a provider you no longer accept while leaving users
   and their connections in place:
@@ -845,8 +856,10 @@ The flows send them in this order:
   `django.contrib.auth.login()`, so Django sends `user_logged_in` itself; Cross
   Auth does not send it again. Password logins send only Django's signals.
   Logging out goes through Django's `LogoutView` and `user_logged_out`; there is
-  no Cross Auth logout signal. Provider failures do not emit Django's
-  `user_login_failed`, which is sent by failed calls to Django's
+  no Cross Auth logout signal. `revoke_session` logs the current session out
+  with `logout()`, so Django sends `user_logged_out` between
+  `before_session_revoke` and `session_revoked`. Provider failures do not emit
+  Django's `user_login_failed`, which is sent by failed calls to Django's
   `authenticate()`.
 
 For example, to tell users when Google was connected to their account:

@@ -266,8 +266,8 @@ class BeforeSessionRevokeEvent:
 class AfterSessionRevokeEvent:
     """Sessions of ``user_id`` that were revoked.
 
-    ``revoked_count`` counts the sessions that were still active: ``0`` when
-    the session of scope ``"one"`` had already expired or been revoked.
+    Sent only when at least one session was revoked: ``revoked_count`` is 1
+    for scope ``"one"`` and the number of active sessions revoked otherwise.
     """
 
     user_id: Any

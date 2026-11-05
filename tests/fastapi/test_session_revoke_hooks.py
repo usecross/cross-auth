@@ -161,7 +161,7 @@ def test_crossauth_methods_run_the_hooks_without_a_request(
     create_session("test", session_storage)
     create_session("test", session_storage)
 
-    auth.revoke_session(first.id, user_id="test")
+    assert auth.revoke_session(first.id, user_id="test") is True
     assert auth.revoke_other_sessions(user_id="test", keep_session_id=second.id) == 2
     assert auth.revoke_all_sessions(user_id="test") == 1
 
@@ -171,18 +171,21 @@ def test_crossauth_methods_run_the_hooks_without_a_request(
     assert [event.revoked_count for event in recorded.after] == [1, 2, 1]
 
 
-def test_revoking_an_expired_session_counts_nothing(
+def test_after_hooks_run_only_when_a_session_was_revoked(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
     session_storage: SessionStorage,
 ):
     auth, recorded = _make_auth(secondary_storage, accounts_storage, session_storage)
     _, expired = create_session("test", session_storage, max_age=-1)
+    _, only = create_session("test", session_storage)
 
-    auth.revoke_session(expired.id, user_id="test")
+    assert auth.revoke_session(expired.id, user_id="test") is False
+    assert auth.revoke_other_sessions(user_id="test", keep_session_id=only.id) == 0
 
-    [after] = recorded.after
-    assert after.revoked_count == 0
+    # The before hooks still ran: they are the policy check for the request.
+    assert [event.scope for event in recorded.before] == ["one", "others"]
+    assert recorded.after == []
     stored = session_storage.get_any(expired.id)
     assert stored is not None
     assert stored.revoked_at is None

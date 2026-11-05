@@ -241,11 +241,12 @@ class SessionStorage(Protocol):
         session_id: Any,
         *,
         revoked_at: AwareDatetime,
-    ) -> None:
+    ) -> bool:
         """Revoke the session if it is still active at revoked_at.
 
         A missing, revoked or expired session is left unchanged, so an
-        expired session keeps its ``expired`` status.
+        expired session keeps its ``expired`` status. Return whether the
+        session was revoked.
         """
         ...
 
