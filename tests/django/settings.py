@@ -9,6 +9,8 @@ manager and required fields.
 import atexit
 import os
 import tempfile
+from copy import deepcopy
+from typing import Any
 
 from cross_auth.social_providers.google import GoogleProvider
 
@@ -80,6 +82,8 @@ TEMPLATES = [
 
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 
+DATABASES: dict[str, dict[str, Any]]
+
 if DATABASE == "postgres":
     from testcontainers.postgres import PostgresContainer
 
@@ -109,3 +113,9 @@ elif DATABASE == "sqlite":
     }
 else:
     raise ValueError(f"Unknown CROSS_AUTH_TEST_DATABASE {DATABASE!r}")
+
+# A genuinely separate database, created only by multi-database regressions.
+DATABASES["other"] = deepcopy(DATABASES["default"])
+DATABASES["other"]["NAME"] += "_other"
+if DATABASE == "sqlite":
+    DATABASES["other"]["TEST"]["NAME"] += "_other"

@@ -5,12 +5,8 @@ import type { SeedConfig } from "emulate"
 export const GOOGLE_CLIENT_ID = "cross-auth-e2e.apps.googleusercontent.com"
 export const GOOGLE_CLIENT_SECRET = "GOCSPX-cross-auth-e2e"
 
-// Each framework app runs one server per Playwright worker on
-// basePort + parallelIndex, so the OAuth client allows that many callbacks.
-export const MAX_WORKERS = 8
-// Emulator users must exist before the run starts, so every identity a
-// scenario uses is declared here. Each --repeat-each run gets its own copy.
-export const MAX_REPEATS = 3
+// Emulator users exist before the run starts. Every scenario identity is
+// declared here; fixtures seed the actual scenario's resolved repeatEach index.
 
 const IDENTITIES = {
   signup: { verified: true },
@@ -35,18 +31,13 @@ export function googleIdentity(
   name: IdentityName,
   repeat: number,
 ): GoogleIdentity {
-  if (repeat >= MAX_REPEATS) {
-    throw new Error(
-      `The Google emulator seeds at most ${MAX_REPEATS} repeats (--repeat-each)`,
-    )
-  }
   const { domain = "e2e.test" } = IDENTITIES[name] as { domain?: string }
   return { email: `${name}.${repeat}@${domain}`, name: `E2E ${name} ${repeat}` }
 }
 
-export function googleSeed(callbackUrls: string[]): SeedConfig {
+export function googleSeed(callbackUrls: string[], repeats: number[]): SeedConfig {
   const users = Object.entries(IDENTITIES).flatMap(([name, { verified }]) =>
-    Array.from({ length: MAX_REPEATS }, (_, repeat) => ({
+    repeats.map((repeat) => ({
       ...googleIdentity(name as IdentityName, repeat),
       email_verified: verified,
     })),
@@ -68,7 +59,7 @@ export function googleSeed(callbackUrls: string[]): SeedConfig {
 
 export function emulatorUrl(): string {
   const url = process.env.GOOGLE_EMULATOR_URL
-  if (!url) throw new Error("GOOGLE_EMULATOR_URL is set by the global setup")
+  if (!url) throw new Error("GOOGLE_EMULATOR_URL is set by the scenario fixture")
   return url
 }
 

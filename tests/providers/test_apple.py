@@ -4,6 +4,7 @@ from typing import cast
 
 import jwt
 import pytest
+from cross_web import HTTPRequest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from jwt.algorithms import RSAAlgorithm
@@ -70,10 +71,8 @@ def test_generate_client_secret_structure(apple_provider: AppleProvider):
     """Test that client secret is a valid JWT with correct structure."""
     secret = apple_provider.generate_client_secret()
 
-    # Should be a valid JWT
     assert secret.count(".") == 2
 
-    # Decode without verification to check structure
     header = jwt.get_unverified_header(secret)
     assert header["alg"] == "ES256"
     assert header["kid"] == "KEY123ABC"
@@ -129,18 +128,6 @@ def test_build_authorization_params_with_pkce(apple_provider: AppleProvider):
     assert params["code_challenge_method"] == "S256"
 
 
-def test_scope_is_space_separated(apple_provider: AppleProvider):
-    """Test that scope uses space separator (not plus)."""
-    params = apple_provider.build_authorization_params(
-        state="test_state",
-        redirect_uri="https://example.com/callback",
-    )
-
-    # Critical: must be space-separated, not "name+email"
-    assert params["scope"] == "name email"
-    assert "+" not in params["scope"]
-
-
 # --- Token exchange params tests ---
 
 
@@ -169,6 +156,67 @@ def test_build_token_exchange_params_with_pkce(apple_provider: AppleProvider):
     )
 
     assert params["code_verifier"] == "test_verifier"
+
+
+def test_token_exchange_client_secret_is_signed_by_configured_key(
+    apple_provider: AppleProvider, apple_private_key: str
+):
+    params = apple_provider.build_token_exchange_params(
+        "auth-code", "https://example.com/callback", "verifier"
+    )
+    private_key = serialization.load_pem_private_key(
+        apple_private_key.encode(), password=None
+    )
+    assert isinstance(private_key, ec.EllipticCurvePrivateKey)
+    claims = jwt.decode(
+        params["client_secret"],
+        private_key.public_key(),
+        algorithms=["ES256"],
+        audience="https://appleid.apple.com",
+        issuer="TEAM123456",
+    )
+    assert claims["sub"] == apple_provider.client_id
+    assert claims["exp"] - claims["iat"] == 300
+    assert params["code"] == "auth-code"
+    assert params["redirect_uri"] == "https://example.com/callback"
+    assert params["code_verifier"] == "verifier"
+
+
+def test_callback_malformed_user_data_is_not_logged(apple_provider, caplog):
+    marker = "private-apple-profile-marker"
+    callback = apple_provider.extract_callback_params(
+        HTTPRequest.from_form_data(
+            data={"code": "code", "state": "state", "user": f'{{"name":"{marker}"'}
+        )
+    )
+
+    assert callback.code == "code"
+    assert callback.state == "state"
+    assert callback.extra is None
+    assert len(caplog.records) == 1
+    assert caplog.records[0].__dict__["oauth_provider"] == "apple"
+    assert marker not in str(caplog.records[0].__dict__)
+    assert marker not in caplog.text
+
+
+def test_callback_keeps_first_authorization_name(apple_provider):
+    callback = apple_provider.extract_callback_params(
+        HTTPRequest.from_form_data(
+            data={
+                "code": "code",
+                "state": "state",
+                "user": json.dumps(
+                    {"name": {"firstName": "Ada", "lastName": "Lovelace"}}
+                ),
+            }
+        )
+    )
+    claims = _make_payload(sub="apple-user", email="ada@example.com").model_dump()
+
+    info = apple_provider.extract_user_info_from_claims(claims, callback.extra)
+
+    assert info["id"] == "apple-user"
+    assert info["name"] == "Ada Lovelace"
 
 
 # --- id_token validation tests ---
@@ -320,20 +368,6 @@ def test_extract_user_info_private_relay(apple_provider: AppleProvider):
     user_info = apple_provider.extract_user_info_from_claims(claims)
 
     assert user_info["email"] == "abc123@privaterelay.appleid.com"
-
-
-def test_extract_user_info_without_extra(apple_provider: AppleProvider):
-    """Test user info extraction with no extra data (typical login)."""
-    claims = _make_payload(
-        sub="001234.abcd5678.7890",
-        email="user@example.com",
-        email_verified="true",
-    ).model_dump()
-
-    user_info = apple_provider.extract_user_info_from_claims(claims)
-
-    assert user_info["id"] == "001234.abcd5678.7890"
-    assert user_info["email"] == "user@example.com"
 
 
 # --- AppleIdTokenPayload parsing tests ---

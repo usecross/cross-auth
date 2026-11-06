@@ -2,8 +2,6 @@ import pytest
 
 from cross_auth.social_providers.github import GitHubProvider
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture
 def github_provider() -> GitHubProvider:

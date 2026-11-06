@@ -12,7 +12,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
-import respx
 import time_machine
 from asgiref.sync import async_to_sync
 from django.conf import settings
@@ -23,8 +22,8 @@ from django.contrib.auth import (
     get_user_model,
     login,
 )
-from django.contrib.auth.signals import user_logged_out
 from django.contrib.auth.base_user import AbstractBaseUser
+from django.contrib.auth.signals import user_logged_out
 from django.core.exceptions import ImproperlyConfigured, PermissionDenied
 from django.core.management import call_command
 from django.db import IntegrityError, OperationalError, connection
@@ -39,10 +38,9 @@ from cross_auth.django.sessions import (
     _clean_user_agent,
 )
 
-from .conftest import connect, make_user
 from .fake_google import FakeGoogle
+from .support import connect, csrf_post, make_user, sign_in, whoami
 from .testapp import signals
-from .test_views import csrf_post, sign_in, whoami
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -65,14 +63,6 @@ def cross_auth_sessions() -> Iterator[None]:
         SESSION_ENGINE="cross_auth.django.sessions", MIDDLEWARE=middleware
     ):
         yield
-
-
-@pytest.fixture
-def google() -> Iterator[FakeGoogle]:
-    with respx.mock(assert_all_called=False) as router:
-        fake = FakeGoogle(router)
-        fake.install()
-        yield fake
 
 
 def browser(user_agent: str | None = USER_AGENT, ip: str = IP) -> Client:

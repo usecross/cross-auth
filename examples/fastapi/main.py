@@ -57,14 +57,9 @@ templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
 SESSION_COOKIE_NAME = "cross_auth_example_session"
 DEMO_EMAIL = "demo@example.com"
 DEMO_PASSWORD = "password123"  # noqa: S105
-# A second password account whose social connections stay isolated from the
-# shared demo user, so the disconnect e2e can delete a social account without
-# racing the tests that link GitHub to demo@example.com.
-CONNECT_DEMO_EMAIL = "connect-demo@example.com"
 GITHUB_MOCK_BASE_URL = "https://github-oauth-mock.fastapicloud.dev"
-# The shared framework browser suite (e2e/README.md) runs this app on its own
-# port and database, with Google served by a local emulator. Unset, the demo
-# runs on 127.0.0.1:8000 with in-memory storage and only the GitHub mock.
+GITHUB_EMULATOR_URL = os.environ.get("GITHUB_EMULATOR_URL")
+# Browser suites supply owned databases, callback origins and local providers.
 BASE_URL = os.environ.get("EXAMPLE_BASE_URL", "http://127.0.0.1:8000")
 DATABASE_URL = os.environ.get("EXAMPLE_DATABASE_URL")
 GOOGLE_EMULATOR_URL = os.environ.get("GOOGLE_EMULATOR_URL")
@@ -78,6 +73,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SPA_CORS_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    *os.environ.get("EXAMPLE_SPA_ORIGINS", "").split(),
 ]
 CLIENT_REDIRECT_URIS = [
     "http://localhost:5173/callback",
@@ -86,33 +82,46 @@ CLIENT_REDIRECT_URIS = [
     "http://127.0.0.1:5173/link-callback",
     "http://localhost:8000/link-callback",
     "http://127.0.0.1:8000/link-callback",
+    *(
+        f"{origin}/{callback}"
+        for origin in os.environ.get("EXAMPLE_SPA_ORIGINS", "").split()
+        for callback in ("callback", "link-callback")
+    ),
 ]
 
 
 class MemorySecondaryStorage(SecondaryStorage):
     def __init__(self) -> None:
         self.data: dict[str, tuple[str, float | None]] = {}
+        self._lock = threading.Lock()
 
     def set(self, key: str, value: str, ttl: int | None = None) -> None:
-        expires_at = time.monotonic() + ttl if ttl is not None else None
-        self.data[key] = (value, expires_at)
+        with self._lock:
+            expires_at = time.monotonic() + ttl if ttl is not None else None
+            self.data[key] = (value, expires_at)
 
-    def get(self, key: str) -> str | None:
-        if (entry := self.data.get(key)) is None:
+    def _read(self, key: str, *, consume: bool) -> str | None:
+        # The caller holds the lock across expiry checking and removal.
+        entry = self.data.pop(key, None) if consume else self.data.get(key)
+        if entry is None:
             return None
         value, expires_at = entry
         if expires_at is not None and time.monotonic() >= expires_at:
-            del self.data[key]
+            self.data.pop(key, None)
             return None
         return value
 
+    def get(self, key: str) -> str | None:
+        with self._lock:
+            return self._read(key, consume=False)
+
     def delete(self, key: str) -> None:
-        self.data.pop(key, None)
+        with self._lock:
+            self.data.pop(key, None)
 
     def pop(self, key: str) -> str | None:
-        value = self.get(key)
-        self.data.pop(key, None)
-        return value
+        with self._lock:
+            return self._read(key, consume=True)
 
 
 # SQLModel base classes provide the common auth fields. The application owns
@@ -122,17 +131,11 @@ class SocialAccount(SQLModelSocialAccount, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id")
-    provider: str
-    provider_user_id: str
     access_token: str | None = None
     refresh_token: str | None = None
     access_token_expires_at: datetime | None = None
     refresh_token_expires_at: datetime | None = None
     scope: str | None = None
-    provider_email: str | None = None
-    provider_email_verified: bool | None = None
-    is_login_method: bool = True
-
     user: "User" = Relationship(back_populates="social_accounts")
 
 
@@ -150,7 +153,6 @@ class User(SQLModelUser, table=True):
     id: int | None = Field(default=None, primary_key=True)
     email: str = Field(index=True)
     email_verified: bool = False
-    hashed_password: str | None = None
     # Extra demo column populated by the user.create hook.
     display_name: str | None = None
 
@@ -158,10 +160,6 @@ class User(SQLModelUser, table=True):
         back_populates="user", sa_relationship_kwargs={"lazy": "selectin"}
     )
     welcome_notes: list[WelcomeNote] = Relationship(back_populates="user")
-
-    @property
-    def has_usable_password(self) -> bool:
-        return self.hashed_password is not None
 
 
 class SessionRecord(SQLModelSession, table=True):
@@ -185,9 +183,8 @@ engine = (
 SQLModel.metadata.create_all(engine)
 
 # StaticPool shares one SQLite connection, which SQLite can't use from two
-# threads at once. FastAPI runs sync endpoints in a threadpool, so serialize the
-# brief span each session holds the connection — mirroring the GIL-serialized
-# dict access the demo's in-memory storage relied on before.
+# threads at once. Serialize each SQL session independently of the secondary
+# storage lock; neither storage boundary holds the other's lock.
 _db_lock = threading.Lock()
 
 
@@ -218,7 +215,6 @@ class AccountsStore(SQLModelAccountsStorage[User, SocialAccount]):
         **kwargs: Any,
     ) -> User:
         user = super().build_user(session=session, **kwargs)
-        # Signup commits this note together with the user and provider identity.
         session.add(WelcomeNote(user=user, message=f"Welcome, {user.display_name}!"))
         return user
 
@@ -336,9 +332,9 @@ def resolve_auth_user(request: HTTPRequest) -> User | None:
 github = GitHubProvider(
     client_id="demo-client",
     client_secret="demo-secret",
-    authorization_endpoint=f"{GITHUB_MOCK_BASE_URL}/login/oauth/authorize",
-    token_endpoint=f"{GITHUB_MOCK_BASE_URL}/login/oauth/access_token",
-    api_base_url=f"{GITHUB_MOCK_BASE_URL}/api",
+    authorization_endpoint=f"{GITHUB_EMULATOR_URL or GITHUB_MOCK_BASE_URL}/login/oauth/authorize",
+    token_endpoint=f"{GITHUB_EMULATOR_URL or GITHUB_MOCK_BASE_URL}/login/oauth/access_token",
+    api_base_url=(GITHUB_EMULATOR_URL or f"{GITHUB_MOCK_BASE_URL}/api"),
 )
 
 providers: list[OAuth2Provider] = [github]
@@ -349,7 +345,6 @@ if GOOGLE_EMULATOR_URL is not None:
         # The emulator signs ID tokens with its own URL as issuer. Signature,
         # audience, nonce and PKCE checks are unchanged.
         issuer = GOOGLE_EMULATOR_URL
-        jwks_cache_key = "google-emulator:jwks"
 
     providers.append(
         EmulatedGoogleProvider(
@@ -378,14 +373,6 @@ def seed_demo_user() -> None:
                 email_verified=True,
                 hashed_password=pwd_context.hash(DEMO_PASSWORD),
                 display_name="Demo User",
-            )
-        )
-        session.add(
-            User(
-                email=CONNECT_DEMO_EMAIL,
-                email_verified=True,
-                hashed_password=pwd_context.hash(DEMO_PASSWORD),
-                display_name="Connect Demo User",
             )
         )
         session.commit()
@@ -704,8 +691,6 @@ def revoke_all_sessions_form(
     request: Request,
     user: Annotated[UserProtocol, Depends(auth.require_current_user)],
 ) -> RedirectResponse:
-    # Revoke every session (including this one), then clear the cookie so the
-    # browser is fully signed out rather than holding a now-dead cookie.
     auth.revoke_all_sessions(user_id=str(user.id))
     response = RedirectResponse(url="/", status_code=303)
     auth.logout(request, response=response)

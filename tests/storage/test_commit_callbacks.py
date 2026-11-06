@@ -25,12 +25,7 @@ from .models import (
     User,
     UserSession,
 )
-from . import test_atomic_signup
-from .test_atomic_signup import identity_data, make_store, row_counts
-
-# Run against the same SQLite and PostgreSQL engines as the signup tests.
-signup_engine = test_atomic_signup.signup_engine
-pg_engine = test_atomic_signup.pg_engine
+from .support import identity_data, make_store, row_counts
 
 
 def make_context(store) -> tuple[Context, HookRegistry]:

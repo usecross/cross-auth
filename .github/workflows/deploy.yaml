@@ -1,20 +1,28 @@
-name: "🚀 Deploy"
+name: "Website"
 
 on:
   push:
     branches:
       - main
-    paths:
+    paths: &website-inputs
       - "website/**"
+      - "src/**"
+      - "examples/*/pyproject.toml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".python-version"
+      - ".github/workflows/deploy.yaml"
+  pull_request:
+    paths: *website-inputs
   workflow_dispatch:
 
 jobs:
-  deploy:
-    name: "Deploy"
+  website:
+    name: "Build website"
     runs-on: ubuntu-latest
 
     concurrency:
-      group: ${{ github.actor }}-deploy
+      group: website-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
 
     steps:
@@ -23,25 +31,31 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install the latest version of uv
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+
+      - name: Install uv
         uses: astral-sh/setup-uv@v7
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.11"
 
       - name: Install dependencies
         working-directory: website
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Build frontend
         working-directory: website
         run: bun run build
 
       - name: Sync website Python environment
-        working-directory: website
         run: uv sync --frozen --package cross-auth-website
 
       - name: Deploy to production
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         working-directory: website
         run: uv run --frozen --package cross-auth-website fastapi deploy
         env:

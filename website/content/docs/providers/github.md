@@ -58,7 +58,7 @@ Use GitHub Apps if you need repository access or webhooks.
 The GitHub provider requests the `user:email` scope by default, which provides:
 
 - Access to the user's public profile
-- Access to the user's verified email addresses
+- Access to the user's email addresses, including private and unverified ones
 
 ### Available Scopes
 
@@ -70,41 +70,32 @@ The GitHub provider requests the `user:email` scope by default, which provides:
 
 ## User Info
 
-GitHub returns the following user information:
+Cross Auth starts with GitHub's `/user` response and looks up `/user/emails` to
+select the primary email:
 
-| Field        | Type   | Description            |
-| ------------ | ------ | ---------------------- |
-| `id`         | string | GitHub user ID         |
-| `email`      | string | Primary verified email |
-| `login`      | string | GitHub username        |
-| `name`       | string | Display name           |
-| `avatar_url` | string | Profile picture URL    |
+| UserInfo field   | Source                                                 |
+| ---------------- | ------------------------------------------------------ |
+| `id`             | GitHub's numeric user ID (stored as a string identity) |
+| `email`          | Primary email, falling back to the profile email       |
+| `email_verified` | Primary email's `verified` flag, which may be `False`  |
+| `name`           | Display name, falling back to the `login` username     |
 
-## Example
+The primary email is not necessarily verified. If the email lookup fails or has
+no primary entry, the profile email and any profile verification status remain
+the fallback; verification may be unknown (`None`). Linking by email still
+requires a verified address under the configured trust policy.
 
-```python
-from fastapi import FastAPI
-from cross_auth.router import AuthRouter
-from cross_auth.social_providers.github import GitHubProvider
+Provider-specific keys such as `login` and `avatar_url` remain in the returned
+profile dictionary, but are not part of the standard `UserInfo` contract or
+automatically persisted as user fields.
 
-github = GitHubProvider(
-    client_id="Iv1.abc123",
-    client_secret="secret123",
-)
+## Application setup
 
-auth_router = AuthRouter(
-    providers=[github],
-    # ... other config
-)
-
-app = FastAPI()
-app.include_router(auth_router, prefix="/auth")
-```
-
-Users can then authenticate via:
-
-- `GET /auth/github/authorize` - Start OAuth flow
-- `GET /auth/github/callback` - OAuth callback (handled automatically)
+Pass `github` in your configured `providers` list. Follow the shared
+[session sign-in or OAuth client setup](/docs/oauth#the-oauth-server) to choose
+between cookie sign-in at `/auth/github/login` and the registered-client PKCE
+flow. `/auth/github/authorize` is only mounted with an `OAuthServer` and
+requires a registered client, its redirect URI, and a PKCE challenge.
 
 ## Troubleshooting
 
@@ -115,6 +106,8 @@ Users can then authenticate via:
 
 ### Email is None
 
-- The user may not have a public email set
-- The user may not have verified their email
-- Request the `user:email` scope (included by default)
+- Request the `user:email` scope (included by default) so Cross Auth can fetch
+  the primary email even when it is private
+- If the email lookup fails and no public profile email exists, email is `None`
+- An unverified primary email is returned with `email_verified=False`, not
+  silently discarded

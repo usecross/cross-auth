@@ -9,8 +9,8 @@ from cross_web import HTTPRequest
 from pydantic import BaseModel, BeforeValidator, EmailStr
 
 from .oauth import (
-    CallbackData,
     DEFAULT_TOKEN_EXCHANGE_TIMEOUT,
+    CallbackData,
     OAuth2Exception,
     TokenExchangeParams,
     UserInfo,
@@ -103,7 +103,6 @@ class AppleProvider(OIDCProvider):
     authorization_endpoint = "https://appleid.apple.com/auth/authorize"
     token_endpoint = "https://appleid.apple.com/auth/token"
 
-    # OIDC configuration
     jwks_uri = "https://appleid.apple.com/auth/keys"
     issuer = "https://appleid.apple.com"
     jwks_cache_key = "apple:jwks"
@@ -164,10 +163,7 @@ class AppleProvider(OIDCProvider):
         login_hint: str | None = None,
         provider_data: dict[str, str] | None = None,
     ) -> dict[str, str]:
-        """Build authorization request parameters for Apple.
-
-        IMPORTANT: scope must be space-separated ("name email"), NOT plus-encoded.
-        """
+        """Request Apple's POST callback with name and email scopes."""
         params = super().build_authorization_params(
             state,
             redirect_uri,
@@ -187,17 +183,8 @@ class AppleProvider(OIDCProvider):
         self, code: str, redirect_uri: str, code_verifier: str | None = None
     ) -> TokenExchangeParams:
         """Build token exchange parameters with dynamic client_secret JWT."""
-        params: TokenExchangeParams = {
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": redirect_uri,
-            "client_id": self.client_id,
-            "client_secret": self.generate_client_secret(),
-        }
-
-        if code_verifier:
-            params["code_verifier"] = code_verifier
-
+        params = super().build_token_exchange_params(code, redirect_uri, code_verifier)
+        params["client_secret"] = self.generate_client_secret()
         return params
 
     def extract_user_info_from_claims(
@@ -257,7 +244,10 @@ class AppleProvider(OIDCProvider):
             try:
                 extra["user"] = json.loads(user_json)
             except json.JSONDecodeError:
-                logger.warning("Failed to parse Apple user JSON: %s", user_json)
+                logger.warning(
+                    "Failed to parse Apple user JSON",
+                    extra={"oauth_provider": self.id},
+                )
 
         return CallbackData(
             code=get_form_value("code"),

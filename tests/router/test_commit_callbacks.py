@@ -17,7 +17,8 @@ from typing import get_args
 
 import pytest
 import respx
-from cross_web import Cookie, Response as CrossWebResponse
+from cross_web import Cookie
+from cross_web import Response as CrossWebResponse
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -32,16 +33,17 @@ from cross_auth.hooks import AfterLoginEvent, AfterLogoutEvent, BeforeLogoutEven
 from cross_auth.hooks._types import HookEventName
 from tests.conftest import (
     TEST_PASSWORD,
+    DeferredSessionStorage,
     MemoryAccountsStorage,
     MemorySessionStorage,
 )
 
+from ..conftest import legacy_password_grant
 from .conftest import (
     LEGACY_APP_OAUTH_SERVER,
     mock_token_and_userinfo,
     start_provider_auth,
 )
-from ..conftest import legacy_password_grant
 
 
 class TransactionalAccountsStorage(MemoryAccountsStorage):
@@ -76,31 +78,36 @@ class TransactionalAccountsStorage(MemoryAccountsStorage):
             callback()
 
 
-class DeferredSessionStorage(MemorySessionStorage):
-    """Holds commit callbacks until the test commits or rolls back the store."""
-
-    def __init__(self):
-        super().__init__()
-        self.pending: list[CommitCallback] = []
-        self._committed = deepcopy(self.records)
-
-    def on_commit(self, callback: CommitCallback) -> None:
-        self.pending.append(callback)
-
-    def commit(self) -> None:
-        self._committed = deepcopy(self.records)
-        pending, self.pending = self.pending, []
-        for callback in pending:
-            callback()
-
-    def rollback(self) -> None:
-        self.records = deepcopy(self._committed)
-        self.pending = []
-
-
 @pytest.fixture
 def accounts_storage(test_password_hash: str) -> TransactionalAccountsStorage:
     return TransactionalAccountsStorage(test_password_hash)
+
+
+@respx.mock
+def test_callback_completion_follows_the_storage_that_logged_in(
+    auth: CrossAuth, client
+):
+    replacement = DeferredSessionStorage()
+    completed: list[str] = []
+
+    @auth.after("login")
+    def change_future_storage(event: AfterLoginEvent) -> None:
+        auth.router.context.session_storage = replacement
+
+    @auth.after("oauth.callback")
+    def record_completion(event) -> None:
+        completed.append(event.user.id)
+
+    mock_token_and_userinfo()
+    _, state = start_provider_auth(client, "/fake/login")
+    response = client.get(
+        "/fake/callback", params={"code": "provider-code", "state": state}
+    )
+
+    assert response.status_code == 302
+    assert completed == ["fake-user-1"]
+    replacement.commit()
+    assert completed == ["fake-user-1"]
 
 
 def _trace_after_hooks(auth: CrossAuth) -> list[str]:

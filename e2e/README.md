@@ -7,7 +7,8 @@ two suites with separate configs:
   browser scenarios that runs against every supported framework's example app
   (Django and FastAPI today) with Google served by a local emulator.
 - **FastAPI + SPA suite** (`playwright.config.js`): the FastAPI hybrid backend
-  and the separate SPA demo, signing in through a remote GitHub OAuth mock.
+  and the separate SPA demo, signing in through a scenario-owned local GitHub
+  emulator.
 
 ## Setup
 
@@ -51,9 +52,9 @@ frameworks/
   contract/*.spec.ts              shared scenarios and every assertion
   support/app.ts                  the App interface used by shared scenarios
   support/browser.ts              shared browser actions and profile/session checks
-  support/fixtures.ts             per-worker server, network guard, identities
+  support/fixtures.ts             scenario-owned app/provider, network guard, identities
   support/google.ts               emulator seed, test identities, account picker
-  support/global-setup.ts         starts the Google emulator
+  support/plan.ts                 ports derived from resolved Playwright config
   support/process.ts              server start, readiness and cleanup
   django/app.ts                   Django startup/state + declarative routes/labels
   django/e2e_settings.py          the example's settings, pointed at the emulator
@@ -66,23 +67,26 @@ frameworks/
 
 ### How it runs
 
-- `support/global-setup.ts` starts the Google emulator from
-  [emulate](https://emulate.dev) (pinned in `package.json`) inside the
-  Playwright runner on a free loopback port. Workers read its URL from
-  `GOOGLE_EMULATOR_URL`.
-- Each worker starts the real example app (`examples/django` with
-  `manage.py runserver`, `examples/fastapi` with uvicorn) on its own port, with
-  a fresh SQLite database in a temporary directory. Django serves on
-  `8280 + worker`, FastAPI on `8180 + worker`, for up to 8 workers. A server
-  that is already answering on one of those ports fails the run instead of being
-  reused. Servers stop, and databases are removed, when the worker ends.
-- Server output goes to `test-results/frameworks/servers/` and is attached to
-  failed tests, next to Playwright's trace.
-- Emulator users exist before the run, so every Google identity a scenario uses
-  is declared in `support/google.ts`, one copy per `--repeat-each` index (up to
-  3). Scenarios never share an identity, and password users are created per
-  scenario through Django's `manage.py e2e_state` command or FastAPI's
-  `state.py` helper.
+- `support/fixtures.ts` starts a scenario-owned Google emulator from
+  [emulate](https://emulate.dev) (pinned in `package.json`) on a free loopback
+  port, passing `GOOGLE_EMULATOR_URL` to the owned application process.
+- Each scenario starts the real example app (`examples/django` with
+  `manage.py runserver`, `examples/fastapi` with uvicorn) on its worker's port,
+  with a fresh SQLite database in a temporary directory. Ports start at `8180`,
+  with one block per configured project sized by the resolved worker count
+  (including `--workers` overrides). The emulator allows exactly those
+  callbacks. An already answering port fails the run instead of being reused.
+  Servers stop, and databases are removed, when the scenario ends (including
+  retries and repeats).
+- Server output goes to each scenario's `servers/` directory beneath
+  `test-results/frameworks/` and is attached to failures beside Playwright's
+  trace.
+- Emulator users are seeded before each scenario starts; every Google identity
+  is declared in `support/google.ts`. The fixture seeds the actual scenario's
+  `testInfo.repeatEachIndex`; unlike global setup or worker project config, this
+  reflects CLI `--repeat-each` overrides. Scenarios never share mutable provider
+  state, and password users are created per scenario through Django's
+  `manage.py e2e_state` command or FastAPI's `state.py` helper.
 - Every browser request outside `127.0.0.1` and `localhost` is blocked and fails
   the test. The apps reach the emulator's token and JWKS endpoints over HTTP;
   nothing calls Google.
@@ -102,8 +106,8 @@ Test-only configuration stays out of the examples' defaults:
   in-memory GitHub-only app as before.
 
 Both apps subclass `GoogleProvider` only to accept the emulator's issuer (its
-own URL) and use a separate JWKS cache key. Signature, audience, nonce, PKCE and
-state checks are the library's normal ones.
+own URL). The provider derives JWKS cache identity from its endpoint. Signature,
+audience, nonce, PKCE and state checks are the library's normal ones.
 
 ### Scenarios
 
@@ -161,9 +165,10 @@ Intentional differences the contract does not hide:
    through a small framework-native helper, such as Django's test-only
    management command or FastAPI's `state.py`. Don't reimplement browser actions
    in the framework file.
-3. Add it to `frameworks/frameworks.ts` with an unused base port. Its project
-   then runs every scenario in `contract/`; put behavior only that framework has
-   in `frameworks/<name>/*.spec.ts`.
+3. Add it to `frameworks/frameworks.ts`. The resolved project/worker
+   configuration allocates its ports. Its project runs every scenario in
+   `contract/`; put behavior only that framework has in
+   `frameworks/<name>/*.spec.ts`.
 
 Don't copy scenarios into a framework directory. If a scenario doesn't hold for
 a framework, the difference belongs in this README and in a framework-specific
@@ -186,14 +191,27 @@ bun run test:e2e
 bun run test:e2e:headed
 ```
 
-It starts `examples/fastapi` on `http://127.0.0.1:8000` and `examples/spa` on
-`http://127.0.0.1:5173`, and signs in through the public GitHub OAuth mock at
-`github-oauth-mock.fastapicloud.dev`, so it needs network access. Set
-`PLAYWRIGHT_REUSE_SERVERS=1` to reuse servers you already started.
+Every scenario (including repeats and retries) starts its own local GitHub
+emulator, `examples/fastapi` with a fresh temporary SQLite database, and
+`examples/spa`. Backend ports are `8380 + parallelIndex`; SPA ports are
+`9380 + parallelIndex`. No public provider, shared demo-account state or reused
+servers are involved. An occupied port fails rather than using an unowned app.
+Processes stop and temporary databases are removed after each scenario; server
+logs stay beside failed traces in `test-results/`.
+
+The fixture reuses the framework suite's process and FastAPI startup helpers.
+`GITHUB_EMULATOR_URL` selects GitHub's local OAuth/API endpoints, while
+`EXAMPLE_SPA_ORIGINS` supplies the owned SPA's CORS and OAuth callback origins.
+Browser requests outside loopback fail the test (the browser-binding scenario
+serves its synthetic cross-site form directly through Playwright routing).
 
 It covers session and SPA sign-in with GitHub, bearer-token API access, account
 linking, connecting and disconnecting, session management and revocation, and
-OAuth browser binding.
+OAuth browser binding. Link/connect scenarios assert the exact provider user,
+email and login capability; bearer revocation is checked without a browser
+cookie that could conceal rejection. Stale SPA response checks wait for the
+named API-result region's `aria-busy` attribute to become false after response
+handling, not a timer.
 
 ## Typecheck
 

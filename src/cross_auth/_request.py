@@ -12,9 +12,17 @@ from cross_web import (
 from cross_web.request._base import HTTPMethod, PathParams, QueryParams
 
 
-# FastAPI/Starlette expose body and form parsing as async operations. Routes preload
-# those values in async dependencies, then this adapter presents the remaining
-# request data through cross-web's sync HTTPRequest API for handlers and hooks.
+def get_header(headers: Mapping[str, str], name: str) -> str | None:
+    """Read a header from adapters that may preserve the original casing."""
+    normalized = name.lower()
+    return next(
+        (value for key, value in headers.items() if key.lower() == normalized),
+        None,
+    )
+
+
+# Framework adapters provide the body/form values before synchronous handlers
+# run; the remaining request metadata can be forwarded without async I/O.
 class HTTPRequestAdapter(SyncHTTPRequestAdapter):
     def __init__(
         self,

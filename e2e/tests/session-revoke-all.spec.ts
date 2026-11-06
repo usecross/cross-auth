@@ -1,14 +1,13 @@
-import { expect, test } from "@playwright/test"
+import { expect, test } from "./helpers/fixtures.js"
 
 import { completeGitHubMockSignIn } from "./helpers/auth.js"
 
-test("logging out everywhere ends the current session", async ({ page }) => {
-  // A fresh user keeps its sessions isolated from the shared demo account.
-  const email = `revoke-${Date.now()}-${Math.random().toString(16).slice(2)}@example.com`
+test("logging out everywhere ends the current session", async ({ page, backend, spa, socialIdentity }) => {
+  const email = socialIdentity.email
 
-  await page.goto("http://127.0.0.1:8000/")
+  await page.goto(`${backend}/`)
   await page.getByRole("link", { name: "Continue with GitHub" }).click()
-  await completeGitHubMockSignIn(page, email, /127\.0\.0\.1:8000\/profile/)
+  await completeGitHubMockSignIn(page, email, `${backend}/profile`)
 
   await page
     .locator(".header-nav")
@@ -20,11 +19,11 @@ test("logging out everywhere ends the current session", async ({ page }) => {
 
   // Revokes every session (including this one) and clears the cookie.
   await Promise.all([
-    page.waitForURL("http://127.0.0.1:8000/"),
+    page.waitForURL(`${backend}/`),
     page.getByRole("button", { name: "Log out everywhere" }).click(),
   ])
 
   // The current session is gone, so a protected page redirects home.
-  await page.goto("http://127.0.0.1:8000/profile")
-  await expect(page).toHaveURL("http://127.0.0.1:8000/")
+  await page.goto(`${backend}/profile`)
+  await expect(page).toHaveURL(`${backend}/`)
 })

@@ -16,7 +16,7 @@ from ..models.oauth_token_response import (
 )
 
 if TYPE_CHECKING:
-    from cross_auth._auth_flow import AuthRequest, LinkCodeData
+    from cross_auth._authorization import AuthRequest, LinkCodeData
 
 logger = logging.getLogger(__name__)
 
@@ -533,12 +533,12 @@ class OAuth2Provider:
             user_info = response.json()
         except httpx.HTTPStatusError as e:
             logger.error(
-                "Failed to fetch user info from %s: %s (status=%d, body=%s, scope=%s)",
-                self.user_info_endpoint,
-                e,
+                "Failed to fetch user info (status=%d)",
                 e.response.status_code,
-                e.response.text,
-                token_response.scope,
+                extra={
+                    "oauth_provider": self.id,
+                    "oauth_status_code": e.response.status_code,
+                },
             )
             raise OAuth2Exception(
                 error="server_error",
@@ -546,10 +546,9 @@ class OAuth2Provider:
             ) from e
         except Exception as e:
             logger.error(
-                "Failed to fetch user info from %s: %s (scope=%s)",
-                self.user_info_endpoint,
-                e,
-                token_response.scope,
+                "Failed to fetch user info (error_type=%s)",
+                type(e).__name__,
+                extra={"oauth_provider": self.id},
             )
             raise OAuth2Exception(
                 error="server_error",

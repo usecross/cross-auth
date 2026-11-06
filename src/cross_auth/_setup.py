@@ -29,7 +29,6 @@ class AuthSetup:
     providers: tuple[OAuth2Provider, ...]
     # Lookup by id for headless operations; the last provider with an id wins.
     providers_by_id: Mapping[str, OAuth2Provider]
-    # The OAuth server's token endpoint; None without an OAuthServer.
     issuer: Issuer | None
 
 

@@ -14,16 +14,21 @@ from typing import (
     overload,
 )
 
-from cross_web import AsyncHTTPRequest, Cookie, HTTPRequest
+from cross_web import AsyncHTTPRequest, HTTPRequest
 from cross_web import Response as CrossWebResponse
 from fastapi import HTTPException
 from fastapi import Request as FastAPIRequest
 from fastapi import Response as FastAPIResponse
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from ._auth_flow import _require_committed_accounts
+from ._accounts import require_committed_accounts
 from ._config import Config
-from ._context import AccountsStorage, SecondaryStorage, User
+from ._fastapi_session import (
+    SessionCookieMiddleware as SessionCookieMiddleware,
+)
+from ._fastapi_session import (
+    queue_rolled_cookie,
+    set_cookie,
+)
 from ._login import (
     issue_bearer_session,
     login_with_session,
@@ -45,11 +50,14 @@ from ._session import (
 )
 from ._setup import build_auth_setup
 from ._storage import (
+    AccountsStorage,
+    SecondaryStorage,
     SessionListOrder,
     SessionListResult,
     SessionRecord,
     SessionStatus,
     SessionStorage,
+    User,
 )
 from .hooks import (
     AfterAuthenticateEvent,
@@ -141,13 +149,6 @@ class _SocialAccountDecorator(
         Concatenate[_SpecificSocialAccountEventT, _P],
         _SpecificSocialAccountReturnT,
     ]: ...
-
-
-# request.state slots shared between CrossAuth and SessionCookieMiddleware. The
-# middleware marks the sink on the way in; session reads queue rolled cookies
-# as they resolve; the middleware serializes them onto the outgoing response.
-_COOKIE_SINK_STATE_KEY = "cross_auth_cookie_sink"
-_ROLLED_COOKIES_STATE_KEY = "cross_auth_rolled_cookies"
 
 
 class IdTokenSignIn(NamedTuple):
@@ -264,7 +265,7 @@ class CrossAuth:
         # re-sending the cookie the browser would still drop it at the
         # original Max-Age. Bearer tokens have no cookie to roll.
         if resolution.source == "cookie" and resolution.refreshed:
-            self._queue_rolled_cookie(
+            queue_rolled_cookie(
                 request,
                 make_session_cookie(resolution.token, self._context.session_config),
             )
@@ -277,41 +278,12 @@ class CrossAuth:
         return user
 
     def _queue_session_refresh(self, request: FastAPIRequest) -> None:
-        # No store or no sliding window -> reads never refresh anything.
         session_storage = self._context.session_storage
         if session_storage is None:
             return
         if resolve_config(self._context.session_config).get("update_age") is None:
             return
-        async_request = AsyncHTTPRequest.from_fastapi(request)
-        resolution = resolve_current_session(
-            make_http_request(async_request),
-            session_storage,
-            self._context.session_config,
-        )
-        if (
-            resolution is not None
-            and resolution.source == "cookie"
-            and resolution.refreshed
-        ):
-            self._queue_rolled_cookie(
-                request,
-                make_session_cookie(resolution.token, self._context.session_config),
-            )
-
-    def _queue_rolled_cookie(self, request: FastAPIRequest, cookie: Cookie) -> None:
-        state = request.scope.setdefault("state", {})
-        if _COOKIE_SINK_STATE_KEY not in state:
-            warnings.warn(
-                "A sliding session refreshed but SessionCookieMiddleware is "
-                "not installed, so the rolled session cookie cannot reach the "
-                "browser and the user will be logged out at the cookie's "
-                "original Max-Age. Add "
-                "`app.add_middleware(SessionCookieMiddleware)`.",
-                stacklevel=2,
-            )
-            return
-        state.setdefault(_ROLLED_COOKIES_STATE_KEY, []).append(cookie)
+        self.get_current_session(request)
 
     def list_sessions(
         self,
@@ -422,7 +394,7 @@ class CrossAuth:
         Runs the ``oauth.id_token`` hooks, then the ``login`` hooks.
         """
         session_storage = self._require_session_storage()
-        _require_committed_accounts(self._context)
+        require_committed_accounts(self._context)
         user, created = self.resolve_id_token_user(
             provider, id_token, user_info=user_info, nonce=nonce
         )
@@ -678,20 +650,6 @@ class CrossAuth:
 
         return decorator
 
-    def _set_cookie_on_response(
-        self, response: FastAPIResponse, cookie: Cookie
-    ) -> None:
-        response.set_cookie(
-            key=cookie.name,
-            value=cookie.value,
-            max_age=cookie.max_age,
-            path=cookie.path or "/",
-            domain=cookie.domain,
-            secure=cookie.secure,
-            httponly=cookie.httponly,
-            samesite=cookie.samesite,
-        )
-
     def _make_hook_response(self, response: FastAPIResponse) -> CrossWebResponse:
         return CrossWebResponse(
             status_code=response.status_code,
@@ -702,14 +660,6 @@ class CrossAuth:
             },
             cookies=[],
         )
-
-    # TODO: refactor this when we improve cross-web
-    def _add_cookie_to_hook_response(
-        self, response: CrossWebResponse, cookie: Cookie
-    ) -> None:
-        if response.cookies is None:
-            response.cookies = []
-        response.cookies.append(cookie)
 
     def _apply_hook_response(
         self, source: CrossWebResponse, target: FastAPIResponse
@@ -722,7 +672,7 @@ class CrossAuth:
             target.headers[name] = value
 
         for cookie in source.cookies or []:
-            self._set_cookie_on_response(target, cookie)
+            set_cookie(target, cookie)
 
     def issue_session_token(
         self,
@@ -798,65 +748,3 @@ class CrossAuth:
             scope=scope,
         )
         self._apply_hook_response(hook_response, response)
-
-
-def _serialize_cookie(cookie: Cookie) -> bytes:
-    # Reuse starlette's Set-Cookie serialization instead of hand-rolling it.
-    scratch = FastAPIResponse()
-    scratch.set_cookie(
-        key=cookie.name,
-        value=cookie.value,
-        max_age=cookie.max_age,
-        path=cookie.path or "/",
-        domain=cookie.domain,
-        secure=cookie.secure,
-        httponly=cookie.httponly,
-        samesite=cookie.samesite,
-    )
-    return scratch.headers["set-cookie"].encode("latin-1")
-
-
-class SessionCookieMiddleware:
-    """Delivers rolled sliding-session cookies on the outgoing response.
-
-    Install once when sessions are configured with ``update_age``::
-
-        app.add_middleware(SessionCookieMiddleware)
-
-    Session reads that refresh a cookie-backed session queue the rolled cookie
-    on the request state; this middleware serializes it onto whatever response
-    the handler produces — including responses returned directly (redirects,
-    streaming, server-rendered pages), which a dependency-injected ``Response``
-    can never reach. A cookie the handler already set itself (``logout``
-    clearing it, ``login`` replacing it) wins: the rolled copy is dropped
-    instead of fighting it. Without ``update_age`` reads never roll a cookie
-    and the middleware is inert.
-    """
-
-    def __init__(self, app: ASGIApp):
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-
-        state = scope.setdefault("state", {})
-        state[_COOKIE_SINK_STATE_KEY] = True
-
-        async def send_with_rolled_cookies(message: Message) -> None:
-            if message["type"] == "http.response.start":
-                for cookie in state.get(_ROLLED_COOKIES_STATE_KEY, []):
-                    _append_unless_cookie_set(message, cookie)
-            await send(message)
-
-        await self.app(scope, receive, send_with_rolled_cookies)
-
-
-def _append_unless_cookie_set(message: Message, cookie: Cookie) -> None:
-    headers: list[tuple[bytes, bytes]] = message.setdefault("headers", [])
-    prefix = f"{cookie.name}=".encode("latin-1")
-    for name, value in headers:
-        if name.lower() == b"set-cookie" and value.startswith(prefix):
-            return
-    headers.append((b"set-cookie", _serialize_cookie(cookie)))

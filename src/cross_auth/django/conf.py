@@ -19,14 +19,20 @@ from django.utils.module_loading import import_string
 from cross_auth._config import AccountLinkingConfig
 from cross_auth.social_providers.oauth import OAuth2Provider
 
+from ._database import user_database as user_database
+
 
 class UserFactory(Protocol):
     """Creates the native user for a first provider sign-in.
 
-    Runs inside the transaction that also stores the user's first identity,
-    so rows it writes roll back together with them. It must not call external
-    services; send notifications from a ``user_created`` receiver instead.
-    ``email`` is normalized; ``extra_fields`` is empty.
+    Runs inside the transaction that also stores the user's first identity.
+    All writes must use ``user_database()`` (via ``db_manager``/``using``),
+    including related rows. Return a saved AUTH_USER_MODEL on that database.
+    A misrouted write cannot be rolled back by this transaction; the returned
+    user's database is validated, but related writes remain the factory's
+    responsibility. Do not call external services; send notifications from a
+    ``user_created`` receiver instead. ``email`` is normalized; ``extra_fields``
+    is empty.
     """
 
     def __call__(
@@ -49,7 +55,7 @@ def create_user(
     Uses the email as the username and leaves the user without a usable
     password. Other user models need ``CROSS_AUTH["CREATE_USER"]``.
     """
-    manager = get_user_model()._default_manager
+    manager = get_user_model()._default_manager.db_manager(user_database())
     if not isinstance(manager, UserManager):
         raise ImproperlyConfigured(
             "The default Cross Auth user factory needs a user model managed by "

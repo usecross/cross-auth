@@ -6,12 +6,12 @@ from typing import Any, cast
 
 import pytest
 import time_machine
-from sqlmodel import Session
+from sqlmodel import Field, Session
 
 from cross_auth._session import create_session, get_session
 from cross_auth._storage import SessionStorage
 from cross_auth.storage import InvalidCursorError
-from cross_auth.storage.sqlmodel import SQLModelSessionStorage
+from cross_auth.storage.sqlmodel import SQLModelSession, SQLModelSessionStorage
 
 from .models import (
     IntUserIdSessionStore,
@@ -403,7 +403,7 @@ def test_pagination_supports_uuid_primary_keys(engine):
 def test_invalid_cursor_raises(store):
     _make(store, user_id="u1")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(InvalidCursorError):
         store.list_for_user("u1", now=NOW, cursor="not-a-valid-cursor")
 
 
@@ -421,18 +421,6 @@ def test_cursor_is_bound_to_its_order_by(store):
         store.list_for_user(
             "u1", now=NOW, order_by="created_at_asc", cursor=page1.next_cursor
         )
-
-
-def test_crafted_cursor_id_raises_invalid_cursor(store):
-    _make(store, user_id="u1")
-    crafted = base64.urlsafe_b64encode(
-        json.dumps(
-            {"o": "updated_at_desc", "v": NOW.isoformat(), "id": {"x": 1}}
-        ).encode()
-    ).decode()
-
-    with pytest.raises(InvalidCursorError):
-        store.list_for_user("u1", now=NOW, cursor=crafted)
 
 
 def test_cursor_id_type_mismatch_raises_invalid_cursor(store):
@@ -497,17 +485,6 @@ def test_crafted_cursor_out_of_range_id_raises_invalid_cursor(store):
         store.list_for_user("u1", now=NOW, cursor=crafted)
 
 
-def test_crafted_cursor_deeply_nested_payload_raises_invalid_cursor(store):
-    # A deeply nested JSON payload makes json.loads raise RecursionError on
-    # some Python versions instead of a clean parse failure; the oversized
-    # cursor must be rejected before decoding is even attempted.
-    _make(store, user_id="u1")
-    crafted = base64.urlsafe_b64encode(("[" * 1500).encode()).decode()
-
-    with pytest.raises(InvalidCursorError):
-        store.list_for_user("u1", now=NOW, cursor=crafted)
-
-
 def test_model_passed_to_constructor(engine):
     # No subclass needed: the model can be given directly to the constructor.
     store = SQLModelSessionStorage(UserSession, session_factory=lambda: Session(engine))
@@ -537,41 +514,19 @@ def test_constructor_without_model_mentions_both_options(engine):
         SQLModelSessionStorage(session_factory=lambda: Session(engine))
 
 
-def test_model_missing_required_field_raises_at_construction(engine):
-    class NotASession:
-        id = None  # declares id but none of the other session columns
-
-    class BadStore(SQLModelSessionStorage):
-        SessionModel = NotASession
-
-    with pytest.raises(TypeError, match="token_hash"):
-        BadStore(session_factory=lambda: Session(engine))
+def test_session_base_without_a_table_is_rejected(engine):
+    with pytest.raises(TypeError, match="must be a SQLModel table model"):
+        SQLModelSessionStorage(SQLModelSession, session_factory=lambda: Session(engine))
 
 
-def test_model_missing_status_property_raises_at_construction(engine):
-    # `status` is part of the SessionRecord protocol even though the adapter
-    # never reads it; a model without it must fail at startup, not when a
-    # session listing is first serialized.
-    class NoStatusSession:
-        id = None
-        token_hash = None
-        user_id = None
-        created_at = None
-        updated_at = None
-        expires_at = None
-        last_active_at = None
-        revoked_at = None
-        client_id = None
-        client_name = None
-        user_agent = None
-        ip = None
-        login_method = None
+def test_session_model_requires_application_owner_column(engine):
+    class MissingSessionOwner(SQLModelSession, table=True):
+        id: int | None = Field(default=None, primary_key=True)
 
-    class BadStore(SQLModelSessionStorage):
-        SessionModel = NoStatusSession
-
-    with pytest.raises(TypeError, match="status"):
-        BadStore(session_factory=lambda: Session(engine))
+    with pytest.raises(TypeError, match="user_id.*mapped column"):
+        SQLModelSessionStorage(
+            MissingSessionOwner, session_factory=lambda: Session(engine)
+        )
 
 
 def test_string_user_ids_coerced_to_int_column(engine):

@@ -11,10 +11,9 @@ from ._session import (
     SessionMetadata,
     _build_cookie,
     create_session,
-    get_bearer_token,
-    hash_session_token,
     make_clear_cookie,
     resolve_config,
+    resolve_current_session,
 )
 from ._storage import CommitCallback, SessionRecord, SessionStorage, User
 from .hooks import (
@@ -249,27 +248,10 @@ def logout_session(
     Returns the hook response; adapters decide how to send it and how to
     surface hook exceptions.
     """
-    resolved = resolve_config(session_config)
-
-    def find(session_token: str) -> SessionRecord | None:
-        # A plain lookup: rolling a sliding session forward is pointless when
-        # it is about to be revoked.
-        return session_storage.get(
-            token_hash=hash_session_token(session_token, resolved["token_hasher"]),
-            now=datetime.now(tz=timezone.utc),
-        )
-
-    # Same precedence as resolve_current_session: a stale cookie does not hide
-    # a valid bearer token.
-    session_record: SessionRecord | None = None
-    for session_token in (
-        request.cookies.get(resolved["cookies"]["name"]),
-        get_bearer_token(request),
-    ):
-        if session_token is not None:
-            session_record = find(session_token)
-            if session_record is not None:
-                break
+    current = resolve_current_session(
+        request, session_storage, session_config, refresh=False
+    )
+    session_record = None if current is None else current.record
 
     event = hooks.run_before(
         "logout",
@@ -377,7 +359,6 @@ def _revoke_sessions(
     # Fix the target first: a hook may refuse the revocation, but changing
     # the live record must not make it revoke another session.
     session_id = None if event.session_record is None else event.session_record.id
-    # Hook exceptions propagate: a before hook that raises revokes nothing.
     hooks.run_before("session.revoke", event)
 
     revoked_at = datetime.now(tz=timezone.utc)
@@ -391,7 +372,6 @@ def _revoke_sessions(
             except_session_id=event.keep_session_id,
         )
 
-    # Nothing written, nothing to report: after hooks only see revocations.
     if revoked_count == 0:
         return 0
     after_event = AfterSessionRevokeEvent(

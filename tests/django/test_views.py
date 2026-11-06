@@ -14,7 +14,6 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-import respx
 from asgiref.sync import async_to_sync
 from django.apps import apps
 from django.conf import settings
@@ -37,21 +36,21 @@ from cross_auth.django.storage import (
     DjangoUser,
 )
 
-from .conftest import CUSTOM_USER, connect, make_user
-from .fake_google import CALLBACK, Account, Authorization, FakeGoogle
+from .fake_google import CALLBACK, Account, FakeGoogle
+from .support import (
+    CUSTOM_USER,
+    connect,
+    csrf_post,
+    make_user,
+    sign_in,
+    start_login,
+    whoami,
+)
 from .testapp import signals
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
 BACKEND = "cross_auth.django.backends.CrossAuthBackend"
-
-
-@pytest.fixture
-def google() -> Iterator[FakeGoogle]:
-    with respx.mock(assert_all_called=False) as router:
-        fake = FakeGoogle(router)
-        fake.install()
-        yield fake
 
 
 @pytest.fixture(autouse=True)
@@ -75,30 +74,6 @@ def payload(name: str) -> dict[str, Any]:
 @pytest.fixture
 def client() -> Client:
     return Client(enforce_csrf_checks=True)
-
-
-def csrf_post(client: Client, path: str, data: dict[str, str] | None = None) -> Any:
-    if "csrftoken" not in client.cookies:
-        client.get("/")
-    token = client.cookies["csrftoken"].value
-    return client.post(path, {**(data or {}), "csrfmiddlewaretoken": token})
-
-
-def whoami(client: Client) -> dict[str, Any]:
-    return client.get("/").json()
-
-
-def start_login(
-    client: Client, google: FakeGoogle, next_url: str | None = None
-) -> Authorization:
-    data = {"next": next_url} if next_url is not None else {}
-    return google.authorize(csrf_post(client, "/auth/google/login/", data))
-
-
-def sign_in(
-    client: Client, google: FakeGoogle, account: Account | None = None
-) -> HttpResponseBase:
-    return google.callback(client, start_login(client, google), account)
 
 
 def error_of(response: HttpResponseBase) -> str:
@@ -364,7 +339,7 @@ class TestCallbackBinding:
         assert whoami(client)["authenticated"] is False
 
     def test_concurrent_callbacks_complete_once(self, google: FakeGoogle) -> None:
-        from .conftest import run_in_threads
+        from .support import run_in_threads
 
         client = Client(enforce_csrf_checks=True)
         authorization = start_login(client, google)
@@ -395,7 +370,7 @@ class TestCallbackBinding:
     def test_parallel_first_sign_ins_leave_one_user(
         self, google: FakeGoogle, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from .conftest import run_in_threads
+        from .support import run_in_threads
 
         clients = [Client(enforce_csrf_checks=True) for _ in range(2)]
         authorizations = [start_login(client, google) for client in clients]
@@ -938,8 +913,8 @@ class TestSignals:
         signals.handlers["user_created"] = lambda user, **kwargs: profiles.append(
             Profile.objects.filter(user=user).exists()
         )
-        signals.handlers["social_account_created"] = (
-            lambda social_account, **kwargs: profiles.append(
+        signals.handlers["social_account_created"] = lambda social_account, **kwargs: (
+            profiles.append(
                 Profile.objects.filter(user_id=social_account.user_id).exists()
             )
         )
@@ -1079,8 +1054,8 @@ class TestAuthorizationSignals:
     ) -> None:
         user = password_user(client)
         seen: list[Any] = []
-        signals.handlers["authorization_started"] = (
-            lambda request, **kwargs: seen.append(request.user.pk)
+        signals.handlers["authorization_started"] = lambda request, **kwargs: (
+            seen.append(request.user.pk)
         )
 
         google.authorize(csrf_post(client, "/auth/google/link/"))

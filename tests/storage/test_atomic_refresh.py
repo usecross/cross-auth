@@ -7,10 +7,6 @@ import pytest
 from sqlmodel import Session
 
 from .models import SessionStore
-from . import test_atomic_signup
-from .test_postgres import pg_engine  # noqa: F401
-
-signup_engine = test_atomic_signup.signup_engine
 
 NOW = datetime(2026, 6, 6, 12, tzinfo=timezone.utc)
 

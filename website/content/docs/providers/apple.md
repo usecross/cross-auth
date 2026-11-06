@@ -25,6 +25,14 @@ apple = AppleProvider(
 )
 ```
 
+## Application setup
+
+Pass `apple` in your configured `providers` list. Follow the shared
+[session sign-in or OAuth client setup](/docs/oauth#the-oauth-server) for cookie
+sign-in at `/auth/apple/login` or a registered-client PKCE flow. Provider
+credentials alone do not enable `/auth/apple/authorize`; it requires an
+`OAuthServer` with registered clients.
+
 ## Apple Developer Setup
 
 1. Go to [Apple Developer Portal](https://developer.apple.com/account)

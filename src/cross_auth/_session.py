@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal, TypedDict
 
-from cross_web import HTTPRequest, Cookie
+from cross_web import Cookie, HTTPRequest
 
+from ._request import get_header
 from ._storage import AccountsStorage, SessionRecord, SessionStorage, User
 
 _DEFAULT_MAX_AGE = 86400
@@ -26,8 +27,8 @@ class SessionMetadata(TypedDict, total=False):
 class SessionCookieConfig(TypedDict, total=False):
     # If True, register GET /{provider}/login and complete OAuth callbacks
     # into a browser session cookie. Requires session_storage. When False
-    # (default), the login routes are not registered and only the token/PKCE
-    # flow (/authorize, /callback, /token) is exposed.
+    # (default), the login routes are not registered. The OAuth server's
+    # token/PKCE routes are configured separately through OAuthServer.
     auth: bool
     name: str
     secure: bool
@@ -66,8 +67,6 @@ _SESSION_CONFIG_DEFAULTS: SessionConfig = {
 
 def resolve_config(config: SessionConfig | None) -> SessionConfig:
     base: SessionConfig = config if config is not None else {}
-    # Shallow-merge top level, but deep-merge the nested cookie attributes so a
-    # partial `cookies` override doesn't drop the other cookie defaults.
     return {
         **_SESSION_CONFIG_DEFAULTS,
         **base,
@@ -125,6 +124,8 @@ def _get_session(
     session_token: str,
     storage: SessionStorage,
     resolved: SessionConfig,
+    *,
+    refresh: bool = True,
 ) -> tuple[SessionRecord, bool] | None:
     """Resolve a session by token, returning (record, refreshed).
 
@@ -141,7 +142,7 @@ def _get_session(
         return None
 
     update_age = resolved.get("update_age")
-    if update_age is None:
+    if not refresh or update_age is None:
         return session, False
 
     if now - session.updated_at < timedelta(seconds=update_age):
@@ -244,28 +245,29 @@ def resolve_current_session(
     request: HTTPRequest,
     storage: SessionStorage,
     config: SessionConfig | None = None,
+    *,
+    refresh: bool = True,
 ) -> ResolvedSession | None:
     """Resolve the request's session, preferring the cookie over a bearer token.
 
     Unlike ``get_current_session`` this also reports the transport the token
     arrived on and whether the record was just refreshed, so a response-aware
-    caller can roll the session cookie forward.
+    caller can roll the session cookie forward. Set ``refresh=False`` when
+    resolving a session for logout so it is not extended before revocation.
     """
     resolved = resolve_config(config)
 
-    cookie_token = request.cookies.get(resolved["cookies"]["name"])
-    if cookie_token is not None:
-        result = _get_session(cookie_token, storage, resolved)
+    candidates: tuple[tuple[Literal["cookie", "bearer"], str | None], ...] = (
+        ("cookie", request.cookies.get(resolved["cookies"]["name"])),
+        ("bearer", get_bearer_token(request)),
+    )
+    for source, token in candidates:
+        if token is None:
+            continue
+        result = _get_session(token, storage, resolved, refresh=refresh)
         if result is not None:
             record, refreshed = result
-            return ResolvedSession(record, cookie_token, "cookie", refreshed)
-
-    bearer_token = get_bearer_token(request)
-    if bearer_token is not None:
-        result = _get_session(bearer_token, storage, resolved)
-        if result is not None:
-            record, refreshed = result
-            return ResolvedSession(record, bearer_token, "bearer", refreshed)
+            return ResolvedSession(record, token, source, refreshed)
 
     return None
 
@@ -281,7 +283,7 @@ def get_current_session(
 
 def get_bearer_token(request: HTTPRequest) -> str | None:
     """Extract a bearer credential without validating the token or its owner."""
-    authorization = _get_header(request.headers, "authorization")
+    authorization = get_header(request.headers, "authorization")
     if authorization is None:
         return None
 
@@ -289,11 +291,3 @@ def get_bearer_token(request: HTTPRequest) -> str | None:
     if scheme.lower() != "bearer":
         return None
     return token.strip() or None
-
-
-def _get_header(headers: Mapping[str, str], name: str) -> str | None:
-    normalized = name.lower()
-    for key, value in headers.items():
-        if key.lower() == normalized:
-            return value
-    return None

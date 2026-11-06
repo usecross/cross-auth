@@ -1,4 +1,3 @@
-from unittest.mock import Mock
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -26,7 +25,6 @@ def test_connected_account_cannot_sign_in(
     accounts_storage,
     session_storage,
     secondary_storage,
-    monkeypatch,
 ):
     accounts_storage.create_social_account(
         user_id="test",
@@ -42,8 +40,6 @@ def test_connected_account_cannot_sign_in(
         provider_email_verified=True,
         is_login_method=False,
     )
-    update = Mock(wraps=accounts_storage.update_social_account)
-    monkeypatch.setattr(accounts_storage, "update_social_account", update)
     seen_after: list[AfterOAuthCallbackEvent] = []
 
     @auth.after("oauth.callback")
@@ -83,25 +79,30 @@ def test_connected_account_cannot_sign_in(
             "error": "access_denied",
             "error_description": "Sign-in is not allowed",
         }
-    update.assert_not_called()
+    account = accounts_storage.find_social_account(
+        provider="fake", provider_user_id="connected-1", user_id="test"
+    )
+    assert account is not None
+    assert account.access_token == "stored-access"
+    assert account.refresh_token == "stored-refresh"
+    assert account.is_login_method is False
     assert not seen_after
     assert not session_storage.records
     assert "session_id" not in response.cookies
     assert not any(key.startswith("oauth:code:") for key in secondary_storage.data)
 
 
-def _recording_client(
+def _sign_in_client(
     *,
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
     session_storage: SessionStorage,
     provider: FakeProvider,
     account_linking_enabled: bool,
-) -> tuple[TestClient, Mock]:
-    recording_storage = Mock(wraps=accounts_storage, spec=accounts_storage)
+) -> TestClient:
     auth = _build_auth(
         storage=secondary_storage,
-        accounts_storage=recording_storage,
+        accounts_storage=accounts_storage,
         session_storage=session_storage,
         providers=[provider],
         config={
@@ -111,17 +112,17 @@ def _recording_client(
     )
     app = FastAPI()
     app.include_router(auth.router)
-    return TestClient(app, follow_redirects=False), recording_storage
+    return TestClient(app, follow_redirects=False)
 
 
 @respx.mock
-def test_missing_user_has_one_normalized_email_lookup_when_auto_linking_allowed(
+def test_missing_user_signs_up_with_normalized_email(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
     session_storage: SessionStorage,
     fake_provider: FakeProvider,
 ):
-    client, recording_storage = _recording_client(
+    client = _sign_in_client(
         secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
         session_storage=session_storage,
@@ -139,20 +140,26 @@ def test_missing_user_has_one_normalized_email_lookup_when_auto_linking_allowed(
         )
 
     assert response.status_code == 302
-    recording_storage.find_user_by_email.assert_called_once_with("new.user@example.com")
-    assert accounts_storage.find_user_by_email("new.user@example.com") is not None
+    user = accounts_storage.find_user_by_email("new.user@example.com")
+    assert user is not None
+    account = accounts_storage.find_social_account(
+        provider="fake", provider_user_id="new-provider-user", user_id=user.id
+    )
+    assert account is not None
+    assert account.is_login_method is True
+    assert len(list(accounts_storage.list_social_accounts(user_id=user.id))) == 1
 
 
 @pytest.mark.parametrize("account_linking_enabled", [False, True])
 @respx.mock
-def test_existing_user_has_one_email_lookup_and_respects_auto_link_policy(
+def test_existing_user_respects_auto_link_policy_after_email_normalization(
     account_linking_enabled: bool,
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
     session_storage: SessionStorage,
     fake_provider: FakeProvider,
 ):
-    client, recording_storage = _recording_client(
+    client = _sign_in_client(
         secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
         session_storage=session_storage,
@@ -169,7 +176,6 @@ def test_existing_user_has_one_email_lookup_and_respects_auto_link_policy(
             "/fake/callback", params={"code": "provider-code", "state": state}
         )
 
-    recording_storage.find_user_by_email.assert_called_once_with("test@example.com")
     social_account = accounts_storage.find_social_account(
         provider="fake", provider_user_id="existing-provider-user"
     )

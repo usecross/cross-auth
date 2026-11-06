@@ -32,22 +32,9 @@ jobs:
             echo "has_release=true" >> $GITHUB_OUTPUT
           else
             echo "has_release=false" >> $GITHUB_OUTPUT
-            if [ "${{ github.event_name }}" = "pull_request" ]; then
-              exit 1
-            fi
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload .autopub
-        if: steps.check.outputs.has_release == 'true'
-        run: |
-          if [ -d ".autopub" ]; then
-            echo "Found .autopub directory"
-          else
-            echo "No .autopub directory found"
-            exit 1
-          fi
 
       - name: Upload .autopub artifact
         if: steps.check.outputs.has_release == 'true'
@@ -56,3 +43,4 @@ jobs:
           name: autopub-data
           path: .autopub
           include-hidden-files: true
+          if-no-files-found: error

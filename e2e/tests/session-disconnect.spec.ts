@@ -1,31 +1,28 @@
-import { expect, test } from "@playwright/test"
+import { expect, test } from "./helpers/fixtures.js"
 
 import { completeGitHubMockSignIn } from "./helpers/auth.js"
 
 test("backend profile disconnects a social account when a password remains", async ({
-  page,
+  page, backend, spa, socialIdentity,
 }) => {
-  await page.goto("http://127.0.0.1:8000/")
+  await page.goto(`${backend}/`)
 
-  // A dedicated password account keeps a password (so disconnecting GitHub is
-  // allowed) and its GitHub connection stays isolated from the shared demo user.
-  await page.getByLabel("Email").fill("connect-demo@example.com")
+  await page.getByLabel("Email").fill("demo@example.com")
   await page.getByLabel("Password").fill("password123")
   await page.getByRole("button", { name: "Sign in with password" }).click()
 
-  await expect(page).toHaveURL(/127\.0\.0\.1:8000\/profile/)
+  await expect(page).toHaveURL(`${backend}/profile`)
 
   await page.getByRole("link", { name: "Connect GitHub (session)" }).click()
   await completeGitHubMockSignIn(
     page,
-    "connect-demo@example.com",
-    /127\.0\.0\.1:8000\/profile/,
+    socialIdentity.email,
+    `${backend}/profile`,
   )
 
   const account = page
     .locator("li[data-social-account-id]")
-    .filter({ hasText: "connect-demo@example.com" })
-    .first()
+    .filter({ hasText: socialIdentity.email })
   await expect(account.getByRole("button", { name: "Disconnect" })).toBeVisible()
 
   const [deleteResponse] = await Promise.all([
@@ -38,20 +35,21 @@ test("backend profile disconnects a social account when a password remains", asy
   ])
   expect(deleteResponse.status()).toBe(200)
 
-  // The button reloads /profile on success.
-  await expect(page).toHaveURL(/127\.0\.0\.1:8000\/profile/)
+  await expect(account).toHaveCount(0)
+  const me = await page.request.get(`${backend}/api/me`)
+  expect(await me.json()).toMatchObject({ email: "demo@example.com", social_accounts: [] })
 })
 
 test("backend profile refuses to disconnect the only login method", async ({
-  page,
+  page, backend, spa, socialIdentity,
 }) => {
   // A fresh email creates a GitHub-only user (no password), so GitHub is the
   // only login method and the disconnect guard must reject the request.
-  const email = `guard-${Date.now()}-${Math.random().toString(16).slice(2)}@example.com`
+  const email = socialIdentity.email
 
-  await page.goto("http://127.0.0.1:8000/")
+  await page.goto(`${backend}/`)
   await page.getByRole("link", { name: "Continue with GitHub" }).click()
-  await completeGitHubMockSignIn(page, email, /127\.0\.0\.1:8000\/profile/)
+  await completeGitHubMockSignIn(page, email, `${backend}/profile`)
 
   await expect(page.getByRole("heading", { name: email })).toBeVisible()
 

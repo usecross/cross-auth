@@ -5,6 +5,8 @@ from typing import Any
 from django.contrib.auth.backends import ModelBackend
 from django.http import HttpRequest
 
+BACKEND = "cross_auth.django.backends.CrossAuthBackend"
+
 
 class CrossAuthBackend(ModelBackend):
     """Authentication backend recorded on sessions started by provider sign-in.

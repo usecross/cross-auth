@@ -91,43 +91,26 @@ The Google provider requests these scopes by default:
 
 ## User Info
 
-Google returns the following user information in the ID token:
+Cross Auth maps these verified ID-token claims into its `UserInfo`:
 
-| Field            | Type    | Description               |
-| ---------------- | ------- | ------------------------- |
-| `sub`            | string  | Stable Google user ID     |
-| `email`          | string  | User's email address      |
-| `email_verified` | boolean | Whether email is verified |
-| `name`           | string  | Display name              |
-| `picture`        | string  | Profile picture URL       |
+| UserInfo field   | ID-token claim   | Description                        |
+| ---------------- | ---------------- | ---------------------------------- |
+| `id`             | `sub`            | Stable Google user ID              |
+| `email`          | `email`          | Email address, or `None` if absent |
+| `email_verified` | `email_verified` | Verification status, or `None`     |
+| `name`           | `name`           | Display name, when non-empty       |
 
-Cross Auth maps `sub` to the standard user info `id` field.
+Google may include other claims such as `picture`, but the built-in mapping does
+not copy them to `UserInfo`. Subclass `GoogleProvider` and override
+`extract_user_info_from_claims` if your application needs additional claims.
 
-## Example
+## Application setup
 
-```python
-from fastapi import FastAPI
-from cross_auth.router import AuthRouter
-from cross_auth.social_providers.google import GoogleProvider
-
-google = GoogleProvider(
-    client_id="123.apps.googleusercontent.com",
-    client_secret="secret123",
-)
-
-auth_router = AuthRouter(
-    providers=[google],
-    # ... other config
-)
-
-app = FastAPI()
-app.include_router(auth_router, prefix="/auth")
-```
-
-Users can then authenticate via:
-
-- `GET /auth/google/authorize` - Start OAuth flow
-- `GET /auth/google/callback` - OAuth callback (handled automatically)
+Pass `google` in your configured `providers` list. Follow the shared
+[session sign-in or OAuth client setup](/docs/oauth#the-oauth-server) to choose
+between cookie sign-in at `/auth/google/login` and the registered-client PKCE
+flow. `/auth/google/authorize` is only mounted with an `OAuthServer` and
+requires a registered client, its redirect URI, and a PKCE challenge.
 
 ## Testing With a Mock Provider
 

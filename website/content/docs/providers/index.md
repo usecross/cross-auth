@@ -28,21 +28,15 @@ provider's public keys (JWKS) - no extra HTTP request needed.
 **OAuth2 providers** (GitHub, Discord) require a separate call to a userinfo
 endpoint to fetch user data after token exchange.
 
-## Multiple Providers
+## Application setup
 
-You can use multiple providers simultaneously:
-
-```python
-from cross_auth.router import AuthRouter
-from cross_auth.social_providers.apple import AppleProvider
-from cross_auth.social_providers.github import GitHubProvider
-from cross_auth.social_providers.google import GoogleProvider
-
-auth_router = AuthRouter(
-    providers=[apple, google, github, discord],
-    # ... other config
-)
-```
+Configure each provider using its page, then pass the instances together in your
+`providers` list. Use the shared
+[session sign-in or OAuth client setup](/docs/oauth#the-oauth-server) for the
+application wiring: cookie sign-in uses `/{provider}/login`; client token flows
+use `/{provider}/authorize` with an `OAuthServer`, registered clients, and PKCE.
+The provider credentials and your application's OAuth client registrations are
+separate.
 
 ## Custom Providers
 

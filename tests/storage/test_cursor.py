@@ -6,7 +6,11 @@ from datetime import datetime, timezone
 import pytest
 
 from cross_auth.storage import InvalidCursorError
-from cross_auth.storage._cursor import decode_cursor, encode_cursor
+from cross_auth.storage._cursor import (
+    _MAX_CURSOR_LENGTH,
+    decode_cursor,
+    encode_cursor,
+)
 
 NOW = datetime(2026, 6, 6, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -15,7 +19,7 @@ def _craft(payload: object) -> str:
     return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
 
 
-@pytest.mark.parametrize("row_id", [42, "row-1", uuid.uuid4()])
+@pytest.mark.parametrize("row_id", [42, "row-1", "x" * 320, "🔑" * 200, uuid.uuid4()])
 def test_round_trip(row_id):
     cursor = encode_cursor("updated_at_desc", NOW, row_id)
 
@@ -68,16 +72,30 @@ def test_decode_rejects_malformed_cursors(cursor):
         decode_cursor(cursor)
 
 
+@pytest.mark.parametrize("character", ["x", "é", "🔑"])
+def test_payload_bound_is_symmetric(character):
+    # Exercise the encoded size, which includes JSON's Unicode escaping.
+    row_id = character
+    while True:
+        try:
+            cursor = encode_cursor("updated_at_desc", NOW, row_id + character)
+        except ValueError:
+            break
+        row_id += character
+    cursor = encode_cursor("updated_at_desc", NOW, row_id)
+    assert len(cursor) <= _MAX_CURSOR_LENGTH
+    assert decode_cursor(cursor).row_id == row_id
+    with pytest.raises(ValueError, match="shorter session ID"):
+        encode_cursor("updated_at_desc", NOW, row_id + character)
+
+
 def test_decode_rejects_oversized_cursor():
-    # Legitimate cursors are ~100-200 bytes; a much longer one is crafted.
     with pytest.raises(InvalidCursorError):
-        decode_cursor("a" * 513)
+        decode_cursor("a" * (_MAX_CURSOR_LENGTH + 1))
 
 
 def test_decode_rejects_deeply_nested_payload():
-    # A deeply nested payload can make json.loads raise RecursionError
-    # instead of a clean parse failure (observed on Python 3.11); the
-    # oversized cursor must be rejected before decoding is even attempted.
+    # Bounded input can still exhaust the JSON decoder's recursion limit.
     crafted = base64.urlsafe_b64encode(("[" * 1500).encode()).decode()
 
     with pytest.raises(InvalidCursorError):

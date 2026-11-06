@@ -1,10 +1,8 @@
 import warnings
-from datetime import datetime, timezone
 from typing import Annotated, Any, Literal
 
 from cross_web import HTTPRequest, Response
 from pydantic import (
-    AwareDatetime,
     BaseModel,
     ConfigDict,
     Discriminator,
@@ -16,10 +14,16 @@ from pydantic.type_adapter import TypeAdapter
 from cross_auth.models.oauth_token_response import TokenResponse
 from cross_auth.utils._pkce import validate_pkce
 
+from ._authorization_code import (
+    AUTH_CODE_KEY,
+)
+from ._authorization_code import (
+    AuthorizationCodeGrantData as AuthorizationCodeGrantData,
+)
 from ._context import Context
 from ._password import _verify_password
 from ._route import Route
-from ._tokens import TokenIssueRequest
+from ._tokens import IssuedToken, TokenIssueRequest
 from .exceptions import CrossAuthException
 from .hooks import (
     AfterTokenAuthorizationCodeEvent,
@@ -100,23 +104,26 @@ class TokenErrorResponse(BaseModel):
     )
 
 
-class AuthorizationCodeGrantData(BaseModel):
-    user_id: str
-    expires_at: AwareDatetime
-    client_id: str
-    redirect_uri: str
+def _bearer_token(issued: IssuedToken) -> TokenResponse:
+    return TokenResponse(
+        access_token=issued.token,
+        token_type="Bearer",
+        expires_in=issued.expires_in,
+        scope="",
+    )
 
-    # PKCE
-    code_challenge: str
-    code_challenge_method: Literal["S256"]
 
-    # How the user authenticated, e.g. the provider id. Codes stored by an
-    # older version have no such field and parse with None.
-    login_method: str | None = None
-
-    @property
-    def is_expired(self) -> bool:
-        return datetime.now(tz=timezone.utc) > self.expires_at
+def _token_success(data: TokenResponse) -> Response:
+    return Response(
+        status_code=200,
+        body=data.model_dump_json(),
+        headers={
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+        },
+        cookies=[],
+    )
 
 
 class Issuer:
@@ -202,9 +209,9 @@ class Issuer:
     ) -> Response:
         code = request.code
 
-        # Use atomic pop() to prevent race condition where multiple concurrent
-        # requests could all retrieve the same code before any of them delete it
-        raw_authorization_data = context.secondary_storage.pop(f"oauth:code:{code}")
+        raw_authorization_data = context.secondary_storage.pop(
+            AUTH_CODE_KEY.format(code=code)
+        )
 
         if raw_authorization_data is None:
             return self._error_response(
@@ -248,12 +255,6 @@ class Issuer:
                 "Redirect URI is no longer registered for this client",
             )
 
-        if authorization_data.code_challenge_method != "S256":
-            return self._error_response(
-                "invalid_request",
-                "Unsupported code challenge method",
-            )
-
         if not validate_pkce(
             authorization_data.code_challenge,
             authorization_data.code_challenge_method,
@@ -277,7 +278,7 @@ class Issuer:
             return self._error_response(e.error, e.error_description)
 
         try:
-            token, expires_in = context.issue_token(
+            issued = context.issue_token_result(
                 TokenIssueRequest(
                     user_id=authorization_data.user_id,
                     client_id=authorization_data.client_id,
@@ -290,15 +291,7 @@ class Issuer:
         except CrossAuthException as e:
             return self._error_response(e.error, e.error_description)
 
-        token_data = TokenResponse(
-            access_token=token,
-            token_type="Bearer",
-            expires_in=expires_in,
-            refresh_token=None,
-            refresh_token_expires_in=None,
-            # TODO: figure out scopes
-            scope="",
-        )
+        token_data = _bearer_token(issued)
 
         after_event = AfterTokenAuthorizationCodeEvent(
             request=request,
@@ -306,22 +299,11 @@ class Issuer:
             authorization_data=authorization_data,
             token_response=token_data,
         )
-        context._on_token_commit(
+        issued.on_commit(
             lambda: context.hooks.run_after("token.authorization_code", after_event)
         )
 
-        headers = {
-            "Content-Type": "application/json",
-            "Cache-Control": "no-store",
-            "Pragma": "no-cache",
-        }
-
-        return Response(
-            status_code=200,
-            body=token_data.model_dump_json(),
-            headers=headers,
-            cookies=[],
-        )
+        return _token_success(token_data)
 
     def _password_grant(
         self,
@@ -351,7 +333,7 @@ class Issuer:
             return self._error_response("invalid_grant", "Invalid username or password")
 
         try:
-            token, expires_in = context.issue_token(
+            issued = context.issue_token_result(
                 TokenIssueRequest(
                     user_id=str(user.id),
                     client_id=request.client_id,
@@ -365,15 +347,7 @@ class Issuer:
         except CrossAuthException as e:
             return self._error_response(e.error, e.error_description)
 
-        token_data = TokenResponse(
-            access_token=token,
-            token_type="Bearer",
-            expires_in=expires_in,
-            refresh_token=None,
-            refresh_token_expires_in=None,
-            # TODO: figure out scopes
-            scope="",
-        )
+        token_data = _bearer_token(issued)
 
         after_event = AfterTokenPasswordEvent(
             request=request,
@@ -382,22 +356,9 @@ class Issuer:
             user=user,
             token_response=token_data,
         )
-        context._on_token_commit(
-            lambda: context.hooks.run_after("token.password", after_event)
-        )
+        issued.on_commit(lambda: context.hooks.run_after("token.password", after_event))
 
-        headers = {
-            "Content-Type": "application/json",
-            "Cache-Control": "no-store",
-            "Pragma": "no-cache",
-        }
-
-        return Response(
-            status_code=200,
-            body=token_data.model_dump_json(),
-            headers=headers,
-            cookies=[],
-        )
+        return _token_success(token_data)
 
     def routes(self, *, password_grant: bool) -> list[Route]:
         # The route reads its own form, so FastAPI adds no components for these

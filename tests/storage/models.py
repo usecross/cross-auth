@@ -5,7 +5,7 @@ Defined once at module level so every table is registered on
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, Index, UniqueConstraint, text
 from sqlmodel import Field, Relationship, SQLModel
@@ -300,3 +300,46 @@ class SignupApplicationRow(SQLModel, table=True):
     user_id: int = Field(foreign_key="user.id")
     label: str
     user: User = Relationship()
+
+
+class PropertyExpirySocialAccount(SQLModelSocialAccount, table=True):
+    """An application's read-only credential view over differently named fields."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id")
+    stored_access_expiry: datetime | None = None
+    stored_refresh_expiry: datetime | None = None
+
+    @property
+    def access_token(self) -> None:
+        return None
+
+    @property
+    def refresh_token(self) -> None:
+        return None
+
+    @property
+    def scope(self) -> None:
+        return None
+
+    @property
+    def access_token_expires_at(self) -> datetime | None:
+        value = self.stored_access_expiry
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+    @property
+    def refresh_token_expires_at(self) -> datetime | None:
+        value = self.stored_refresh_expiry
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+
+class PropertyExpiryAccountsStore(
+    SQLModelAccountsStorage[User, PropertyExpirySocialAccount]
+):
+    UserModel = User
+    SocialAccountModel = PropertyExpirySocialAccount
+    excluded_social_account_fields = LeanAccountsStore.excluded_social_account_fields

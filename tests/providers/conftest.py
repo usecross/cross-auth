@@ -3,8 +3,6 @@ import pytest
 from cross_auth.models.oauth_token_response import TokenResponse
 from cross_auth.social_providers.oauth import OAuth2Provider
 
-pytestmark = pytest.mark.asyncio
-
 
 class TestOAuth2Provider(OAuth2Provider):
     __test__ = False

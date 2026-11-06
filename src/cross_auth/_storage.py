@@ -70,9 +70,7 @@ class User(Protocol):
     @property
     def id(self) -> Any: ...
 
-    # Nullable: apps may hold users without an email (created before email
-    # capture, or via providers that withhold it). Core never reads this —
-    # email lookups go through ``find_user_by_email``.
+    # Apps may hold users without an email, including when providers withhold it.
     @property
     def email(self) -> str | None: ...
 
@@ -342,9 +340,12 @@ class AccountsStorage(Protocol):
 
         Call identity once with the new user and its generated ID, before commit.
         The returned identity must belong to that user. Roll back both records
-        if construction, validation, or persistence fails. Return after
-        committing both records, or after writing both in the application
-        transaction that on_commit follows; callers then schedule after-create
+        if construction, validation, or persistence fails. Both records and
+        application rows created by the builder must participate in the same
+        database transaction; a shared storage session alone is not enough when
+        models route to different databases. Return after committing both
+        records, or after writing both in the application transaction that
+        on_commit follows; callers then schedule after-create
         hooks with on_commit. The callback must not open independent storage
         sessions while this transaction is active.
         """

@@ -9,7 +9,6 @@ The tests skip automatically when Docker is unavailable.
 
 import base64
 import json
-import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import cast
@@ -17,7 +16,7 @@ from typing import cast
 import pytest
 from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session
 
 from cross_auth._session import create_session, get_session
 from cross_auth._storage import SessionStorage
@@ -30,34 +29,6 @@ from .models import (
     UserSession,
     UuidSessionStore,
 )
-
-pytest.importorskip("psycopg")
-testcontainers_postgres = pytest.importorskip("testcontainers.postgres")
-
-
-@pytest.fixture(scope="module")
-def pg_engine():
-    try:
-        container = testcontainers_postgres.PostgresContainer(
-            "postgres:16-alpine", driver="psycopg"
-        )
-        container.start()
-    except Exception as exc:  # docker missing or unreachable
-        # In CI, Docker must be available; skipping silently would hide a
-        # broken test environment instead of failing the build.
-        if os.environ.get("CI"):
-            raise
-        pytest.skip(f"Docker unavailable for testcontainers: {exc}")
-    engine = create_engine(
-        container.get_connection_url(),
-        # A non-UTC connection TimeZone is what breaks naive-datetime
-        # handling in production; keep it weird on purpose.
-        connect_args={"options": "-c TimeZone=America/New_York"},
-    )
-    SQLModel.metadata.create_all(engine)
-    yield engine
-    engine.dispose()
-    container.stop()
 
 
 @pytest.fixture

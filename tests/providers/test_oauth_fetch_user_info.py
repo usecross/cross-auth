@@ -10,8 +10,6 @@ from cross_auth.social_providers.oauth import OAuth2Exception
 
 from .conftest import TestOAuth2Provider
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture
 def context() -> MagicMock:
@@ -19,7 +17,7 @@ def context() -> MagicMock:
 
 
 @respx.mock
-async def test_get_user_info_success(
+def test_get_user_info_success(
     oauth_provider: TestOAuth2Provider,
     token_response: TokenResponse,
     context: MagicMock,
@@ -38,7 +36,7 @@ async def test_get_user_info_success(
 
 
 @respx.mock
-async def test_get_user_info_endpoint_fails(
+def test_get_user_info_endpoint_fails(
     oauth_provider: TestOAuth2Provider,
     token_response: TokenResponse,
     context: MagicMock,

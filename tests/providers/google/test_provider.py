@@ -215,7 +215,7 @@ def test_fetch_jwks_uses_response_cache_control(monkeypatch) -> None:
         client_secret="google-client-secret",
     )
 
-    captured_ttl: dict[str, int] = {}
+    captured_ttls: dict[str, int] = {}
 
     def fake_get(url: str) -> Any:
         response = MagicMock()
@@ -228,7 +228,7 @@ def test_fetch_jwks_uses_response_cache_control(monkeypatch) -> None:
     secondary_storage.get.return_value = None
 
     def fake_set(key: str, value: str, ttl: int) -> None:
-        captured_ttl["ttl"] = ttl
+        captured_ttls[key] = ttl
 
     secondary_storage.set.side_effect = fake_set
 
@@ -236,7 +236,11 @@ def test_fetch_jwks_uses_response_cache_control(monkeypatch) -> None:
 
     provider._fetch_jwks(secondary_storage)
 
-    assert captured_ttl["ttl"] == 7200
+    assert captured_ttls[provider.jwks_cache_key] == 7200
+    assert (
+        captured_ttls[f"{provider.jwks_cache_key}:refetch-cooldown"]
+        == provider._JWKS_REFETCH_COOLDOWN
+    )
 
 
 def test_fetch_user_info_accepts_schemeless_issuer() -> None:

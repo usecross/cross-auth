@@ -6,8 +6,6 @@ import respx
 from cross_auth.models.oauth_token_response import TokenResponse
 from cross_auth.social_providers.github import GitHubProvider
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture
 def context() -> MagicMock:
@@ -15,7 +13,7 @@ def context() -> MagicMock:
 
 
 @respx.mock
-async def test_verified_primary_email(
+def test_verified_primary_email(
     github_provider: GitHubProvider,
     mock_user_info: dict[str, str],
     mock_emails_verified_primary: list[dict[str, str]],
@@ -37,7 +35,7 @@ async def test_verified_primary_email(
 
 
 @respx.mock
-async def test_unverified_primary_email(
+def test_unverified_primary_email(
     github_provider: GitHubProvider,
     mock_user_info: dict[str, str],
     mock_emails_unverified_primary: list[dict[str, str]],
@@ -59,7 +57,7 @@ async def test_unverified_primary_email(
 
 
 @respx.mock
-async def test_empty_emails_list(
+def test_empty_emails_list(
     github_provider: GitHubProvider,
     mock_user_info: dict[str, str],
     mock_emails_empty: list[dict[str, str]],
@@ -81,7 +79,7 @@ async def test_empty_emails_list(
 
 
 @respx.mock
-async def test_emails_endpoint_fails_gracefully(
+def test_emails_endpoint_fails_gracefully(
     github_provider: GitHubProvider,
     mock_user_info: dict[str, str],
     token_response: TokenResponse,
@@ -102,7 +100,7 @@ async def test_emails_endpoint_fails_gracefully(
 
 
 @respx.mock
-async def test_emails_endpoint_failure_preserves_public_email(
+def test_emails_endpoint_failure_preserves_public_email(
     github_provider: GitHubProvider,
     mock_user_info: dict[str, str],
     token_response: TokenResponse,

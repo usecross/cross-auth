@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hashlib import sha256
 from typing import Any
 
 import httpx
@@ -54,6 +55,8 @@ class GoogleProvider(OIDCProvider):
             authorization_endpoint: Custom authorization URL (for browser redirects).
             token_endpoint: Custom token exchange URL (for server-to-server calls).
             jwks_uri: Custom JWKS URL (for server-to-server ID token validation).
+                Nondefault endpoints get an endpoint-specific default cache key;
+                explicit subclass cache keys are kept as configured.
             token_exchange_timeout: Timeout for the provider token request. Set to
                 None to disable it.
         """
@@ -71,6 +74,12 @@ class GoogleProvider(OIDCProvider):
             self.token_endpoint = token_endpoint
         if jwks_uri is not None:
             self.jwks_uri = jwks_uri
+        if (
+            self.jwks_uri != GoogleProvider.jwks_uri
+            and self.jwks_cache_key == GoogleProvider.jwks_cache_key
+        ):
+            endpoint_hash = sha256(self.jwks_uri.encode()).hexdigest()
+            self.jwks_cache_key = f"{self.jwks_cache_key}:{endpoint_hash}"
 
     def extract_user_info_from_claims(
         self,

@@ -29,7 +29,6 @@ class Config(TypedDict, total=False):
     # linked accounts are not affected - they can still login.
     require_verified_email: bool
 
-    # Session cookie settings (cookie name, max_age, secure, etc.) plus the
-    # cookie_auth flag that enables the browser /{provider}/login flow. See
-    # SessionConfig. cookie_auth requires session_storage to be provided.
+    # Session settings, including cookies.auth to enable browser
+    # /{provider}/login routes. Cookie sign-in requires session_storage.
     session: SessionConfig

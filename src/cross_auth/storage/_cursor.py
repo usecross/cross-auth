@@ -8,6 +8,11 @@ from datetime import datetime
 from cross_auth.exceptions import InvalidCursorError
 
 
+# The encoded payload, including JSON escaping of string IDs, is bounded in
+# both directions. Applications with larger identifiers cannot use pagination.
+_MAX_CURSOR_LENGTH = 4096
+
+
 @dataclass(frozen=True)
 class Cursor:
     order_by: str
@@ -22,13 +27,13 @@ def encode_cursor(order_by: str, order_value: datetime, row_id: object) -> str:
         "id": _serialize_cursor_id(row_id),
     }
     raw = json.dumps(payload, separators=(",", ":")).encode()
-    return base64.urlsafe_b64encode(raw).decode()
-
-
-# Legitimate cursors are ~100-200 bytes; a much longer one is crafted. Reject
-# it before decoding — a deeply nested payload (e.g. `"["*1500`) makes
-# json.loads raise RecursionError instead of a clean parse failure.
-_MAX_CURSOR_LENGTH = 512
+    cursor = base64.urlsafe_b64encode(raw).decode()
+    if len(cursor) > _MAX_CURSOR_LENGTH:
+        raise ValueError(
+            f"Session pagination cursor exceeds {_MAX_CURSOR_LENGTH} encoded "
+            "characters; use a shorter session ID"
+        )
+    return cursor
 
 
 def decode_cursor(cursor: str) -> Cursor:

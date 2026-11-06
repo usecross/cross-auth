@@ -89,31 +89,13 @@ def get_avatar_url(user_id: str, avatar_hash: str) -> str:
     return f"https://cdn.discordapp.com/embed/avatars/{(int(user_id) >> 22) % 6}.png"
 ```
 
-## Example
+## Application setup
 
-```python
-from fastapi import FastAPI
-from cross_auth.router import AuthRouter
-from cross_auth.social_providers.discord import DiscordProvider
-
-discord = DiscordProvider(
-    client_id="123456789012345678",
-    client_secret="secret123",
-)
-
-auth_router = AuthRouter(
-    providers=[discord],
-    # ... other config
-)
-
-app = FastAPI()
-app.include_router(auth_router, prefix="/auth")
-```
-
-Users can then authenticate via:
-
-- `GET /auth/discord/authorize` - Start OAuth flow
-- `GET /auth/discord/callback` - OAuth callback (handled automatically)
+Pass `discord` in your configured `providers` list. Follow the shared
+[session sign-in or OAuth client setup](/docs/oauth#the-oauth-server) to choose
+between cookie sign-in at `/auth/discord/login` and the registered-client PKCE
+flow. `/auth/discord/authorize` is only mounted with an `OAuthServer` and
+requires a registered client, its redirect URI, and a PKCE challenge.
 
 ## Troubleshooting
 
