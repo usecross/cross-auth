@@ -205,13 +205,14 @@ class AppleProvider(OIDCProvider):
             "email_verified": id_token_payload.email_verified,
         }
 
-        if extra and (user := extra.get("user")):
-            name = user.get("name", {})
-            full_name = (
-                f"{name.get('firstName', '')} {name.get('lastName', '')}".strip()
-            )
-            if full_name:
-                info["name"] = full_name
+        # The form field is whatever the browser posted, so check its shape.
+        user = extra.get("user") if extra else None
+        name = user.get("name") if isinstance(user, dict) else None
+        if isinstance(name, dict):
+            parts = (name.get("firstName"), name.get("lastName"))
+            full_name = " ".join(part for part in parts if isinstance(part, str))
+            if full_name.strip():
+                info["name"] = full_name.strip()
 
         return info
 

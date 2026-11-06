@@ -540,7 +540,12 @@ def _handle_oauth_callback(
         except ValidationError:
             return Response.error("invalid_request", "Invalid callback continuation")
     else:
-        callback_data = provider.extract_callback_params(request)
+        try:
+            callback_data = provider.extract_callback_params(request)
+        except OAuth2Exception as e:
+            # E.g. Apple's form_post callback requested with GET: a malformed
+            # callback answers 400, not an unhandled exception.
+            return Response.error(e.error, e.error_description)
 
     state = callback_data.state
     auth_request = _load_auth_request(context, state) if state else None

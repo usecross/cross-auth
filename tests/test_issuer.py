@@ -724,7 +724,7 @@ def test_password_grant_verifies_password_hash_for_unknown_users(
             )
 
     with mock.patch(
-        "cross_auth._password.pwd_context.verify",
+        "cross_auth._password._check_password",
         side_effect=record_password_verification,
     ):
         existing_response = request_password_token("test@example.com")

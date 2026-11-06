@@ -482,6 +482,41 @@ def resolve_user_for_sign_in(
     )
 
 
+# One message whether or not an account with the email exists.
+_EMAIL_NOT_VERIFIED = "Please verify your email with the provider before signing in."
+
+
+def _user_owns_email(context: Context, user: User, email: str) -> bool:
+    """Whether the existing ``user`` has proven to own ``email``.
+
+    Auto-linking adds a sign-in method to an account found by email alone, so
+    both sides must have verified it. Otherwise whoever registers someone
+    else's address first, say with a password, gets to read that person's
+    account once they sign in with a provider that did verify the address.
+    The user's own ``email_verified`` flag counts, and so does a sign-in
+    identity whose provider verified the same address: an application that
+    does not keep the flag itself (Django) still lets provider-created users
+    link another provider.
+    """
+    if user.email_verified:
+        return True
+    for account in context.accounts_storage.list_social_accounts(user_id=user.id):
+        if (
+            not account.is_login_method
+            or account.provider_email_verified is not True
+            or account.provider_email is None
+        ):
+            continue
+        try:
+            stored = context.normalize_email(account.provider_email)
+        except ValueError:
+            # A custom normalizer may reject a stored address; it is no match.
+            continue
+        if stored == email:
+            return True
+    return False
+
+
 def resolve_or_create_user(
     *,
     provider: OAuth2Provider,
@@ -531,7 +566,17 @@ def resolve_or_create_user(
     user = context.accounts_storage.find_user_by_email(email)
     can_auto_link = provider.can_auto_link(context, validated.email_verified)
 
-    if user is not None and not can_auto_link:
+    if user is not None and not provider.trusts_email(validated.email_verified):
+        # Whoever controls this provider account has not shown they own the
+        # email, so do not tell them an account with it exists: answer as a
+        # refused sign-up with an unverified email does.
+        raise CrossAuthException(
+            "email_not_verified", error_description=_EMAIL_NOT_VERIFIED
+        )
+
+    if user is not None and not (
+        can_auto_link and _user_owns_email(context, user, email)
+    ):
         raise CrossAuthException(
             "account_not_linked",
             error_description=(
@@ -546,10 +591,7 @@ def resolve_or_create_user(
             and validated.email_verified is not True
         ):
             raise CrossAuthException(
-                "email_not_verified",
-                error_description=(
-                    "Please verify your email with the provider before signing up."
-                ),
+                "email_not_verified", error_description=_EMAIL_NOT_VERIFIED
             )
 
         def prepare_identity(created_user: User) -> SocialAccountCreate:

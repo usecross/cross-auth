@@ -40,7 +40,7 @@ class AuthRequest(BaseModel):
     flow: FlowKind
     provider_id: str
     state: str
-    provider_code_verifier: str | None = None
+    provider_code_verifier: str | None = Field(default=None, repr=False)
     provider_data: dict[str, str] = Field(default_factory=dict)
     browser_binding: str
     expires_at: datetime
@@ -72,8 +72,8 @@ class LinkCodeData(BaseModel):
     code_challenge: str
     code_challenge_method: Literal["S256"]
     user_id: str
-    provider_code: str
-    provider_code_verifier: str | None = None
+    provider_code: str = Field(repr=False)
+    provider_code_verifier: str | None = Field(default=None, repr=False)
     provider_data: dict[str, str] = Field(default_factory=dict)
     client_state: str | None = None
     provider_callback_extra: dict[str, Any] | None = None

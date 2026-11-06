@@ -9,11 +9,11 @@ from urllib.parse import urlencode
 
 import cross_auth
 from cross_web import HTTPRequest
+import bcrypt
 from fastapi import Depends, FastAPI, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from passlib.context import CryptContext
 from sqlalchemy import UniqueConstraint
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Field, Relationship, Session, SQLModel, create_engine
@@ -68,7 +68,6 @@ SPA_CLIENT_ID = "spa-example"
 MAX_HOOK_EVENTS = 20
 # Small page size so the demo's handful of sessions paginate visibly.
 SESSIONS_PAGE_SIZE = 5
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 SPA_CORS_ORIGINS = [
     "http://localhost:5173",
@@ -371,7 +370,9 @@ def seed_demo_user() -> None:
             User(
                 email=DEMO_EMAIL,
                 email_verified=True,
-                hashed_password=pwd_context.hash(DEMO_PASSWORD),
+                hashed_password=bcrypt.hashpw(
+                    DEMO_PASSWORD.encode(), bcrypt.gensalt()
+                ).decode(),
                 display_name="Demo User",
             )
         )

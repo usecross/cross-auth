@@ -7,9 +7,8 @@ authors = [{ name = "Patrick Arminio", email = "patrick.arminio@gmail.com" }]
 requires-python = ">=3.11"
 dependencies = [
     "cross-web>=0.7.0",
-    "passlib[bcrypt]>=1.7.4",
     "pydantic[email]>=2.11.3",
-    "bcrypt>=4.0.0,<5.0.0",
+    "bcrypt>=4.0.0",
     "PyJWT[crypto]>=2.10.1",
     "httpx>=0.28.1",
 ]

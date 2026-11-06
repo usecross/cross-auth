@@ -241,6 +241,15 @@ This function uses **constant-time verification** -- it always runs bcrypt even
 for non-existent users, preventing timing attacks that could enumerate valid
 email addresses.
 
+Cross-Auth verifies passwords; your application hashes them when a user sets
+one. Store a bcrypt hash (the `$2b$` format produced by the `bcrypt` package or
+by passlib) in `hashed_password`. bcrypt uses only the first 72 bytes of a
+password, so any password that shares those bytes verifies against the hash.
+Decide how to handle longer passwords when hashing: reject them, as
+`bcrypt.hashpw` does from bcrypt 5, or hash them with SHA-256 first and bcrypt
+the digest. Verification compares the first 72 bytes either way, so users whose
+hash was made from a longer password keep signing in.
+
 ### Creating Sessions
 
 After authentication, create a session to persist the login:

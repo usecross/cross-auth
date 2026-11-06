@@ -905,7 +905,12 @@ reports invalid values.
 `ACCOUNT_LINKING["enabled"]` is off by default. Turning it on lets anyone who
 controls a Google account with a matching, verified email sign in to an existing
 user, so only enable it if you trust Google's email verification for all of your
-users. Even then, Cross Auth refuses when several users share the email.
+users. Even then, Cross Auth refuses when several users share the email, and
+when the existing user has not proven to own it. Django has no verified-email
+flag, so a user counts as verified only through a connected sign-in identity
+whose provider verified the same email: a user that one provider created can
+link another, while a user created with a password answers `account_not_linked`
+and has to sign in and connect the provider instead.
 
 ## How Cross Auth fits into Django
 

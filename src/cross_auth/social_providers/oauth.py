@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 
 import httpx
 from cross_web import HTTPRequest
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from cross_auth.utils._response import Response
 
@@ -90,7 +90,7 @@ class OAuth2TimeoutException(OAuth2Exception):
 
 
 class CallbackData(BaseModel):
-    code: str | None
+    code: str | None = Field(repr=False)
     state: str | None
     error: str | None
     extra: dict[str, Any] | None = None  # Provider-specific data

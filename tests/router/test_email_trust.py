@@ -20,7 +20,12 @@ from cross_auth.social_providers.discord import DiscordProvider
 from cross_auth.social_providers.github import GitHubProvider
 from cross_auth.social_providers.oauth import OAuth2Provider
 
-from ..conftest import MemoryAccountsStorage, MemorySessionStorage, MemoryStorage
+from ..conftest import (
+    MemoryAccountsStorage,
+    MemorySessionStorage,
+    MemoryStorage,
+    SocialAccount,
+)
 from .conftest import (
     APP_OAUTH_SERVER,
     FakeProvider,
@@ -189,7 +194,9 @@ def test_unverified_email_cannot_link_existing_user_by_default(
     ) as client:
         response = _sign_in(client, provider.id, flow)
 
-    assert _error(response, flow) == "account_not_linked"
+    # The same error a refused sign-up gets: an unverified provider email must
+    # not learn whether an account with that email exists.
+    assert _error(response, flow) == "email_not_verified"
     assert list(accounts_storage.data) == ["test"]
     assert accounts_storage.data["test"].social_accounts == []
     assert session_storage.records == {}
@@ -301,7 +308,7 @@ def test_trust_email_accepts_only_a_missing_verification_claim(
         [account] = accounts_storage.data["test"].social_accounts
         assert account.is_login_method is True
     else:
-        assert _error(response, "session") == "account_not_linked"
+        assert _error(response, "session") == "email_not_verified"
         assert accounts_storage.data["test"].social_accounts == []
         assert session_storage.records == {}
 
@@ -330,3 +337,152 @@ def test_trust_email_does_not_verify_new_users(
     assert _error(response, "session") == "email_not_verified"
     assert list(accounts_storage.data) == ["test"]
     assert session_storage.records == {}
+
+
+@pytest.mark.parametrize("flow", ["session", "token"])
+@pytest.mark.parametrize("provider_name", list(DEFAULT_PROVIDERS))
+@respx.mock
+def test_existing_user_with_unverified_email_is_not_linked(
+    provider_name: str,
+    flow: str,
+    secondary_storage: MemoryStorage,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+):
+    """A verified provider email alone does not prove the existing user's.
+
+    Someone who registers another person's address first, say with a
+    password, must not get that person's provider sign-in attached to their
+    account, so the existing user has to have verified the address too.
+    """
+    make_provider, mock_provider = DEFAULT_PROVIDERS[provider_name]
+    provider = make_provider()
+    mock_provider(email=EXISTING_EMAIL, email_verified=True)
+    accounts_storage.data["test"].email_verified = False
+
+    with _client(
+        provider,
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=session_storage,
+    ) as client:
+        response = _sign_in(client, provider.id, flow)
+
+    assert _error(response, flow) == "account_not_linked"
+    assert accounts_storage.data["test"].social_accounts == []
+    assert session_storage.records == {}
+    assert not any(key.startswith("oauth:code:") for key in secondary_storage.data)
+
+
+@pytest.mark.parametrize("flow", ["session", "token"])
+@pytest.mark.parametrize(
+    ("identity_email", "identity_verified", "identity_logs_in", "linked"),
+    [
+        (EXISTING_EMAIL, True, True, True),
+        ("Test@Example.com", True, True, True),
+        (EXISTING_EMAIL, False, True, False),
+        (EXISTING_EMAIL, None, True, False),
+        (EXISTING_EMAIL, True, False, False),
+        ("other@example.com", True, True, False),
+    ],
+)
+@respx.mock
+def test_verified_sign_in_identity_vouches_for_the_existing_email(
+    flow: str,
+    identity_email: str,
+    identity_verified: bool | None,
+    identity_logs_in: bool,
+    linked: bool,
+    secondary_storage: MemoryStorage,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+):
+    """Without an email_verified flag, a verified login identity counts.
+
+    Applications that do not track verification on the user (Django) still
+    link a provider to a user that another provider created with the same
+    verified email.
+    """
+    provider = FakeProvider(client_id="fake-client-id", client_secret="fake-secret")
+    _mock_fake(email=EXISTING_EMAIL, email_verified=True)
+    user = accounts_storage.data["test"]
+    user.email_verified = False
+    user.social_accounts.append(
+        SocialAccount(
+            id="github-account",
+            user_id=user.id,
+            provider="github",
+            provider_user_id="583231",
+            provider_email=identity_email,
+            provider_email_verified=identity_verified,
+            is_login_method=identity_logs_in,
+        )
+    )
+
+    with _client(
+        provider,
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=session_storage,
+    ) as client:
+        response = _sign_in(client, provider.id, flow)
+
+    if linked:
+        _assert_signed_in(response, flow)
+        assert [account.provider for account in user.social_accounts] == [
+            "github",
+            "fake",
+        ]
+    else:
+        assert _error(response, flow) == "account_not_linked"
+        assert [account.provider for account in user.social_accounts] == ["github"]
+
+
+@respx.mock
+def test_identity_email_the_normalizer_rejects_is_no_match(
+    secondary_storage: MemoryStorage,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+):
+    """A stored address a custom normalizer refuses does not break the check."""
+
+    def strict_normalize(email: str) -> str:
+        if "@" not in email:
+            raise ValueError("not an email")
+        return email.strip().lower()
+
+    provider = FakeProvider(client_id="fake-client-id", client_secret="fake-secret")
+    _mock_fake(email=EXISTING_EMAIL, email_verified=True)
+    user = accounts_storage.data["test"]
+    user.email_verified = False
+    user.social_accounts.append(
+        SocialAccount(
+            id="odd-account",
+            user_id=user.id,
+            provider="github",
+            provider_user_id="583231",
+            provider_email="not-an-email",
+            provider_email_verified=True,
+            is_login_method=True,
+        )
+    )
+    auth = _build_auth(
+        storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=session_storage,
+        providers=[provider],
+        config={
+            "session": {"cookies": {"auth": True}},
+            "account_linking": {"enabled": True},
+        },
+        normalize_email=strict_normalize,
+        oauth_server=APP_OAUTH_SERVER,
+    )
+    app = FastAPI()
+    app.include_router(auth.router)
+
+    with TestClient(app, follow_redirects=False) as client:
+        response = _sign_in(client, provider.id, "session")
+
+    assert _error(response, "session") == "account_not_linked"
+    assert [account.provider for account in user.social_accounts] == ["github"]

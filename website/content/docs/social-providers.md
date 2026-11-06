@@ -68,9 +68,11 @@ config = {"account_linking": {"enabled": True}}
 ```
 
 The provider must report the email as verified (`email_verified=True`).
-Otherwise the sign-in fails with `account_not_linked`: nothing is attached and
-nobody is signed in. GitHub reports whether the primary email is verified,
-Discord its `verified` field, and Google and Apple their `email_verified` claim.
+Otherwise the sign-in fails with `email_not_verified`, the error a sign-up with
+an unverified email gets, so that it does not reveal whether an account with
+that email exists: nothing is attached and nobody is signed in. GitHub reports
+whether the primary email is verified, Discord its `verified` field, and Google
+and Apple their `email_verified` claim.
 
 All providers default to `trust_email=False`. Pass `trust_email=True` only for a
 provider that verifies email ownership but does not say so: an email it sends
@@ -78,6 +80,15 @@ without a verification claim then counts as verified. An email the provider
 reports as unverified never links, whatever `trust_email` says. The same rule
 applies when a signed-in user links a provider with `finalize-link`, or connects
 it as a login method, which fail with `email_not_verified`.
+
+The existing user must have verified the email too: their `email_verified` must
+be `True`, or one of their sign-in identities (`is_login_method=True`) must
+carry the same email with `provider_email_verified=True`. Otherwise the sign-in
+fails with `account_not_linked` as well. Without this, whoever registers someone
+else's address first, say with a password that was never confirmed, would get
+that person's provider sign-in attached to their own account. Users that a
+provider sign-in created have a verified email when the provider reported one;
+set `email_verified` yourself for users your application creates.
 
 This only decides whether an existing user is linked. `require_verified_email`
 decides whether a new user can sign up, and a provider identity that is already

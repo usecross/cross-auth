@@ -219,6 +219,32 @@ def test_callback_keeps_first_authorization_name(apple_provider):
     assert info["name"] == "Ada Lovelace"
 
 
+@pytest.mark.parametrize(
+    "user",
+    [
+        "Ada Lovelace",
+        ["Ada", "Lovelace"],
+        {"name": "Ada Lovelace"},
+        {"name": ["Ada"]},
+        {"name": {"firstName": 1, "lastName": None}},
+        {"name": {}},
+    ],
+)
+def test_callback_user_of_unexpected_shape_is_ignored(apple_provider, user):
+    """The user field is posted by the browser, so any shape must be tolerated."""
+    callback = apple_provider.extract_callback_params(
+        HTTPRequest.from_form_data(
+            data={"code": "code", "state": "state", "user": json.dumps(user)}
+        )
+    )
+    claims = _make_payload(sub="apple-user", email="ada@example.com").model_dump()
+
+    info = apple_provider.extract_user_info_from_claims(claims, callback.extra)
+
+    assert info["id"] == "apple-user"
+    assert "name" not in info
+
+
 # --- id_token validation tests ---
 
 

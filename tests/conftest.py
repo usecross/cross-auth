@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
+import bcrypt
 import pytest
 from cross_web import HTTPRequest
-from passlib.context import CryptContext
 
 from cross_auth._auth_flow import LinkCodeData
 from cross_auth._clients import OAuthClient
@@ -35,8 +35,6 @@ from cross_auth._storage import (
     User as UserProtocol,
 )
 from cross_auth.exceptions import CrossAuthException
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 TEST_PASSWORD = "password123"
 
@@ -582,7 +580,8 @@ class MemoryAccountsStorage:
 
 @pytest.fixture(scope="session")
 def test_password_hash() -> str:
-    return pwd_context.hash(TEST_PASSWORD)
+    # Low cost: tests verify this hash often and only need a valid bcrypt hash.
+    return bcrypt.hashpw(TEST_PASSWORD.encode(), bcrypt.gensalt(rounds=4)).decode()
 
 
 @pytest.fixture
