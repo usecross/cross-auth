@@ -341,7 +341,7 @@ model/session-store lookups and the public session-management reexports remain
 necessary framework/compatibility seams, not new initialization requirements.
 All three independent review tracks ended with no worthwhile unresolved finding.
 
-### Final verification
+### Refactor verification before the post-PR follow-up
 
 | Check                                                                           | Result                          |
 | ------------------------------------------------------------------------------- | ------------------------------- |
@@ -365,6 +365,29 @@ warnings and the website's large-chunk warning remain non-blocking. Changed-file
 hooks (including formatting, lint and root typing) and `git diff --check` pass
 after applying the hooks' automatic formatting.
 
+### Post-PR review: explicit Django user-creation database
+
+The initial implementation preserved the existing `CREATE_USER` signature by
+passing the captured alias through a context variable and
+`conf.user_database()`. Review identified this as unnecessary ambient coupling.
+The user confirmed that the Django integration has no external compatibility
+requirement for this API.
+
+Replace that mechanism with a required `using: str` keyword on the user-creation
+protocol and default/custom functions. Storage passes its captured alias
+directly; functions use it for user and related-row writes. Remove
+`_database.py` entirely, without signature detection or a legacy fallback.
+Extend the multi-database regressions to cover both custom creation paths after
+routing changes and rollback of user, profile and identity rows on the
+explicitly supplied database.
+
+Implemented and independently reviewed with no worthwhile residual findings.
+Follow-up validation: full Python 3.13 suite **1622 passed, 7 skipped**; all
+four Python 3.14 Django variants pass (**249 passed, 1 skipped** for the default
+user, **248 passed, 2 skipped** for the custom user, on both SQLite and
+PostgreSQL). Root `ty check . --exclude website`, rendered Django-doc smoke
+checks and changed-file hooks pass.
+
 ### Deliberately retained limits and compatibility
 
 - The security/backend exceptions listed above remain requirements, not
@@ -373,9 +396,10 @@ after applying the hooks' automatic formatting.
   single-flight. Simultaneous distributed JWKS misses can issue redundant
   network requests; they must not reject otherwise-valid concurrent logins. No
   speculative new distributed coordination API was introduced.
-- Django custom factories must keep all related writes on `user_database()`;
-  returned-user validation cannot inspect arbitrary side-effect writes. SQLModel
-  custom builders must honor the documented no-flush/same-bind contract.
+- Django custom factories must keep all related writes on the supplied `using`
+  alias; returned-user validation cannot inspect arbitrary side-effect writes.
+  SQLModel custom builders must honor the documented no-flush/same-bind
+  contract.
 - Expired Django transient rows are logically absent immediately; deployments
   schedule `DjangoSecondaryStorage.clear_expired()` for physical cleanup.
 - The original untracked planning/review/roadmap documents remain untouched.

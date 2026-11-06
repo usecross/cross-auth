@@ -12,6 +12,7 @@ from django.db import transaction
 from django.db.models import Model
 from django.test import RequestFactory, override_settings
 
+from cross_auth._storage import SocialAccountCreate, User
 from cross_auth.django import signals
 from cross_auth.django.models import Session, SocialAccount
 from cross_auth.django.sessions import SessionStore, list_sessions, revoke_session
@@ -82,10 +83,13 @@ def test_default_factory_uses_the_captured_database() -> None:
     assert not get_user_model()._default_manager.using("default").exists()
 
 
-def test_signup_queries_and_commit_callbacks_keep_the_captured_database() -> None:
+@pytest.mark.parametrize("factory", ["create_native", "with_profile"])
+def test_signup_queries_and_commit_callbacks_keep_the_captured_database(
+    factory: str,
+) -> None:
     calls: list[str] = []
     with override_settings(
-        CROSS_AUTH={"CREATE_USER": "tests.django.factories.create_native"},
+        CROSS_AUTH={"CREATE_USER": f"tests.django.factories.{factory}"},
     ):
         with override_settings(DATABASE_ROUTERS=[PrimaryRouter()]):
             storage = DjangoAccountsStorage()
@@ -108,6 +112,32 @@ def test_signup_queries_and_commit_callbacks_keep_the_captured_database() -> Non
     assert not get_user_model()._default_manager.using("default").exists()
     secondary.set("state", "value")
     assert secondary.pop("state") == "value"
+
+
+def test_factory_rows_roll_back_on_the_supplied_database() -> None:
+    with override_settings(
+        CROSS_AUTH={"CREATE_USER": "tests.django.factories.with_profile"},
+    ):
+        with override_settings(DATABASE_ROUTERS=[PrimaryRouter()]):
+            storage = DjangoAccountsStorage()
+
+        def failing_identity(user: User) -> SocialAccountCreate:
+            raise RuntimeError("identity failed")
+
+        with pytest.raises(RuntimeError, match="identity failed"):
+            storage.create_user_with_identity(
+                user={
+                    "email": "person@example.com",
+                    "user_info": {},
+                    "email_verified": True,
+                    "extra_fields": {},
+                },
+                identity=failing_identity,
+            )
+    for alias in ["default", "other"]:
+        assert not get_user_model()._default_manager.using(alias).exists()
+        assert not Profile.objects.using(alias).exists()
+        assert not SocialAccount.objects.using(alias).exists()
 
 
 def test_current_session_logout_uses_captured_database() -> None:

@@ -550,12 +550,10 @@ For other models, such as one whose manager requires extra fields, set
 
 ```python
 # core/users.py
-from cross_auth.django import conf
 from core.models import Profile, User
 
 
-def create_user(*, email, user_info, extra_fields):
-    using = conf.user_database()
+def create_user(*, email, user_info, extra_fields, using):
     user = User.objects.db_manager(using).create_user(
         email=email,
         display_name=user_info.get("name") or email.split("@")[0],
@@ -572,11 +570,11 @@ CROSS_AUTH = {
 ```
 
 The factory runs inside the transaction that also stores the Google account
-link. Use `conf.user_database()` for **all** user and related-row writes, via
-`db_manager(using)` for manager methods or `using(using)` for querysets. During
-signup it returns the accounts storage's captured write alias, even if the
-router would now choose another database. Writes on this alias roll back
-together if the factory or identity creation fails.
+link. Cross Auth passes the accounts storage's captured write alias as the
+required `using` keyword argument, even if the router would now choose another
+database. Use it for **all** user and related-row writes, via
+`db_manager(using)` for manager methods or `using(using)` for querysets. Writes
+on this alias roll back together if the factory or identity creation fails.
 
 Return a saved instance of `AUTH_USER_MODEL` on that alias. Cross Auth checks
 the returned model type, saved state and database, raising
@@ -931,7 +929,8 @@ users. Even then, Cross Auth refuses when several users share the email.
   it. Each storage uses its captured authoritative write alias for reads,
   mutations, transactions and commit callbacks, rather than following later
   routing changes or reading from replicas. Custom user factories must use
-  [`conf.user_database()`](#custom-user-models) to join the signup transaction.
+  [the supplied `using` alias](#custom-user-models) to join the signup
+  transaction.
 - **Concurrency.** A database constraint gives each Google account one owner,
   and sign-in state is consumed by exactly one request. When two first sign-ins
   with the same email finish at once, one creates the user and the other shows

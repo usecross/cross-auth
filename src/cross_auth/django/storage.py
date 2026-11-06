@@ -28,7 +28,6 @@ from cross_auth._storage import (
 from cross_auth._storage import User as CrossAuthUser
 from cross_auth.exceptions import CrossAuthException
 
-from ._database import creating_user_on
 from .conf import get_settings
 from .models import ExpiringValue, SocialAccount
 
@@ -193,11 +192,12 @@ class DjangoAccountsStorage:
         factory = get_settings().create_user
         data: SocialAccountCreate | None = None
         try:
-            with transaction.atomic(using=self.alias), creating_user_on(self.alias):
+            with transaction.atomic(using=self.alias):
                 native = factory(
                     email=user["email"],
                     user_info=user["user_info"],
                     extra_fields=user["extra_fields"] or {},
+                    using=self.alias,
                 )
                 if (
                     not isinstance(native, self._user_model)
@@ -206,7 +206,7 @@ class DjangoAccountsStorage:
                 ):
                     raise ImproperlyConfigured(
                         "CREATE_USER must return a saved AUTH_USER_MODEL on "
-                        f"database {self.alias!r}; use conf.user_database() for "
+                        f"database {self.alias!r}; use the supplied using alias for "
                         "all factory writes"
                     )
                 created = self._wrap(native)

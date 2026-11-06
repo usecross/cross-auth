@@ -33,8 +33,12 @@ class User(AbstractBaseUser, PermissionsMixin):
 
 
 def create_user(
-    *, email: str, user_info: Mapping[str, Any], extra_fields: Mapping[str, Any]
+    *,
+    email: str,
+    user_info: Mapping[str, Any],
+    extra_fields: Mapping[str, Any],
+    using: str,
 ) -> User:
-    return User.objects.create_user(
+    return User.objects.db_manager(using).create_user(
         email, display_name=user_info.get("name") or email.split("@")[0]
     )
