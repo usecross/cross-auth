@@ -746,7 +746,27 @@ class SQLModelAccountsStorage(
             return session.exec(statement).first()
 
     def find_user_by_email(self, email: str) -> UserModelT | None:
-        return self._find_user(col(self.UserModel.email) == email)
+        """Return the user with this email, or None.
+
+        Several users with the same email raise ``account_not_linked``, as the
+        Django storage does: a sign-in must not attach a provider identity to
+        an arbitrary one of them. Keep the column unique to rule this out.
+        """
+        model = self.UserModel
+        with self._open_session() as session:
+            statement = self.filter_user_query(
+                select(model).where(col(model.email) == email)
+            )
+            matches = session.exec(statement.limit(2)).all()
+        if len(matches) > 1:
+            raise CrossAuthException(
+                "account_not_linked",
+                error_description=(
+                    "Several accounts use this email. Sign in and connect the "
+                    "provider from your account."
+                ),
+            )
+        return matches[0] if matches else None
 
     def find_user_by_id(self, id: object) -> UserModelT | None:
         id = _coerce_id(self.UserModel, "id", id)

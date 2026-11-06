@@ -260,10 +260,13 @@ def test_failed_cold_fetch_is_cooled_down_across_instances(signing_keys, cache_c
     route = respx.get(provider.jwks_uri).respond(503)
     token = _token(provider, signing_keys[0], "key")
 
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(OAuth2Exception) as outage:
         provider.validate_id_token(token, storage)
-    with pytest.raises(OAuth2Exception, match="cooldown"):
+    assert outage.value.error == "temporarily_unavailable"
+    with pytest.raises(OAuth2Exception, match="cooldown") as cooled:
         _provider().validate_id_token(token, storage)
+    # Still the provider's outage, not a bad token.
+    assert cooled.value.error == "temporarily_unavailable"
     assert storage.get(provider.jwks_cache_key) is None
     assert route.call_count == 1
 
@@ -297,7 +300,7 @@ def test_failed_refresh_preserves_good_keys_and_cooldown(signing_keys, failure):
     else:
         route.respond(200, json={"keys": [{"kty": "RSA", "kid": "new"}]})
 
-    with pytest.raises((httpx.HTTPError, OAuth2Exception)):
+    with pytest.raises(OAuth2Exception):
         provider.validate_id_token(_token(provider, signing_keys[1], "new"), storage)
     assert storage.data[provider.jwks_cache_key] == previous
     assert (

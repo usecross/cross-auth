@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from typing import cast
 from unittest.mock import Mock, patch
 
+import bcrypt
 import pytest
 from cross_web import HTTPRequest, TestingHTTPRequestAdapter
 
@@ -46,13 +47,31 @@ def test_verify_password_once(
     user = cast(User, Mock(hashed_password=password_hash)) if user_exists else None
 
     with patch(
-        "cross_auth._password.pwd_context.verify",
+        "cross_auth._password._check_password",
         return_value=verification_result,
     ) as verify:
         valid = _verify_password(user, TEST_PASSWORD)
 
     assert valid is expected_validity
     verify.assert_called_once_with(TEST_PASSWORD, expected_hash)
+
+
+def test_verify_password_uses_the_first_72_bytes_like_passlib_did():
+    """Hashes made by passlib from longer passwords keep verifying."""
+    password = "p" * 80
+    hashed = bcrypt.hashpw(password.encode()[:72], bcrypt.gensalt(rounds=4)).decode()
+    user = cast(User, Mock(hashed_password=hashed))
+
+    assert _verify_password(user, password) is True
+    assert _verify_password(user, "p" * 72) is True
+    assert _verify_password(user, "p" * 71) is False
+
+
+def test_verify_password_rejects_a_hash_bcrypt_cannot_read():
+    foreign = "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHQ$aGFzaGhhc2hoYXNo"
+    user = cast(User, Mock(hashed_password=foreign))
+
+    assert _verify_password(user, TEST_PASSWORD) is False
 
 
 def test_authenticate_success(accounts_storage: AccountsStorage):

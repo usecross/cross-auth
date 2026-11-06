@@ -13,13 +13,13 @@ import os
 import sqlite3
 import sys
 
-from passlib.context import CryptContext
+import bcrypt
 
 DATABASE = os.environ["E2E_DATABASE"]
 
 
 def seed_password_user(email: str, password: str) -> None:
-    hashed = CryptContext(schemes=["bcrypt"]).hash(password)
+    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
     with sqlite3.connect(DATABASE) as db:
         db.execute(
             "INSERT INTO user (email, email_verified, hashed_password, display_name)"

@@ -6,12 +6,14 @@ from pydantic import BaseModel, Field, HttpUrl
 class TokenResponse(BaseModel):
     token_type: str = Field(description="The type of token, usually 'Bearer'")
 
-    access_token: str = Field(description="The issued access token")
+    # Tokens are left out of the repr so logging a response, or a hook event
+    # that carries one, does not log credentials.
+    access_token: str = Field(description="The issued access token", repr=False)
     expires_in: int | None = Field(
         None, description="Lifetime of the access token in seconds"
     )
     refresh_token: str | None = Field(
-        None, description="Token used to obtain new access tokens"
+        None, description="Token used to obtain new access tokens", repr=False
     )
     refresh_token_expires_in: int | None = Field(
         None, description="Lifetime of the refresh token in seconds"
@@ -21,7 +23,7 @@ class TokenResponse(BaseModel):
         description="Space-delimited list of scopes associated with the access token",
     )
     id_token: str | None = Field(
-        None, description="OIDC ID token (used by Apple, Google, etc.)"
+        None, description="OIDC ID token (used by Apple, Google, etc.)", repr=False
     )
 
     @property

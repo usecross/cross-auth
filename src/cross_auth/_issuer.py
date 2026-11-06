@@ -38,15 +38,16 @@ class AuthorizationCodeGrantRequest(BaseModel):
     )
     client_id: str = Field(description="The client identifier")
     client_secret: str | None = Field(
-        None, description="The client secret (for confidential clients)"
+        None, description="The client secret (for confidential clients)", repr=False
     )
     code: str = Field(
-        description="The authorization code received from the authorization server"
+        description="The authorization code received from the authorization server",
+        repr=False,
     )
     redirect_uri: str = Field(
         description="The redirect URI used in the authorization request"
     )
-    code_verifier: str = Field(description="The PKCE code verifier")
+    code_verifier: str = Field(description="The PKCE code verifier", repr=False)
     scope: str | None = Field(None, description="Space-delimited list of scopes")
 
 
@@ -57,10 +58,10 @@ class PasswordGrantRequest(BaseModel):
     grant_type: Literal["password"] = Field(description="The OAuth 2.0 grant type")
     client_id: str = Field(description="The client identifier")
     client_secret: str | None = Field(
-        None, description="The client secret (for confidential clients)"
+        None, description="The client secret (for confidential clients)", repr=False
     )
     username: str = Field(description="The resource owner username")
-    password: str = Field(description="The resource owner password")
+    password: str = Field(description="The resource owner password", repr=False)
     scope: str | None = Field(None, description="Space-delimited list of scopes")
 
 

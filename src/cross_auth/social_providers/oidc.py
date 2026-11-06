@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import re
 import secrets
@@ -13,6 +14,8 @@ from cross_auth._context import Context
 from cross_auth.models.oauth_token_response import TokenResponse
 
 from .oauth import OAuth2Exception, OAuth2Provider, UserInfo
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
@@ -112,11 +115,32 @@ class OIDCProvider(OAuth2Provider):
             # A fetch may finish between this reader's cache miss and cooldown read.
             if not refresh and (cached := secondary_storage.get(self.jwks_cache_key)):
                 return json.loads(cached)
-            raise ValueError("JWKS refetch cooldown active")
+            # A provider outage, not a bad token: the last fetch failed and
+            # is not retried yet.
+            raise OAuth2Exception(
+                error="temporarily_unavailable",
+                error_description="JWKS refetch cooldown active; please try again",
+            )
 
         try:
-            response = httpx.get(self.jwks_uri)
-            response.raise_for_status()
+            try:
+                response = httpx.get(self.jwks_uri)
+                response.raise_for_status()
+            except httpx.HTTPError as error:
+                # A provider outage is not an invalid token, and the callers
+                # of a sign-in only handle OAuth2Exception.
+                logger.warning(
+                    "Failed to fetch JWKS (error_type=%s)",
+                    type(error).__name__,
+                    extra={"oauth_provider": self.id, "jwks_uri": self.jwks_uri},
+                )
+                raise OAuth2Exception(
+                    error="temporarily_unavailable",
+                    error_description=(
+                        "Could not fetch the provider's signing keys. "
+                        "Please try again."
+                    ),
+                ) from error
 
             jwks = response.json()
             if (

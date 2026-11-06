@@ -434,7 +434,7 @@ def test_unverified_email_cannot_sign_in_as_existing_user(
         },
     )
 
-    with pytest.raises(CrossAuthException, match="^account_not_linked$"):
+    with pytest.raises(CrossAuthException, match="^email_not_verified$"):
         auth.sign_in_with_id_token("stub", VALID_TOKEN)
 
     assert (

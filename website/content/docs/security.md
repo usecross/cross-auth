@@ -209,7 +209,13 @@ Domain attribute. Keep HTTPS in production and prefer a host-only cookie.
 Changing to SameSite=None for a cross-site frontend requires Secure cookies and
 explicit CSRF and credentialed-CORS configuration. Do not log session tokens,
 authorization codes, passwords, or raw ID tokens when monitoring rejected
-requests.
+requests. The `repr` of hook events and of Cross-Auth's request and token models
+leaves out the credentials Cross-Auth itself handles: passwords, client secrets,
+provider and ID tokens, authorization codes and PKCE verifiers. The values are
+still there as attributes. Your own records are not covered: the `user` and
+`social_account` of after events are your models, whose `repr` may include a
+password hash or stored provider tokens, and `user_info` is whatever the
+provider returned. Redact those before logging an event that carries them.
 
 For another framework, enforce the same checks in its middleware/views before
 calling Cross-Auth. Reuse its CSRF system where available; authentication and

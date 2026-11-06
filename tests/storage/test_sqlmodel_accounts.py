@@ -88,6 +88,17 @@ def test_find_user_by_email_missing(store):
     assert store.find_user_by_email("nope@example.com") is None
 
 
+def test_find_user_by_email_refuses_several_users(store, engine):
+    # A sign-in by email must not pick one of them at random.
+    _seed_user(engine, email="twice@example.com")
+    _seed_user(engine, email="twice@example.com")
+
+    with pytest.raises(CrossAuthException) as excinfo:
+        store.find_user_by_email("twice@example.com")
+
+    assert excinfo.value.error == "account_not_linked"
+
+
 def test_find_user_by_id(store, engine):
     user_id = _seed_user(engine)
 

@@ -83,7 +83,9 @@ class SocialAccountSnapshot:
 @dataclass(frozen=True, slots=True)
 class BeforeAuthenticateEvent:
     email: str
-    password: str
+    # Credentials are left out of event reprs so a hook or error handler that
+    # logs an event does not log them.
+    password: str = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,8 +144,9 @@ class AfterLoginEvent:
 @dataclass(frozen=True, slots=True)
 class BeforeOAuthIdTokenEvent:
     provider: str
-    id_token: str
-    user_info: dict[str, Any] | None
+    id_token: str = field(repr=False)
+    # Caller-supplied metadata: whatever the application posted.
+    user_info: dict[str, Any] | None = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,8 +184,8 @@ class BeforeSocialAccountCreateEvent:
     user_id: Any
     provider: str
     provider_user_id: str
-    access_token: str | None
-    refresh_token: str | None
+    access_token: str | None = field(repr=False)
+    refresh_token: str | None = field(repr=False)
     access_token_expires_at: datetime | None
     refresh_token_expires_at: datetime | None
     scope: str | None
@@ -207,8 +210,8 @@ class BeforeSocialAccountUpdateEvent:
     user_id: Any
     provider: str
     provider_user_id: str
-    access_token: str | None
-    refresh_token: str | None
+    access_token: str | None = field(repr=False)
+    refresh_token: str | None = field(repr=False)
     access_token_expires_at: datetime | None
     refresh_token_expires_at: datetime | None
     scope: str | None
@@ -338,7 +341,7 @@ class AfterOAuthCallbackEvent:
     social_account: SocialAccount
     created_user: User | None
     created_social_account: SocialAccount | None
-    authorization_code: str | None
+    authorization_code: str | None = field(repr=False)
     redirect_uri: str | None
     client_state: str | None
 
@@ -417,7 +420,7 @@ class BeforeTokenPasswordEvent:
 
 @dataclass(frozen=True, slots=True)
 class AfterTokenPasswordEvent:
-    request: PasswordGrantRequest
+    request: PasswordGrantRequest = field(repr=False)
     client_id: str
     username: str
     user: User
@@ -434,7 +437,7 @@ class BeforeTokenAuthorizationCodeEvent:
 @dataclass(frozen=True, slots=True)
 class AfterTokenAuthorizationCodeEvent:
     request: AuthorizationCodeGrantRequest
-    code: str
+    code: str = field(repr=False)
     authorization_data: AuthorizationCodeGrantData
     token_response: TokenResponse
 
