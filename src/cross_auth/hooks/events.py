@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from cross_web import HTTPRequest, Response
 
-    from .._auth_flow import AuthRequest, InitiateLinkRequest, LinkCodeData
+    from .._authorization import AuthRequest, InitiateLinkRequest, LinkCodeData
+    from .._authorization_code import AuthorizationCodeGrantData
     from .._issuer import (
-        AuthorizationCodeGrantData,
         AuthorizationCodeGrantRequest,
         PasswordGrantRequest,
     )

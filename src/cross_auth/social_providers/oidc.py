@@ -1,9 +1,7 @@
 import json
-import logging
 import math
 import re
 import secrets
-import time
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import httpx
@@ -19,10 +17,8 @@ from .oauth import OAuth2Exception, OAuth2Provider, UserInfo
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
-    from cross_auth._auth_flow import AuthRequest, LinkCodeData
+    from cross_auth._authorization import AuthRequest, LinkCodeData
     from cross_auth._storage import SecondaryStorage
-
-logger = logging.getLogger(__name__)
 
 
 class OIDCProvider(OAuth2Provider):
@@ -44,7 +40,6 @@ class OIDCProvider(OAuth2Provider):
     issuer: ClassVar[str | list[str]]
     jwks_cache_key: ClassVar[str]
 
-    # OIDC providers typically don't need a userinfo endpoint
     user_info_endpoint: ClassVar[str | None] = None
 
     _JWKS_REFETCH_COOLDOWN: ClassVar[int] = 60  # seconds
@@ -61,7 +56,6 @@ class OIDCProvider(OAuth2Provider):
                 for key, value in self.extra_authorization_params.items()
                 if key != "nonce"
             }
-        self._jwks_last_fetch_time: float = 0.0
 
     def get_authorization_data(self) -> dict[str, str]:
         return {"nonce": secrets.token_urlsafe(32)}
@@ -106,24 +100,47 @@ class OIDCProvider(OAuth2Provider):
 
         return max(cls._JWKS_TTL_FLOOR, min(int(match.group(1)), cls._JWKS_TTL_CEILING))
 
-    def _fetch_jwks(self, secondary_storage: "SecondaryStorage") -> dict[str, Any]:
-        """Fetch provider's JWKS, using secondary_storage as cache.
-
-        TTL honors the JWKS response's Cache-Control max-age (clamped) so cache
-        doesn't outlive the provider's key rotation window.
-        """
-        if cached := secondary_storage.get(self.jwks_cache_key):
+    def _fetch_jwks(
+        self, secondary_storage: "SecondaryStorage", *, refresh: bool = False
+    ) -> dict[str, Any]:
+        """Cache a successful JWKS response without evicting keys during refresh."""
+        if not refresh and (cached := secondary_storage.get(self.jwks_cache_key)):
             return json.loads(cached)
 
-        response = httpx.get(self.jwks_uri)
-        response.raise_for_status()
+        cooldown_key = f"{self.jwks_cache_key}:refetch-cooldown"
+        if secondary_storage.get(cooldown_key):
+            # A fetch may finish between this reader's cache miss and cooldown read.
+            if not refresh and (cached := secondary_storage.get(self.jwks_cache_key)):
+                return json.loads(cached)
+            raise ValueError("JWKS refetch cooldown active")
 
-        jwks = response.json()
-        ttl = self._ttl_from_cache_control(response.headers.get("cache-control"))
+        try:
+            response = httpx.get(self.jwks_uri)
+            response.raise_for_status()
 
-        secondary_storage.set(self.jwks_cache_key, json.dumps(jwks), ttl=ttl)
-        self._jwks_last_fetch_time = time.monotonic()
-        return jwks
+            jwks = response.json()
+            if (
+                not isinstance(jwks, dict)
+                or not isinstance(jwks.get("keys"), list)
+                or any(
+                    not isinstance(key, dict) or not isinstance(key.get("kty"), str)
+                    for key in jwks["keys"]
+                )
+            ):
+                raise ValueError("Invalid JWKS response")
+            # Parse supported keys before replacing an otherwise usable cache.
+            for key in jwks["keys"]:
+                if key["kty"] == "RSA":
+                    RSAAlgorithm.from_jwk(key)
+            ttl = self._ttl_from_cache_control(response.headers.get("cache-control"))
+
+            secondary_storage.set(self.jwks_cache_key, json.dumps(jwks), ttl=ttl)
+            return jwks
+        finally:
+            # Cooldowns describe completed attempts, not in-flight cold fetches.
+            # SecondaryStorage has no set-if-absent or wait/notify primitive, so
+            # concurrent misses may fetch together instead of rejecting a login.
+            secondary_storage.set(cooldown_key, "1", ttl=self._JWKS_REFETCH_COOLDOWN)
 
     @staticmethod
     def _find_key_by_kid(keys: dict[str, Any], kid: str) -> "RSAPublicKey | None":
@@ -141,17 +158,16 @@ class OIDCProvider(OAuth2Provider):
         if found := self._find_key_by_kid(keys, kid):
             return found
 
-        # Key not found - clear cache and try again (handle key rotation)
-        # Rate-limit refetches to prevent abuse
-        elapsed = time.monotonic() - self._jwks_last_fetch_time
-        if elapsed < self._JWKS_REFETCH_COOLDOWN:
+        if secondary_storage.get(f"{self.jwks_cache_key}:refetch-cooldown"):
+            # Another reader may have refreshed since our key lookup.
+            keys = self._fetch_jwks(secondary_storage)
+            if found := self._find_key_by_kid(keys, kid):
+                return found
             raise ValueError(
-                f"Key {kid} not found in provider's JWKS "
-                f"(retry available in {int(self._JWKS_REFETCH_COOLDOWN - elapsed)}s)"
+                f"Key {kid} not found in provider's JWKS (refetch cooldown active)"
             )
 
-        secondary_storage.delete(self.jwks_cache_key)
-        keys = self._fetch_jwks(secondary_storage)
+        keys = self._fetch_jwks(secondary_storage, refresh=True)
         if found := self._find_key_by_kid(keys, kid):
             return found
 

@@ -553,12 +553,12 @@ For other models, such as one whose manager requires extra fields, set
 from core.models import Profile, User
 
 
-def create_user(*, email, user_info, extra_fields):
-    user = User.objects.create_user(
+def create_user(*, email, user_info, extra_fields, using):
+    user = User.objects.db_manager(using).create_user(
         email=email,
         display_name=user_info.get("name") or email.split("@")[0],
     )
-    Profile.objects.create(user=user)
+    Profile.objects.using(using).create(user=user)
     return user
 ```
 
@@ -570,10 +570,20 @@ CROSS_AUTH = {
 ```
 
 The factory runs inside the transaction that also stores the Google account
-link, so if it raises, neither the user nor the rows it created are saved. Do
-not call external services from it; use a `user_created` receiver, which runs
-after the transaction commits. `extra_fields` is always empty. Custom primary
-keys, such as UUIDs, are supported.
+link. Cross Auth passes the accounts storage's captured write alias as the
+required `using` keyword argument, even if the router would now choose another
+database. Use it for **all** user and related-row writes, via
+`db_manager(using)` for manager methods or `using(using)` for querysets. Writes
+on this alias roll back together if the factory or identity creation fails.
+
+Return a saved instance of `AUTH_USER_MODEL` on that alias. Cross Auth checks
+the returned model type, saved state and database, raising
+`ImproperlyConfigured` if they do not match. This check cannot undo a write to
+another database or validate every related write; keeping those writes on the
+same alias is the factory's responsibility. Do not call external services from
+it; use a `user_created` receiver, which runs after the transaction commits.
+`extra_fields` is always empty. Custom primary keys, such as UUIDs, are
+supported.
 
 ## Sessions
 
@@ -914,8 +924,13 @@ users. Even then, Cross Auth refuses when several users share the email.
   sessions on the next request.
 - **Transactions.** Each step commits on its own. Cross Auth's views opt out of
   `ATOMIC_REQUESTS`, and raise `ImproperlyConfigured` if they run inside another
-  transaction, such as one opened by middleware. Users and their Google account
-  links live on the database your router picks for the user model.
+  transaction, such as one opened by middleware. Accounts storage captures the
+  user model's write alias at construction and requires `SocialAccount` to share
+  it. Each storage uses its captured authoritative write alias for reads,
+  mutations, transactions and commit callbacks, rather than following later
+  routing changes or reading from replicas. Custom user factories must use
+  [the supplied `using` alias](#custom-user-models) to join the signup
+  transaction.
 - **Concurrency.** A database constraint gives each Google account one owner,
   and sign-in state is consumed by exactly one request. When two first sign-ins
   with the same email finish at once, one creates the user and the other shows
@@ -952,8 +967,26 @@ cannot detect every setup.
   `CSRF_TRUSTED_ORIGINS`; CORS settings do not replace CSRF protection.
 - Keep the Google client secret in your deployment's secret store, not in the
   repository.
-- Expired sign-in state is deleted as new state is written. Rows in
-  `cross_auth_expiringvalue` are short-lived and safe to clear.
+- Schedule cleanup of expired sign-in state separately from requests; see
+  [Expired sign-in state](#expired-sign-in-state).
+
+### Expired sign-in state
+
+`DjangoSecondaryStorage.get()` and `pop()` treat expired values as absent, so
+expiry does not depend on a cleanup job. `set()` no longer sweeps unrelated
+expired rows from `cross_auth_expiringvalue` on each write. Reclaim those rows
+by calling `clear_expired()` from your own scheduled management command or
+periodic task, with Django initialized:
+
+```python
+from cross_auth.django.storage import DjangoSecondaryStorage
+
+DjangoSecondaryStorage().clear_expired()
+```
+
+The method deletes expired rows on the storage's captured write alias and
+returns the deleted count. Choose a schedule appropriate to your sign-in volume;
+it is separate from Django's `clearsessions` maintenance for login sessions.
 
 ## Troubleshooting
 

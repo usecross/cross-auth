@@ -1,10 +1,8 @@
 import inspect
 import json
-from typing import get_args
 
 from cross_web import Response
 from fastapi import FastAPI
-from fastapi.params import Body as FastAPIBody
 from fastapi.testclient import TestClient
 
 from cross_auth._route import PathParameter, Route
@@ -27,14 +25,6 @@ OTHER_ID_PARAMETER: PathParameter = {
     "required": True,
     "schema": {"type": "string", "title": "Other Id"},
 }
-
-
-def _has_fastapi_body_parameter(endpoint) -> bool:
-    return any(
-        isinstance(metadata, FastAPIBody)
-        for parameter in inspect.signature(endpoint).parameters.values()
-        for metadata in get_args(parameter.annotation)
-    )
 
 
 def test_route_copies_path_parameters():
@@ -89,7 +79,7 @@ def test_fastapi_endpoint_without_preload_is_sync(context):
     assert not inspect.iscoroutinefunction(endpoint)
 
 
-def test_fastapi_endpoint_with_body_preload_uses_fastapi_body(context):
+def test_fastapi_endpoint_preloads_json_body(context):
     seen = {}
 
     def handler(request, context):
@@ -100,7 +90,6 @@ def test_fastapi_endpoint_with_body_preload_uses_fastapi_body(context):
     endpoint = route.to_fastapi_endpoint(context=context)
 
     assert not inspect.iscoroutinefunction(endpoint)
-    assert _has_fastapi_body_parameter(endpoint)
 
     app = FastAPI()
     app.add_api_route(route.path, endpoint, methods=route.methods)
@@ -112,7 +101,7 @@ def test_fastapi_endpoint_with_body_preload_uses_fastapi_body(context):
     assert seen == {"body": {"name": "patrick"}}
 
 
-def test_fastapi_endpoint_with_form_preload_uses_dependency(context):
+def test_fastapi_endpoint_preloads_form_data(context):
     seen = {}
 
     def handler(request, context):

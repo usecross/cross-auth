@@ -20,8 +20,6 @@ const python = [
 ]
 
 export const django: Framework = {
-  basePort: 8280,
-
   async start({ port, dataDir, logFile }) {
     const baseURL = `http://127.0.0.1:${port}`
     const command = (...args: string[]) => ({

@@ -7,7 +7,9 @@ configured. Like ``/logout`` they act on the session behind the request
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timezone
+from functools import wraps
 from typing import Any
 
 from cross_web import HTTPRequest
@@ -29,7 +31,6 @@ from .utils._response import Response
 
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 100
-# The ?status= values GET /sessions accepts, and the storage filter for each.
 STATUS_FILTERS: dict[str, SessionStatus | None] = {
     "active": "active",
     "expired": "expired",
@@ -78,21 +79,9 @@ class RevokedSessions(BaseModel):
     )
 
 
-def _current_session(request: HTTPRequest, context: Context) -> ResolvedSession | None:
-    return resolve_current_session(
-        request, _session_storage(context), context.session_config
-    )
-
-
 def _session_storage(context: Context) -> SessionStorage:
     assert context.session_storage is not None
     return context.session_storage
-
-
-def _unauthorized() -> Response:
-    return Response.error(
-        "unauthorized", error_description="Not logged in", status_code=401
-    )
 
 
 def _json(model: BaseModel) -> Response:
@@ -103,16 +92,28 @@ def _json(model: BaseModel) -> Response:
     )
 
 
-def _roll_cookie(
-    response: Response, current: ResolvedSession, context: Context
-) -> Response:
-    """Re-send a sliding session's cookie that this request rolled forward."""
-    if current.source == "cookie" and current.refreshed:
-        response.cookies = [
-            *(response.cookies or []),
-            make_session_cookie(current.token, context.session_config),
-        ]
-    return response
+def _session_endpoint(
+    handler: Callable[[HTTPRequest, Context, ResolvedSession], Response],
+) -> Callable[[HTTPRequest, Context], Response]:
+    @wraps(handler)
+    def endpoint(request: HTTPRequest, context: Context) -> Response:
+        current = resolve_current_session(
+            request, _session_storage(context), context.session_config
+        )
+        if current is None:
+            return Response.error(
+                "unauthorized", error_description="Not logged in", status_code=401
+            )
+        response = handler(request, context, current)
+        if current.source == "cookie" and current.refreshed:
+            cookie = make_session_cookie(current.token, context.session_config)
+            if not any(
+                existing.name == cookie.name for existing in response.cookies or []
+            ):
+                response.cookies = [*(response.cookies or []), cookie]
+        return response
+
+    return endpoint
 
 
 def _parse_limit(value: str | None) -> int | None:
@@ -144,41 +145,37 @@ def _session_info(
     )
 
 
-def _hook_error(
-    error: CrossAuthException, current: ResolvedSession, context: Context
-) -> Response:
-    response = Response.error(
+def _hook_error(error: CrossAuthException) -> Response:
+    return Response.error(
         error.error,
         error_description=error.error_description,
         status_code=error.status_code,
     )
-    return _roll_cookie(response, current, context)
 
 
-def list_sessions(request: HTTPRequest, context: Context) -> Response:
+@_session_endpoint
+def list_sessions(
+    request: HTTPRequest, context: Context, current: ResolvedSession
+) -> Response:
     """GET /sessions — the caller's sessions, newest first.
 
     ``?status=`` picks ``active`` (the default), ``expired``, ``revoked`` or
     ``all`` of them.
     """
-    current = _current_session(request, context)
-    if current is None:
-        return _unauthorized()
-
     status = request.query_params.get("status", "active")
     if status not in STATUS_FILTERS:
         error = Response.error(
             "invalid_request",
             error_description="status must be one of " + ", ".join(STATUS_FILTERS),
         )
-        return _roll_cookie(error, current, context)
+        return error
     limit = _parse_limit(request.query_params.get("limit"))
     if limit is None:
         error = Response.error(
             "invalid_request",
             error_description=f"limit must be an integer from 1 to {MAX_PAGE_SIZE}",
         )
-        return _roll_cookie(error, current, context)
+        return error
     now = datetime.now(tz=timezone.utc)
     try:
         result = _session_storage(context).list_for_user(
@@ -191,7 +188,7 @@ def list_sessions(request: HTTPRequest, context: Context) -> Response:
         )
     except InvalidCursorError:
         error = Response.error("invalid_request", error_description="Invalid cursor")
-        return _roll_cookie(error, current, context)
+        return error
 
     current_id = str(current.record.id)
     session_list = SessionList(
@@ -201,19 +198,18 @@ def list_sessions(request: HTTPRequest, context: Context) -> Response:
         ],
         next_cursor=result.next_cursor,
     )
-    return _roll_cookie(_json(session_list), current, context)
+    return _json(session_list)
 
 
-def revoke_session(request: HTTPRequest, context: Context) -> Response:
+@_session_endpoint
+def revoke_session(
+    request: HTTPRequest, context: Context, current: ResolvedSession
+) -> Response:
     """DELETE /sessions/{session_id} — revoke one of the caller's sessions.
 
     Another user's session answers 404 like an unknown id. Revoking the
     current cookie session also clears the cookie, as ``/logout`` does.
     """
-    current = _current_session(request, context)
-    if current is None:
-        return _unauthorized()
-
     session_storage = _session_storage(context)
     session = get_user_session(
         request.path_params["session_id"],
@@ -226,7 +222,7 @@ def revoke_session(request: HTTPRequest, context: Context) -> Response:
             error_description="Session not found",
             status_code=404,
         )
-        return _roll_cookie(error, current, context)
+        return error
     try:
         revoke_user_session(
             session,
@@ -235,22 +231,19 @@ def revoke_session(request: HTTPRequest, context: Context) -> Response:
             request=request,
         )
     except CrossAuthException as e:
-        return _hook_error(e, current, context)
+        return _hook_error(e)
 
     response = Response(status_code=204)
-    if str(current.record.id) == str(session.id):
-        if current.source == "cookie":
-            response.cookies = [make_clear_cookie(context.session_config)]
-        return response
-    return _roll_cookie(response, current, context)
+    if str(current.record.id) == str(session.id) and current.source == "cookie":
+        response.cookies = [make_clear_cookie(context.session_config)]
+    return response
 
 
-def revoke_other_sessions(request: HTTPRequest, context: Context) -> Response:
+@_session_endpoint
+def revoke_other_sessions(
+    request: HTTPRequest, context: Context, current: ResolvedSession
+) -> Response:
     """POST /sessions/revoke-others — revoke all the caller's other sessions."""
-    current = _current_session(request, context)
-    if current is None:
-        return _unauthorized()
-
     try:
         revoked = revoke_user_sessions(
             current.record.user_id,
@@ -260,8 +253,8 @@ def revoke_other_sessions(request: HTTPRequest, context: Context) -> Response:
             request=request,
         )
     except CrossAuthException as e:
-        return _hook_error(e, current, context)
-    return _roll_cookie(_json(RevokedSessions(revoked=revoked)), current, context)
+        return _hook_error(e)
+    return _json(RevokedSessions(revoked=revoked))
 
 
 def _responses(descriptions: dict[str, str]) -> dict[str, Any]:

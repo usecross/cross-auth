@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import io
-import time
 import uuid
 from datetime import timedelta
 
 import pytest
 import time_machine
 from django.conf import settings
-from django.contrib.auth.base_user import AbstractBaseUser
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
@@ -31,11 +29,12 @@ from cross_auth.django.storage import (
 from cross_auth.exceptions import CrossAuthException
 from tests.django.testapp.models import Profile
 
-from .conftest import (
+from .support import (
     CUSTOM_USER,
     connect,
     create_account,
     identity_data,
+    interleave_after_write,
     make_user,
     run_in_threads,
     update_account,
@@ -66,7 +65,10 @@ def _signup(
 def test_adapters_satisfy_core_protocols() -> None:
     accounts: AccountsStorage = DjangoAccountsStorage()
     secondary: SecondaryStorage = DjangoSecondaryStorage()
-    assert accounts and secondary
+    assert accounts.find_user_by_email("missing@example.com") is None
+    secondary.set("protocol", "value")
+    assert secondary.pop("protocol") == "value"
+    assert secondary.get("protocol") is None
 
 
 def test_django_user_maps_native_values_conservatively() -> None:
@@ -534,30 +536,21 @@ class TestDisconnect:
 
     @pytest.mark.django_db(transaction=True)
     def test_concurrent_disconnects_keep_one_login_method(
-        self, storage: DjangoAccountsStorage, monkeypatch: pytest.MonkeyPatch
+        self, storage: DjangoAccountsStorage
     ) -> None:
         owner = make_user("owner@example.com")
         accounts = [
             connect(owner, provider_user_id=f"google-sub-{index}") for index in range(2)
         ]
-        # Widen the gap between reading the alternatives and deleting, so
-        # unserialized removals would both see the other identity.
-        wrap = storage._wrap
 
-        def slow_wrap(native: AbstractBaseUser) -> DjangoUser:
-            time.sleep(0.3)
-            return wrap(native)
-
-        monkeypatch.setattr(storage, "_wrap", slow_wrap)
-
-        results = run_in_threads(
-            2,
-            lambda index: storage.disconnect_social_account(
+        def disconnect(index: int) -> str:
+            return storage.disconnect_social_account(
                 user_id=owner.pk,
                 provider="google",
                 social_account_id=accounts[index].pk,
-            ),
-        )
+            )
+
+        results = interleave_after_write(lambda: disconnect(0), lambda: disconnect(1))
 
         assert sorted(map(str, results)) == ["disconnected", "last_login_method"]
         assert SocialAccount.objects.filter(user=owner).count() == 1
@@ -585,6 +578,46 @@ class TestSecondaryStorage:
 
             secondary.set("other", "value", ttl=10)
         assert not ExpiringValue.objects.filter(key="short").exists()
+
+    def test_writes_do_not_collect_unrelated_expired_values(
+        self, secondary: DjangoSecondaryStorage
+    ) -> None:
+        secondary.set("expired", "old", ttl=-1)
+        secondary.set("live", "new", ttl=60)
+        secondary.set("forever", "value")
+
+        assert secondary.get("expired") is None
+        assert ExpiringValue.objects.filter(key="expired").exists()
+        assert secondary.clear_expired() == 1
+        assert not ExpiringValue.objects.filter(key="expired").exists()
+        assert secondary.get("live") == "new"
+        assert secondary.get("forever") == "value"
+
+    @pytest.mark.django_db(transaction=True)
+    @pytest.mark.parametrize("same_value", [False, True])
+    def test_pop_serializes_with_overwrite(
+        self, secondary: DjangoSecondaryStorage, same_value: bool
+    ) -> None:
+        secondary.set("state", "old", ttl=60)
+        replacement = "old" if same_value else "new"
+        results = interleave_after_write(
+            lambda: secondary.pop("state"),
+            lambda: secondary.set("state", replacement, ttl=60),
+        )
+        assert results == ["old", None]
+        assert secondary.get("state") == replacement
+
+    @pytest.mark.django_db(transaction=True)
+    def test_pop_waits_for_pending_overwrite(
+        self, secondary: DjangoSecondaryStorage
+    ) -> None:
+        secondary.set("state", "old", ttl=60)
+        results = interleave_after_write(
+            lambda: secondary.set("state", "new", ttl=60),
+            lambda: secondary.pop("state"),
+        )
+        assert results == [None, "new"]
+        assert secondary.get("state") is None
 
     def test_pop_returns_a_value_once(self, secondary: DjangoSecondaryStorage) -> None:
         secondary.set("state", "value", ttl=60)

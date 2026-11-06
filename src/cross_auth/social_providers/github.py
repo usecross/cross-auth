@@ -76,7 +76,6 @@ class GitHubProvider(OAuth2Provider):
         *,
         provider_data: dict[str, str] | None = None,
     ) -> UserInfo:
-        # Cast to dict[str, Any] since GitHub API returns more fields than UserInfo
         info = cast(
             dict[str, Any],
             super().fetch_user_info(
@@ -96,7 +95,7 @@ class GitHubProvider(OAuth2Provider):
 
             emails = response.json()
 
-            # Always use the primary email
+            # A verified secondary email must not replace the primary identity.
             primary = next((e for e in emails if e["primary"]), None)
 
             if primary:
@@ -105,25 +104,23 @@ class GitHubProvider(OAuth2Provider):
 
         except httpx.HTTPStatusError as e:
             logger.error(
-                "Failed to fetch user emails from %s: %s (status=%d, body=%s, scope=%s)",
-                self.emails_endpoint,
-                e,
+                "Failed to fetch user emails (status=%d)",
                 e.response.status_code,
-                e.response.text,
-                token_response.scope,
+                extra={
+                    "oauth_provider": self.id,
+                    "oauth_status_code": e.response.status_code,
+                },
             )
         except Exception as e:
             logger.error(
-                "Failed to fetch user emails from %s: %s (scope=%s)",
-                self.emails_endpoint,
-                e,
-                token_response.scope,
+                "Failed to fetch user emails (error_type=%s)",
+                type(e).__name__,
+                extra={"oauth_provider": self.id},
             )
 
         info["email"] = info.get("email") or fallback_email
         info["email_verified"] = info.get("email_verified", fallback_email_verified)
 
-        # Ensure name is always a string, falling back to login (username)
         if not info.get("name"):
             info["name"] = info["login"]
 

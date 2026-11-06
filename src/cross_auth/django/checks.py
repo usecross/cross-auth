@@ -6,9 +6,9 @@ from django.conf import settings
 from django.core import checks
 from django.core.exceptions import ImproperlyConfigured
 
+from .backends import BACKEND
 from .conf import get_settings
 
-BACKEND = "cross_auth.django.backends.CrossAuthBackend"
 SESSION_ENGINE = "cross_auth.django.sessions"
 SESSION_MIDDLEWARE = "cross_auth.django.sessions.SessionMiddleware"
 _AUTHENTICATION_MIDDLEWARE = "django.contrib.auth.middleware.AuthenticationMiddleware"

@@ -1,8 +1,6 @@
-import { expect, test } from "@playwright/test"
+import { expect, test } from "./helpers/fixtures.js"
 
-const backend = "http://127.0.0.1:8000"
-
-test("OAuth callback cannot be transferred to another browser", async ({ context, browser }) => {
+test("OAuth callback cannot be transferred to another browser", async ({ context, browser, backend }) => {
   const start = await context.request.get(`${backend}/auth/github/login`, { maxRedirects: 0 })
   const state = new URL(start.headers().location).searchParams.get("state")
   const callback = `${backend}/auth/github/callback?state=${state}&error=access_denied`
@@ -24,7 +22,7 @@ test("OAuth callback cannot be transferred to another browser", async ({ context
   }
 })
 
-test("cross-site form POST resumes with the browser's Lax cookie", async ({ context, page }) => {
+test("cross-site form POST resumes with the browser's Lax cookie", async ({ context, page, backend }) => {
   const start = await context.request.get(`${backend}/auth/github/login`, { maxRedirects: 0 })
   const state = new URL(start.headers().location).searchParams.get("state")
   const callback = `${backend}/auth/github/callback?state=${state}&error=access_denied`

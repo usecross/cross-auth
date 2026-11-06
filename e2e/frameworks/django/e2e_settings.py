@@ -20,7 +20,6 @@ class EmulatedGoogleProvider(GoogleProvider):
     # The emulator signs ID tokens with its own URL as issuer. Signature,
     # audience, nonce and PKCE checks are unchanged.
     issuer = EMULATOR_URL
-    jwks_cache_key = "google-emulator:jwks"
 
 
 DATABASES["default"]["NAME"] = os.environ["E2E_DATABASE"]

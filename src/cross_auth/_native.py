@@ -11,26 +11,12 @@ import secrets
 from collections.abc import Mapping
 from typing import Any
 
-from ._auth_flow import ResolvedSocialAccount, ResolvedUser, resolve_user_for_sign_in
+from ._accounts import ResolvedSocialAccount, ResolvedUser, resolve_user_for_sign_in
 from ._context import Context
 from .exceptions import CrossAuthException
 from .hooks import AfterOAuthIdTokenEvent, BeforeOAuthIdTokenEvent
 from .social_providers.oauth import OAuth2Exception, OAuth2Provider
 from .social_providers.oidc import OIDCProvider
-
-
-class _NoTokenResponse:
-    """Native id_token sign-ins have no OAuth token exchange: there is no
-    access or refresh token to store on the social account."""
-
-    access_token = None
-    refresh_token = None
-    access_token_expires_at = None
-    refresh_token_expires_at = None
-    scope = None
-
-
-_NO_TOKEN_RESPONSE = _NoTokenResponse()
 
 
 def verify_nonce(claims: dict[str, Any], nonce: str) -> None:
@@ -126,7 +112,7 @@ def resolve_id_token_user(
         context=context,
         validated=validated,
         user_info=merged,
-        token_response=_NO_TOKEN_RESPONSE,
+        token_response=None,
     )
 
     after_event = AfterOAuthIdTokenEvent(

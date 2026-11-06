@@ -11,7 +11,8 @@ try:
     from sqlalchemy import BigInteger, SmallInteger, and_, inspect, or_, update
     from sqlalchemy.engine import Connection
     from sqlalchemy.exc import IntegrityError
-    from sqlmodel import SQLModel, Session, col, select
+    from sqlalchemy.orm.attributes import set_committed_value
+    from sqlmodel import Session, SQLModel, col, select
     from sqlmodel.sql.expression import SelectOfScalar
 except ImportError as exc:  # pragma: no cover - exercised only without the extra
     raise ImportError(
@@ -31,9 +32,9 @@ from cross_auth._storage import (
 from cross_auth.exceptions import CrossAuthException, InvalidCursorError
 from cross_auth.storage._cursor import decode_cursor, encode_cursor
 from cross_auth.storage._sqlmodel_models import (
-    SQLModelSession as SQLModelSession,
-    SQLModelSocialAccount as SQLModelSocialAccount,
-    SQLModelUser as SQLModelUser,
+    SQLModelSession,
+    SQLModelSocialAccount,
+    SQLModelUser,
 )
 
 SessionModelT = TypeVar("SessionModelT", bound=SQLModelSession)
@@ -51,23 +52,8 @@ _ORDER_FIELDS: dict[SessionListOrder, tuple[str, bool]] = {
     "expires_at_asc": ("expires_at", False),
 }
 
-_SESSION_DATETIME_FIELDS = (
-    "created_at",
-    "updated_at",
-    "expires_at",
-    "last_active_at",
-    "revoked_at",
-)
-
-_SOCIAL_ACCOUNT_DATETIME_FIELDS = (
-    "access_token_expires_at",
-    "refresh_token_expires_at",
-)
-
-# Write-only columns the adapter populates by default, beyond the
-# protocol fields already checked via _required_models. SQLModel table models
-# silently ignore unknown constructor kwargs, so without this check a missing
-# column would silently drop OAuth tokens instead of failing.
+# SQLModel silently ignores unknown constructor kwargs. Credential fields must
+# be mapped unless the application explicitly opts out of persisting them.
 _SOCIAL_ACCOUNT_WRITE_FIELDS = (
     "access_token",
     "refresh_token",
@@ -208,51 +194,44 @@ def _coerce_id(model: type[SQLModel], field: str, value: object) -> object:
     return value
 
 
-def _ensure_aware_datetime(value: object) -> object:
-    if not isinstance(value, datetime) or value.tzinfo is not None:
+@overload
+def _ensure_aware_datetime(value: datetime) -> datetime: ...
+
+
+@overload
+def _ensure_aware_datetime(value: None) -> None: ...
+
+
+def _ensure_aware_datetime(value: datetime | None) -> datetime | None:
+    if value is None or value.tzinfo is not None:
         return value
     return value.replace(tzinfo=timezone.utc)
 
 
-@overload
-def _prepare_record(record: None, fields: tuple[str, ...]) -> None: ...
-
-
-@overload
-def _prepare_record(record: RecordT, fields: tuple[str, ...]) -> RecordT: ...
-
-
-def _prepare_record(record, fields):
-    """Label naive datetimes read back from the database as UTC."""
-    if record is None:
-        return None
-    # _validate_models guarantees these attributes exist. Credential expiries
-    # may be read-only properties, so only write a naive value that needs UTC.
-    for field in fields:
-        value = getattr(record, field)
-        prepared_value = _ensure_aware_datetime(value)
-        if prepared_value is not value:
-            setattr(record, field, prepared_value)
-    return record
+def _validate_model(
+    model: type[SQLModel],
+    base: type[SQLModel],
+    *,
+    attributes: tuple[str, ...] = (),
+    columns: tuple[str, ...] = ("id",),
+) -> None:
+    """Validate application-owned capabilities beyond the required base."""
+    if not isinstance(model, type) or not issubclass(model, base):
+        raise TypeError(f"{model!r} must inherit from {base.__name__}")
+    if not model.model_config.get("table"):
+        raise TypeError(f"{model.__name__} must be a SQLModel table model")
+    for field in attributes:
+        if not hasattr(model, field):
+            raise TypeError(f"{model.__name__} is missing the {field!r} attribute")
+    for field in columns:
+        if _column(model, field) is None:
+            raise TypeError(f"{model.__name__} is missing the {field!r} mapped column")
 
 
 class _SQLModelStorageBase:
-    """Shared construction, validation, and session handling."""
+    """Adapter-owned sessions and commit notifications."""
 
     session_factory: Callable[[], Session]
-
-    # (class attribute holding the model, required base, required attributes).
-    # Checked at construction so misconfiguration fails at startup with a
-    # clear error instead of an AttributeError on the first auth request.
-    _required_models: ClassVar[
-        tuple[tuple[str, type[SQLModel], tuple[str, ...]], ...]
-    ] = ()
-
-    # How to supply a missing model; session storage also accepts it in the
-    # constructor and overrides this hint.
-    _missing_model_hint: ClassVar[str] = (
-        "declare a class attribute (e.g. `{attr} = MyModel`)"
-    )
 
     def __init__(self, *, session_factory: Callable[[], Session]):
         if not callable(session_factory):
@@ -261,30 +240,9 @@ class _SQLModelStorageBase:
                 f"returning a new Session, got {session_factory!r}"
             )
         self.session_factory = session_factory
-        self._validate_models()
 
-    def _validate_models(self) -> None:
-        for attr, base, required_fields in self._required_models:
-            # Instance lookup, so a model passed to the constructor (stored on
-            # the instance) and one declared as a class attribute both resolve.
-            model = getattr(self, attr, None)
-            if not isinstance(model, type):
-                raise TypeError(
-                    f"{type(self).__name__} must be given the {attr} model — "
-                    + self._missing_model_hint.format(attr=attr)
-                )
-            for field in required_fields:
-                if not hasattr(model, field):
-                    raise TypeError(
-                        f"{model.__name__} is missing the {field!r} attribute "
-                        f"required by {type(self).__name__}"
-                    )
-
-            if not issubclass(model, base):
-                raise TypeError(f"{model.__name__} must inherit from {base.__name__}")
-
-    def _models(self) -> list[type[SQLModel]]:
-        return [getattr(self, attr) for attr, _, _ in self._required_models]
+    def _models(self) -> tuple[type[SQLModel], ...]:
+        raise NotImplementedError
 
     def on_commit(self, callback: CommitCallback) -> None:
         """Run callback now: every operation commits before it returns."""
@@ -327,8 +285,14 @@ def _prepare_session_record(record: None) -> None: ...
 def _prepare_session_record(record: SessionModelT) -> SessionModelT: ...
 
 
-def _prepare_session_record(record):
-    return _prepare_record(record, _SESSION_DATETIME_FIELDS)
+def _prepare_session_record(record: SessionModelT | None) -> SessionModelT | None:
+    if record is not None:
+        record.created_at = _ensure_aware_datetime(record.created_at)
+        record.updated_at = _ensure_aware_datetime(record.updated_at)
+        record.expires_at = _ensure_aware_datetime(record.expires_at)
+        record.last_active_at = _ensure_aware_datetime(record.last_active_at)
+        record.revoked_at = _ensure_aware_datetime(record.revoked_at)
+    return record
 
 
 @overload
@@ -339,8 +303,33 @@ def _prepare_social_account(record: None) -> None: ...
 def _prepare_social_account(record: SocialAccountModelT) -> SocialAccountModelT: ...
 
 
-def _prepare_social_account(record):
-    return _prepare_record(record, _SOCIAL_ACCOUNT_DATETIME_FIELDS)
+def _prepare_social_account(
+    record: SocialAccountModelT | None,
+) -> SocialAccountModelT | None:
+    if record is not None:
+        for field, value in _social_account_datetimes(record).items():
+            # Hydrate mapped columns without invoking application setters or
+            # marking database-loaded values as an application edit.
+            set_committed_value(record, field, value)
+    return record
+
+
+def _social_account_datetimes(record: SQLModelSocialAccount) -> dict[str, datetime]:
+    """Validate property timestamps and collect mapped values needing UTC."""
+    expiries = {
+        "access_token_expires_at": record.access_token_expires_at,
+        "refresh_token_expires_at": record.refresh_token_expires_at,
+    }
+    normalized: dict[str, datetime] = {}
+    for field, value in expiries.items():
+        if value is not None and value.tzinfo is None:
+            if _column(type(record), field) is None:
+                raise TypeError(
+                    f"{type(record).__name__}.{field} is property-backed and must "
+                    "return a timezone-aware datetime or None"
+                )
+            normalized[field] = _ensure_aware_datetime(value)
+    return normalized
 
 
 class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
@@ -360,15 +349,11 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
     The model's datetime columns may be timezone-naive (values are stored as
     UTC wall time and labeled UTC when read back) or declared with
     ``DateTime(timezone=True)``. Configuration is validated at construction.
+    Cursor pagination supports int, str and UUID IDs within the codec's
+    4096-character encoded payload limit (including JSON escaping).
     """
 
     SessionModel: type[SessionModelT]
-
-    _missing_model_hint = (
-        "pass it to the constructor (e.g. `SQLModelSessionStorage(MySession, "
-        "session_factory=...)`) or declare `SessionModel = MySession` on a "
-        "subclass"
-    )
 
     def __init__(
         self,
@@ -379,33 +364,15 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
         if model is not None:
             self.SessionModel = model
         super().__init__(session_factory=session_factory)
+        if not hasattr(self, "SessionModel"):
+            raise TypeError(
+                f"{type(self).__name__} must be given the SessionModel model — "
+                "pass it to the constructor or declare SessionModel on a subclass"
+            )
+        _validate_model(self.SessionModel, SQLModelSession, columns=("id", "user_id"))
 
-    # The full cross_auth.SessionRecord protocol surface plus the internal
-    # token_hash column. `status` is never read by the adapter itself, but the
-    # protocol requires it — checking it here surfaces the missing property at
-    # startup instead of when a session listing is first serialized.
-    _required_models = (
-        (
-            "SessionModel",
-            SQLModelSession,
-            (
-                "id",
-                "token_hash",
-                "user_id",
-                "created_at",
-                "updated_at",
-                "expires_at",
-                "last_active_at",
-                "revoked_at",
-                "client_id",
-                "client_name",
-                "user_agent",
-                "ip",
-                "login_method",
-                "status",
-            ),
-        ),
-    )
+    def _models(self) -> tuple[type[SQLModel], ...]:
+        return (self.SessionModel,)
 
     def create(
         self,
@@ -708,50 +675,6 @@ class SQLModelAccountsStorage(
     SocialAccountModel: type[SocialAccountModelT]
     excluded_social_account_fields: ClassVar[frozenset[str]] = frozenset()
 
-    # The full cross_auth.User / cross_auth.SocialAccount protocol surfaces.
-    # Some are read mid-flow (e.g. this adapter's disconnect_social_account
-    # reads has_usable_password), so checking them here surfaces a
-    # non-compliant model at startup instead of as an AttributeError halfway
-    # through a request. Properties and relationships satisfy hasattr on the
-    # class.
-    _required_models = (
-        (
-            "UserModel",
-            SQLModelUser,
-            (
-                "id",
-                "email",
-                "email_verified",
-                "hashed_password",
-                "has_usable_password",
-            ),
-        ),
-        (
-            "SocialAccountModel",
-            SQLModelSocialAccount,
-            (
-                "id",
-                "user_id",
-                "provider",
-                "provider_user_id",
-                "provider_email",
-                "provider_email_verified",
-                "is_login_method",
-                "access_token",
-                "refresh_token",
-                "access_token_expires_at",
-                "refresh_token_expires_at",
-                "scope",
-            ),
-        ),
-    )
-
-    _missing_model_hint = (
-        "pass the models to the constructor (e.g. "
-        "`SQLModelAccountsStorage(User, SocialAccount, session_factory=...)`) "
-        "or declare `{attr} = MyModel` on a subclass"
-    )
-
     def __init__(
         self,
         user_model: type[UserModelT] | None = None,
@@ -764,7 +687,22 @@ class SQLModelAccountsStorage(
         if social_account_model is not None:
             self.SocialAccountModel = social_account_model
         super().__init__(session_factory=session_factory)
+        if not hasattr(self, "UserModel") or not hasattr(self, "SocialAccountModel"):
+            raise TypeError(
+                f"{type(self).__name__} requires UserModel and SocialAccountModel — "
+                "pass the models to the constructor or declare them on a subclass"
+            )
+        _validate_model(self.UserModel, SQLModelUser, attributes=("email_verified",))
+        _validate_model(
+            self.SocialAccountModel,
+            SQLModelSocialAccount,
+            attributes=_SOCIAL_ACCOUNT_WRITE_FIELDS,
+            columns=("id", "user_id"),
+        )
         self._validate_social_account_write_fields()
+
+    def _models(self) -> tuple[type[SQLModel], ...]:
+        return (self.UserModel, self.SocialAccountModel)
 
     def _validate_social_account_write_fields(self) -> None:
         model = self.SocialAccountModel
@@ -824,8 +762,10 @@ class SQLModelAccountsStorage(
         email_verified: bool,
         extra_fields: Mapping[str, object] | None = None,
     ) -> UserModelT:
-        """Create a user in a single adapter-owned transaction.
+        """Create a user without an identity for administrative/legacy callers.
 
+        Provider signup uses ``create_user_with_identity`` so that the initial
+        identity and application rows commit atomically with the user.
         Builds and adds the user to the adapter-owned session, commits, and
         returns the user safe to read after the session closes with scalar
         columns loaded. Relationship loading is controlled by the application.
@@ -857,12 +797,29 @@ class SQLModelAccountsStorage(
         """Commit the user, initial identity, and build_user rows together.
 
         The identity factory runs after flushing the user, so its generated ID
-        is available. Exceptions from either construction or hooks roll back
-        the whole transaction. External side effects belong after this returns.
+        is available. Both configured models must share one Engine or Connection;
+        split bindings are rejected before construction or writes. Related rows
+        added by ``build_user`` must use that same bind; queued application
+        rows are checked before the first flush. A builder that executes SQL
+        itself is responsible for its participation in that transaction.
+        Exceptions from construction or hooks roll back the whole transaction.
+        External side effects belong after this returns.
         """
         with self._open_session() as session:
+            bind = session.get_bind(self.UserModel)
+            if bind is not session.get_bind(self.SocialAccountModel):
+                raise RuntimeError(
+                    "Atomic signup requires UserModel and SocialAccountModel "
+                    "to share the same transactional bind (Engine or Connection)"
+                )
             new_user = self.build_user(session=session, **user)
             session.add(new_user)
+            for row in session.new | session.dirty | session.deleted:
+                if session.get_bind(type(row)) is not bind:
+                    raise RuntimeError(
+                        "Atomic signup application rows must share the same "
+                        "transactional bind as UserModel and SocialAccountModel"
+                    )
             session.flush()
 
             identity_data = identity(new_user)
@@ -1021,9 +978,13 @@ class SQLModelAccountsStorage(
             values.pop(field)
         self._merge_social_account_extra_fields(values, extra_fields)
         self._check_social_account_values(values)
-        return _construct_record(
+        record = _construct_record(
             self.SocialAccountModel, **self._bind_social_account_datetimes(values)
         )
+        # Validate application properties before writes, but leave mapped UTC
+        # wall times naive until persistence in timezone-naive columns.
+        _social_account_datetimes(record)
+        return record
 
     def update_social_account(
         self,
@@ -1064,6 +1025,7 @@ class SQLModelAccountsStorage(
             values = self._bind_social_account_datetimes(values)
             for key, value in values.items():
                 setattr(row, key, value)
+            _social_account_datetimes(row)
             session.add(row)
             session.commit()
         return _prepare_social_account(row)
@@ -1236,9 +1198,11 @@ class SQLModelAccountsStorage(
         """Build the user and required application rows in the same transaction.
 
         Override this method to add related rows to session and return the user.
-        Do not commit or perform external side effects here. The adapter owns
-        the transaction and adds the returned user. The default delegates to
-        _build_user to preserve existing subclass overrides.
+        All rows must share the user's transactional bind; prefer adding rows
+        for the adapter to flush. Do not commit or perform external side effects
+        here. The adapter owns the transaction and adds the returned user.
+        The default delegates to _build_user to preserve existing subclass
+        overrides.
         """
         return self._build_user(
             session=session,

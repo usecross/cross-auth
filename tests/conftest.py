@@ -14,29 +14,30 @@ from cross_auth._auth_flow import LinkCodeData
 from cross_auth._clients import OAuthClient
 from cross_auth._context import Context
 from cross_auth._issuer import AuthorizationCodeGrantData, Issuer
+from cross_auth._oauth_server import OAuthServer
 from cross_auth._storage import (
     AccountsStorage,
     CommitCallback,
     DisconnectResult,
-    SocialAccountCreate,
-    UserCreate,
-    User as StorageUser,
     SecondaryStorage,
     SessionListOrder,
     SessionListResult,
     SessionStatus,
     SessionStorage,
-    User as UserProtocol,
+    SocialAccountCreate,
+    UserCreate,
     session_status,
 )
-from cross_auth._oauth_server import OAuthServer
+from cross_auth._storage import (
+    User as StorageUser,
+)
+from cross_auth._storage import (
+    User as UserProtocol,
+)
 from cross_auth.exceptions import CrossAuthException
-
-pytestmark = pytest.mark.asyncio
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# Test password constant
 TEST_PASSWORD = "password123"
 
 TEST_CLIENTS = {
@@ -277,6 +278,28 @@ class MemorySessionStorage(SessionStorage):
                 record.revoked_at = revoked_at
                 count += 1
         return count
+
+
+class DeferredSessionStorage(MemorySessionStorage):
+    """Holds commit callbacks until the test commits or rolls back the store."""
+
+    def __init__(self):
+        super().__init__()
+        self.pending: list[CommitCallback] = []
+        self._committed = deepcopy(self.records)
+
+    def on_commit(self, callback: CommitCallback) -> None:
+        self.pending.append(callback)
+
+    def commit(self) -> None:
+        self._committed = deepcopy(self.records)
+        pending, self.pending = self.pending, []
+        for callback in pending:
+            callback()
+
+    def rollback(self) -> None:
+        self.records = deepcopy(self._committed)
+        self.pending = []
 
 
 class MemoryAccountsStorage:

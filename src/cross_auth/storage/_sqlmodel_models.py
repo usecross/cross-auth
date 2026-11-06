@@ -63,9 +63,12 @@ class SQLModelUser(SQLModel):
 class SQLModelSocialAccount(SQLModel):
     """Identity fields; subclasses supply IDs and provider credential fields.
 
-    Credential fields can be columns or read-only properties. When credentials
-    are not persisted, configure ``excluded_social_account_fields`` on the store.
-    Identity uniqueness and foreign-key constraints belong to the application.
+    Credential fields can be columns or read-only properties. Mapped credential
+    timestamps are labeled UTC on reads; properties must themselves return
+    timezone-aware datetimes or None, including when backed by naive columns.
+    When credentials are not persisted, configure
+    ``excluded_social_account_fields`` on the store. Identity uniqueness and
+    foreign-key constraints belong to the application.
     """
 
     if TYPE_CHECKING:

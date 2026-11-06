@@ -3,11 +3,15 @@ from typing import assert_type
 
 import pytest
 from sqlalchemy import inspect
-from sqlmodel import Session
+from sqlmodel import Field, Session
 
 from cross_auth._storage import User as UserProtocol
 from cross_auth.exceptions import CrossAuthException
-from cross_auth.storage.sqlmodel import SQLModelAccountsStorage
+from cross_auth.storage.sqlmodel import (
+    SQLModelAccountsStorage,
+    SQLModelSocialAccount,
+    SQLModelUser,
+)
 
 from .models import (
     AccountsStore,
@@ -20,8 +24,11 @@ from .models import (
     RelationshipFreeUser,
     SocialAccount,
     SoftDeleteAccountsStore,
+    StoredSocialAccountBase,
     User,
 )
+
+from .support import identity_data, user_data
 
 NOW = datetime(2026, 6, 6, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -255,12 +262,10 @@ def test_create_user_bypasses_filter_user_query(engine):
     assert store.find_user_by_id(user.id) is None  # filtered lookup excludes it
 
 
-def test_build_user_override_joins_the_create_user_transaction(engine):
-    # The cloud-style signup: an override composes with the default and adds
-    # related rows to the same unit of work.
+def test_build_user_override_joins_atomic_signup(engine):
     class TeamSignupStore(AccountsStore):
-        def _build_user(self, *, session, **kwargs):
-            user = super()._build_user(session=session, **kwargs)
+        def build_user(self, *, session, **kwargs):
+            user = super().build_user(session=session, **kwargs)
             # user_id is populated from the relationship at flush time.
             session.add(
                 SocialAccount(  # ty: ignore[missing-argument]
@@ -271,22 +276,23 @@ def test_build_user_override_joins_the_create_user_transaction(engine):
 
     store = TeamSignupStore(session_factory=lambda: Session(engine))
 
-    user = store.create_user(
-        user_info={}, email="team@example.com", email_verified=True
+    user, identity = store.create_user_with_identity(
+        user=user_data("team@example.com"),
+        identity=lambda user: identity_data(user, "first-identity"),
     )
 
-    # No open session here; both reads must not hit the database.
     assert user.email == "team@example.com"
-    accounts = list(user.social_accounts)
-    assert [a.provider_user_id for a in accounts] == ["linked-1"]
+    assert identity.user_id == user.id
+    assert {a.provider_user_id for a in user.social_accounts} == {
+        "linked-1",
+        "first-identity",
+    }
 
 
 def test_build_user_raise_aborts_the_signup(engine):
-    # Raising from the private escape hatch rolls back the transaction:
-    # neither the user nor any related rows are persisted.
     class InviteOnlyStore(AccountsStore):
-        def _build_user(self, *, session, **kwargs):
-            user = super()._build_user(session=session, **kwargs)
+        def build_user(self, *, session, **kwargs):
+            user = super().build_user(session=session, **kwargs)
             session.add(
                 SocialAccount(  # ty: ignore[missing-argument]
                     user=user, provider="github", provider_user_id="rollback-1"
@@ -297,8 +303,9 @@ def test_build_user_raise_aborts_the_signup(engine):
     store = InviteOnlyStore(session_factory=lambda: Session(engine))
 
     with pytest.raises(CrossAuthException):
-        store.create_user(
-            user_info={}, email="uninvited@example.com", email_verified=True
+        store.create_user_with_identity(
+            user=user_data("uninvited@example.com"),
+            identity=lambda user: identity_data(user, "first-identity"),
         )
 
     assert store.find_user_by_email("uninvited@example.com") is None
@@ -313,15 +320,17 @@ def test_build_user_override_can_customize_the_user(engine):
         UserModel = User
         SocialAccountModel = SocialAccount
 
-        def _build_user(self, *, session, **kwargs):
-            user = super()._build_user(session=session, **kwargs)
+        def build_user(self, *, session, **kwargs):
+            user = super().build_user(session=session, **kwargs)
             user.hashed_password = f"gen:{kwargs['user_info']['seed']}"
             return user
 
     store = CustomConstructionStore(session_factory=lambda: Session(engine))
 
-    user = store.create_user(
-        user_info={"seed": "abc"}, email="built@example.com", email_verified=True
+    data = user_data("built@example.com")
+    data["user_info"] = {"seed": "abc"}
+    user, _ = store.create_user_with_identity(
+        user=data, identity=lambda user: identity_data(user, "first-identity")
     )
 
     assert user.hashed_password == "gen:abc"
@@ -580,65 +589,50 @@ def test_missing_model_declaration_raises_at_construction(engine):
         SQLModelAccountsStorage(session_factory=lambda: Session(engine))
 
 
-def test_model_missing_required_field_raises_at_construction(engine):
+def test_user_model_requires_supported_base(engine):
     class NotAUser:
-        id = None  # declares id but no email
+        pass
 
     class BadStore(AccountsStore):
         UserModel = NotAUser
 
-    with pytest.raises(TypeError, match="email"):
+    with pytest.raises(TypeError, match="must inherit from SQLModelUser"):
         BadStore(session_factory=lambda: Session(engine))
 
 
-def test_user_model_missing_protocol_property_raises_at_construction(engine):
-    # Core reads has_usable_password mid-flow (account linking); a model
-    # without it must fail at startup, not during an OAuth login.
-    class BareUser:
-        id = None
-        email = None
-        email_verified = None
-        hashed_password = None
+def test_user_model_requires_application_verification(engine):
+    class MissingVerificationUser(SQLModelUser, table=True):
+        id: int | None = Field(default=None, primary_key=True)
 
-    class BadStore(AccountsStore):
-        UserModel = BareUser
-
-    with pytest.raises(TypeError, match="has_usable_password"):
-        BadStore(session_factory=lambda: Session(engine))
+    with pytest.raises(TypeError, match="email_verified"):
+        SQLModelAccountsStorage(
+            MissingVerificationUser,
+            SocialAccount,
+            session_factory=lambda: Session(engine),
+        )
 
 
-def test_social_account_model_missing_protocol_field_raises_at_construction(engine):
-    class BareSocialAccount:
-        id = None
-        user_id = None
-        provider = None
-        provider_user_id = None
-        # missing provider_email, provider_email_verified, is_login_method
+def test_social_account_requires_application_owner_column(engine):
+    class MissingOwnerSocialAccount(StoredSocialAccountBase, table=True):
+        id: int | None = Field(default=None, primary_key=True)
 
-    class BadStore(AccountsStore):
-        SocialAccountModel = BareSocialAccount
-
-    with pytest.raises(TypeError, match="provider_email"):
-        BadStore(session_factory=lambda: Session(engine))
+    with pytest.raises(TypeError, match="user_id.*mapped column"):
+        SQLModelAccountsStorage(
+            User, MissingOwnerSocialAccount, session_factory=lambda: Session(engine)
+        )
 
 
-def test_social_account_model_missing_credential_property_raises_at_construction(
-    engine,
-):
-    class MissingCredentialsSocialAccount:
-        id = None
-        user_id = None
-        provider = None
-        provider_user_id = None
-        provider_email = None
-        provider_email_verified = None
-        is_login_method = None
-
-    class BadStore(AccountsStore):
-        SocialAccountModel = MissingCredentialsSocialAccount
+def test_social_account_requires_application_credential_capabilities(engine):
+    class MissingCredentialsSocialAccount(SQLModelSocialAccount, table=True):
+        id: int | None = Field(default=None, primary_key=True)
+        user_id: int
 
     with pytest.raises(TypeError, match="access_token"):
-        BadStore(session_factory=lambda: Session(engine))
+        SQLModelAccountsStorage(
+            User,
+            MissingCredentialsSocialAccount,
+            session_factory=lambda: Session(engine),
+        )
 
 
 def test_missing_token_columns_raises_at_construction(engine):

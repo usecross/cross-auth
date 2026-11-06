@@ -49,6 +49,7 @@ export default function App() {
   const [status, setStatus] = useState("idle")
   const [error, setError] = useState("")
   const [tokenUser, setTokenUser] = useState(null)
+  const [pendingUserRequests, setPendingUserRequests] = useState(0)
   const tokenScopeRef = useRef({ token: accessToken })
   const hasHandledAuthCallback = useRef(false)
   const hasHandledLinkCallback = useRef(false)
@@ -256,6 +257,7 @@ export default function App() {
 
     setStatus("loading-user")
     setError("")
+    setPendingUserRequests((count) => count + 1)
 
     try {
       const response = await fetch(`${authBaseUrl}/api/me`, {
@@ -288,6 +290,8 @@ export default function App() {
           ? fetchError.message
           : "Failed to fetch bearer-authenticated user",
       )
+    } finally {
+      setPendingUserRequests((count) => count - 1)
     }
   }
 
@@ -608,8 +612,12 @@ export default function App() {
           {accessToken ? <pre>{accessToken}</pre> : <p>No token stored yet.</p>}
         </section>
 
-        <section className="card stack full">
-          <h2>Bearer-Protected API Result</h2>
+        <section
+          className="card stack full"
+          aria-labelledby="bearer-api-result"
+          aria-busy={pendingUserRequests > 0}
+        >
+          <h2 id="bearer-api-result">Bearer-Protected API Result</h2>
           {tokenUser ? <pre>{JSON.stringify(tokenUser, null, 2)}</pre> : <p>No API response yet.</p>}
         </section>
 

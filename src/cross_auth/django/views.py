@@ -30,8 +30,8 @@ from django.shortcuts import render, resolve_url
 from django.utils.cache import add_never_cache_headers
 from django.utils.http import url_has_allowed_host_and_scheme
 
+from cross_auth._authorization import AuthRequest
 from cross_auth._auth_flow import (
-    AuthRequest,
     disconnect_provider,
     handle_callback,
     start_connect_flow,
@@ -57,12 +57,10 @@ from cross_auth.hooks import (
 from cross_auth.social_providers.oauth import OAuth2Provider, ValidatedUserInfo
 
 from . import models, signals
-from .backends import CrossAuthBackend
+from .backends import BACKEND, CrossAuthBackend
 from .conf import get_settings
-from .sessions import LOGIN_METHOD_SESSION_KEY
+from .sessions import LOGIN_METHOD_SESSION_KEY, SessionStore
 from .storage import DjangoAccountsStorage, DjangoSecondaryStorage, DjangoUser
-
-BACKEND = "cross_auth.django.backends.CrossAuthBackend"
 
 _SAMESITE: dict[str, Literal["Lax", "Strict", "None"]] = {
     "lax": "Lax",
@@ -252,7 +250,11 @@ class DjangoLogin:
                 "(SESSION_ENGINE db, cached_db or cross_auth.django.sessions)"
             )
         self.session = session
-        self.alias = router.db_for_write(session.get_model_class())
+        self.alias = (
+            session.alias
+            if isinstance(session, SessionStore)
+            else router.db_for_write(session.get_model_class())
+        )
 
     def on_commit(self, callback: CommitCallback) -> None:
         transaction.on_commit(callback, using=self.alias, robust=False)
@@ -411,7 +413,6 @@ def link(request: HttpRequest, provider: str) -> HttpResponse:
     oauth_provider = _provider(provider)
     bridge = _Signals(request, oauth_provider)
     context = _context(request, bridge)
-    # Core answers a signed-out browser with 401 and stores nothing.
     if (user := _current_user(request)) is not None:
         bridge.send(signals.before_authorization, flow="link", user_id=str(user.id))
     response = start_connect_flow(

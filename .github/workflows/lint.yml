@@ -20,5 +20,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uv sync --frozen --group dev --package cross-auth
-      - run: uv run --frozen --group dev --package cross-auth nox -s typecheck
+      - run: uv run --python 3.14 --frozen --group dev --package cross-auth ty check . --exclude website

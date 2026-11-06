@@ -23,3 +23,12 @@ class TokenIssueRequest:
 
 
 TokenIssuer = Callable[[TokenIssueRequest], tuple[str, int]]
+
+
+@dataclass(frozen=True)
+class IssuedToken:
+    """A credential and the durability boundary selected when it was issued."""
+
+    token: str
+    expires_in: int
+    on_commit: Callable[[Callable[[], None]], None]

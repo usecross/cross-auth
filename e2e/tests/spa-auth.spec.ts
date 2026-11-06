@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test"
+import type { Page } from "@playwright/test"
+import { expect, test } from "./helpers/fixtures.js"
 
 import { completeGitHubMockSignIn } from "./helpers/auth.js"
 
@@ -38,35 +39,36 @@ async function delayNextUserResponse(page: Page, email: string) {
 }
 
 test("separate SPA completes auth-code flow and calls bearer API", async ({
-  page,
+  page, backend, spa, socialIdentity,
 }) => {
   // Keep this identity separate from tests that connect accounts without login.
-  const email = `spa-login-${Date.now()}-${Math.random().toString(16).slice(2)}@example.com`
+  const email = socialIdentity.email
 
-  await page.goto("http://127.0.0.1:5173/")
+  await page.goto(`${spa}/`)
 
   await page.getByRole("button", { name: "Log in with GitHub" }).click()
   await completeGitHubMockSignIn(page, email)
 
-  await expect(page).toHaveURL("http://127.0.0.1:5173/")
+  await expect(page).toHaveURL(`${spa}/`)
   await expect(page.getByText("token present")).toBeVisible()
   await expect(page.getByText(`"email": "${email}"`)).toBeVisible()
   await expect(page.getByText('"provider": "github"')).toBeVisible()
 })
 
-test("clearing a token ignores its delayed bearer API response", async ({ page }) => {
-  await page.goto("http://127.0.0.1:5173/")
+test("clearing a token ignores its delayed bearer API response", async ({ page, backend, spa, socialIdentity }) => {
+  await page.goto(`${spa}/`)
   await page.getByRole("button", { name: "Log in with password" }).click()
   await expect(page.getByText('"email": "demo@example.com"')).toBeVisible()
 
   const delayedResponse = await delayNextUserResponse(page, "stale@example.com")
   await page.getByRole("button", { name: "Call /api/me" }).click()
   await delayedResponse.started
+  await expect(page.getByRole("region", { name: "Bearer-Protected API Result" })).toHaveAttribute("aria-busy", "true")
   await page.getByRole("button", { name: "Clear token" }).click()
 
   delayedResponse.releaseResponse()
   await delayedResponse.finished
-  await page.waitForTimeout(100)
+  await expect(page.getByRole("region", { name: "Bearer-Protected API Result" })).toHaveAttribute("aria-busy", "false")
 
   await expect(page.getByText("no token", { exact: true })).toBeVisible()
   await expect(page.getByText("state: idle")).toBeVisible()
@@ -74,8 +76,8 @@ test("clearing a token ignores its delayed bearer API response", async ({ page }
   await expect(page.getByText("stale@example.com")).not.toBeVisible()
 })
 
-test("a replaced token ignores the previous token's delayed user", async ({ page }) => {
-  await page.goto("http://127.0.0.1:5173/")
+test("a replaced token ignores the previous token's delayed user", async ({ page, backend, spa, socialIdentity }) => {
+  await page.goto(`${spa}/`)
   await page.getByRole("button", { name: "Log in with password" }).click()
   await expect(page.getByText('"email": "demo@example.com"')).toBeVisible()
   const previousToken = await page.evaluate(() =>
@@ -85,6 +87,7 @@ test("a replaced token ignores the previous token's delayed user", async ({ page
   const delayedResponse = await delayNextUserResponse(page, "stale@example.com")
   await page.getByRole("button", { name: "Call /api/me" }).click()
   await delayedResponse.started
+  await expect(page.getByRole("region", { name: "Bearer-Protected API Result" })).toHaveAttribute("aria-busy", "true")
   await page.getByRole("button", { name: "Log in with password" }).click()
 
   await expect
@@ -98,7 +101,7 @@ test("a replaced token ignores the previous token's delayed user", async ({ page
 
   delayedResponse.releaseResponse()
   await delayedResponse.finished
-  await page.waitForTimeout(100)
+  await expect(page.getByRole("region", { name: "Bearer-Protected API Result" })).toHaveAttribute("aria-busy", "false")
 
   await expect(page.getByText("state: authenticated")).toBeVisible()
   await expect(page.getByText('"email": "demo@example.com"')).toBeVisible()

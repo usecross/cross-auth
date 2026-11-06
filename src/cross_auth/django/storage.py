@@ -1,9 +1,10 @@
 """Django ORM implementations of Cross Auth's storage protocols.
 
-Each method runs its own ``transaction.atomic`` on the database the router
-picks for writes, so it commits before returning in autocommit views. Called
-inside an application's atomic block, writes join that transaction and
-``on_commit`` waits for its outermost commit, as Django does.
+Each storage captures its authoritative write database at construction; reads,
+transactions and commit callbacks use that alias even if routing later changes.
+Multi-statement mutations run in ``transaction.atomic``, committing before
+returning in autocommit views. Inside an application's atomic block on that
+alias, writes join it and ``on_commit`` waits for its outermost commit.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from django.contrib.auth import get_user_model
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import IntegrityError, router, transaction
 from django.db.models import F, Q
 from django.utils import timezone
@@ -95,14 +96,13 @@ def _check_no_extra_fields(extra_fields: Mapping[str, Any] | None) -> None:
 class DjangoAccountsStorage:
     """Stores identities in ``cross_auth.SocialAccount`` next to native users."""
 
-    @property
-    def _user_model(self) -> type[AbstractBaseUser]:
-        return get_user_model()
-
-    @property
-    def alias(self) -> str:
-        # Identities reference users, so both live on the user model's database.
-        return router.db_for_write(self._user_model)
+    def __init__(self) -> None:
+        self._user_model = get_user_model()
+        self.alias = router.db_for_write(self._user_model)
+        if router.db_for_write(SocialAccount) != self.alias:
+            raise ImproperlyConfigured(
+                "Cross Auth users and SocialAccount must share a write database"
+            )
 
     def _users(self) -> QuerySet[AbstractBaseUser]:
         return self._user_model._default_manager.using(self.alias)
@@ -197,7 +197,18 @@ class DjangoAccountsStorage:
                     email=user["email"],
                     user_info=user["user_info"],
                     extra_fields=user["extra_fields"] or {},
+                    using=self.alias,
                 )
+                if (
+                    not isinstance(native, self._user_model)
+                    or native._state.adding
+                    or native._state.db != self.alias
+                ):
+                    raise ImproperlyConfigured(
+                        "CREATE_USER must return a saved AUTH_USER_MODEL on "
+                        f"database {self.alias!r}; use the supplied using alias for "
+                        "all factory writes"
+                    )
                 created = self._wrap(native)
                 data = identity(created)
                 if _coerce_pk(self._user_model, data["user_id"]) != native.pk:
@@ -273,7 +284,6 @@ class DjangoAccountsStorage:
                 raise
             if is_login_method and not existing.is_login_method:
                 raise CrossAuthException("account_already_linked") from error
-            # A same-owner retry keeps the stored row unchanged.
             return existing
 
     def update_social_account(
@@ -359,13 +369,13 @@ class DjangoAccountsStorage:
 class DjangoSecondaryStorage:
     """Expiring key/value storage on the ``cross_auth.ExpiringValue`` table.
 
-    ``pop`` is a compare-and-delete: concurrent callers may all read a value,
-    but only the one whose DELETE removes the row receives it.
+    ``pop`` locks before reading so consumption also serializes with ``set``.
+    Expired rows are logically absent; schedule ``clear_expired`` separately
+    to reclaim them instead of scanning the table on each OAuth write.
     """
 
-    @property
-    def alias(self) -> str:
-        return router.db_for_write(ExpiringValue)
+    def __init__(self) -> None:
+        self.alias = router.db_for_write(ExpiringValue)
 
     def _values(self) -> QuerySet[ExpiringValue]:
         return ExpiringValue.objects.using(self.alias)
@@ -378,7 +388,6 @@ class DjangoSecondaryStorage:
     def set(self, key: str, value: str, ttl: int | None = None) -> None:
         now = timezone.now()
         expires_at = now + timedelta(seconds=ttl) if ttl is not None else None
-        self._values().filter(expires_at__lte=now).delete()
         # Write first rather than read-then-write, which SQLite cannot upgrade
         # while another connection writes. Concurrent sets: the last one wins.
         values = {"value": value, "expires_at": expires_at}
@@ -397,8 +406,21 @@ class DjangoSecondaryStorage:
         self._values().filter(key=key).delete()
 
     def pop(self, key: str) -> str | None:
-        value = self.get(key)
-        if value is None:
-            return None
-        deleted, _ = self._live(key).filter(value=value).delete()
-        return value if deleted else None
+        # A write-first boundary works on both PostgreSQL (row lock) and
+        # SQLite (database write lock); select_for_update is inert on SQLite.
+        # Include expired rows so a concurrent set cannot replace one between
+        # our read and delete. Missing keys can linearize at the UPDATE.
+        with transaction.atomic(using=self.alias):
+            rows = self._values().filter(key=key)
+            if not rows.update(value=F("value")):
+                return None
+            row = rows.get()
+            rows.delete()
+            if row.expires_at is not None and row.expires_at <= timezone.now():
+                return None
+            return row.value
+
+    def clear_expired(self) -> int:
+        """Delete expired values; call from scheduled maintenance, not requests."""
+        deleted, _ = self._values().filter(expires_at__lte=timezone.now()).delete()
+        return deleted

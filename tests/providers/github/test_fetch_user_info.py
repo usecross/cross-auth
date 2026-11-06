@@ -9,8 +9,6 @@ import respx
 from cross_auth.models.oauth_token_response import TokenResponse
 from cross_auth.social_providers.github import GitHubProvider
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture
 def context() -> MagicMock:
@@ -18,7 +16,7 @@ def context() -> MagicMock:
 
 
 @respx.mock
-async def test_get_user_info_success(
+def test_get_user_info_success(
     github_provider: GitHubProvider,
     mock_user_info: dict,
     mock_emails_verified_primary: list[dict],
@@ -43,7 +41,7 @@ async def test_get_user_info_success(
 
 
 @respx.mock
-async def test_name_fallback_to_login(
+def test_name_fallback_to_login(
     github_provider: GitHubProvider,
     mock_user_info: dict,
     mock_emails_verified_primary: list[dict],

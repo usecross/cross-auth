@@ -19,7 +19,6 @@ DATABASE = os.environ["E2E_DATABASE"]
 
 
 def seed_password_user(email: str, password: str) -> None:
-    # The columns the example's User model gives a password user.
     hashed = CryptContext(schemes=["bcrypt"]).hash(password)
     with sqlite3.connect(DATABASE) as db:
         db.execute(

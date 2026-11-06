@@ -8,22 +8,21 @@ from ._config import Config
 from ._email import normalize_email as _default_normalize_email
 from ._login import issue_bearer_session, run_login, run_now
 from ._oauth_server import OAuthServer
+from ._request import get_header
 from ._session import (
     SessionConfig,
     SessionMetadata,
-    _get_header,
     create_session,
     resolve_config,
 )
 from ._storage import (
     AccountsStorage,
-    CommitCallback,
     SecondaryStorage,
     SessionRecord,
     SessionStorage,
     User,
 )
-from ._tokens import TokenIssueRequest, TokenIssuer
+from ._tokens import IssuedToken, TokenIssueRequest
 from .exceptions import CrossAuthException
 from .hooks import BeforeLoginEvent, HookRegistry
 
@@ -49,7 +48,6 @@ class Context:
         self.get_user_from_request = get_user_from_request
         if oauth_server is not None and not isinstance(oauth_server, OAuthServer):
             raise TypeError("oauth_server must be an OAuthServer or None")
-        # Mounts /authorize, /token, /link and /finalize-link; None leaves them out.
         self.oauth_server = oauth_server
         self.base_url = base_url
         # Applied to every user lookup/creation by email (not to the raw
@@ -104,7 +102,14 @@ class Context:
         Runs the ``login`` hooks around the OAuth server's ``token_issuer``
         call or, without one, around a new session.
         """
-        token_issuer = self._token_issuer
+        issued = self.issue_token_result(request)
+        return issued.token, issued.expires_in
+
+    def issue_token_result(self, request: TokenIssueRequest) -> IssuedToken:
+        """Issue a bearer credential together with its actual commit scheduler."""
+        token_issuer = (
+            None if self.oauth_server is None else self.oauth_server.token_issuer
+        )
         if token_issuer is not None:
             issued, _ = run_login(
                 BeforeLoginEvent(
@@ -115,7 +120,6 @@ class Context:
                     login_method=request.login_method,
                 ),
                 hooks=self.hooks,
-                # The issuer sees the login_method the before hooks approved.
                 issue=lambda event: (
                     token_issuer(replace(request, login_method=event.login_method)),
                     None,
@@ -124,9 +128,10 @@ class Context:
                 # cannot see any transaction behind it.
                 on_commit=run_now,
             )
-            return issued
+            return IssuedToken(*issued, on_commit=run_now)
 
-        if self.session_storage is None:
+        session_storage = self.session_storage
+        if session_storage is None:
             raise CrossAuthException(
                 "server_error",
                 "The token endpoint requires token_issuer or session_storage",
@@ -135,26 +140,17 @@ class Context:
         session_token, _, expires_in = issue_bearer_session(
             request.user_id,
             hooks=self.hooks,
-            session_storage=self.session_storage,
+            session_storage=session_storage,
             session_config=self.session_config,
             metadata={
                 "client_id": request.client_id,
-                "user_agent": _get_header(request.http_request.headers, "user-agent"),
+                "user_agent": get_header(request.http_request.headers, "user-agent"),
             },
             login_method=request.login_method,
         )
-        return session_token, expires_in
-
-    @property
-    def _token_issuer(self) -> TokenIssuer | None:
-        return None if self.oauth_server is None else self.oauth_server.token_issuer
-
-    def _on_token_commit(self, callback: CommitCallback) -> None:
-        """Schedule callback after the credential ``issue_token`` stored commits."""
-        if self._token_issuer is None and self.session_storage is not None:
-            self.session_storage.on_commit(callback)
-        else:
-            callback()
+        return IssuedToken(
+            session_token, expires_in, on_commit=session_storage.on_commit
+        )
 
     def get_client(self, client_id: str) -> OAuthClient | None:
         """Look up the current registration without caching application results."""

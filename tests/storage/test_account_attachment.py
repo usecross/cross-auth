@@ -6,48 +6,25 @@ from threading import Barrier
 
 import pytest
 from sqlalchemy.exc import IntegrityError, MultipleResultsFound
-from sqlmodel import Session, SQLModel, create_engine
-from sqlalchemy import event
+from sqlmodel import Session
 
 from cross_auth.storage.sqlmodel import SQLModelAccountsStorage
 
 from cross_auth.exceptions import CrossAuthException
 
 from .models import ExclusiveAttachmentAccount, SharedAttachmentAccount, User
-from .test_postgres import pg_engine  # noqa: F401 - shared PostgreSQL fixture
 
 
-@pytest.fixture(
-    params=[
-        "sqlite-exclusive",
-        "sqlite-shared",
-        "postgresql-exclusive",
-        "postgresql-shared",
-    ]
-)
-def attachment_store(request, tmp_path):
-    dialect, policy = request.param.split("-")
-    if dialect == "postgresql":
-        engine = request.getfixturevalue("pg_engine")
-    else:
-        engine = create_engine(
-            f"sqlite:///{tmp_path / 'accounts.db'}",
-            connect_args={"check_same_thread": False, "timeout": 10},
-        )
-
-        @event.listens_for(engine, "connect")
-        def enable_foreign_keys(connection, _record):
-            connection.execute("PRAGMA foreign_keys=ON")
-
-        SQLModel.metadata.create_all(engine)
-
+@pytest.fixture(params=["exclusive", "shared"])
+def attachment_store(request, signup_engine):
     model = (
-        SharedAttachmentAccount if policy == "shared" else ExclusiveAttachmentAccount
+        SharedAttachmentAccount
+        if request.param == "shared"
+        else ExclusiveAttachmentAccount
     )
-    yield SQLModelAccountsStorage(User, model, session_factory=lambda: Session(engine))
-
-    if dialect == "sqlite":
-        engine.dispose()
+    return SQLModelAccountsStorage(
+        User, model, session_factory=lambda: Session(signup_engine)
+    )
 
 
 def create(store, owner, identity, *, login=False, **kwargs):

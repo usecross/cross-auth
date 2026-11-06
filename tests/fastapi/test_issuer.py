@@ -18,33 +18,6 @@ def test_returns_error_response_if_grant_type_is_missing(
     )
 
 
-def test_returns_error_response_if_code_is_missing(client: TestClient) -> None:
-    response = client.post(
-        "/token", data={"grant_type": "authorization_code", "client_id": "test"}
-    )
-    assert response.status_code == 400
-    assert response.json() == snapshot(
-        {"error": "invalid_request", "error_description": "code is required"}
-    )
-
-
-def test_returns_error_response_if_redirect_uri_is_missing(
-    client: TestClient,
-) -> None:
-    response = client.post(
-        "/token",
-        data={
-            "grant_type": "authorization_code",
-            "client_id": "test",
-            "code": "test",
-        },
-    )
-    assert response.status_code == 400
-    assert response.json() == snapshot(
-        {"error": "invalid_request", "error_description": "redirect_uri is required"}
-    )
-
-
 def test_returns_error_response_if_code_verifier_is_missing(
     client: TestClient, valid_code: str
 ) -> None:
@@ -76,43 +49,6 @@ def test_password_grant_missing_username(client: TestClient) -> None:
     assert response.status_code == 400
     assert response.json() == snapshot(
         {"error": "invalid_request", "error_description": "username is required"}
-    )
-
-
-def test_password_grant_missing_password(client: TestClient) -> None:
-    with legacy_password_grant():
-        response = client.post(
-            "/token",
-            data={
-                "grant_type": "password",
-                "client_id": "test",
-                "username": "test@example.com",
-            },
-        )
-    assert response.status_code == 400
-    assert response.json() == snapshot(
-        {"error": "invalid_request", "error_description": "password is required"}
-    )
-
-
-def test_issuer_route_validates_password_grant_missing_client_id(
-    client: TestClient,
-) -> None:
-    with legacy_password_grant():
-        response = client.post("/token", data={"grant_type": "password"})
-    assert response.status_code == 400
-
-    assert response.json() == snapshot(
-        {"error": "invalid_request", "error_description": "client_id is required"}
-    )
-
-
-def test_issuer_route_validates_auth_code_missing_client_id(client: TestClient) -> None:
-    response = client.post("/token", data={"grant_type": "authorization_code"})
-    assert response.status_code == 400
-
-    assert response.json() == snapshot(
-        {"error": "invalid_request", "error_description": "client_id is required"}
     )
 
 

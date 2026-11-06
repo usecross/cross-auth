@@ -9,12 +9,7 @@ from sqlalchemy import event
 from sqlmodel import Session, select
 
 from .models import AccountsStore, SocialAccount, User
-from .test_atomic_signup import identity_data, user_data
-from . import test_atomic_signup
-from .test_postgres import pg_engine  # noqa: F401
-
-
-signup_engine = test_atomic_signup.signup_engine
+from .support import identity_data, user_data
 
 
 @pytest.fixture

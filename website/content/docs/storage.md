@@ -137,10 +137,17 @@ accounts_storage = SQLModelAccountsStorage(
 ```
 
 `create_user_with_identity` saves the new user, provider identity, and required
-application rows in one adapter-owned transaction. If any part fails, all of
-those writes roll back. It returns both records fully loaded, so they stay
-readable after the session closes. Like standalone `create_user`, it bypasses
-`filter_user_query` when returning the newly created user.
+application rows in one adapter-owned transaction, subject to the bind and
+builder requirements below. If any part fails, writes in that transaction roll
+back. It returns both records fully loaded, so they stay readable after the
+session closes. Like standalone `create_user`, it bypasses `filter_user_query`
+when returning the newly created user.
+
+`UserModel` and `SocialAccountModel` must resolve through `Session.get_bind` to
+the **same `Engine` or `Connection` object**. Two engines pointing at the same
+database URL are not sufficient. A split binding raises `RuntimeError` before
+user construction or writes; signup is not a distributed transaction across
+binds. Application rows queued by `build_user` must share that bind too.
 
 The default user creation validates and applies mapped `extra_fields` from the
 `user.create` hook, then assigns `email_verified` through the model attribute.
@@ -155,9 +162,18 @@ implementation.
 If related rows must commit atomically with the user, subclass the adapter and
 override its public `build_user` method. Existing `_build_user` overrides remain
 supported, but new code should use `build_user`. Call `super()`, add your rows
-to the supplied session, and return the user. Do not commit or perform external
-I/O here; the adapter owns the transaction boundary. During signup, these rows
-commit together with the provider identity.
+to the supplied session, and return the user; the adapter adds the returned
+user. Prefer queuing related rows with `session.add()` and letting the adapter
+flush them. Before its first flush during signup, it checks that all pending,
+dirty and deleted rows resolve to the same transactional bind as the user and
+identity, raising `RuntimeError` for a mismatch.
+
+Do not commit or perform external I/O here; the adapter owns the transaction
+boundary. A custom builder that executes SQL itself, including SQL emitted by an
+explicit flush or autoflush, is responsible for keeping those writes in the
+supplied session's same-bind transaction. The queued-row check does not validate
+SQL already executed by the builder or make cross-bind writes atomic. With that
+contract, related rows commit or roll back together with the provider identity.
 
 ```python
 class AccountsStore(SQLModelAccountsStorage[User, SocialAccount]):
@@ -238,6 +254,14 @@ fields remain required. The social-account model must still expose the five
 credential attributes as readable properties because Cross-Auth reads them when
 preserving credentials during a tokenless sign-in. A storage that never persists
 credentials can return `None` from those properties.
+
+Mapped credential expiry columns are normalized to timezone-aware values on
+reads: naive datetimes returned by the database are labeled UTC. Property-backed
+`access_token_expires_at` and `refresh_token_expires_at` must themselves return
+a timezone-aware `datetime` or `None`, even if their backing columns are naive.
+The adapter does not assign to read-only properties or normalize their backing
+fields; a property returning a naive datetime raises `TypeError` when read by
+the adapter.
 
 #### Adapter customization
 
@@ -412,6 +436,13 @@ try:
 except InvalidCursorError:
     raise HTTPException(status_code=400, detail="Invalid cursor")
 ```
+
+The built-in cursor encoder and decoder both limit cursors to **4096 encoded
+characters**, including the encoded ordering, timestamp, and JSON-escaped row
+ID. This is not a 4096-character allowance for the ID alone. Pagination supports
+integer, string and UUID session IDs; an ID that makes the encoded cursor too
+large causes encoding to raise `ValueError` (use shorter IDs). An incoming
+cursor over the same limit raises `InvalidCursorError`.
 
 ### The session factory
 

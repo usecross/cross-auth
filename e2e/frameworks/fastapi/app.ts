@@ -20,9 +20,7 @@ const python = [
 ]
 
 export const fastapi: Framework = {
-  basePort: 8180,
-
-  async start({ port, dataDir, logFile }) {
+  async start({ port, dataDir, logFile, env = {} }) {
     const baseURL = `http://127.0.0.1:${port}`
     const database = join(dataDir, "db.sqlite3")
     const command = (...args: string[]) => ({
@@ -33,9 +31,14 @@ export const fastapi: Framework = {
         EXAMPLE_BASE_URL: baseURL,
         EXAMPLE_DATABASE_URL: `sqlite:///${database}`,
         E2E_DATABASE: database,
-        GOOGLE_EMULATOR_URL: emulatorUrl(),
-        GOOGLE_CLIENT_ID,
-        GOOGLE_CLIENT_SECRET,
+        ...(process.env.GOOGLE_EMULATOR_URL
+          ? {
+              GOOGLE_EMULATOR_URL: emulatorUrl(),
+              GOOGLE_CLIENT_ID,
+              GOOGLE_CLIENT_SECRET,
+            }
+          : {}),
+        ...env,
       },
     })
     const state = (...args: string[]) =>

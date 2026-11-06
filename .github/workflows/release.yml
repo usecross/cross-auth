@@ -17,7 +17,7 @@ jobs:
       has_release: ${{ steps.check.outputs.has_release }}
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -29,22 +29,9 @@ jobs:
             echo "has_release=true" >> $GITHUB_OUTPUT
           else
             echo "has_release=false" >> $GITHUB_OUTPUT
-            if [ "${{ github.event_name }}" = "pull_request" ]; then
-              exit 1
-            fi
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload .autopub
-        if: steps.check.outputs.has_release == 'true'
-        run: |
-          if [ -d ".autopub" ]; then
-            echo "Found .autopub directory"
-          else
-            echo "No .autopub directory found"
-            exit 1
-          fi
 
       - name: Upload .autopub artifact
         if: steps.check.outputs.has_release == 'true'
@@ -53,11 +40,7 @@ jobs:
           name: autopub-data
           path: .autopub
           include-hidden-files: true
-
-      - name: Debug Info
-        run: |
-          echo "GitHub ref: ${{ github.ref }}"
-          echo "has_release value: ${{ steps.check.outputs.has_release }}"
+          if-no-files-found: error
 
   publish:
     needs: check-release
@@ -65,12 +48,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Debug Info
-        run: |
-          echo "GitHub ref: ${{ github.ref }}"
-          echo "has_release value: ${{ needs.check-release.outputs.has_release }}"
-
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5

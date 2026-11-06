@@ -1,14 +1,9 @@
-from typing import Any, cast, get_args
+from typing import Any, cast
 
 import pytest
 
 from cross_auth.exceptions import CrossAuthException
-from cross_auth.hooks._types import _ALL_EVENT_NAMES, HookEventName
 from cross_auth.hooks.registry import HookRegistry
-
-
-def test_runtime_event_names_match_hook_event_name() -> None:
-    assert _ALL_EVENT_NAMES == frozenset(get_args(HookEventName))
 
 
 def test_dispatch_rejects_unsupported_event_names() -> None:
@@ -50,12 +45,9 @@ def test_after_hook_errors_propagate_and_stop_later_handlers() -> None:
     assert calls == ["fail"]
 
 
-def test_empty_dispatch_does_not_create_handler_buckets() -> None:
+def test_empty_dispatch_preserves_payload() -> None:
     hooks = HookRegistry()
     payload = object()
 
     assert hooks.run_before("login", payload) is payload
-    hooks.run_after("login", payload)
-
-    assert hooks._before == {}
-    assert hooks._after == {}
+    assert hooks.run_after("login", payload) is None

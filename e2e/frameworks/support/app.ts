@@ -40,11 +40,10 @@ export interface App {
 }
 
 export interface Framework {
-  // Worker N serves on basePort + N.
-  readonly basePort: number
   start(options: {
     port: number
     dataDir: string
     logFile: string
+    env?: Record<string, string>
   }): Promise<App & { stop(): Promise<void> }>
 }

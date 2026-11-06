@@ -1,28 +1,54 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-
 import hashlib
 import json
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
-from typing import Any, Literal, NamedTuple, cast
+from collections.abc import Callable
+from dataclasses import replace
+from datetime import datetime, timezone
+from typing import Any, Literal, cast
 
-from cross_web import Cookie, HTTPRequest
-from pydantic import BaseModel, Field, ValidationError
+from cross_web import HTTPRequest
+from pydantic import BaseModel, ValidationError
 
+from ._accounts import (
+    VerifiedIdentityGuard,
+    _check_login_link_email,
+    attach_social_account,
+    resolve_user_for_sign_in,
+)
+from ._accounts import require_committed_accounts as _require_committed_accounts
+from ._authorization import (
+    _AUTH_REQUEST_KEY,
+    _AUTH_REQUEST_TTL,
+    _LINK_CODE_KEY,
+    _LINK_CODE_TTL,
+    AuthRequest,
+    ClientAuthorization,
+    ConnectAuthorization,
+    InitiateLinkRequest,
+    LinkAuthorization,
+    LinkCodeData,
+    SessionAuthorization,
+    TokenAuthorization,
+    _binding_cookie,
+    _load_auth_request,
+    _proxy_redirect_uri,
+    begin_authorization,
+)
+from ._authorization_code import AUTH_CODE_KEY as _AUTH_CODE_KEY
+from ._authorization_code import AUTH_CODE_TTL as _AUTH_CODE_TTL
+from ._authorization_code import AuthorizationCodeGrantData
 from ._context import Context
-from ._issuer import AuthorizationCodeGrantData
 from ._login import (
     BrowserLogin,
     login_with_session,
     logout_session,
-    require_immediate_commit,
     run_now,
 )
-from ._session import _get_header
-from ._storage import SocialAccount, SocialAccountCreate, User
+from ._request import get_header
+from ._storage import CommitCallback, User
 from .exceptions import CrossAuthException
 from .hooks import (
     AfterOAuthAuthorizeEvent,
@@ -30,17 +56,11 @@ from .hooks import (
     AfterOAuthDisconnectEvent,
     AfterOAuthFinalizeLinkEvent,
     AfterOAuthLinkEvent,
-    AfterSocialAccountCreateEvent,
-    AfterSocialAccountUpdateEvent,
-    AfterUserCreateEvent,
     BeforeOAuthAuthorizeEvent,
     BeforeOAuthCallbackEvent,
     BeforeOAuthDisconnectEvent,
     BeforeOAuthFinalizeLinkEvent,
     BeforeOAuthLinkEvent,
-    BeforeSocialAccountCreateEvent,
-    BeforeSocialAccountUpdateEvent,
-    BeforeUserCreateEvent,
     LogoutScope,
     ProviderSnapshot,
     SocialAccountSnapshot,
@@ -54,92 +74,16 @@ from .social_providers.oauth import (
     UserInfo,
     ValidatedUserInfo,
 )
-from .utils._pkce import (
-    calculate_s256_challenge,
-    generate_code_verifier,
-    validate_pkce,
-)
+from .utils._pkce import validate_pkce
 from .utils._response import Response
-from .utils._url import construct_relative_url
 
 logger = logging.getLogger(__name__)
 
 EXPECTED_OAUTH_CALLBACK_ERRORS = {"access_denied"}
 
 
-FlowKind = Literal[
-    # Sign in and set a session cookie in the browser.
-    "session",
-    # Sign in and return an authorization code for the client to exchange.
-    "token",
-    # Add a provider account to an authenticated user after the client redeems
-    # a link code at finalize-link with its PKCE verifier.
-    "link",
-    # Add a provider account to an authenticated user during the callback,
-    # then redirect back to the app without a separate finalize-link step.
-    "connect",
-]
-
-
-class AuthRequest(BaseModel):
-    """Stored state for an in-progress authorization at the provider.
-
-    Keyed by `oauth:authorization_request:v2:{state}` in secondary storage.
-    Replaces the pre-refactor OAuth2AuthorizationRequestData.
-    """
-
-    flow: FlowKind
-    provider_id: str
-    state: str
-    provider_code_verifier: str | None = None
-    provider_data: dict[str, str] = Field(default_factory=dict)
-    browser_binding: str
-    expires_at: datetime
-
-    # Session + connect flows: where to redirect the user after completion.
-    next_url: str | None = None
-
-    # Token flow: the client app's OAuth parameters.
-    client_id: str | None = None
-    client_redirect_uri: str | None = None
-    client_state: str | None = None
-    client_code_challenge: str | None = None
-    client_code_challenge_method: Literal["S256"] | None = None
-
-    # Link + connect flows: the user who initiated attaching a social account.
-    user_id: str | None = None
-
-    # Connect flow: also make the attached account a login method.
-    allow_login: bool = False
-
-
-class LinkCodeData(BaseModel):
-    """Stored after a successful link callback; redeemed by finalize-link."""
-
-    expires_at: datetime
-    provider_id: str | None = None
-    client_id: str
-    redirect_uri: str
-    code_challenge: str
-    code_challenge_method: Literal["S256"]
-    user_id: str
-    provider_code: str
-    provider_code_verifier: str | None = None
-    provider_data: dict[str, str] = Field(default_factory=dict)
-    client_state: str | None = None
-    provider_callback_extra: dict[str, Any] | None = None
-
-
 class LogoutRequest(BaseModel):
     scope: LogoutScope = "current"
-
-
-class InitiateLinkRequest(BaseModel):
-    redirect_uri: str
-    code_challenge: str
-    code_challenge_method: Literal["S256"]
-    client_id: str
-    state: str | None = None
 
 
 class InitiateLinkResponse(BaseModel):
@@ -154,91 +98,10 @@ class DisconnectResponse(BaseModel):
 OnVerified = Callable[[AuthRequest, ValidatedUserInfo], None]
 
 
-class ResolvedUser(NamedTuple):
-    user: User
-    created: bool
-
-
-class ResolvedSocialAccount(NamedTuple):
-    account: SocialAccount
-    created: bool
-
-
-_AUTH_REQUEST_KEY = "oauth:authorization_request:v2:{state}"
-_LINK_CODE_KEY = "oauth:link_request:v2:{code}"
-_AUTH_CODE_KEY = "oauth:code:{code}"
-_AUTH_CODE_TTL = timedelta(minutes=10)
-_LINK_CODE_TTL = timedelta(minutes=10)
-# How long a user has to complete the redirect dance at the provider. Also the
-# TTL of the stored state, so abandoned flows don't accumulate in storage.
-_AUTH_REQUEST_TTL = timedelta(minutes=10)
-
-
-def _binding_cookie(
-    request: HTTPRequest, context: Context, state: str, value: str, *, max_age: int
-) -> Cookie:
-    secure = (context.base_url or str(request.url)).startswith("https://")
-    prefix = "__Host-" if secure else ""
-    return Cookie(
-        name=f"{prefix}cross_auth_oauth_{state}",
-        value=value,
-        secure=secure,
-        path="/",
-        max_age=max_age,
-        httponly=True,
-        samesite="lax",
-    )
-
-
-def _store_auth_request(
-    context: Context, request: HTTPRequest, data: AuthRequest, binding: str
-) -> Cookie:
-    context.secondary_storage.set(
-        _AUTH_REQUEST_KEY.format(state=data.state),
-        data.model_dump_json(),
-        ttl=int(_AUTH_REQUEST_TTL.total_seconds()),
-    )
-    return _binding_cookie(
-        request,
-        context,
-        data.state,
-        binding,
-        max_age=int(_AUTH_REQUEST_TTL.total_seconds()),
-    )
-
-
-def _load_auth_request(context: Context, state: str) -> AuthRequest | None:
-    raw = context.secondary_storage.get(_AUTH_REQUEST_KEY.format(state=state))
-    if raw is None:
-        return None
-    try:
-        data = AuthRequest.model_validate_json(raw)
-    except ValidationError:
-        return None
-
-    if data.expires_at <= datetime.now(tz=timezone.utc):
-        return None
-    return data
-
-
-def _generate_provider_pkce(
-    provider: OAuth2Provider,
-) -> tuple[str | None, str | None, str | None]:
-    if not provider.supports_pkce:
-        return None, None, None
-    verifier = generate_code_verifier()
-    return verifier, calculate_s256_challenge(verifier), "S256"
-
-
-def _proxy_redirect_uri(request: HTTPRequest, context: Context) -> str:
-    return construct_relative_url(str(request.url), "callback", context.base_url)
-
-
 def _is_safe_next_url(next_url: str) -> bool:
     """Only allow relative paths for `next` to prevent open-redirect."""
     if not next_url.startswith("/"):
         return False
-    # Disallow protocol-relative URLs like //evil.com/path
     if next_url.startswith("//"):
         return False
     # Browsers read /\evil.com as //evil.com and drop tabs and newlines.
@@ -408,38 +271,17 @@ def start_session_flow(
     if not _is_safe_next_url(next_url):
         next_url = context.default_next_url
 
-    state = secrets.token_hex(16)
-    verifier, challenge, challenge_method = _generate_provider_pkce(provider)
-    provider_data = provider.get_authorization_data()
-
-    binding = secrets.token_urlsafe(32)
-    binding_cookie = _store_auth_request(
-        context,
+    attempt = begin_authorization(
+        provider,
         request,
-        AuthRequest(
-            flow="session",
-            provider_id=provider.id,
-            state=state,
-            browser_binding=hashlib.sha256(binding.encode()).hexdigest(),
-            expires_at=datetime.now(tz=timezone.utc) + _AUTH_REQUEST_TTL,
-            provider_code_verifier=verifier,
-            provider_data=provider_data,
-            next_url=next_url,
+        context,
+        SessionAuthorization(
+            next_url=next_url, login_hint=request.query_params.get("login_hint")
         ),
-        binding=binding,
     )
-
-    authorization_url = provider.build_authorization_url(
-        provider_data=provider_data,
-        state=state,
-        redirect_uri=_proxy_redirect_uri(request, context),
-        request=request,
-        code_challenge=challenge,
-        code_challenge_method=challenge_method,
-        login_hint=request.query_params.get("login_hint"),
+    return Response.redirect(
+        attempt.authorization_url, cookies=[attempt.binding_cookie]
     )
-
-    return Response.redirect(authorization_url, cookies=[binding_cookie])
 
 
 def start_connect_flow(
@@ -469,39 +311,17 @@ def start_connect_flow(
     if not _is_safe_next_url(next_url):
         next_url = context.default_next_url
 
-    state = secrets.token_hex(16)
-    verifier, challenge, challenge_method = _generate_provider_pkce(provider)
-    provider_data = provider.get_authorization_data()
-
-    binding = secrets.token_urlsafe(32)
-    binding_cookie = _store_auth_request(
-        context,
+    attempt = begin_authorization(
+        provider,
         request,
-        AuthRequest(
-            flow="connect",
-            provider_id=provider.id,
-            state=state,
-            browser_binding=hashlib.sha256(binding.encode()).hexdigest(),
-            expires_at=datetime.now(tz=timezone.utc) + _AUTH_REQUEST_TTL,
-            provider_code_verifier=verifier,
-            provider_data=provider_data,
-            next_url=next_url,
-            user_id=str(user.id),
-            allow_login=allow_login,
+        context,
+        ConnectAuthorization(
+            user_id=str(user.id), next_url=next_url, allow_login=allow_login
         ),
-        binding=binding,
     )
-
-    authorization_url = provider.build_authorization_url(
-        provider_data=provider_data,
-        state=state,
-        redirect_uri=_proxy_redirect_uri(request, context),
-        request=request,
-        code_challenge=challenge,
-        code_challenge_method=challenge_method,
+    return Response.redirect(
+        attempt.authorization_url, cookies=[attempt.binding_cookie]
     )
-
-    return Response.redirect(authorization_url, cookies=[binding_cookie])
 
 
 def start_token_flow(
@@ -595,39 +415,20 @@ def start_token_flow(
             state=client_state,
         )
 
-    state = secrets.token_hex(16)
-    verifier, challenge, challenge_method = _generate_provider_pkce(provider)
-    provider_data = provider.get_authorization_data()
-
-    binding = secrets.token_urlsafe(32)
-    binding_cookie = _store_auth_request(
-        context,
+    attempt = begin_authorization(
+        provider,
         request,
-        AuthRequest(
-            flow="token",
-            provider_id=provider.id,
-            state=state,
-            browser_binding=hashlib.sha256(binding.encode()).hexdigest(),
-            expires_at=datetime.now(tz=timezone.utc) + _AUTH_REQUEST_TTL,
-            provider_code_verifier=verifier,
-            provider_data=provider_data,
-            client_id=client_id,
-            client_redirect_uri=redirect_uri,
-            client_state=client_state,
-            client_code_challenge=code_challenge,
-            client_code_challenge_method=validated_code_challenge_method,
+        context,
+        TokenAuthorization(
+            client=ClientAuthorization(
+                client_id=client_id,
+                redirect_uri=redirect_uri,
+                state=client_state,
+                code_challenge=code_challenge,
+                code_challenge_method=validated_code_challenge_method,
+            ),
+            login_hint=authorize_event.login_hint,
         ),
-        binding=binding,
-    )
-
-    authorization_url = provider.build_authorization_url(
-        provider_data=provider_data,
-        state=state,
-        redirect_uri=_proxy_redirect_uri(request, context),
-        request=request,
-        code_challenge=challenge,
-        code_challenge_method=challenge_method,
-        login_hint=authorize_event.login_hint,
     )
 
     context.hooks.run_after(
@@ -641,12 +442,14 @@ def start_token_flow(
             login_hint=authorize_event.login_hint,
             code_challenge=code_challenge,
             code_challenge_method=validated_code_challenge_method,
-            state=state,
-            authorization_url=authorization_url,
+            state=attempt.data.state,
+            authorization_url=attempt.authorization_url,
         ),
     )
 
-    return Response.redirect(authorization_url, cookies=[binding_cookie])
+    return Response.redirect(
+        attempt.authorization_url, cookies=[attempt.binding_cookie]
+    )
 
 
 def handle_callback(
@@ -953,8 +756,8 @@ def _complete_sign_in(
     login: BrowserLogin | None,
 ) -> Response:
     """Check login eligibility and complete a session or token sign-in."""
-    provider_snapshot = ProviderSnapshot.of(provider)
-    raw_claims = _raw_identity_claims(user_info)
+    identity_guard = VerifiedIdentityGuard.of(provider, validated, user_info)
+    provider_snapshot = identity_guard.provider
     callback_event = BeforeOAuthCallbackEvent(
         provider=provider_snapshot,
         request=request,
@@ -975,13 +778,7 @@ def _complete_sign_in(
             status_code=e.status_code,
         )
 
-    _check_verified_identity(
-        "oauth.callback",
-        callback_event,
-        provider=provider_snapshot,
-        validated=validated,
-        raw_claims=raw_claims,
-    )
+    identity_guard.check("oauth.callback", callback_event)
     user_info = callback_event.user_info
 
     try:
@@ -999,9 +796,28 @@ def _complete_sign_in(
 
     _require_committed_accounts(context)
 
+    after_event = AfterOAuthCallbackEvent(
+        provider=provider,
+        request=request,
+        auth_request=auth_request,
+        callback_data=callback_data,
+        token_response=token_response,
+        user_info=user_info,
+        validated_user_info=validated,
+        user=resolved_user.user,
+        social_account=resolved_social_account.account,
+        created_user=resolved_user.user if resolved_user.created else None,
+        created_social_account=(
+            resolved_social_account.account if resolved_social_account.created else None
+        ),
+        authorization_code=None,
+        redirect_uri=None,
+        client_state=None,
+    )
+
     if auth_request.flow == "session":
         try:
-            response = _complete_session(
+            response, on_commit = _complete_session(
                 auth_request,
                 resolved_user.user,
                 context,
@@ -1016,34 +832,7 @@ def _complete_sign_in(
                 status_code=e.status_code,
             )
 
-        session_event = AfterOAuthCallbackEvent(
-            provider=provider,
-            request=request,
-            auth_request=auth_request,
-            callback_data=callback_data,
-            token_response=token_response,
-            user_info=user_info,
-            validated_user_info=validated,
-            user=resolved_user.user,
-            social_account=resolved_social_account.account,
-            created_user=resolved_user.user if resolved_user.created else None,
-            created_social_account=(
-                resolved_social_account.account
-                if resolved_social_account.created
-                else None
-            ),
-            authorization_code=None,
-            redirect_uri=None,
-            client_state=None,
-        )
-        # The login's session is the last write; follow its commit.
-        if login is not None:
-            on_commit = login.on_commit
-        elif context.session_storage is not None:
-            on_commit = context.session_storage.on_commit
-        else:
-            on_commit = run_now
-        on_commit(lambda: context.hooks.run_after("oauth.callback", session_event))
+        on_commit(lambda: context.hooks.run_after("oauth.callback", after_event))
 
         return response
 
@@ -1055,22 +844,8 @@ def _complete_sign_in(
         # has no transactions, so the code is already durable.
         context.hooks.run_after(
             "oauth.callback",
-            AfterOAuthCallbackEvent(
-                provider=provider,
-                request=request,
-                auth_request=auth_request,
-                callback_data=callback_data,
-                token_response=token_response,
-                user_info=user_info,
-                validated_user_info=validated,
-                user=resolved_user.user,
-                social_account=resolved_social_account.account,
-                created_user=resolved_user.user if resolved_user.created else None,
-                created_social_account=(
-                    resolved_social_account.account
-                    if resolved_social_account.created
-                    else None
-                ),
+            replace(
+                after_event,
                 authorization_code=code,
                 redirect_uri=auth_request.client_redirect_uri,
                 client_state=auth_request.client_state,
@@ -1080,20 +855,6 @@ def _complete_sign_in(
         return response
 
     return Response.error("server_error", error_description="Unknown flow")
-
-
-def _require_committed_accounts(context: Context) -> None:
-    """Refuse to issue a credential or code for uncommitted account changes.
-
-    Raises while an accounts storage defers its commit callbacks, as one that
-    joined an application transaction does. Built-in sign-in does not support
-    that: the login could outlive a rolled-back user.
-    """
-    require_immediate_commit(
-        context.accounts_storage.on_commit,
-        "Sign-in cannot issue a login while account changes are uncommitted; "
-        "do not run the sign-in flow inside an application transaction",
-    )
 
 
 def _flow_error(
@@ -1106,7 +867,7 @@ def _flow_error(
     """Render an error in a way appropriate to the flow.
 
     Token flow redirects to client with error params (so the client sees it).
-    Session/link flows return a JSON error.
+    Session/link/connect flows return a JSON error.
     """
     if auth_request.flow == "token" and auth_request.client_redirect_uri:
         return Response.error_redirect(
@@ -1123,496 +884,6 @@ def _flow_error(
     )
 
 
-def _create_user_with_identity(
-    *,
-    context: Context,
-    user_info: dict[str, Any],
-    email: str,
-    email_verified: bool,
-    identity: Callable[[User], SocialAccountCreate],
-) -> tuple[User, SocialAccount]:
-    raw_claims = _raw_identity_claims(user_info)
-    event = context.hooks.run_before(
-        "user.create",
-        BeforeUserCreateEvent(
-            user_info=user_info,
-            email=email,
-            email_verified=email_verified,
-            extra_fields={},
-        ),
-    )
-    if (
-        event.email != email
-        or event.email_verified != email_verified
-        or _raw_identity_claims(event.user_info) != raw_claims
-    ):
-        raise ValueError(
-            "user.create before hooks cannot change email, email_verified or "
-            f"{_RAW_IDENTITY_CLAIMS_TEXT}; configure normalize_email to "
-            "canonicalize emails"
-        )
-    identity_data: SocialAccountCreate | None = None
-
-    def prepare_identity(user: User) -> SocialAccountCreate:
-        nonlocal identity_data
-        identity_data = identity(user)
-        return identity_data
-
-    user, social_account = context.accounts_storage.create_user_with_identity(
-        user={
-            "user_info": event.user_info,
-            "email": email,
-            "email_verified": email_verified,
-            "extra_fields": event.extra_fields,
-        },
-        identity=prepare_identity,
-    )
-    assert identity_data is not None
-
-    user_event = AfterUserCreateEvent(user_info=event.user_info, user=user)
-    account_event = AfterSocialAccountCreateEvent(
-        user_info=identity_data["user_info"], social_account=social_account
-    )
-
-    # One callback, so a failing user.create hook still skips the next one.
-    def run_after_hooks() -> None:
-        context.hooks.run_after("user.create", user_event)
-        context.hooks.run_after("social_account.create", account_event)
-
-    context.accounts_storage.on_commit(run_after_hooks)
-    return user, social_account
-
-
-def _prepare_social_account(
-    *,
-    context: Context,
-    user_id: Any,
-    provider: str,
-    provider_user_id: str,
-    access_token: str | None,
-    refresh_token: str | None,
-    access_token_expires_at: datetime | None,
-    refresh_token_expires_at: datetime | None,
-    scope: str | None,
-    user_info: dict[str, Any],
-    provider_email: str | None,
-    provider_email_verified: bool | None,
-    is_login_method: bool,
-) -> SocialAccountCreate:
-    raw_claims = _raw_identity_claims(user_info)
-    event = context.hooks.run_before(
-        "social_account.create",
-        BeforeSocialAccountCreateEvent(
-            user_id=user_id,
-            provider=provider,
-            provider_user_id=provider_user_id,
-            access_token=access_token,
-            refresh_token=refresh_token,
-            access_token_expires_at=access_token_expires_at,
-            refresh_token_expires_at=refresh_token_expires_at,
-            scope=scope,
-            user_info=user_info,
-            provider_email=provider_email,
-            provider_email_verified=provider_email_verified,
-            is_login_method=is_login_method,
-            extra_fields={},
-        ),
-    )
-    if (
-        event.user_id != user_id
-        or event.provider != provider
-        or event.provider_user_id != provider_user_id
-        or event.is_login_method != is_login_method
-        or event.provider_email != provider_email
-        or event.provider_email_verified != provider_email_verified
-        or _raw_identity_claims(event.user_info) != raw_claims
-    ):
-        raise ValueError(
-            "social_account.create before hooks cannot change user_id, provider, "
-            "provider_user_id, is_login_method, provider_email, "
-            f"provider_email_verified or {_RAW_IDENTITY_CLAIMS_TEXT}"
-        )
-    return SocialAccountCreate(
-        user_id=user_id,
-        provider=provider,
-        provider_user_id=provider_user_id,
-        access_token=event.access_token,
-        refresh_token=event.refresh_token,
-        access_token_expires_at=event.access_token_expires_at,
-        refresh_token_expires_at=event.refresh_token_expires_at,
-        scope=event.scope,
-        user_info=event.user_info,
-        provider_email=provider_email,
-        provider_email_verified=provider_email_verified,
-        is_login_method=is_login_method,
-        extra_fields=event.extra_fields,
-    )
-
-
-def _check_social_account_ownership(
-    context: Context,
-    *,
-    user_id: Any,
-    provider: str,
-    provider_user_id: str,
-    is_login_method: bool,
-) -> None:
-    # Database constraints enforce this policy when requests race these checks.
-    allow_shared_connections = context.config.get("account_linking", {}).get(
-        "allow_shared_connections", False
-    )
-    if not allow_shared_connections:
-        identity_exists = context.accounts_storage.has_social_account(
-            provider=provider, provider_user_id=provider_user_id
-        )
-        if (
-            identity_exists
-            and context.accounts_storage.find_social_account(
-                provider=provider,
-                provider_user_id=provider_user_id,
-                user_id=user_id,
-            )
-            is None
-        ):
-            raise CrossAuthException("account_already_linked")
-    elif is_login_method:
-        login_account = context.accounts_storage.find_social_account(
-            provider=provider,
-            provider_user_id=provider_user_id,
-            is_login_method=True,
-        )
-        if login_account is not None and not _same_id(login_account.user_id, user_id):
-            raise CrossAuthException("account_already_linked")
-
-
-def _create_social_account(
-    *,
-    context: Context,
-    user_id: Any,
-    provider: str,
-    provider_user_id: str,
-    access_token: str | None,
-    refresh_token: str | None,
-    access_token_expires_at: datetime | None,
-    refresh_token_expires_at: datetime | None,
-    scope: str | None,
-    user_info: dict[str, Any],
-    provider_email: str | None,
-    provider_email_verified: bool | None,
-    is_login_method: bool,
-) -> SocialAccount:
-    data = _prepare_social_account(
-        context=context,
-        user_id=user_id,
-        provider=provider,
-        provider_user_id=provider_user_id,
-        access_token=access_token,
-        refresh_token=refresh_token,
-        access_token_expires_at=access_token_expires_at,
-        refresh_token_expires_at=refresh_token_expires_at,
-        scope=scope,
-        user_info=user_info,
-        provider_email=provider_email,
-        provider_email_verified=provider_email_verified,
-        is_login_method=is_login_method,
-    )
-    _check_social_account_ownership(
-        context,
-        user_id=data["user_id"],
-        provider=data["provider"],
-        provider_user_id=data["provider_user_id"],
-        is_login_method=data["is_login_method"],
-    )
-
-    social_account = context.accounts_storage.create_social_account(**data)
-    after_event = AfterSocialAccountCreateEvent(
-        user_info=data["user_info"], social_account=social_account
-    )
-    context.accounts_storage.on_commit(
-        lambda: context.hooks.run_after("social_account.create", after_event)
-    )
-    return social_account
-
-
-def _update_social_account(
-    *,
-    context: Context,
-    social_account: SocialAccount,
-    access_token: str | None,
-    refresh_token: str | None,
-    access_token_expires_at: datetime | None,
-    refresh_token_expires_at: datetime | None,
-    scope: str | None,
-    user_info: dict[str, Any],
-    provider_email: str | None,
-    provider_email_verified: bool | None,
-    enable_login: bool = False,
-) -> SocialAccount:
-    snapshot = SocialAccountSnapshot.of(social_account)
-    raw_claims = _raw_identity_claims(user_info)
-    event = context.hooks.run_before(
-        "social_account.update",
-        BeforeSocialAccountUpdateEvent(
-            social_account=snapshot,
-            user_id=snapshot.user_id,
-            provider=snapshot.provider,
-            provider_user_id=snapshot.provider_user_id,
-            access_token=access_token,
-            refresh_token=refresh_token,
-            access_token_expires_at=access_token_expires_at,
-            refresh_token_expires_at=refresh_token_expires_at,
-            scope=scope,
-            user_info=user_info,
-            provider_email=provider_email,
-            provider_email_verified=provider_email_verified,
-            is_login_method=snapshot.is_login_method,
-            extra_fields={},
-        ),
-    )
-    if (
-        event.social_account != snapshot
-        or event.user_id != snapshot.user_id
-        or event.provider != snapshot.provider
-        or event.provider_user_id != snapshot.provider_user_id
-        or event.is_login_method != snapshot.is_login_method
-        # Compared with the incoming provider claims, not the stored ones, so a
-        # provider-verified email change still refreshes the account.
-        or event.provider_email != provider_email
-        or event.provider_email_verified != provider_email_verified
-        or _raw_identity_claims(event.user_info) != raw_claims
-    ):
-        raise ValueError(
-            "social_account.update before hooks cannot change the account, its "
-            "user_id, provider, provider_user_id, is_login_method, "
-            f"provider_email, provider_email_verified or {_RAW_IDENTITY_CLAIMS_TEXT}"
-        )
-    if enable_login and not social_account.is_login_method:
-        _check_social_account_ownership(
-            context,
-            user_id=social_account.user_id,
-            provider=social_account.provider,
-            provider_user_id=social_account.provider_user_id,
-            is_login_method=True,
-        )
-
-    updated_social_account = context.accounts_storage.update_social_account(
-        social_account.id,
-        access_token=event.access_token,
-        refresh_token=event.refresh_token,
-        access_token_expires_at=event.access_token_expires_at,
-        refresh_token_expires_at=event.refresh_token_expires_at,
-        scope=event.scope,
-        user_info=event.user_info,
-        provider_email=provider_email,
-        provider_email_verified=provider_email_verified,
-        enable_login=enable_login,
-        extra_fields=event.extra_fields,
-    )
-    after_event = AfterSocialAccountUpdateEvent(
-        user_info=event.user_info,
-        social_account=updated_social_account,
-    )
-    context.accounts_storage.on_commit(
-        lambda: context.hooks.run_after("social_account.update", after_event)
-    )
-    return updated_social_account
-
-
-# The standard identity claims of ``UserInfo``. The rest of ``user_info`` is
-# profile metadata hooks may adjust, but storage adapters may read these keys.
-_RAW_IDENTITY_CLAIMS = ("id", "email", "email_verified")
-_RAW_IDENTITY_CLAIMS_TEXT = "the user_info id, email or email_verified"
-
-
-def _raw_identity_claims(user_info: Mapping[str, object]) -> dict[str, object]:
-    return {key: user_info[key] for key in _RAW_IDENTITY_CLAIMS if key in user_info}
-
-
-def _check_verified_identity(
-    event_name: str,
-    event: BeforeOAuthCallbackEvent | BeforeOAuthFinalizeLinkEvent,
-    *,
-    provider: ProviderSnapshot,
-    validated: ValidatedUserInfo,
-    raw_claims: dict[str, object],
-) -> None:
-    # The verified claims select the account and decide auto-linking, signup
-    # and link checks, so hooks may read them but not change them. Callers keep
-    # using the original provider and claims; this only rejects the attempt.
-    if (
-        event.provider != provider
-        or event.validated_user_info != validated
-        or _raw_identity_claims(event.user_info) != raw_claims
-    ):
-        raise ValueError(
-            f"{event_name} before hooks cannot change the provider, the verified "
-            f"provider_user_id, email or email_verified, or {_RAW_IDENTITY_CLAIMS_TEXT}"
-        )
-
-
-def resolve_user_for_sign_in(
-    *,
-    provider: OAuth2Provider,
-    context: Context,
-    validated: ValidatedUserInfo,
-    user_info: dict[str, Any],
-    token_response: Any,
-) -> tuple[ResolvedUser, ResolvedSocialAccount]:
-    """Check whether a provider identity may sign in, then resolve its user."""
-    social_account = context.accounts_storage.find_social_account(
-        provider=provider.id,
-        provider_user_id=validated.provider_user_id,
-        is_login_method=True,
-    )
-
-    # Connections grant API access without implicitly granting sign-in access.
-    if social_account is None and context.accounts_storage.has_social_account(
-        provider=provider.id, provider_user_id=validated.provider_user_id
-    ):
-        raise CrossAuthException(
-            "access_denied", error_description="Sign-in is not allowed"
-        )
-
-    return resolve_or_create_user(
-        social_account=social_account,
-        provider=provider,
-        context=context,
-        validated=validated,
-        user_info=user_info,
-        token_response=token_response,
-    )
-
-
-def resolve_or_create_user(
-    *,
-    provider: OAuth2Provider,
-    context: Context,
-    validated: ValidatedUserInfo,
-    user_info: dict[str, Any],
-    token_response: Any,
-    social_account: SocialAccount | None,
-) -> tuple[ResolvedUser, ResolvedSocialAccount]:
-    """Find/create a user and social account after login eligibility is checked."""
-    if social_account:
-        # A token-less sign-in (native id_token: no OAuth code exchange)
-        # refreshes identity fields but must not clobber credentials stored by
-        # an earlier web flow — e.g. a Google refresh token that background
-        # API calls depend on. A web exchange always carries an access_token.
-        source = (
-            token_response
-            if token_response.access_token is not None
-            else social_account
-        )
-        social_account = _update_social_account(
-            context=context,
-            social_account=social_account,
-            access_token=source.access_token,
-            refresh_token=source.refresh_token,
-            access_token_expires_at=source.access_token_expires_at,
-            refresh_token_expires_at=source.refresh_token_expires_at,
-            scope=source.scope,
-            user_info=user_info,
-            provider_email=validated.email,
-            provider_email_verified=validated.email_verified,
-        )
-
-        user = context.accounts_storage.find_user_by_id(social_account.user_id)
-
-        if user is None:
-            raise CrossAuthException(
-                "server_error",
-                error_description="User not found for social account",
-            )
-
-        return (
-            ResolvedUser(user=user, created=False),
-            ResolvedSocialAccount(account=social_account, created=False),
-        )
-
-    if validated.email is None:
-        raise CrossAuthException(
-            "server_error",
-            error_description="No email provided by the identity provider",
-        )
-
-    # Lookups and creation use the normalized (canonical) form; the raw
-    # provider email is still stored on the social account as provider_email.
-    email = context.normalize_email(validated.email)
-    user = context.accounts_storage.find_user_by_email(email)
-    can_auto_link = provider.can_auto_link(context, validated.email_verified)
-
-    if user is not None and not can_auto_link:
-        raise CrossAuthException(
-            "account_not_linked",
-            error_description=(
-                "An account with this email exists but could not be linked "
-                "automatically."
-            ),
-        )
-
-    if user is None:
-        if (
-            context.config.get("require_verified_email", False)
-            and validated.email_verified is not True
-        ):
-            raise CrossAuthException(
-                "email_not_verified",
-                error_description=(
-                    "Please verify your email with the provider before signing up."
-                ),
-            )
-
-        def prepare_identity(created_user: User) -> SocialAccountCreate:
-            return _prepare_social_account(
-                context=context,
-                user_id=created_user.id,
-                provider=provider.id,
-                provider_user_id=validated.provider_user_id,
-                access_token=token_response.access_token,
-                refresh_token=token_response.refresh_token,
-                access_token_expires_at=token_response.access_token_expires_at,
-                refresh_token_expires_at=token_response.refresh_token_expires_at,
-                scope=token_response.scope,
-                user_info=user_info,
-                provider_email=validated.email,
-                provider_email_verified=validated.email_verified,
-                is_login_method=True,
-            )
-
-        user, account = _create_user_with_identity(
-            context=context,
-            user_info=user_info,
-            email=email,
-            email_verified=validated.email_verified or False,
-            identity=prepare_identity,
-        )
-        return (
-            ResolvedUser(user=user, created=True),
-            ResolvedSocialAccount(account=account, created=True),
-        )
-
-    created_social_account = _create_social_account(
-        context=context,
-        user_id=user.id,
-        provider=provider.id,
-        provider_user_id=validated.provider_user_id,
-        access_token=token_response.access_token,
-        refresh_token=token_response.refresh_token,
-        access_token_expires_at=token_response.access_token_expires_at,
-        refresh_token_expires_at=token_response.refresh_token_expires_at,
-        scope=token_response.scope,
-        user_info=user_info,
-        provider_email=validated.email,
-        provider_email_verified=validated.email_verified,
-        is_login_method=True,
-    )
-
-    return (
-        ResolvedUser(user=user, created=False),
-        ResolvedSocialAccount(account=created_social_account, created=True),
-    )
-
-
 def _complete_connect(
     *,
     auth_request: AuthRequest,
@@ -1620,7 +891,7 @@ def _complete_connect(
     context: Context,
     validated: ValidatedUserInfo,
     user_info: dict[str, Any],
-    token_response: Any,
+    token_response: TokenResponse,
 ) -> Response:
     """Attach the provider account to the user who started the connect flow."""
     assert auth_request.user_id is not None
@@ -1635,65 +906,18 @@ def _complete_connect(
     if auth_request.allow_login:
         _check_login_link_email(provider, context, validated, user)
 
-    social_account = context.accounts_storage.find_social_account(
-        provider=provider.id,
-        provider_user_id=validated.provider_user_id,
-        user_id=user.id,
+    attach_social_account(
+        provider=provider,
+        context=context,
+        user=user,
+        validated=validated,
+        user_info=user_info,
+        token_response=token_response,
+        allow_login=auth_request.allow_login,
     )
-
-    if social_account is not None:
-        _update_social_account(
-            context=context,
-            social_account=social_account,
-            enable_login=auth_request.allow_login,
-            access_token=token_response.access_token,
-            refresh_token=token_response.refresh_token,
-            access_token_expires_at=token_response.access_token_expires_at,
-            refresh_token_expires_at=token_response.refresh_token_expires_at,
-            scope=token_response.scope,
-            user_info=user_info,
-            provider_email=validated.email,
-            provider_email_verified=validated.email_verified,
-        )
-    else:
-        _create_social_account(
-            context=context,
-            user_id=user.id,
-            provider=provider.id,
-            provider_user_id=validated.provider_user_id,
-            access_token=token_response.access_token,
-            refresh_token=token_response.refresh_token,
-            access_token_expires_at=token_response.access_token_expires_at,
-            refresh_token_expires_at=token_response.refresh_token_expires_at,
-            scope=token_response.scope,
-            user_info=user_info,
-            provider_email=validated.email,
-            provider_email_verified=validated.email_verified,
-            is_login_method=auth_request.allow_login,
-        )
 
     next_url = auth_request.next_url or context.default_next_url
     return Response.redirect(next_url)
-
-
-def _check_login_link_email(
-    provider: OAuth2Provider,
-    context: Context,
-    validated: ValidatedUserInfo,
-    user: User,
-) -> None:
-    """Require a verified provider email, matching the user's unless allowed."""
-    if not provider.trusts_email(validated.email_verified):
-        raise CrossAuthException(
-            "email_not_verified",
-            "Cannot link account: email not verified by provider.",
-        )
-
-    if not provider.allows_different_emails(context, validated.email, user.email):
-        raise CrossAuthException(
-            "email_mismatch",
-            "Provider email does not match account email.",
-        )
 
 
 def _complete_session(
@@ -1703,10 +927,11 @@ def _complete_session(
     request: HTTPRequest,
     *,
     login: BrowserLogin | None,
-) -> Response:
+) -> tuple[Response, Callable[[CommitCallback], None]]:
     next_url = auth_request.next_url or context.default_next_url
     if login is not None:
-        return cast(
+        on_commit = login.on_commit
+        response = cast(
             Response,
             login.login(
                 user,
@@ -1714,17 +939,22 @@ def _complete_session(
                 login_method=auth_request.provider_id,
             ),
         )
+        return response, on_commit
 
+    session_storage = context.session_storage
     if not context.cookie_auth_enabled:
-        return Response.error(
+        response = Response.error(
             "server_error",
             error_description=(
                 "Cookie auth is not enabled for this deployment "
                 "(config['session']['cookies']['auth'])"
             ),
         )
+        return (
+            response,
+            run_now if session_storage is None else session_storage.on_commit,
+        )
 
-    session_storage = context.session_storage
     if session_storage is None:
         raise RuntimeError("Session flow not configured for this deployment")
 
@@ -1734,17 +964,15 @@ def _complete_session(
         hooks=context.hooks,
         session_storage=session_storage,
         session_config=context.session_config,
-        metadata={"user_agent": _get_header(request.headers, "user-agent")},
+        metadata={"user_agent": get_header(request.headers, "user-agent")},
         login_method=auth_request.provider_id,
     )
-    return cast(Response, response)
+    return cast(Response, response), session_storage.on_commit
 
 
 def _complete_token(
     auth_request: AuthRequest, user: User, context: Context
 ) -> tuple[str, Response]:
-    # All the token-flow client params must be present at this point — they were
-    # validated when we stored the AuthRequest.
     assert auth_request.client_id is not None
     assert auth_request.client_redirect_uri is not None
     assert auth_request.client_code_challenge is not None
@@ -1845,7 +1073,7 @@ def start_link_flow(
 
     try:
         link_request = InitiateLinkRequest.model_validate_json(request.body)
-    except (json.JSONDecodeError, ValidationError) as e:
+    except ValidationError as e:
         logger.error("Invalid request body: %s", e)
         return Response.error(
             "invalid_request", error_description="Invalid request body"
@@ -1876,39 +1104,20 @@ def start_link_flow(
             status_code=e.status_code,
         )
 
-    state = secrets.token_hex(16)
-    verifier, challenge, challenge_method = _generate_provider_pkce(provider)
-    provider_data = provider.get_authorization_data()
-
-    binding = secrets.token_urlsafe(32)
-    binding_cookie = _store_auth_request(
-        context,
+    attempt = begin_authorization(
+        provider,
         request,
-        AuthRequest(
-            flow="link",
-            provider_id=provider.id,
-            state=state,
-            browser_binding=hashlib.sha256(binding.encode()).hexdigest(),
-            expires_at=datetime.now(tz=timezone.utc) + _AUTH_REQUEST_TTL,
-            provider_code_verifier=verifier,
-            provider_data=provider_data,
-            client_id=link_request.client_id,
-            client_redirect_uri=link_request.redirect_uri,
-            client_state=link_request.state,
-            client_code_challenge=link_request.code_challenge,
-            client_code_challenge_method=link_request.code_challenge_method,
+        context,
+        LinkAuthorization(
             user_id=str(user.id),
+            client=ClientAuthorization(
+                client_id=link_request.client_id,
+                redirect_uri=link_request.redirect_uri,
+                state=link_request.state,
+                code_challenge=link_request.code_challenge,
+                code_challenge_method=link_request.code_challenge_method,
+            ),
         ),
-        binding=binding,
-    )
-
-    authorization_url = provider.build_authorization_url(
-        provider_data=provider_data,
-        state=state,
-        redirect_uri=_proxy_redirect_uri(request, context),
-        request=request,
-        code_challenge=challenge,
-        code_challenge_method=challenge_method,
     )
 
     context.hooks.run_after(
@@ -1918,16 +1127,16 @@ def start_link_flow(
             request=request,
             user=user,
             link_request=link_request,
-            state=state,
-            authorization_url=authorization_url,
+            state=attempt.data.state,
+            authorization_url=attempt.authorization_url,
         ),
     )
 
     return Response(
         status_code=200,
-        cookies=[binding_cookie],
+        cookies=[attempt.binding_cookie],
         body=InitiateLinkResponse(
-            authorization_url=authorization_url
+            authorization_url=attempt.authorization_url
         ).model_dump_json(),
         headers={"Content-Type": "application/json"},
     )
@@ -1998,11 +1207,6 @@ def finalize_link(
     if not client.check_redirect_uri(link_data.redirect_uri):
         return Response.error("invalid_redirect_uri", "Invalid redirect_uri")
 
-    if link_data.code_challenge_method != "S256":
-        return Response.error(
-            "server_error", error_description="Unsupported code challenge method"
-        )
-
     code_verifier = request_data.get("code_verifier")
     if not isinstance(code_verifier, str) or not code_verifier:
         return Response.error(
@@ -2045,9 +1249,9 @@ def finalize_link(
     except OAuth2Exception as e:
         return Response.error(e.error, error_description=e.error_description)
 
-    provider_snapshot = ProviderSnapshot.of(provider)
+    identity_guard = VerifiedIdentityGuard.of(provider, validated, user_info)
+    provider_snapshot = identity_guard.provider
     user_snapshot = UserSnapshot.of(user)
-    raw_claims = _raw_identity_claims(user_info)
     finalize_event = BeforeOAuthFinalizeLinkEvent(
         provider=provider_snapshot,
         request=request,
@@ -2070,13 +1274,7 @@ def finalize_link(
 
     if finalize_event.user != user_snapshot:
         raise ValueError("oauth.finalize_link before hooks cannot change the user")
-    _check_verified_identity(
-        "oauth.finalize_link",
-        finalize_event,
-        provider=provider_snapshot,
-        validated=validated,
-        raw_claims=raw_claims,
-    )
+    identity_guard.check("oauth.finalize_link", finalize_event)
     allow_login = finalize_event.allow_login
     user_info = finalize_event.user_info
 
@@ -2091,46 +1289,16 @@ def finalize_link(
     except CrossAuthException as e:
         return Response.error(e.error, error_description=e.error_description)
 
-    social_account = context.accounts_storage.find_social_account(
-        provider=provider.id,
-        provider_user_id=validated.provider_user_id,
-        user_id=user.id,
-    )
-
-    created_social_account: SocialAccount | None = None
-
     try:
-        if social_account:
-            social_account = _update_social_account(
-                context=context,
-                social_account=social_account,
-                enable_login=allow_login,
-                access_token=token_response.access_token,
-                refresh_token=token_response.refresh_token,
-                access_token_expires_at=token_response.access_token_expires_at,
-                refresh_token_expires_at=token_response.refresh_token_expires_at,
-                scope=token_response.scope,
-                user_info=cast(dict[str, Any], user_info),
-                provider_email=validated.email,
-                provider_email_verified=validated.email_verified,
-            )
-        else:
-            social_account = _create_social_account(
-                context=context,
-                user_id=user.id,
-                provider=provider.id,
-                provider_user_id=validated.provider_user_id,
-                access_token=token_response.access_token,
-                refresh_token=token_response.refresh_token,
-                access_token_expires_at=token_response.access_token_expires_at,
-                refresh_token_expires_at=token_response.refresh_token_expires_at,
-                scope=token_response.scope,
-                user_info=cast(dict[str, Any], user_info),
-                provider_email=validated.email,
-                provider_email_verified=validated.email_verified,
-                is_login_method=allow_login,
-            )
-            created_social_account = social_account
+        resolved_account = attach_social_account(
+            provider=provider,
+            context=context,
+            user=user,
+            validated=validated,
+            user_info=cast(dict[str, Any], user_info),
+            token_response=token_response,
+            allow_login=allow_login,
+        )
     except CrossAuthException as exc:
         return Response.error(
             exc.error,
@@ -2147,8 +1315,10 @@ def finalize_link(
         token_response=token_response,
         user_info=user_info,
         validated_user_info=validated,
-        social_account=social_account,
-        created_social_account=created_social_account,
+        social_account=resolved_account.account,
+        created_social_account=(
+            resolved_account.account if resolved_account.created else None
+        ),
     )
     context.accounts_storage.on_commit(
         lambda: context.hooks.run_after("oauth.finalize_link", after_event)

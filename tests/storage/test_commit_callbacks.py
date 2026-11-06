@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from cross_auth._auth_flow import _create_social_account, _create_user_with_identity
+from cross_auth._accounts import _create_social_account, _create_user_with_identity
 from cross_auth._context import Context
 from cross_auth._login import issue_bearer_session
 from cross_auth.hooks import HookRegistry
@@ -25,12 +25,7 @@ from .models import (
     User,
     UserSession,
 )
-from . import test_atomic_signup
-from .test_atomic_signup import identity_data, make_store, row_counts
-
-# Run against the same SQLite and PostgreSQL engines as the signup tests.
-signup_engine = test_atomic_signup.signup_engine
-pg_engine = test_atomic_signup.pg_engine
+from .support import identity_data, make_store, row_counts
 
 
 def make_context(store) -> tuple[Context, HookRegistry]:
