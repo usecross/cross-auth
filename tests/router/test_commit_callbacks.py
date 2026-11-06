@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
 
-from cross_auth._auth_flow import _create_user_with_identity, _update_social_account
+from cross_auth._accounts import _create_user_with_identity, _update_social_account
 from cross_auth._session import create_session, get_session
 from cross_auth._storage import CommitCallback
 from cross_auth._tokens import TokenIssueRequest

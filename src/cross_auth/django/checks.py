@@ -6,7 +6,7 @@ from django.conf import settings
 from django.core import checks
 from django.core.exceptions import ImproperlyConfigured
 
-from .backends import BACKEND as BACKEND
+from .backends import BACKEND
 from .conf import get_settings
 
 SESSION_ENGINE = "cross_auth.django.sessions"

@@ -12,7 +12,7 @@ try:
     from sqlalchemy.engine import Connection
     from sqlalchemy.exc import IntegrityError
     from sqlalchemy.orm.attributes import set_committed_value
-    from sqlmodel import SQLModel, Session, col, select
+    from sqlmodel import Session, SQLModel, col, select
     from sqlmodel.sql.expression import SelectOfScalar
 except ImportError as exc:  # pragma: no cover - exercised only without the extra
     raise ImportError(
@@ -32,9 +32,9 @@ from cross_auth._storage import (
 from cross_auth.exceptions import CrossAuthException, InvalidCursorError
 from cross_auth.storage._cursor import decode_cursor, encode_cursor
 from cross_auth.storage._sqlmodel_models import (
-    SQLModelSession as SQLModelSession,
-    SQLModelSocialAccount as SQLModelSocialAccount,
-    SQLModelUser as SQLModelUser,
+    SQLModelSession,
+    SQLModelSocialAccount,
+    SQLModelUser,
 )
 
 SessionModelT = TypeVar("SessionModelT", bound=SQLModelSession)

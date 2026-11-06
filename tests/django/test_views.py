@@ -25,7 +25,7 @@ from django.db import IntegrityError, connections, transaction
 from django.http import HttpRequest, HttpResponse, HttpResponseBase
 from django.test import AsyncClient, Client, RequestFactory, override_settings
 
-from cross_auth._auth_flow import _create_social_account
+from cross_auth._accounts import _create_social_account
 from cross_auth._context import Context
 from cross_auth.django import views
 from cross_auth.django.conf import get_settings

@@ -91,6 +91,11 @@ exclude_also = [
     "@overload",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# Public API modules also expose imported names.
+"src/cross_auth/fastapi.py" = ["F401"]
+"src/cross_auth/django/sessions.py" = ["F401"]
+
 [tool.ty.environment]
 # The shared browser suite's Django settings extend the example's settings.
 root = ["src", ".", "examples/django"]

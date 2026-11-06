@@ -36,10 +36,12 @@ from django.db import DatabaseError, IntegrityError, router, transaction
 from django.http import HttpRequest, HttpResponse
 from django.utils import timezone
 
-from ._session_management import SessionInfo as SessionInfo
-from ._session_management import list_sessions as list_sessions
-from ._session_management import revoke_other_sessions as revoke_other_sessions
-from ._session_management import revoke_session as revoke_session
+from ._session_management import (
+    SessionInfo,
+    list_sessions,
+    revoke_other_sessions,
+    revoke_session,
+)
 from .backends import BACKEND
 from .conf import get_settings
 

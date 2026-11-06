@@ -273,8 +273,8 @@ concrete follow-up fixes, and final validation before preparing the PR.
   Browser and native orchestration both depend on it.
 - `_authorization.py` owns persisted attempts, common state/PKCE/provider setup,
   binding, expiry and callback construction. `_authorization_code.py` owns the
-  code schema/key/TTL shared by producer and consumer. Existing imports remain
-  compatible through aliases rather than parallel implementations.
+  code schema/key/TTL shared by producer and consumer. Existing public imports
+  remain available without parallel implementations.
 - Token issuance and callback completion carry the selected credential owner's
   commit scheduler. Configuration changes inside storage, custom issuers or
   after-login hooks cannot silently transfer completion ownership.
@@ -387,6 +387,15 @@ four Python 3.14 Django variants pass (**249 passed, 1 skipped** for the default
 user, **248 passed, 2 skipped** for the custom user, on both SQLite and
 PostgreSQL). Root `ty check . --exclude website`, rendered Django-doc smoke
 checks and changed-file hooks pass.
+
+### Post-PR review: plain imports and internal ownership
+
+Public modules expose imported names using ordinary imports, without redundant
+same-name aliases or new export lists. Ruff's unused-import exception is scoped
+to the two public API modules that forward otherwise-unused names. Private
+`_auth_flow` no longer forwards unused account helpers/types; affected tests
+import them from `_accounts`, their actual owner. Existing public import paths
+remain available. Blank lines separate logical steps in the refactored helpers.
 
 ### Deliberately retained limits and compatibility
 
