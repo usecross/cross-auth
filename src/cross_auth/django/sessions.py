@@ -36,18 +36,10 @@ from django.db import DatabaseError, IntegrityError, router, transaction
 from django.http import HttpRequest, HttpResponse
 from django.utils import timezone
 
-from ._session_management import (
-    SessionInfo as SessionInfo,
-)
-from ._session_management import (
-    list_sessions as list_sessions,
-)
-from ._session_management import (
-    revoke_other_sessions as revoke_other_sessions,
-)
-from ._session_management import (
-    revoke_session as revoke_session,
-)
+from ._session_management import SessionInfo as SessionInfo
+from ._session_management import list_sessions as list_sessions
+from ._session_management import revoke_other_sessions as revoke_other_sessions
+from ._session_management import revoke_session as revoke_session
 from .backends import BACKEND
 from .conf import get_settings
 
@@ -95,6 +87,7 @@ def _clean_user_agent(value: str | None) -> str | None:
     """
     if not value:
         return None
+
     printable = "".join(char if char.isprintable() else " " for char in value)
     return " ".join(printable.split())[:_USER_AGENT_MAX_LENGTH].strip() or None
 
@@ -106,12 +99,15 @@ def _clean_ip(value: str | None) -> str | None:
     """
     if not value:
         return None
+
     try:
         address = ipaddress.ip_address(value.split("%", 1)[0].strip())
     except ValueError:
         return None
+
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
         return str(address.ipv4_mapped)
+
     return str(address)
 
 
@@ -181,6 +177,7 @@ class SessionStore(_DatabaseSessionStore):
         if self._client is not None:
             session.user_agent = self._client.user_agent
             session.ip = self._client.ip
+
         return session
 
     async def acreate_model_instance(self, data: dict[str, Any]) -> Session:
@@ -193,11 +190,13 @@ class SessionStore(_DatabaseSessionStore):
         # retries those forever, which a user deleted mid-login must not cause.
         if self.session_key is None:
             return self.create()
+
         data = self._get_session(  # ty: ignore[unresolved-attribute]
             no_load=must_create
         )
         session = self.create_model_instance(data)
         using = self.alias
+
         try:
             with transaction.atomic(using=using):
                 if must_create:
@@ -213,9 +212,11 @@ class SessionStore(_DatabaseSessionStore):
             if not must_create:
                 raise UpdateError
             raise
+
         if not written:
             # Like Django: the row was deleted since this request loaded it.
             raise UpdateError
+
         self._saved(session)
 
     async def asave(self, must_create: bool = False) -> None:
@@ -231,6 +232,7 @@ class SessionStore(_DatabaseSessionStore):
         if key is None:
             # Nothing is stored under the cookie's key.
             return super().cycle_key()
+
         while True:
             self._session_key = (
                 self._get_new_session_key()  # ty: ignore[unresolved-attribute]
@@ -246,12 +248,14 @@ class SessionStore(_DatabaseSessionStore):
                     continue
                 raise
             break
+
         if not moved:
             # Revoked or logged out since this request loaded it: start an
             # empty session rather than bring the old one back.
             self._session_cache = {}
             self.create()
             return
+
         self.modified = True
         self._saved(session)
 
@@ -272,13 +276,16 @@ class SessionStore(_DatabaseSessionStore):
             "login_method": session.login_method,
             "last_activity": session.last_activity,
         }
+
         if session.session_key != key:
             columns["session_key"] = session.session_key
         if self._client is not None:
             columns.update(user_agent=session.user_agent, ip=session.ip)
         if self._login_pending:
             columns.update(public_id=session.public_id, created_at=session.created_at)
+
         rows = self.model.objects.using(using).filter(session_key=key)
+
         return rows.update(**columns) > 0
 
     def _saved(self, session: Session) -> None:
@@ -297,6 +304,7 @@ class SessionStore(_DatabaseSessionStore):
         if session is None:
             self._session_key = None
         self._loaded(session)
+
         return session
 
     async def _aget_session_from_db(self) -> Session | None:
@@ -346,10 +354,12 @@ class SessionStore(_DatabaseSessionStore):
         row = self._row
         if row is None or row.session_key != self.session_key:
             return
+
         now = timezone.now()
         since = now - get_settings().session_activity_interval
         if row.last_activity > since:
             return
+
         changes: dict[str, object] = {"last_activity": now}
         if self._client is not None:
             changes.update(user_agent=self._client.user_agent, ip=self._client.ip)
@@ -365,6 +375,7 @@ class SessionStore(_DatabaseSessionStore):
         except DatabaseError:
             logger.warning("Could not record a session's activity", exc_info=True)
             return
+
         if updated:
             self._row = replace(row, last_activity=now)
 
@@ -409,4 +420,5 @@ class SessionMiddleware(DjangoSessionMiddleware):
         # Like Django's save, skipped for server errors.
         if isinstance(session, SessionStore) and response.status_code < 500:
             session.record_activity()
+
         return response

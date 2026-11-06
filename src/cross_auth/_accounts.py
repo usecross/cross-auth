@@ -51,6 +51,7 @@ class ProviderCredentials:
     def of(cls, source: TokenResponse | SocialAccount | None) -> ProviderCredentials:
         if source is None:
             return cls()
+
         return cls(
             access_token=source.access_token,
             refresh_token=source.refresh_token,
@@ -144,6 +145,7 @@ def _create_user_with_identity(
             f"{_RAW_IDENTITY_CLAIMS_TEXT}; configure normalize_email to "
             "canonicalize emails"
         )
+
     identity_data: SocialAccountCreate | None = None
 
     def prepare_identity(user: User) -> SocialAccountCreate:
@@ -218,6 +220,7 @@ def _prepare_social_account(
             "provider_user_id, is_login_method, provider_email, "
             f"provider_email_verified or {_RAW_IDENTITY_CLAIMS_TEXT}"
         )
+
     return SocialAccountCreate(
         user_id=user_id,
         provider=provider,
@@ -247,6 +250,7 @@ def _check_social_account_ownership(
     allow_shared_connections = context.config.get("account_linking", {}).get(
         "allow_shared_connections", False
     )
+
     if not allow_shared_connections:
         identity_exists = context.accounts_storage.has_social_account(
             provider=provider, provider_user_id=provider_user_id
@@ -267,6 +271,7 @@ def _check_social_account_ownership(
             provider_user_id=provider_user_id,
             is_login_method=True,
         )
+
         if login_account is not None and not _same_id(login_account.user_id, user_id):
             raise CrossAuthException("account_already_linked")
 
@@ -317,6 +322,7 @@ def _create_social_account(
     context.accounts_storage.on_commit(
         lambda: context.hooks.run_after("social_account.create", after_event)
     )
+
     return social_account
 
 
@@ -364,6 +370,7 @@ def _update_social_account(
             "user_id, provider, provider_user_id, is_login_method, "
             f"provider_email, provider_email_verified or {_RAW_IDENTITY_CLAIMS_TEXT}"
         )
+
     if enable_login and not social_account.is_login_method:
         _check_social_account_ownership(
             context,
@@ -393,6 +400,7 @@ def _update_social_account(
     context.accounts_storage.on_commit(
         lambda: context.hooks.run_after("social_account.update", after_event)
     )
+
     return updated_social_account
 
 
@@ -564,6 +572,7 @@ def resolve_or_create_user(
             email_verified=validated.email_verified or False,
             identity=prepare_identity,
         )
+
         return (
             ResolvedUser(user=user, created=True),
             ResolvedSocialAccount(account=account, created=True),
@@ -604,6 +613,7 @@ def attach_social_account(
         user_id=user.id,
     )
     credentials = ProviderCredentials.of(token_response)
+
     if social_account is not None:
         account = _update_social_account(
             context=context,
@@ -614,6 +624,7 @@ def attach_social_account(
             provider_email=validated.email,
             provider_email_verified=validated.email_verified,
         )
+
         return ResolvedSocialAccount(account=account, created=False)
 
     account = _create_social_account(
@@ -627,6 +638,7 @@ def attach_social_account(
         provider_email_verified=validated.email_verified,
         is_login_method=allow_login,
     )
+
     return ResolvedSocialAccount(account=account, created=True)
 
 

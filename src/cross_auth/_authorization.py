@@ -98,6 +98,7 @@ def _binding_cookie(
 ) -> Cookie:
     secure = (context.base_url or str(request.url)).startswith("https://")
     prefix = "__Host-" if secure else ""
+
     return Cookie(
         name=f"{prefix}cross_auth_oauth_{state}",
         value=value,
@@ -117,6 +118,7 @@ def _store_auth_request(
         data.model_dump_json(),
         ttl=int(_AUTH_REQUEST_TTL.total_seconds()),
     )
+
     return _binding_cookie(
         request,
         context,
@@ -130,6 +132,7 @@ def _load_auth_request(context: Context, state: str) -> AuthRequest | None:
     raw = context.secondary_storage.get(_AUTH_REQUEST_KEY.format(state=state))
     if raw is None:
         return None
+
     try:
         data = AuthRequest.model_validate_json(raw)
     except ValidationError:
@@ -137,6 +140,7 @@ def _load_auth_request(context: Context, state: str) -> AuthRequest | None:
 
     if data.expires_at <= datetime.now(tz=timezone.utc):
         return None
+
     return data
 
 
@@ -145,7 +149,9 @@ def _generate_provider_pkce(
 ) -> tuple[str | None, str | None, str | None]:
     if not provider.supports_pkce:
         return None, None, None
+
     verifier = generate_code_verifier()
+
     return verifier, calculate_s256_challenge(verifier), "S256"
 
 
@@ -226,6 +232,7 @@ def _client_fields(client: ClientAuthorization) -> _ClientFields:
 def _auth_request(flow: AuthorizationFlow, common: _AttemptFields) -> AuthRequest:
     if isinstance(flow, SessionAuthorization):
         return AuthRequest(flow="session", next_url=flow.next_url, **common)
+
     if isinstance(flow, ConnectAuthorization):
         return AuthRequest(
             flow="connect",
@@ -234,8 +241,10 @@ def _auth_request(flow: AuthorizationFlow, common: _AttemptFields) -> AuthReques
             allow_login=flow.allow_login,
             **common,
         )
+
     if isinstance(flow, TokenAuthorization):
         return AuthRequest(flow="token", **_client_fields(flow.client), **common)
+
     return AuthRequest(
         flow="link", user_id=flow.user_id, **_client_fields(flow.client), **common
     )
@@ -257,6 +266,7 @@ def begin_authorization(
     verifier, challenge, challenge_method = _generate_provider_pkce(provider)
     provider_data = provider.get_authorization_data()
     binding = secrets.token_urlsafe(32)
+
     data = _auth_request(
         flow,
         {
@@ -269,9 +279,11 @@ def begin_authorization(
         },
     )
     cookie = _store_auth_request(context, request, data, binding)
+
     options: _AuthorizationOptions = {}
     if isinstance(flow, (SessionAuthorization, TokenAuthorization)):
         options["login_hint"] = flow.login_hint
+
     authorization_url = provider.build_authorization_url(
         provider_data=provider_data,
         state=state,
@@ -281,4 +293,5 @@ def begin_authorization(
         code_challenge_method=challenge_method,
         **options,
     )
+
     return StartedAuthorization(data, authorization_url, cookie)

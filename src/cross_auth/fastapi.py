@@ -22,9 +22,7 @@ from fastapi import Response as FastAPIResponse
 
 from ._accounts import require_committed_accounts
 from ._config import Config
-from ._fastapi_session import (
-    SessionCookieMiddleware as SessionCookieMiddleware,
-)
+from ._fastapi_session import SessionCookieMiddleware as SessionCookieMiddleware
 from ._fastapi_session import (
     queue_rolled_cookie,
     set_cookie,

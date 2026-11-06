@@ -31,6 +31,7 @@ class _CookieSink:
 
     def apply(self, message: Message) -> None:
         headers: list[tuple[bytes, bytes]] = message.setdefault("headers", [])
+
         for cookie in self.cookies:
             prefix = f"{cookie.name}=".encode("latin-1")
             if any(
@@ -38,6 +39,7 @@ class _CookieSink:
                 for name, value in headers
             ):
                 continue
+
             scratch = Response()
             set_cookie(scratch, cookie)
             headers.append(
@@ -57,6 +59,7 @@ def queue_rolled_cookie(request: Request, cookie: Cookie) -> None:
             stacklevel=2,
         )
         return
+
     sink.cookies.append(cookie)
 
 
@@ -83,6 +86,7 @@ class SessionCookieMiddleware:
         async def send_with_rolled_cookies(message: Message) -> None:
             if message["type"] == "http.response.start":
                 sink.apply(message)
+
             await send(message)
 
         await self.app(scope, receive, send_with_rolled_cookies)

@@ -59,6 +59,7 @@ def _store(request: HttpRequest) -> SessionStore:
             "Listing and revoking sessions needs "
             "SESSION_ENGINE = 'cross_auth.django.sessions'"
         )
+
     return session
 
 
@@ -66,6 +67,7 @@ def _user(request: HttpRequest) -> AbstractBaseUser | None:
     user = request.user
     if not isinstance(user, AbstractBaseUser) or not user.is_authenticated:
         return None
+
     return user
 
 
@@ -78,11 +80,14 @@ def _signed_in(data: dict[str, Any], user: AbstractBaseUser) -> bool:
     """
     if data.get(BACKEND_SESSION_KEY) not in settings.AUTHENTICATION_BACKENDS:
         return False
+
     session_hash = data.get(HASH_SESSION_KEY)
     if not session_hash:
         return False
+
     if constant_time_compare(session_hash, user.get_session_auth_hash()):
         return True
+
     return any(
         constant_time_compare(session_hash, fallback)
         for fallback in user.get_session_auth_fallback_hash()
@@ -100,7 +105,9 @@ def list_sessions(request: HttpRequest) -> list[SessionInfo]:
     user = _user(request)
     if user is None:
         return []
+
     sessions = _unexpired(store, user).order_by("-created_at", "-last_activity")
+
     return [
         SessionInfo(
             id=str(session.public_id),
@@ -169,13 +176,16 @@ def revoke_session(request: HttpRequest, session_id: str) -> bool:
     user = _user(request)
     if user is None:
         return False
+
     try:
         public_id = uuid.UUID(str(session_id))
     except ValueError:
         return False
+
     found = _unexpired(store, user).filter(public_id=public_id).first()
     if found is None or not _signed_in(found.get_decoded(), user):
         return False
+
     _send(
         signals.before_session_revoke,
         request,
@@ -183,6 +193,7 @@ def revoke_session(request: HttpRequest, session_id: str) -> bool:
         scope="one",
         session_id=str(public_id),
     )
+
     # Looked up again: the session may have expired while receivers ran. By
     # public_id, not session key: a session keeps its public_id when its key
     # changes, even while it is being revoked.
@@ -192,6 +203,7 @@ def revoke_session(request: HttpRequest, session_id: str) -> bool:
         revoked = 1
     else:
         revoked, _ = sessions.delete()
+
     if revoked:
         _revoked(
             request,
@@ -201,6 +213,7 @@ def revoke_session(request: HttpRequest, session_id: str) -> bool:
             session_id=str(public_id),
             revoked_count=revoked,
         )
+
     return revoked > 0
 
 
@@ -217,6 +230,7 @@ def revoke_other_sessions(request: HttpRequest) -> int:
     user = _user(request)
     if user is None:
         return 0
+
     _send(
         signals.before_session_revoke,
         request,
@@ -224,14 +238,17 @@ def revoke_other_sessions(request: HttpRequest) -> int:
         scope="others",
         session_id=None,
     )
+
     sessions = _unexpired(store, user)
     if store.session_key is not None:
         sessions = sessions.exclude(session_key=store.session_key)
+
     signed_in = [
         session.public_id
         for session in sessions
         if _signed_in(session.get_decoded(), user)
     ]
+
     deleted, _ = sessions.filter(public_id__in=signed_in).delete()
     if deleted:
         _revoked(
@@ -242,4 +259,5 @@ def revoke_other_sessions(request: HttpRequest) -> int:
             session_id=None,
             revoked_count=deleted,
         )
+
     return deleted

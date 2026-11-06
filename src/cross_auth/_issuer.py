@@ -14,9 +14,7 @@ from pydantic.type_adapter import TypeAdapter
 from cross_auth.models.oauth_token_response import TokenResponse
 from cross_auth.utils._pkce import validate_pkce
 
-from ._authorization_code import (
-    AUTH_CODE_KEY,
-)
+from ._authorization_code import AUTH_CODE_KEY
 from ._authorization_code import (
     AuthorizationCodeGrantData as AuthorizationCodeGrantData,
 )
