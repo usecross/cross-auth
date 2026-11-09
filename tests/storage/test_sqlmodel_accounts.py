@@ -3,6 +3,7 @@ from typing import assert_type
 
 import pytest
 from sqlalchemy import inspect
+from sqlalchemy.orm import object_session
 from sqlmodel import Field, Session
 
 from cross_auth._storage import User as UserProtocol
@@ -168,6 +169,54 @@ def test_default_relationship_is_not_loaded_by_adapter(engine):
     assert state is not None
     assert "social_accounts" in state.unloaded
     assert store.list_social_accounts(user_id=found.id)[0].id == account.id
+
+
+def test_with_read_session_returns_users_of_the_callers_session(engine):
+    store = DefaultLazyAccountsStore(session_factory=lambda: Session(engine))
+    user = store.create_user(
+        user_info={}, email="bound@example.com", email_verified=True
+    )
+    store.create_social_account(
+        user_id=user.id,
+        provider="github",
+        provider_user_id="bound-1",
+        access_token=None,
+        refresh_token=None,
+        access_token_expires_at=None,
+        refresh_token_expires_at=None,
+        scope=None,
+        user_info={},
+        provider_email=user.email,
+        provider_email_verified=True,
+        is_login_method=True,
+    )
+
+    with Session(engine) as db:
+        found = store.with_read_session(db).find_user_by_id(user.id)
+
+        assert found is not None
+        assert object_session(found) is db
+        # A detached user could not load this relationship.
+        assert [a.provider_user_id for a in found.social_accounts] == ["bound-1"]
+
+
+def test_with_read_session_keeps_social_accounts_in_their_own_session(store, engine):
+    user_id = _seed_user(engine)
+    _seed_social(engine, user_id=user_id)
+
+    with Session(engine) as db:
+        accounts = store.with_read_session(db).list_social_accounts(user_id=user_id)
+
+        assert len(accounts) == 1
+        assert object_session(accounts[0]) is None
+
+
+def test_with_read_session_keeps_the_user_query_filter(engine):
+    store = SoftDeleteAccountsStore(session_factory=lambda: Session(engine))
+    user_id = _seed_user(engine, deleted=True)
+
+    with Session(engine) as db:
+        assert store.with_read_session(db).find_user_by_id(user_id) is None
 
 
 def test_relationship_free_user_uses_storage_for_account_access(engine):

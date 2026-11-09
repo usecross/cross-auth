@@ -131,6 +131,29 @@ def get_session(
     return result[0] if result is not None else None
 
 
+@dataclass(frozen=True)
+class AuthenticatedSession:
+    """An active session and the user it belongs to."""
+
+    session: SessionRecord
+    user: User
+
+
+def authenticate_session_token(
+    session_token: str,
+    storage: SessionStorage,
+    accounts_storage: AccountsStorage,
+    config: SessionConfig | None = None,
+) -> AuthenticatedSession | None:
+    session = get_session(session_token, storage, config)
+    if session is None:
+        return None
+    user = accounts_storage.find_user_by_id(session.user_id)
+    if user is None:
+        return None
+    return AuthenticatedSession(session, user)
+
+
 def _get_session(
     session_token: str,
     storage: SessionStorage,

@@ -2,7 +2,12 @@ from cross_auth._clients import ClientResolver, OAuthClient
 from cross_auth._context import Context
 from cross_auth._email import normalize_email
 from cross_auth._oauth_server import OAuthServer
-from cross_auth._session import SessionConfig, SessionCookieConfig, get_bearer_token
+from cross_auth._session import (
+    AuthenticatedSession,
+    SessionConfig,
+    SessionCookieConfig,
+    get_bearer_token,
+)
 from cross_auth._storage import (
     AccountsStorage,
     CommitCallback,
@@ -65,6 +70,7 @@ from cross_auth.social_providers.oidc import OIDCProvider
 
 __all__ = [
     "AccountsStorage",
+    "AuthenticatedSession",
     "CommitCallback",
     "DisconnectResult",
     "CallbackData",

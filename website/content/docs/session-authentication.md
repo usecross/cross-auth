@@ -182,6 +182,55 @@ def build_context(request: Request) -> dict:  # outside dependency injection
     return {"user": auth.get_current_user(request)}
 ```
 
+### Authenticate a Session Token
+
+`authenticate_session_token(token)` looks a session token up without a request.
+It returns an `AuthenticatedSession` with the active `session` record and its
+`user`, or `None` when the token is unknown, revoked or expired, or when the
+accounts storage no longer returns the user. Sliding sessions are refreshed as
+they are for requests.
+
+It never calls `get_user_from_request`, so a resolver that also accepts other
+credentials can use it for session tokens:
+
+```python
+def get_user_from_request(request: HTTPRequest) -> User | None:
+    token = get_bearer_token(request)
+    if token is None:
+        return None
+    if auth.identify_token(token) == "session":
+        result = auth.authenticate_session_token(token)
+        return result.user if result else None
+    return find_user_by_api_key(token)
+```
+
+The SQLModel storages read in database sessions they open and close themselves,
+so the user comes back detached: its columns are readable, but a relationship
+that loads lazily raises `DetachedInstanceError`. Pass your own database session
+as `db_session` and the user is loaded in it instead, so it belongs to that
+session:
+
+```python
+bearer = HTTPBearer()
+
+
+def current_user(
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer)],
+    db: Annotated[Session, Depends(get_db)],
+) -> User:
+    result = auth.authenticate_session_token(credentials.credentials, db_session=db)
+    if result is None:
+        raise HTTPException(status_code=401)
+    return result.user  # relationships load, and you can change and commit it
+```
+
+The session lookup and any sliding-session refresh run first, in the session
+storage's own sessions, so the refresh never commits while Cross-Auth has a
+transaction open in `db`. Cross-Auth never commits or closes `db`. The accounts
+storage needs a `with_read_session(session)` method, which returns a copy of the
+storage whose user lookups run in `session`. The SQLModel accounts storage has
+one; with other accounts storages, `db_session` raises `TypeError`.
+
 ### Sliding Sessions
 
 With `update_age` configured, reads refresh the stored session record — and the

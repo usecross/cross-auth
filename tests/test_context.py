@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import pytest
 from cross_web import HTTPRequest, TestingHTTPRequestAdapter
 
@@ -134,3 +136,49 @@ def test_cookie_auth_without_session_storage_raises(
             get_user_from_request=lambda _: None,
             config={"session": {"cookies": {"auth": True}}},
         )
+
+
+def test_authenticate_session_token_returns_session_and_user(context):
+    token, record = context.create_session("test")
+
+    result = context.authenticate_session_token(token)
+
+    assert result is not None
+    assert result.session.id == record.id
+    assert result.user.id == "test"
+
+
+def test_authenticate_session_token_rejects_unknown_and_revoked_tokens(
+    context, session_storage
+):
+    token, record = context.create_session("test")
+    session_storage.revoke(record.id, revoked_at=datetime.now(tz=timezone.utc))
+
+    assert context.authenticate_session_token(token) is None
+    assert context.authenticate_session_token("unknown") is None
+
+
+def test_authenticate_session_token_rejects_a_session_without_its_user(context):
+    token, _ = context.create_session("missing")
+
+    assert context.authenticate_session_token(token) is None
+
+
+def test_authenticate_session_token_needs_storages_that_take_a_db_session(context):
+    token, _ = context.create_session("test")
+
+    with pytest.raises(TypeError, match="with_read_session"):
+        context.authenticate_session_token(token, db_session=object())
+
+
+def test_authenticate_session_token_rejects_without_session_storage(
+    secondary_storage, accounts_storage
+):
+    context = Context(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        get_user_from_request=lambda _: None,
+    )
+
+    with pytest.raises(RuntimeError, match="Session flow not configured"):
+        context.authenticate_session_token("token")

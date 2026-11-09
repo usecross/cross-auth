@@ -617,6 +617,29 @@ def test_identify_token_without_token_prefix(
     assert auth.identify_token(token) is None
 
 
+def test_authenticate_session_token_does_not_call_the_custom_resolver(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    def get_user_from_request(_request):
+        raise AssertionError("the custom resolver must not run")
+
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        session_storage,
+        get_user_from_request=get_user_from_request,
+    )
+    token, record = auth.issue_session_token("test")
+
+    result = auth.authenticate_session_token(token)
+
+    assert result is not None
+    assert result.session.id == record.id
+    assert result.user.id == "test"
+
+
 def test_invalid_token_prefix_raises_at_construction(
     secondary_storage: SecondaryStorage,
     accounts_storage: AccountsStorage,
