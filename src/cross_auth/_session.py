@@ -11,6 +11,7 @@ from cross_web import Cookie, HTTPRequest
 
 from ._request import get_header
 from ._storage import AccountsStorage, SessionRecord, SessionStorage, User
+from ._token_format import generate_token
 
 _DEFAULT_MAX_AGE = 86400
 
@@ -42,6 +43,10 @@ class SessionConfig(TypedDict, total=False):
     max_age: int
     update_age: int | None
     token_hasher: SessionTokenHasher
+    # If set, new session tokens are "{token_prefix}_" plus 32 base62
+    # characters and a checksum. Lookups accept any token, so sessions issued
+    # before the prefix was set keep working.
+    token_prefix: str | None
     cookies: SessionCookieConfig
 
 
@@ -61,6 +66,7 @@ _SESSION_CONFIG_DEFAULTS: SessionConfig = {
     "token_hasher": lambda session_token: hashlib.sha256(
         session_token.encode("utf-8")
     ).hexdigest(),
+    "token_prefix": None,
     "cookies": _SESSION_COOKIE_DEFAULTS,
 }
 
@@ -89,9 +95,14 @@ def create_session(
     *,
     metadata: SessionMetadata | None = None,
     token_hasher: SessionTokenHasher | None = None,
+    token_prefix: str | None = None,
     login_method: str | None = None,
 ) -> tuple[str, SessionRecord]:
-    session_token = secrets.token_urlsafe(32)
+    session_token = (
+        secrets.token_urlsafe(32)
+        if token_prefix is None
+        else generate_token(token_prefix)
+    )
     now = datetime.now(tz=timezone.utc)
     expires_at = now + timedelta(seconds=max_age)
     resolved_metadata = metadata or {}

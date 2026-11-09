@@ -19,7 +19,7 @@ from cross_auth._storage import (
     UserCreate,
     session_status,
 )
-from cross_auth._tokens import TokenIssueRequest, TokenIssuer
+from cross_auth._tokens import TokenIssueRequest, TokenIssuer, TokenKind
 from cross_auth.hooks import (
     AfterAuthenticateEvent,
     AfterLoginEvent,
@@ -122,6 +122,7 @@ __all__ = [
     "TokenExchangeParams",
     "TokenIssueRequest",
     "TokenIssuer",
+    "TokenKind",
     "TokenResponse",
     "User",
     "UserCreate",

@@ -163,6 +163,7 @@ def login_with_session(
             max_age=event.max_age,
             metadata=event.metadata,
             token_hasher=resolved["token_hasher"],
+            token_prefix=resolved["token_prefix"],
             login_method=event.login_method,
         )
         if event.response.cookies is None:
@@ -211,6 +212,7 @@ def issue_bearer_session(
             max_age=event.max_age,
             metadata=event.metadata,
             token_hasher=resolved["token_hasher"],
+            token_prefix=resolved["token_prefix"],
             login_method=event.login_method,
         )
         return (session_token, session_record), session_record

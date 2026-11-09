@@ -217,6 +217,44 @@ clearly when no `session_storage` is configured. With an `OAuthServer`, the
 built-in `/token` endpoint is registered, but successful token issuance requires
 `session_storage` or the server's `token_issuer`.
 
+### Token Prefix
+
+Set `token_prefix` to give the session tokens Cross-Auth issues a recognizable
+shape, like GitHub's `ghp_` tokens:
+
+```python
+auth = CrossAuth(
+    providers=[],
+    storage=secondary_storage,
+    accounts_storage=accounts_storage,
+    session_storage=session_storage,
+    config={"session": {"token_prefix": "myapp"}},
+)
+```
+
+New tokens are then `myapp_` followed by 32 random base62 characters and a
+6-character checksum, for cookie logins, `/token`, `issue_session_token()` and
+`sign_in_with_id_token()` alike. A token that leaks into a log or a repository
+is easy to spot, secret scanners can match it (`myapp_[0-9A-Za-z]{38}`), and the
+checksum lets you reject a mistyped or made-up token without a storage lookup.
+The prefix is 1 to 16 lowercase letters and digits, starting with a letter;
+anything else raises `ValueError` when `CrossAuth` is created.
+
+`auth.identify_token(token)` returns `"session"` for a token with that prefix
+and a valid checksum, and `None` otherwise:
+
+```python
+if auth.identify_token(token) == "session":
+    user = auth.get_current_user(request)
+```
+
+It reads the token's shape only and does not authenticate it: a well-formed
+token can still be unknown, expired or revoked, so authenticate the request with
+`get_current_user` as usual. Sessions issued before you set the prefix keep
+working until they expire, because lookups accept any token, but
+`identify_token` does not recognize them; don't use it to reject tokens while
+those sessions are still live.
+
 ## Lower-Level Session Functions
 
 For custom frameworks or advanced use cases, Cross-Auth also exposes plain
@@ -261,9 +299,10 @@ session_token, session_record = create_session(str(user.id), session_storage)
 ```
 
 The session token is a cryptographically secure random value
-(`secrets.token_urlsafe(32)`, ~256 bits of entropy). Cross-Auth stores only a
-hash of that token in `SessionStorage`, together with the session metadata and
-expiry.
+(`secrets.token_urlsafe(32)`, ~256 bits of entropy). Pass `token_prefix="myapp"`
+for the [prefixed format](#token-prefix) instead, ~190 bits of entropy.
+Cross-Auth stores only a hash of that token in `SessionStorage`, together with
+the session metadata and expiry.
 
 #### Session Fixation Protection
 

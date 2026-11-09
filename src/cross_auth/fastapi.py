@@ -54,6 +54,7 @@ from ._storage import (
     SessionStorage,
     User,
 )
+from ._tokens import TokenKind
 from .hooks import (
     AfterAuthenticateEvent,
     AfterLoginEvent,
@@ -265,6 +266,18 @@ class CrossAuth:
                 make_session_cookie(resolution.token, self._context.session_config),
             )
         return resolution.record
+
+    def identify_token(self, token: str) -> TokenKind | None:
+        """Name the kind of Cross-Auth token ``token`` looks like, or ``None``.
+
+        Returns ``"session"`` when the session ``token_prefix`` is configured
+        and ``token`` has that prefix and a valid checksum. This only reads
+        the token's shape and does not authenticate it: a well-formed token
+        can be unknown, expired or revoked, and sessions issued before the
+        prefix was set are not recognized. Use ``get_current_user`` to
+        authenticate.
+        """
+        return self._context.identify_token(token)
 
     def require_current_user(self, request: FastAPIRequest) -> User:
         user = self.get_current_user(request)

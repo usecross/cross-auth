@@ -22,7 +22,8 @@ from ._storage import (
     SessionStorage,
     User,
 )
-from ._tokens import IssuedToken, TokenIssueRequest
+from ._token_format import is_well_formed, validate_prefix
+from ._tokens import IssuedToken, TokenIssueRequest, TokenKind
 from .exceptions import CrossAuthException
 from .hooks import BeforeLoginEvent, HookRegistry
 
@@ -61,6 +62,9 @@ class Context:
             raise ValueError(f"Unknown config keys: {', '.join(sorted(unknown))}")
 
         self.session_config: SessionConfig | None = self.config.get("session")
+        token_prefix = (self.session_config or {}).get("token_prefix")
+        if token_prefix is not None:
+            validate_prefix(token_prefix)
         self.default_next_url = default_next_url
         self.hooks = hooks if hooks is not None else HookRegistry()
 
@@ -93,8 +97,24 @@ class Context:
             max_age=resolved["max_age"],
             metadata=metadata,
             token_hasher=resolved["token_hasher"],
+            token_prefix=resolved["token_prefix"],
             login_method=login_method,
         )
+
+    def identify_token(self, token: str) -> TokenKind | None:
+        """Name the kind of Cross-Auth token ``token`` looks like, or ``None``.
+
+        Returns ``"session"`` when the session ``token_prefix`` is configured
+        and ``token`` has that prefix and a valid checksum. This only reads
+        the token's shape and does not authenticate it: a well-formed token
+        can be unknown, expired or revoked, and sessions issued before the
+        prefix was set are not recognized. Use it to route a credential or to
+        reject a malformed one before a storage lookup.
+        """
+        token_prefix = (self.session_config or {}).get("token_prefix")
+        if token_prefix is not None and is_well_formed(token, token_prefix):
+            return "session"
+        return None
 
     def issue_token(self, request: TokenIssueRequest) -> tuple[str, int]:
         """Log ``request.user_id`` in with a bearer token for the token endpoint.
