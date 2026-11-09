@@ -61,6 +61,7 @@ from cross_auth import SessionConfig
 | `max_age`      | `int`                  | `86400` | Session lifetime in seconds (24 hours); also the session cookie's `Max-Age`.                                                                                      |
 | `update_age`   | `int \| None`          | `None`  | Sliding-session interval. After this many seconds a read rolls `expires_at` forward; cookie clients also get a fresh `Set-Cookie` so the browser copy slides too. |
 | `token_hasher` | `Callable[[str], str]` | SHA-256 | Hash function for persisted tokens.                                                                                                                               |
+| `token_prefix` | `str \| None`          | `None`  | Prefix for new session tokens, which then carry a checksum; see [Token Prefix](/docs/session-authentication#token-prefix).                                        |
 | `cookies`      | `SessionCookieConfig`  | —       | Session cookie attributes (see below).                                                                                                                            |
 
 ### Example

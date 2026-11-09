@@ -19,7 +19,7 @@ from cross_auth._session import create_session, get_session
 from cross_auth.fastapi import CrossAuth
 from cross_auth.router import AuthRouter
 from cross_auth.social_providers.github import GitHubProvider
-from ..conftest import legacy_password_grant
+from ..conftest import LEGACY_PASSWORD_SERVER, legacy_password_grant
 
 TEST_PASSWORD = "password123"  # noqa: S105
 
@@ -519,6 +519,116 @@ def test_logout_custom_cookie_name(
 
     # Session should be deleted
     assert get_session(session_id, session_storage) is None
+
+
+# --- Prefixed session tokens ---
+
+
+def test_token_prefix_applies_to_every_session_cross_auth_mints(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        session_storage,
+        config={"session": {"token_prefix": "app"}},
+        oauth_server=LEGACY_PASSWORD_SERVER,
+    )
+    app = FastAPI()
+    app.include_router(auth.router)
+
+    @app.post("/do-login")
+    def do_login():
+        response = JSONResponse({"ok": True})
+        auth.login("test", response=response)
+        return response
+
+    @app.get("/me")
+    def me(user: Annotated[User | None, Depends(auth.get_current_user)]):
+        return {"user": None if user is None else user.id}
+
+    bearer_token, _ = auth.issue_session_token("test")
+    with TestClient(app) as client:
+        cookie_token = client.post("/do-login").cookies["session_id"]
+        with legacy_password_grant():
+            token_response = client.post(
+                "/token",
+                data={
+                    "grant_type": "password",
+                    "client_id": "test",
+                    "username": "test@example.com",
+                    "password": TEST_PASSWORD,
+                },
+            )
+        endpoint_token = token_response.json()["access_token"]
+
+        resp = client.get("/me", headers={"Cookie": f"session_id={cookie_token}"})
+        assert resp.json() == {"user": "test"}
+        for token in (bearer_token, endpoint_token):
+            resp = client.get("/me", headers={"Authorization": f"Bearer {token}"})
+            assert resp.json() == {"user": "test"}
+
+    for token in (cookie_token, bearer_token, endpoint_token):
+        assert token.startswith("app_")
+        assert auth.identify_token(token) == "session"
+
+
+def test_token_prefix_keeps_earlier_sessions_working(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    earlier_token, _ = create_session("test", session_storage)
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        session_storage,
+        config={"session": {"token_prefix": "app"}},
+    )
+    app = FastAPI()
+
+    @app.get("/me")
+    def me(user: Annotated[User | None, Depends(auth.get_current_user)]):
+        return {"user": None if user is None else user.id}
+
+    with TestClient(app) as client:
+        by_cookie = client.get("/me", headers={"Cookie": f"session_id={earlier_token}"})
+        by_bearer = client.get(
+            "/me", headers={"Authorization": f"Bearer {earlier_token}"}
+        )
+
+    assert by_cookie.json() == {"user": "test"}
+    assert by_bearer.json() == {"user": "test"}
+    # Not recognizable by shape, though: it predates the prefix.
+    assert auth.identify_token(earlier_token) is None
+
+
+def test_identify_token_without_token_prefix(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    auth = _make_auth(secondary_storage, accounts_storage, session_storage)
+    token, _ = auth.issue_session_token("test")
+
+    assert not token.startswith("app_")
+    assert auth.identify_token(token) is None
+
+
+def test_invalid_token_prefix_raises_at_construction(
+    secondary_storage: SecondaryStorage,
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    with pytest.raises(ValueError, match="Invalid token prefix 'My_App'"):
+        _make_auth(
+            secondary_storage,
+            accounts_storage,
+            session_storage,
+            config={"session": {"token_prefix": "My_App"}},
+        )
 
 
 # --- Shared setup between CrossAuth and AuthRouter ---

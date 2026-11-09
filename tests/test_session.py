@@ -18,6 +18,7 @@ from cross_auth._session import (
     make_session_cookie,
 )
 from cross_auth._storage import User
+from cross_auth._token_format import is_well_formed
 
 TEST_PASSWORD = "password123"  # noqa: S105
 
@@ -102,6 +103,56 @@ def test_create_session(session_storage: SessionStorage):
 
     stored = session_storage.get_any(session_record.id)
     assert stored is session_record
+
+
+def test_create_session_without_token_prefix_uses_token_urlsafe(
+    session_storage: SessionStorage,
+):
+    with patch(
+        "cross_auth._session.secrets.token_urlsafe", return_value="opaque-token"
+    ) as token_urlsafe:
+        session_token, session_record = create_session("test-user", session_storage)
+
+    token_urlsafe.assert_called_once_with(32)
+    assert session_token == "opaque-token"
+    retrieved = get_session("opaque-token", session_storage)
+    assert retrieved is not None
+    assert retrieved.id == session_record.id
+
+
+def test_create_session_with_token_prefix(session_storage: SessionStorage):
+    session_token, session_record = create_session(
+        "test-user", session_storage, token_prefix="app"
+    )
+
+    assert session_token.startswith("app_")
+    assert is_well_formed(session_token, "app")
+    retrieved = get_session(session_token, session_storage, {"token_prefix": "app"})
+    assert retrieved is not None
+    assert retrieved.id == session_record.id
+
+
+def test_sessions_issued_before_token_prefix_still_resolve(
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage,
+):
+    """Setting token_prefix changes new tokens only. Lookups hash whatever
+    token arrives, so sessions issued before keep working until they expire."""
+    session_token, session_record = create_session("test", session_storage)
+    config: SessionConfig = {"token_prefix": "app"}
+
+    retrieved = get_session(session_token, session_storage, config)
+    assert retrieved is not None
+    assert retrieved.id == session_record.id
+
+    cookie_request = _make_request({"session_id": session_token})
+    bearer_request = HTTPRequest(
+        TestingHTTPRequestAdapter(headers={"Authorization": f"Bearer {session_token}"})
+    )
+    for request in (cookie_request, bearer_request):
+        user = get_current_user(request, session_storage, accounts_storage, config)
+        assert user is not None
+        assert user.email == "test@example.com"
 
 
 def test_get_session(session_storage: SessionStorage):

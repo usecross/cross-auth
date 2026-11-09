@@ -8,6 +8,9 @@ from cross_web import HTTPRequest
 
 TokenGrantType = Literal["authorization_code", "password"]
 
+# What Context.identify_token can tell a token to be.
+TokenKind = Literal["session"]
+
 
 @dataclass(frozen=True, kw_only=True)
 class TokenIssueRequest:
