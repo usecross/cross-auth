@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import copy
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Generic, TypeVar, overload
+from typing import Any, ClassVar, Generic, Self, TypeVar, overload
 
 try:
     from sqlalchemy import BigInteger, SmallInteger, and_, inspect, or_, update
@@ -673,6 +674,8 @@ class SQLModelAccountsStorage(
 
     UserModel: type[UserModelT]
     SocialAccountModel: type[SocialAccountModelT]
+    # The caller's session that reads run in, set by with_read_session.
+    _read_session: Session | None = None
     excluded_social_account_fields: ClassVar[frozenset[str]] = frozenset()
 
     def __init__(
@@ -703,6 +706,28 @@ class SQLModelAccountsStorage(
 
     def _models(self) -> tuple[type[SQLModel], ...]:
         return (self.UserModel, self.SocialAccountModel)
+
+    def with_read_session(self, session: Session) -> Self:
+        """Return a copy of this storage whose user lookups run in ``session``.
+
+        The users ``find_user_by_id`` and ``find_user_by_email`` return belong
+        to ``session``: relationships load lazily and the caller can change and
+        commit them. The storage never commits or closes ``session``. Social
+        account reads and all writes still open their own session from
+        ``session_factory``, and writes commit before they return.
+        """
+        bound = copy.copy(self)
+        bound._read_session = session
+        return bound
+
+    @contextmanager
+    def _open_read_session(self) -> Iterator[Session]:
+        if self._read_session is not None:
+            yield self._read_session
+            return
+
+        with self._open_session() as session:
+            yield session
 
     def _validate_social_account_write_fields(self) -> None:
         model = self.SocialAccountModel
@@ -741,7 +766,7 @@ class SQLModelAccountsStorage(
 
     def _find_user(self, *where: Any) -> UserModelT | None:
         model = self.UserModel
-        with self._open_session() as session:
+        with self._open_read_session() as session:
             statement = self.filter_user_query(select(model).where(*where))
             return session.exec(statement).first()
 
@@ -753,7 +778,7 @@ class SQLModelAccountsStorage(
         an arbitrary one of them. Keep the column unique to rule this out.
         """
         model = self.UserModel
-        with self._open_session() as session:
+        with self._open_read_session() as session:
             statement = self.filter_user_query(
                 select(model).where(col(model.email) == email)
             )

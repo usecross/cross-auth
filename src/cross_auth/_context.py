@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from dataclasses import replace
+from typing import TypeVar
 
 from cross_web import HTTPRequest
 
@@ -10,8 +11,10 @@ from ._login import issue_bearer_session, run_login, run_now
 from ._oauth_server import OAuthServer
 from ._request import get_header
 from ._session import (
+    AuthenticatedSession,
     SessionConfig,
     SessionMetadata,
+    authenticate_session_token,
     create_session,
     resolve_config,
 )
@@ -26,6 +29,8 @@ from ._token_format import is_well_formed, validate_prefix
 from ._tokens import IssuedToken, TokenIssueRequest, TokenKind
 from .exceptions import CrossAuthException
 from .hooks import BeforeLoginEvent, HookRegistry
+
+StorageT = TypeVar("StorageT")
 
 
 class Context:
@@ -116,6 +121,34 @@ class Context:
             return "session"
         return None
 
+    def authenticate_session_token(
+        self, token: str, *, db_session: object | None = None
+    ) -> AuthenticatedSession | None:
+        """Return the active session ``token`` belongs to and its user.
+
+        Returns ``None`` when the token is unknown, revoked or expired, or when
+        the accounts storage does not return its user. Sliding sessions are
+        refreshed as they are for requests.
+
+        Pass ``db_session`` to load the user in your own database session, so
+        the returned user belongs to it. The accounts storage must have a
+        ``with_read_session`` method, as the SQLModel one does. The session
+        lookup and any refresh run first, in the session storage's own
+        sessions, so a refresh never commits while this call has a transaction
+        open in ``db_session``.
+        """
+        session_storage = self.session_storage
+        if session_storage is None:
+            raise RuntimeError("Session flow not configured for this deployment")
+
+        accounts_storage = self.accounts_storage
+        if db_session is not None:
+            accounts_storage = _with_read_session(accounts_storage, db_session)
+
+        return authenticate_session_token(
+            token, session_storage, accounts_storage, self.session_config
+        )
+
     def issue_token(self, request: TokenIssueRequest) -> tuple[str, int]:
         """Log ``request.user_id`` in with a bearer token for the token endpoint.
 
@@ -186,3 +219,13 @@ class Context:
     def is_valid_redirect_uri(self, redirect_uri: str, *, client_id: str) -> bool:
         client = self.get_client(client_id)
         return client is not None and client.check_redirect_uri(redirect_uri)
+
+
+def _with_read_session(storage: StorageT, db_session: object) -> StorageT:
+    with_read_session = getattr(storage, "with_read_session", None)
+    if with_read_session is None:
+        raise TypeError(
+            f"{type(storage).__name__} cannot read in a caller's database session: "
+            "it has no with_read_session method"
+        )
+    return with_read_session(db_session)

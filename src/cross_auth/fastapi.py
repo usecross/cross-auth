@@ -36,6 +36,7 @@ from ._oauth_server import OAuthServer
 from ._password import authenticate
 from ._request import make_http_request
 from ._session import (
+    AuthenticatedSession,
     SessionMetadata,
     get_current_user,
     get_user_session,
@@ -278,6 +279,23 @@ class CrossAuth:
         authenticate.
         """
         return self._context.identify_token(token)
+
+    def authenticate_session_token(
+        self, token: str, *, db_session: object | None = None
+    ) -> AuthenticatedSession | None:
+        """Return the active session ``token`` belongs to and its user.
+
+        Returns ``None`` when the token is unknown, revoked or expired, or when
+        the accounts storage does not return its user. Unlike
+        ``get_current_user``, this never calls ``get_user_from_request``, so a
+        custom resolver can use it for session tokens.
+
+        Pass ``db_session`` to load the user in your own database session, so
+        the returned user belongs to it: its relationships load lazily and you
+        can change and commit it. The accounts storage must have a
+        ``with_read_session`` method, as the SQLModel one does.
+        """
+        return self._context.authenticate_session_token(token, db_session=db_session)
 
     def require_current_user(self, request: FastAPIRequest) -> User:
         user = self.get_current_user(request)
