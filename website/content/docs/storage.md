@@ -893,7 +893,10 @@ the record (see [Login method](/docs/session-authentication#login-method)).
 whose current `expires_at` is at or after the supplied `updated_at`. This
 matches `session_status`: a session is still active at the exact expiry instant.
 Return `None` without changing the record if it is missing, revoked, or expired.
-An omitted `last_active_at` preserves the stored value.
+If the record's `updated_at` is already at or after the supplied `updated_at`, a
+concurrent refresh got there first: return the record unchanged, so a request
+that read the session before that refresh cannot move `expires_at` backwards. An
+omitted `last_active_at` preserves the stored value.
 
 The SQLModel adapter enforces this with a conditional database update. Custom
 adapters must provide the same guarantee: a separate active-session lookup

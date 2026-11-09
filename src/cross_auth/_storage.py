@@ -229,8 +229,11 @@ class SessionStorage(Protocol):
         """Atomically roll forward a session that is still active at updated_at.
 
         Return None without changing the row if missing, revoked, or its current
-        expires_at is earlier than updated_at. When last_active_at is None,
-        preserve the stored value rather than clearing it.
+        expires_at is earlier than updated_at. If its current updated_at is
+        already at or after updated_at, a concurrent refresh got there first:
+        return the row without changing it, so a stale refresh never moves
+        expires_at backwards. When last_active_at is None, preserve the stored
+        value rather than clearing it.
         """
         ...
 

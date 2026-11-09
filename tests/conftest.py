@@ -246,6 +246,8 @@ class MemorySessionStorage(SessionStorage):
             or record.expires_at < updated_at
         ):
             return None
+        if record.updated_at >= updated_at:
+            return record
         record.updated_at = updated_at
         record.expires_at = expires_at
         if last_active_at is not None:

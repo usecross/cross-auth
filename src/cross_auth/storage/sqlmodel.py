@@ -552,19 +552,30 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
                 model, "last_active_at", last_active_at
             )
 
+        active = (
+            col(model.id) == session_id,
+            col(model.revoked_at) == None,  # noqa: E711
+            col(model.expires_at) >= _bind_datetime(model, "expires_at", updated_at),
+        )
+        updated_at_bound = _bind_datetime(model, "updated_at", updated_at)
         with self._open_session() as session:
             statement = (
                 update(model)
-                .where(
-                    col(model.id) == session_id,
-                    col(model.revoked_at) == None,  # noqa: E711
-                    col(model.expires_at)
-                    >= _bind_datetime(model, "expires_at", updated_at),
-                )
+                # Only move forward: a request that read the session before a
+                # newer refresh committed must not roll its expiry back.
+                .where(*active, col(model.updated_at) < updated_at_bound)
                 .values(**values)
                 .returning(model)
             )
             record = session.scalars(statement).one_or_none()
+            if record is None:
+                # Either the session stopped being active, or a newer refresh
+                # already moved it past updated_at; return it in the latter case.
+                record = session.exec(
+                    select(model).where(
+                        *active, col(model.updated_at) >= updated_at_bound
+                    )
+                ).first()
             session.commit()
         return _prepare_session_record(record)
 
