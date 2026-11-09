@@ -839,3 +839,49 @@ def test_refresh_rejects_session_that_became_inactive_after_lookup(
     assert record.updated_at == initial_updated_at
     assert record.expires_at == initial_expires_at
     assert record.last_active_at == initial_last_active_at
+
+
+@time_machine.travel(NOW, tick=False)
+def test_stale_refresh_keeps_the_session_without_rolling_the_cookie(
+    secondary_storage, accounts_storage, session_storage, monkeypatch
+):
+    auth = _make_auth(
+        secondary_storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=session_storage,
+        config={
+            "session": {
+                "max_age": 60,
+                "update_age": 10,
+                "cookies": {"secure": False},
+            }
+        },
+    )
+    token, record = create_session("test", session_storage, max_age=60)
+    original_get = session_storage.get
+
+    with time_machine.travel(NOW + timedelta(seconds=20), tick=False):
+
+        def lookup_then_refresh_elsewhere(**kwargs):
+            result = original_get(**kwargs)
+            assert result is not None
+            snapshot = replace(result)
+            # Another request refreshes the session after this one read it.
+            later = kwargs["now"] + timedelta(seconds=1)
+            session_storage.refresh(
+                record.id,
+                updated_at=later,
+                expires_at=later + timedelta(seconds=60),
+                last_active_at=later,
+            )
+            return snapshot
+
+        monkeypatch.setattr(session_storage, "get", lookup_then_refresh_elsewhere)
+        with TestClient(_sliding_app(auth)) as client:
+            client.cookies.set("session_id", token)
+            response = client.get("/me")
+
+    assert response.json() == {"user": "test"}
+    # The other request's refresh stands, and this one has no expiry to roll.
+    assert record.expires_at == NOW + timedelta(seconds=81)
+    assert "set-cookie" not in response.headers

@@ -78,3 +78,34 @@ def test_revocation_after_lookup_prevents_refresh(refresh_store, signup_engine, 
     assert persisted.updated_at == original.updated_at
     assert persisted.expires_at == original.expires_at
     assert persisted.last_active_at == original.last_active_at
+
+
+@pytest.mark.parametrize(
+    "stale_by", [timedelta(minutes=5), timedelta(0)], ids=["earlier", "equal"]
+)
+def test_stale_refresh_does_not_move_the_session_backwards(refresh_store, stale_by):
+    store = refresh_store
+    original = create(store, expires_at=NOW + timedelta(hours=1))
+    later = NOW + timedelta(minutes=5)
+    store.refresh(
+        original.id,
+        updated_at=later,
+        expires_at=later + timedelta(days=1),
+        last_active_at=later,
+    )
+
+    # A request that read the session before that refresh commits after it,
+    # with an earlier or equal updated_at and a shorter expiry.
+    stale_at = later - stale_by
+    stale = store.refresh(
+        original.id,
+        updated_at=stale_at,
+        expires_at=stale_at + timedelta(hours=1),
+        last_active_at=stale_at,
+    )
+
+    persisted = store.get_any(original.id)
+    assert stale is not None
+    assert stale.updated_at == persisted.updated_at == later
+    assert stale.expires_at == persisted.expires_at == later + timedelta(days=1)
+    assert stale.last_active_at == persisted.last_active_at == later

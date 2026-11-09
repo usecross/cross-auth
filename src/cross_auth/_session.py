@@ -191,7 +191,9 @@ def _get_session(
     )
     if refreshed is None:
         return None
-    return refreshed, True
+    # A concurrent refresh that got there first comes back unchanged, with a
+    # later updated_at; its expiry did not move, so there is no cookie to roll.
+    return refreshed, refreshed.updated_at <= now
 
 
 def get_user_session(
