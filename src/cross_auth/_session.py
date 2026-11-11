@@ -50,6 +50,11 @@ class SessionConfig(TypedDict, total=False):
     # characters and a checksum. Lookups accept any token, so sessions issued
     # before the prefix was set keep working.
     token_prefix: str | None
+    # If True (default), sessions store the client's IP address: Cross-Auth's
+    # own routes read it from the request, and other logins can pass it in
+    # metadata. If False, no session stores an IP, even one passed in
+    # metadata or set by a login hook.
+    store_ip: bool
     cookies: SessionCookieConfig
 
 
@@ -70,6 +75,7 @@ _SESSION_CONFIG_DEFAULTS: SessionConfig = {
         session_token.encode("utf-8")
     ).hexdigest(),
     "token_prefix": None,
+    "store_ip": True,
     "cookies": _SESSION_COOKIE_DEFAULTS,
 }
 
@@ -164,6 +170,23 @@ def clean_session_metadata(metadata: SessionMetadata | None) -> SessionMetadata:
     }
 
 
+def request_metadata(
+    request: HTTPRequest, config: SessionConfig | None = None
+) -> SessionMetadata:
+    """Return the session metadata ``request`` carries.
+
+    That is its user agent and, unless ``store_ip`` is off, its client
+    address as the framework reports it. Behind a proxy, that is the proxy's
+    address unless the server trusts the proxy's forwarded headers.
+    """
+    metadata: SessionMetadata = {
+        "user_agent": get_header(request.headers, "user-agent")
+    }
+    if resolve_config(config)["store_ip"]:
+        metadata["ip"] = request.client_host
+    return metadata
+
+
 def create_session(
     user_id: str,
     storage: SessionStorage,
@@ -173,6 +196,7 @@ def create_session(
     token_hasher: SessionTokenHasher | None = None,
     token_prefix: str | None = None,
     login_method: str | None = None,
+    store_ip: bool = True,
 ) -> tuple[str, SessionRecord]:
     session_token = (
         secrets.token_urlsafe(32)
@@ -191,7 +215,7 @@ def create_session(
         client_id=cleaned_metadata["client_id"],
         client_name=cleaned_metadata["client_name"],
         user_agent=cleaned_metadata["user_agent"],
-        ip=cleaned_metadata["ip"],
+        ip=cleaned_metadata["ip"] if store_ip else None,
         last_active_at=now,
         login_method=login_method,
     )

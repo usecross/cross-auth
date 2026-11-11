@@ -9,13 +9,13 @@ from ._config import Config
 from ._email import normalize_email as _default_normalize_email
 from ._login import issue_bearer_session, run_login, run_now
 from ._oauth_server import OAuthServer
-from ._request import get_header
 from ._session import (
     AuthenticatedSession,
     SessionConfig,
     SessionMetadata,
     authenticate_session_token,
     create_session,
+    request_metadata,
     resolve_config,
 )
 from ._storage import (
@@ -104,6 +104,7 @@ class Context:
             token_hasher=resolved["token_hasher"],
             token_prefix=resolved["token_prefix"],
             login_method=login_method,
+            store_ip=resolved["store_ip"],
         )
 
     def identify_token(self, token: str) -> TokenKind | None:
@@ -197,7 +198,7 @@ class Context:
             session_config=self.session_config,
             metadata={
                 "client_id": request.client_id,
-                "user_agent": get_header(request.http_request.headers, "user-agent"),
+                **request_metadata(request.http_request, self.session_config),
             },
             login_method=request.login_method,
         )

@@ -47,7 +47,7 @@ from ._login import (
     logout_session,
     run_now,
 )
-from ._request import get_header
+from ._session import request_metadata
 from ._storage import CommitCallback, User
 from .exceptions import CrossAuthException
 from .hooks import (
@@ -969,7 +969,7 @@ def _complete_session(
         hooks=context.hooks,
         session_storage=session_storage,
         session_config=context.session_config,
-        metadata={"user_agent": get_header(request.headers, "user-agent")},
+        metadata=request_metadata(request, context.session_config),
         login_method=auth_request.provider_id,
     )
     return cast(Response, response), session_storage.on_commit

@@ -165,6 +165,7 @@ def login_with_session(
             token_hasher=resolved["token_hasher"],
             token_prefix=resolved["token_prefix"],
             login_method=event.login_method,
+            store_ip=resolved["store_ip"],
         )
         if event.response.cookies is None:
             event.response.cookies = []
@@ -214,6 +215,7 @@ def issue_bearer_session(
             token_hasher=resolved["token_hasher"],
             token_prefix=resolved["token_prefix"],
             login_method=event.login_method,
+            store_ip=resolved["store_ip"],
         )
         return (session_token, session_record), session_record
 

@@ -192,6 +192,18 @@ class TestColumns:
         assert (stored(client).user_agent, stored(client).ip) == (USER_AGENT, IP)
         assert stored(client).get_decoded()["more"] == "data"
 
+    def test_store_without_a_request_clears_the_ip_when_left_out(self) -> None:
+        client = browser()
+        csrf_post(client, "/remember/")
+
+        cross_auth = {**settings.CROSS_AUTH, "SESSION_STORE_IP": False}
+        with override_settings(CROSS_AUTH=cross_auth):
+            session = client.session
+            session["more"] = "data"
+            session.save()
+
+        assert (stored(client).user_agent, stored(client).ip) == (USER_AGENT, None)
+
 
 class TestLastActivity:
     def test_updates_at_most_once_per_interval(self, google: FakeGoogle) -> None:
@@ -227,6 +239,49 @@ class TestLastActivity:
             assert (session.user_agent, session.ip) == ("Phone", "::1")
             # Activity alone does not move the start of the session.
             assert session.created_at == T0
+
+    def test_ip_can_be_left_out(self, google: FakeGoogle) -> None:
+        cross_auth = {**settings.CROSS_AUTH, "SESSION_STORE_IP": False}
+        with (
+            override_settings(CROSS_AUTH=cross_auth),
+            time_machine.travel(T0, tick=False),
+        ):
+            client = browser()
+            sign_in(client, google)
+
+            session = stored(client)
+            assert session.user_agent == USER_AGENT
+            assert session.ip is None
+
+    def test_leaving_the_ip_out_clears_a_stored_one(self, google: FakeGoogle) -> None:
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            sign_in(client, google)
+            assert stored(client).ip == IP
+
+            cross_auth = {**settings.CROSS_AUTH, "SESSION_STORE_IP": False}
+            with override_settings(CROSS_AUTH=cross_auth):
+                clock.shift(120)
+                whoami(client)
+
+            assert stored(client).ip is None
+
+    def test_leaving_the_ip_out_clears_it_within_the_interval(
+        self, google: FakeGoogle
+    ) -> None:
+        with time_machine.travel(T0, tick=False) as clock:
+            client = browser()
+            sign_in(client, google)
+
+            cross_auth = {**settings.CROSS_AUTH, "SESSION_STORE_IP": False}
+            with override_settings(CROSS_AUTH=cross_auth):
+                clock.shift(10)
+                whoami(client)
+
+            session = stored(client)
+            assert session.ip is None
+            # Clearing the IP is not activity.
+            assert session.last_activity == T0
 
     def test_saving_the_session_records_activity(self, google: FakeGoogle) -> None:
         with time_machine.travel(T0, tick=False) as clock:

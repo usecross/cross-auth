@@ -17,6 +17,7 @@ def test_valid_settings_pass() -> None:
     [
         ({"PASSWORD_LOGN": False}, "Unknown CROSS_AUTH setting(s): PASSWORD_LOGN"),
         ({"PASSWORD_LOGIN": "no"}, "PASSWORD_LOGIN'] must be a bool"),
+        ({"SESSION_STORE_IP": "no"}, "SESSION_STORE_IP'] must be a bool"),
         ({"CREATE_USER": "tests.django.missing.create"}, "No module named"),
         ({"CREATE_USER": print}, "must be the dotted path of a function"),
         ({"CREATE_USER": "tests.django.settings.SECRET_KEY"}, "is not callable"),

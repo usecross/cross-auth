@@ -353,6 +353,21 @@ for the [prefixed format](#token-prefix) instead, ~190 bits of entropy.
 Cross-Auth stores only a hash of that token in `SessionStorage`, together with
 the session metadata and expiry.
 
+Cross-Auth's own logins, such as `/token` and browser logins, fill `user_agent`
+and `ip` from the request. The IP is the client address the framework reports
+(`request.client.host` in FastAPI), never a forwarding header: behind a proxy,
+run your server so it trusts your proxies' forwarded headers, such as
+`uvicorn --proxy-headers --forwarded-allow-ips=<your proxies>`, or every session
+shows the proxy's address. To store no IP at all, set `store_ip` to `False`:
+
+```python
+CrossAuth(..., config={"session": {"store_ip": False}})
+```
+
+New sessions then store no IP, even one you pass in `metadata` or a `login` hook
+sets. Sessions created before keep theirs until they end; to remove those
+sooner, clear the `ip` of your stored sessions.
+
 Clients choose most of that metadata, and the session list shows it back to
 users, so Cross-Auth cleans it before storing it, including values a `login`
 hook sets:
@@ -538,6 +553,7 @@ cookie = make_session_cookie(session_token, config)
 | Setting            | Default        | Notes                                 |
 | ------------------ | -------------- | ------------------------------------- |
 | `max_age`          | `86400` (24h)  | Session lifetime in seconds           |
+| `store_ip`         | `True`         | Store the client's IP with sessions   |
 | `cookies.name`     | `"session_id"` | Name of the cookie                    |
 | `cookies.secure`   | `True`         | Only sent over HTTPS                  |
 | `cookies.httponly` | `True`         | Not accessible via JavaScript         |
