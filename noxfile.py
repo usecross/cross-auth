@@ -2,7 +2,7 @@ import nox
 
 nox.options.default_venv_backend = "uv"
 
-PYTHON_VERSIONS = ["3.11", "3.12", "3.13", "3.14"]
+PYTHON_VERSIONS = ["3.11", "3.12", "3.13", "3.14", "3.15"]
 
 
 def _sync_dev(session: nox.Session) -> None:
@@ -30,13 +30,21 @@ def typecheck(session: nox.Session) -> None:
     session.run("ty", "check", ".", "--exclude", "website")
 
 
-# The main tests session covers SQLite with Django's user model. This one adds
-# PostgreSQL (in a disposable container) and a custom UUID user model.
-@nox.session(python=["3.14"], tags=["tests"])
+# Exercise each supported Django series with both databases and user models.
+# Python 3.15 is only supported by Django 6.1.3 and later.
+@nox.session(tags=["tests"])
+@nox.parametrize(
+    "python,django_version",
+    [("3.14", "5.2"), ("3.14", "6.0"), ("3.14", "6.1"), ("3.15", "6.1")],
+)
 @nox.parametrize("database", ["sqlite", "postgres"])
 @nox.parametrize("user_model", ["default", "custom"])
-def django(session: nox.Session, database: str, user_model: str) -> None:
+def django(
+    session: nox.Session, django_version: str, database: str, user_model: str
+) -> None:
     _sync_dev(session)
+    session.install(f"django=={django_version}.*")
+    session.run("python", "-m", "django", "--version")
     session.run(
         "coverage",
         "run",

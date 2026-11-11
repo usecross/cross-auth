@@ -28,31 +28,33 @@ The finished project is in
 [`examples/django`](https://github.com/usecross/cross-auth/tree/main/examples/django).
 
 > **Pilot scope:** this integration is new. It supports Google, Django 5.2 LTS
-> (5.2.8 or later), Python 3.11 to 3.14, database-backed Django sessions, and
-> SQLite or PostgreSQL. It is tested with Django's test client against a mocked
-> Google that signs real ID tokens; sign-in against Google itself is a manual
-> step you do in this guide. Other providers, Django 6, and multi-factor
-> authentication are not supported yet. See
+> (5.2.8 or later), Django 6.0 and 6.1, Python 3.11 to 3.15, database-backed
+> Django sessions, and SQLite or PostgreSQL. Python 3.11 requires Django 5.2;
+> Python 3.15 requires Django 6.1.3 or later. It is tested with Django's test
+> client against a mocked Google that signs real ID tokens; sign-in against
+> Google itself is a manual step you do in this guide. Other providers and
+> multi-factor authentication are not supported yet. See
 > [Limitations](#limitations-and-support).
 
 ## Prerequisites
 
-- Python 3.11–3.14 and [uv](https://docs.astral.sh/uv/). The commands below
-  select Python 3.13 so that `uv` does not choose an untested newer version.
+- Python 3.11–3.15 and [uv](https://docs.astral.sh/uv/). The commands below
+  select Python 3.13. Python 3.11 requires Django 5.2; Python 3.15 requires
+  Django 6.1.3 or later.
 - A Google account that can create a project in the
   [Google Cloud console](https://console.cloud.google.com/).
 
 ## Step 1: Create the project
 
 Create an empty project and install Cross Auth with its `django` extra, which
-also installs Django 5.2:
+also installs a compatible Django version. This guide pins Django 5.2 LTS:
 
 ```bash
 mkdir django-google-demo
 cd django-google-demo
 uv init --bare --python 3.13
 uv python pin 3.13
-uv add "cross-auth[django]>=0.38.0"
+uv add "cross-auth[django]>=0.38.0" "django>=5.2.8,<5.3"
 ```
 
 > **Version:** this guide requires Cross Auth 0.38.0 or later, which includes
@@ -1030,16 +1032,21 @@ Tested in Cross Auth's CI:
 
 | Area      | Tested                                                     |
 | --------- | ---------------------------------------------------------- |
-| Python    | 3.11, 3.12, 3.13, 3.14                                     |
-| Django    | 5.2 LTS (5.2.8 or later)                                   |
+| Python    | 3.11, 3.12, 3.13, 3.14, 3.15                               |
+| Django    | 5.2 LTS (5.2.8 or later), 6.0, 6.1                         |
 | Databases | SQLite, PostgreSQL 16                                      |
 | Users     | `auth.User`; a custom UUID user with its own manager       |
 | Sessions  | `db` and `cached_db` engines; `cross_auth.django.sessions` |
 | Servers   | Synchronous views under WSGI and ASGI                      |
 | Providers | Google, against a mocked Google with real signed ID tokens |
 
-Not supported in this pilot: providers other than Google, Django 6, async views,
-sign-in when your project requires multi-factor authentication, sharing one
-Google account between several users, and storing Google access or refresh
-tokens. Logging out of Django does not sign you out of Google or revoke the
-app's access.
+Django 6.0 and 6.1 are tested on Python 3.14; Django 6.1 is also tested on
+Python 3.15. Each Django series is tested against both databases, with Django's
+default user model and a custom UUID user model. Python 3.11 requires Django
+5.2, and Python 3.15 requires Django 6.1.3 or later.
+
+Not supported in this pilot: providers other than Google, async views, sign-in
+when your project requires multi-factor authentication, sharing one Google
+account between several users, and storing Google access or refresh tokens.
+Logging out of Django does not sign you out of Google or revoke the app's
+access.
