@@ -101,8 +101,16 @@ def _clean_text(value: str | None, *, max_length: int) -> str | None:
     if not value:
         return None
 
-    printable = "".join(char if char.isprintable() else " " for char in value)
-    return " ".join(printable.split())[:max_length].strip() or None
+    cleaned: list[str] = []
+    for char in value:
+        if char.isprintable() and not char.isspace():
+            cleaned.append(char)
+        elif cleaned and cleaned[-1] != " ":
+            cleaned.append(" ")
+        if len(cleaned) == max_length:
+            break
+
+    return "".join(cleaned).rstrip() or None
 
 
 def clean_user_agent(value: str | None) -> str | None:
@@ -119,12 +127,20 @@ def clean_ip(value: str | None) -> str | None:
         return None
 
     try:
-        address = ipaddress.ip_address(value.split("%", 1)[0].strip())
+        address = ipaddress.ip_address(value.strip())
     except ValueError:
         return None
 
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-        return str(address.ipv4_mapped)
+    if isinstance(address, ipaddress.IPv6Address):
+        # ipaddress accepts arbitrary scope strings, including address lists.
+        if address.scope_id is not None and any(
+            not char.isprintable() or char.isspace() or char in ",/[]"
+            for char in address.scope_id
+        ):
+            return None
+        address = ipaddress.IPv6Address(int(address))
+        if address.ipv4_mapped:
+            return str(address.ipv4_mapped)
     return str(address)
 
 

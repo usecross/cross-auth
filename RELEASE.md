@@ -14,5 +14,6 @@ from any login path, and to values a `login` hook sets:
   address, not a whole `X-Forwarded-For` list.
 - Values left empty are stored as `None`.
 
-Django sessions already cleaned the user agent and IP this way and are
-unchanged. Sessions created before this release keep their stored values.
+Django sessions use the same cleaners. Malformed IP suffixes are now rejected
+instead of silently discarded, and text cleaning uses bounded memory. Sessions
+created before this release keep their stored values.
