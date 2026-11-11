@@ -23,7 +23,8 @@ on:
 jobs:
   spa-fastapi-hybrid-e2e:
     name: SPA + FastAPI hybrid example
-    runs-on: ubuntu-latest
+    # Playwright 1.59.1 does not support Ubuntu 26.04 (ubuntu-latest).
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     steps:
@@ -70,7 +71,8 @@ jobs:
 
   framework-contract-e2e:
     name: Shared framework contract (Django + FastAPI)
-    runs-on: ubuntu-latest
+    # Keep the browser runner on a supported Playwright distribution.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     steps:
