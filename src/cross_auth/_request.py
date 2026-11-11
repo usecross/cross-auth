@@ -78,6 +78,10 @@ class HTTPRequestAdapter(SyncHTTPRequestAdapter):
     def cookies(self) -> Mapping[str, str]:
         return self._request.cookies
 
+    @property
+    def client_host(self) -> str | None:
+        return self._request.client_host
+
 
 def make_http_request(
     request: AsyncHTTPRequest,

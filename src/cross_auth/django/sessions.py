@@ -45,6 +45,8 @@ from .backends import BACKEND
 from .conf import get_settings
 
 if TYPE_CHECKING:
+    from django.db.models import QuerySet
+
     from .models import Session
 
     # django-stubs makes the store generic in its model; Django's is not.
@@ -71,10 +73,11 @@ class _Row:
 
     session_key: str
     last_activity: datetime
+    ip: str | None
 
     @classmethod
     def of(cls, session: Session) -> _Row:
-        return cls(session.session_key, session.last_activity)
+        return cls(session.session_key, session.last_activity, session.ip)
 
 
 class SessionStore(_DatabaseSessionStore):
@@ -233,7 +236,8 @@ class SessionStore(_DatabaseSessionStore):
 
         The row moves to ``session``'s key if that differs. It keeps its
         ``public_id`` and ``created_at`` unless a login is pending, and its
-        device unless the store has a client.
+        device unless the store has a client. With
+        ``CROSS_AUTH["SESSION_STORE_IP"]`` off it loses its IP either way.
         """
         columns: dict[str, object] = {
             "session_data": session.session_data,
@@ -247,6 +251,8 @@ class SessionStore(_DatabaseSessionStore):
             columns["session_key"] = session.session_key
         if self._client is not None:
             columns.update(user_agent=session.user_agent, ip=session.ip)
+        elif not get_settings().session_store_ip:
+            columns["ip"] = None
         if self._login_pending:
             columns.update(public_id=session.public_id, created_at=session.created_at)
 
@@ -314,36 +320,41 @@ class SessionStore(_DatabaseSessionStore):
 
         Only for a session this store loaded or saved and still holds, so a
         request that never touched the session writes nothing. The interval is
-        ``CROSS_AUTH["SESSION_ACTIVITY_INTERVAL"]``. The update is best-effort:
-        a database error is logged, not raised.
+        ``CROSS_AUTH["SESSION_ACTIVITY_INTERVAL"]``; with
+        ``CROSS_AUTH["SESSION_STORE_IP"]`` off, a stored IP is cleared without
+        waiting for it. Updates are best-effort: a database error is logged,
+        not raised.
         """
         row = self._row
         if row is None or row.session_key != self.session_key:
             return
 
+        conf = get_settings()
         now = timezone.now()
-        since = now - get_settings().session_activity_interval
+        since = now - conf.session_activity_interval
+        rows = self.model.objects.using(self.alias).filter(session_key=row.session_key)
         if row.last_activity > since:
+            if row.ip is not None and not conf.session_store_ip:
+                if self._update(rows, ip=None):
+                    self._row = replace(row, ip=None)
             return
 
         changes: dict[str, object] = {"last_activity": now}
         if self._client is not None:
             changes.update(user_agent=self._client.user_agent, ip=self._client.ip)
-        using = self.alias
         # Only if no other request of the session has updated it since, so
         # concurrent requests write once, and never an older time.
-        rows = self.model.objects.using(using).filter(
-            session_key=row.session_key, last_activity__lte=since
-        )
+        if self._update(rows.filter(last_activity__lte=since), **changes):
+            self._row = replace(row, last_activity=now)
+
+    def _update(self, rows: QuerySet[Session], **changes: object) -> bool:
+        """``rows.update(**changes)``, logging a database error instead of raising."""
         try:
-            with transaction.atomic(using=using):
-                updated = rows.update(**changes)
+            with transaction.atomic(using=self.alias):
+                return rows.update(**changes) > 0
         except DatabaseError:
             logger.warning("Could not record a session's activity", exc_info=True)
-            return
-
-        if updated:
-            self._row = replace(row, last_activity=now)
+            return False
 
 
 def _start_sign_in(
@@ -366,7 +377,9 @@ class SessionMiddleware(DjangoSessionMiddleware):
     the session's ``last_activity`` (throttled) when nothing else saves it.
     The IP is ``REMOTE_ADDR``, never a forwarding header; behind a proxy,
     set ``REMOTE_ADDR`` from the header your proxy sets, in middleware that
-    runs before this one, or every session shows the proxy's address.
+    runs before this one, or every session shows the proxy's address. With
+    ``CROSS_AUTH["SESSION_STORE_IP"] = False`` it stores no IP, and sessions
+    clear the one they have the next time they are saved or used.
     """
 
     def process_request(self, request: HttpRequest) -> None:
@@ -375,7 +388,11 @@ class SessionMiddleware(DjangoSessionMiddleware):
         if isinstance(session, SessionStore):
             session.set_client(
                 user_agent=request.META.get("HTTP_USER_AGENT"),
-                ip=request.META.get("REMOTE_ADDR"),
+                ip=(
+                    request.META.get("REMOTE_ADDR")
+                    if get_settings().session_store_ip
+                    else None
+                ),
             )
 
     def process_response(

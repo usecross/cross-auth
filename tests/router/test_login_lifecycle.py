@@ -105,10 +105,10 @@ def _cookie_value(header: str) -> str:
     return header.split(";", 1)[0].split("=", 1)[1]
 
 
-def _client(auth: CrossAuth) -> TestClient:
+def _client(auth: CrossAuth, *, client_host: str = "testclient") -> TestClient:
     app = FastAPI()
     app.include_router(auth.router)
-    return TestClient(app, follow_redirects=False)
+    return TestClient(app, follow_redirects=False, client=(client_host, 50000))
 
 
 @pytest.fixture
@@ -167,7 +167,7 @@ def test_browser_login_runs_one_lifecycle_around_one_session_and_cookie(
     (after_event,) = after
     assert before_event.credential == "cookie"
     assert before_event.max_age == 86400
-    assert before_event.metadata == {"user_agent": "browser/1.0"}
+    assert before_event.metadata == {"user_agent": "browser/1.0", "ip": "testclient"}
     assert before_event.login_method == after_event.login_method == "fake"
     assert after_event.user_id == record.user_id == before_event.user_id
     assert after_event.credential == "cookie"
@@ -525,13 +525,56 @@ def test_password_grant_runs_one_login_lifecycle(
     (before_event,) = before
     (after_event,) = after
     assert before_event.credential == "bearer"
-    assert before_event.metadata == {"client_id": "app-client", "user_agent": "cli/3.0"}
+    assert before_event.metadata == {
+        "client_id": "app-client",
+        "user_agent": "cli/3.0",
+        "ip": "testclient",
+    }
     assert before_event.login_method == after_event.login_method == "password"
     assert after_event.session_record is record
     assert record.user_id == "test"
     assert record.token_hash == hash_session_token(resp.json()["access_token"])
     assert record.expires_at == NOW + timedelta(seconds=120)
     assert resp.json()["expires_in"] == 120
+
+
+def test_token_grants_store_the_client_ip(
+    build_auth,
+    session_storage: MemorySessionStorage,
+):
+    auth = build_auth(oauth_server=LEGACY_APP_OAUTH_SERVER)
+
+    with _client(auth, client_host="203.0.113.7") as client:
+        resp = _password_grant(client)
+
+    assert resp.status_code == 200
+    (record,) = session_storage.records.values()
+    assert record.ip == "203.0.113.7"
+
+
+def test_sessions_store_no_ip_when_store_ip_is_off(
+    build_auth,
+    session_storage: MemorySessionStorage,
+):
+    auth = build_auth(
+        oauth_server=LEGACY_APP_OAUTH_SERVER,
+        config={"session": {"store_ip": False}},
+    )
+    before, _ = _capture_login(auth)
+
+    @auth.before("login")
+    def set_ip(event: BeforeLoginEvent) -> BeforeLoginEvent:
+        return replace(event, metadata={**(event.metadata or {}), "ip": "198.51.100.1"})
+
+    with _client(auth, client_host="203.0.113.7") as client:
+        resp = _password_grant(client)
+    _, issued = auth.issue_session_token("test", metadata={"ip": "203.0.113.9"})
+
+    assert resp.status_code == 200
+    # Cross-Auth doesn't read the client address, and drops the ones it's given.
+    assert "ip" not in (before[0].metadata or {})
+    assert [record.ip for record in session_storage.records.values()] == [None, None]
+    assert issued.ip is None
 
 
 def test_failed_password_grant_runs_no_login(

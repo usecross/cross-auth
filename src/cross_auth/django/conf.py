@@ -82,6 +82,8 @@ class CrossAuthSettings:
     # How stale cross_auth.django.sessions lets a session's last_activity get
     # before a request that does not save the session updates it.
     session_activity_interval: timedelta
+    # Whether cross_auth.django.sessions stores the request's REMOTE_ADDR.
+    session_store_ip: bool
 
 
 _KNOWN_KEYS = frozenset(
@@ -93,6 +95,7 @@ _KNOWN_KEYS = frozenset(
         "REQUIRE_VERIFIED_EMAIL",
         "BASE_URL",
         "SESSION_ACTIVITY_INTERVAL",
+        "SESSION_STORE_IP",
     }
 )
 _ACCOUNT_LINKING_KEYS = frozenset({"enabled", "allow_different_emails"})
@@ -206,6 +209,7 @@ def get_settings() -> CrossAuthSettings:
             60,
             maximum=_MAX_SESSION_ACTIVITY_INTERVAL,
         ),
+        session_store_ip=_bool(raw, "SESSION_STORE_IP", True),
     )
 
 

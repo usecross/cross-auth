@@ -20,6 +20,7 @@ from cross_auth._session import (
     get_session,
     make_clear_cookie,
     make_session_cookie,
+    request_metadata,
 )
 from cross_auth._storage import User
 from cross_auth._token_format import is_well_formed
@@ -240,6 +241,38 @@ def test_create_session_stores_cleaned_metadata(session_storage: SessionStorage)
     assert session_record.client_name is None
     assert session_record.user_agent == "Mozilla/5.0 (X11)"
     assert session_record.ip is None
+
+
+def test_create_session_can_skip_the_ip(session_storage: SessionStorage):
+    _, session_record = create_session(
+        "test-user",
+        session_storage,
+        metadata={"user_agent": "cli/3.0", "ip": "203.0.113.7"},
+        store_ip=False,
+    )
+
+    assert session_record.user_agent == "cli/3.0"
+    assert session_record.ip is None
+
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        (None, {"user_agent": "cli/3.0", "ip": "203.0.113.7"}),
+        ({"store_ip": True}, {"user_agent": "cli/3.0", "ip": "203.0.113.7"}),
+        ({"store_ip": False}, {"user_agent": "cli/3.0"}),
+    ],
+)
+def test_request_metadata(
+    config: SessionConfig | None, expected: dict[str, str]
+) -> None:
+    request = HTTPRequest(
+        TestingHTTPRequestAdapter(
+            headers={"User-Agent": "cli/3.0"}, client_host="203.0.113.7"
+        )
+    )
+
+    assert request_metadata(request, config) == expected
 
 
 def test_sessions_issued_before_token_prefix_still_resolve(
