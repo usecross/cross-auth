@@ -1,5 +1,6 @@
+from collections.abc import Iterator
 from datetime import datetime, timezone
-from typing import cast
+from typing import LiteralString, cast
 from unittest.mock import Mock, patch
 
 import bcrypt
@@ -10,6 +11,9 @@ from cross_auth import AccountsStorage, SessionStorage
 from cross_auth._password import DUMMY_PASSWORD_HASH, _verify_password, authenticate
 from cross_auth._session import (
     SessionConfig,
+    clean_ip,
+    clean_session_metadata,
+    clean_user_agent,
     create_session,
     delete_session,
     get_current_user,
@@ -130,6 +134,112 @@ def test_create_session_with_token_prefix(session_storage: SessionStorage):
     retrieved = get_session(session_token, session_storage, {"token_prefix": "app"})
     assert retrieved is not None
     assert retrieved.id == session_record.id
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) Chrome/130.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) Chrome/130.0",
+        ),
+        (
+            "  Mozilla/5.0\x00\x1b[31m (X11)\r\n\tFirefox  ",
+            "Mozilla/5.0 [31m (X11) Firefox",
+        ),
+        ("Bad\u2028line\u200bbreaks", "Bad line breaks"),
+        ("Chrome\u202eexe.fdp", "Chrome exe.fdp"),
+        ("x" * 513, "x" * 512),
+        (" " * 1024 + "Firefox", "Firefox"),
+        ("Firefox" + "\x00 " * 1024 + "Browser", "Firefox Browser"),
+        ("x" * 511 + "\nFirefox", "x" * 511),
+        ("x" * 510 + "\nFirefox", "x" * 510 + " F"),
+        ("\x00\r\n ", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_user_agent_is_sanitized(value: str | None, expected: str | None) -> None:
+    assert clean_user_agent(value) == expected
+
+
+def test_user_agent_cleaning_stops_at_the_output_limit() -> None:
+    class GuardedText(str):
+        def __iter__(self) -> Iterator[LiteralString]:
+            for index in range(len(self)):
+                assert index < 512, "Cleaner read beyond the output limit"
+                yield "x"
+
+    assert clean_user_agent(GuardedText("x" * 1_000_000)) == "x" * 512
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("198.51.100.7", "198.51.100.7"),
+        ("2001:DB8:0:0::1", "2001:db8::1"),
+        ("::ffff:198.51.100.7", "198.51.100.7"),
+        ("fe80::1%eth0", "fe80::1"),
+        ("fe80::1%3", "fe80::1"),
+        ("::ffff:198.51.100.7%eth0", "198.51.100.7"),
+        ("198.51.100.7%invalid", None),
+        ("198.51.100.7%invalid, 10.0.0.1", None),
+        ("fe80::1%", None),
+        ("fe80::1%eth0%extra", None),
+        ("fe80::1%eth0, 10.0.0.1", None),
+        ("fe80::1%eth0,10.0.0.1", None),
+        ("fe80::1%eth 0", None),
+        ("fe80::1%eth0\x00", None),
+        ("fe80::1%eth0/64", None),
+        (" 198.51.100.7 ", "198.51.100.7"),
+        ("198.51.100.7, 10.0.0.1", None),
+        ("unknown", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_ip_is_normalized(value: str | None, expected: str | None) -> None:
+    assert clean_ip(value) == expected
+
+
+def test_session_metadata_is_cleaned() -> None:
+    assert clean_session_metadata(
+        {
+            "client_id": " cli\n",
+            "client_name": "My\x00 Laptop" + "x" * 300,
+            "user_agent": "cli/2.0\r\n",
+            "ip": "::ffff:203.0.113.7",
+        }
+    ) == {
+        "client_id": "cli",
+        "client_name": ("My Laptop" + "x" * 300)[:255],
+        "user_agent": "cli/2.0",
+        "ip": "203.0.113.7",
+    }
+    assert clean_session_metadata(None) == {
+        "client_id": None,
+        "client_name": None,
+        "user_agent": None,
+        "ip": None,
+    }
+
+
+def test_create_session_stores_cleaned_metadata(session_storage: SessionStorage):
+    _, session_record = create_session(
+        "test-user",
+        session_storage,
+        metadata={
+            "client_id": "cli\x1b[2J",
+            "client_name": "  ",
+            "user_agent": "Mozilla/5.0\u202e (X11)",
+            "ip": "203.0.113.7, 10.0.0.1",
+        },
+    )
+
+    assert session_record.client_id == "cli [2J"
+    assert session_record.client_name is None
+    assert session_record.user_agent == "Mozilla/5.0 (X11)"
+    assert session_record.ip is None
 
 
 def test_sessions_issued_before_token_prefix_still_resolve(

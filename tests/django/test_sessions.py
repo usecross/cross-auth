@@ -34,8 +34,6 @@ from cross_auth.django.models import Session
 from cross_auth.django.sessions import (
     LOGIN_METHOD_SESSION_KEY,
     SessionStore,
-    _clean_ip,
-    _clean_user_agent,
 )
 
 from .fake_google import FakeGoogle
@@ -193,43 +191,6 @@ class TestColumns:
 
         assert (stored(client).user_agent, stored(client).ip) == (USER_AGENT, IP)
         assert stored(client).get_decoded()["more"] == "data"
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        (USER_AGENT, USER_AGENT),
-        (
-            "  Mozilla/5.0\x00\x1b[31m (X11)\r\n\tFirefox  ",
-            "Mozilla/5.0 [31m (X11) Firefox",
-        ),
-        ("Bad\u2028line\u200bbreaks", "Bad line breaks"),
-        ("x" * 513, "x" * 512),
-        ("\x00\r\n ", None),
-        ("", None),
-        (None, None),
-    ],
-)
-def test_user_agent_is_sanitized(value: str | None, expected: str | None) -> None:
-    assert _clean_user_agent(value) == expected
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        ("198.51.100.7", "198.51.100.7"),
-        ("2001:DB8:0:0::1", "2001:db8::1"),
-        ("::ffff:198.51.100.7", "198.51.100.7"),
-        ("fe80::1%eth0", "fe80::1"),
-        (" 198.51.100.7 ", "198.51.100.7"),
-        ("198.51.100.7, 10.0.0.1", None),
-        ("unknown", None),
-        ("", None),
-        (None, None),
-    ],
-)
-def test_ip_is_normalized(value: str | None, expected: str | None) -> None:
-    assert _clean_ip(value) == expected
 
 
 class TestLastActivity:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ from ._storage import AccountsStorage, SessionRecord, SessionStorage, User
 from ._token_format import generate_token
 
 _DEFAULT_MAX_AGE = 86400
+_USER_AGENT_MAX_LENGTH = 512
+_CLIENT_MAX_LENGTH = 255
 
 SessionTokenHasher = Callable[[str], str]
 
@@ -88,6 +91,79 @@ def hash_session_token(
     return hasher(session_token)
 
 
+def _clean_text(value: str | None, *, max_length: int) -> str | None:
+    """Return ``value`` fit to store and show, or ``None``.
+
+    Control and other unprintable characters become spaces (PostgreSQL also
+    refuses NUL), runs of whitespace collapse, and the result is cut to
+    ``max_length`` characters.
+    """
+    if not value:
+        return None
+
+    cleaned: list[str] = []
+    for char in value:
+        if char.isprintable() and not char.isspace():
+            cleaned.append(char)
+        elif cleaned and cleaned[-1] != " ":
+            cleaned.append(" ")
+        if len(cleaned) == max_length:
+            break
+
+    return "".join(cleaned).rstrip() or None
+
+
+def clean_user_agent(value: str | None) -> str | None:
+    """Return a user agent fit to store and show, or ``None``."""
+    return _clean_text(value, max_length=_USER_AGENT_MAX_LENGTH)
+
+
+def clean_ip(value: str | None) -> str | None:
+    """Return the normalized IP address in ``value``, or ``None``.
+
+    IPv6 zone IDs are dropped and IPv4-mapped IPv6 addresses become IPv4.
+    """
+    if not value:
+        return None
+
+    try:
+        address = ipaddress.ip_address(value.strip())
+    except ValueError:
+        return None
+
+    if isinstance(address, ipaddress.IPv6Address):
+        # ipaddress accepts arbitrary scope strings, including address lists.
+        if address.scope_id is not None and any(
+            not char.isprintable() or char.isspace() or char in ",/[]"
+            for char in address.scope_id
+        ):
+            return None
+        address = ipaddress.IPv6Address(int(address))
+        if address.ipv4_mapped:
+            return str(address.ipv4_mapped)
+    return str(address)
+
+
+def clean_session_metadata(metadata: SessionMetadata | None) -> SessionMetadata:
+    """Return ``metadata`` fit to store and show.
+
+    Clients choose most of it, and session lists show it back to users.
+    ``client_id`` and ``client_name`` are cleaned like a user agent but cut
+    to 255 characters; an ``ip`` that is not a single IP address is dropped.
+    """
+    values = metadata or {}
+    return {
+        "client_id": _clean_text(
+            values.get("client_id"), max_length=_CLIENT_MAX_LENGTH
+        ),
+        "client_name": _clean_text(
+            values.get("client_name"), max_length=_CLIENT_MAX_LENGTH
+        ),
+        "user_agent": clean_user_agent(values.get("user_agent")),
+        "ip": clean_ip(values.get("ip")),
+    }
+
+
 def create_session(
     user_id: str,
     storage: SessionStorage,
@@ -105,17 +181,17 @@ def create_session(
     )
     now = datetime.now(tz=timezone.utc)
     expires_at = now + timedelta(seconds=max_age)
-    resolved_metadata = metadata or {}
+    cleaned_metadata = clean_session_metadata(metadata)
     session_record = storage.create(
         token_hash=hash_session_token(session_token, token_hasher),
         user_id=user_id,
         created_at=now,
         updated_at=now,
         expires_at=expires_at,
-        client_id=resolved_metadata.get("client_id"),
-        client_name=resolved_metadata.get("client_name"),
-        user_agent=resolved_metadata.get("user_agent"),
-        ip=resolved_metadata.get("ip"),
+        client_id=cleaned_metadata["client_id"],
+        client_name=cleaned_metadata["client_name"],
+        user_agent=cleaned_metadata["user_agent"],
+        ip=cleaned_metadata["ip"],
         last_active_at=now,
         login_method=login_method,
     )
