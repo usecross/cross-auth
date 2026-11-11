@@ -436,6 +436,22 @@ def test_issue_session_token_runs_login_lifecycle_without_response(
     assert (record.user_agent, record.client_name) == ("ios/17", "ios")
 
 
+def test_metadata_from_login_hooks_is_cleaned(
+    auth: CrossAuth,
+    session_storage: MemorySessionStorage,
+):
+    @auth.before("login")
+    def name_client(event: BeforeLoginEvent) -> BeforeLoginEvent:
+        return replace(
+            event,
+            metadata={**(event.metadata or {}), "client_name": "My\nLaptop"},
+        )
+
+    _, record = auth.issue_session_token("test", metadata={"user_agent": "ios/17\x00"})
+
+    assert (record.user_agent, record.client_name) == ("ios/17", "My Laptop")
+
+
 def test_issue_session_token_veto_and_invalid_rewrites_create_no_session(
     auth: CrossAuth,
     session_storage: MemorySessionStorage,

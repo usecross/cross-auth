@@ -353,6 +353,18 @@ for the [prefixed format](#token-prefix) instead, ~190 bits of entropy.
 Cross-Auth stores only a hash of that token in `SessionStorage`, together with
 the session metadata and expiry.
 
+Clients choose most of that metadata, and the session list shows it back to
+users, so Cross-Auth cleans it before storing it, including values a `login`
+hook sets:
+
+- In `client_id`, `client_name` and `user_agent`, control and other unprintable
+  characters become spaces and runs of whitespace become one space. `user_agent`
+  is cut to 512 characters, the other two to 255.
+- `ip` must be a single IP address. IPv6 zone IDs are dropped and IPv4-mapped
+  IPv6 addresses become IPv4. Anything else, such as a whole `X-Forwarded-For`
+  list, is stored as `None`.
+- Values left empty are stored as `None`.
+
 #### Session Fixation Protection
 
 Always create a **new** session after authentication. Never reuse an existing

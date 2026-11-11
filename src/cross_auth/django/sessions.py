@@ -15,7 +15,6 @@ provided; there is no cache or ``cached_db`` variant.
 
 from __future__ import annotations
 
-import ipaddress
 import logging
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -36,6 +35,8 @@ from django.db import DatabaseError, IntegrityError, router, transaction
 from django.http import HttpRequest, HttpResponse
 from django.utils import timezone
 
+from cross_auth._session import clean_ip, clean_user_agent
+
 from ._session_management import SessionInfo as SessionInfo
 from ._session_management import list_sessions as list_sessions
 from ._session_management import revoke_other_sessions as revoke_other_sessions
@@ -54,8 +55,6 @@ else:
 # Framework-owned session keys start with an underscore, like Django's own
 # ``_auth_user_id``. Cross Auth's login stores the provider here.
 LOGIN_METHOD_SESSION_KEY = "_cross_auth_login_method"
-
-_USER_AGENT_MAX_LENGTH = 512
 
 logger = logging.getLogger(__name__)
 
@@ -76,39 +75,6 @@ class _Row:
     @classmethod
     def of(cls, session: Session) -> _Row:
         return cls(session.session_key, session.last_activity)
-
-
-def _clean_user_agent(value: str | None) -> str | None:
-    """Return a user agent fit to store and show, or ``None``.
-
-    Control and other unprintable characters become spaces (PostgreSQL also
-    refuses NUL), runs of whitespace collapse, and the result is cut to the
-    column's 512 characters.
-    """
-    if not value:
-        return None
-
-    printable = "".join(char if char.isprintable() else " " for char in value)
-    return " ".join(printable.split())[:_USER_AGENT_MAX_LENGTH].strip() or None
-
-
-def _clean_ip(value: str | None) -> str | None:
-    """Return the normalized IP address in ``value``, or ``None``.
-
-    IPv6 zone IDs are dropped and IPv4-mapped IPv6 addresses become IPv4.
-    """
-    if not value:
-        return None
-
-    try:
-        address = ipaddress.ip_address(value.split("%", 1)[0].strip())
-    except ValueError:
-        return None
-
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-        return str(address.ipv4_mapped)
-
-    return str(address)
 
 
 class SessionStore(_DatabaseSessionStore):
@@ -148,7 +114,7 @@ class SessionStore(_DatabaseSessionStore):
         it; a store without it, such as one created outside a request, keeps
         the stored values.
         """
-        self._client = _Client(_clean_user_agent(user_agent), _clean_ip(ip))
+        self._client = _Client(clean_user_agent(user_agent), clean_ip(ip))
 
     def create_model_instance(self, data: dict[str, Any]) -> Session:
         now = timezone.now()
