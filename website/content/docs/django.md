@@ -929,7 +929,18 @@ and has to sign in and connect the provider instead.
   in, and Django's usual rules apply to password changes
   (`update_session_auth_hash`) and logout.
 - **Inactive users** cannot sign in with Google, and lose their existing
-  sessions on the next request.
+  sessions on the next request. This is Django's own rule,
+  `ModelBackend.user_can_authenticate()`, which `CrossAuthBackend` inherits: a
+  user whose `is_active` is false is refused. Cross Auth checks it once the
+  Google identity is verified, before logging in, and answers
+  `403 access_denied` ("This account is inactive."); Django checks it on every
+  request in `get_user()`, so `request.user` becomes anonymous. It is the Django
+  counterpart of the FastAPI integration's
+  [`user_can_authenticate`](/docs/session-authentication#refuse-suspended-or-deleted-users),
+  which Django projects do not set: to refuse suspended or deleted users, make
+  `is_active` false for them, with a field or a property on your user model.
+  Refusing does not delete their sessions, so making the user active again lets
+  those sessions work again.
 - **Transactions.** Each step commits on its own. Cross Auth's views opt out of
   `ATOMIC_REQUESTS`, and raise `ImproperlyConfigured` if they run inside another
   transaction, such as one opened by middleware. Accounts storage captures the

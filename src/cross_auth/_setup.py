@@ -17,6 +17,7 @@ from ._config import Config
 from ._context import Context
 from ._issuer import Issuer
 from ._oauth_server import OAuthServer
+from ._session import UserCanAuthenticate
 from ._storage import AccountsStorage, SecondaryStorage, SessionStorage, User
 from .hooks import HookRegistry
 from .social_providers.oauth import OAuth2Provider
@@ -45,6 +46,7 @@ def build_auth_setup(
     hooks: HookRegistry | None = None,
     normalize_email: Callable[[str], str] | None = None,
     oauth_server: OAuthServer | None = None,
+    user_can_authenticate: UserCanAuthenticate | None = None,
 ) -> AuthSetup:
     context = Context(
         secondary_storage=secondary_storage,
@@ -57,6 +59,7 @@ def build_auth_setup(
         hooks=hooks,
         normalize_email=normalize_email,
         oauth_server=oauth_server,
+        user_can_authenticate=user_can_authenticate,
     )
     registered_providers = tuple(providers)
     return AuthSetup(

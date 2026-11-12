@@ -186,9 +186,10 @@ def build_context(request: Request) -> dict:  # outside dependency injection
 
 `authenticate_session_token(token)` looks a session token up without a request.
 It returns an `AuthenticatedSession` with the active `session` record and its
-`user`, or `None` when the token is unknown, revoked or expired, or when the
-accounts storage no longer returns the user. Sliding sessions are refreshed as
-they are for requests.
+`user`, or `None` when the token is unknown, revoked or expired, when the
+accounts storage no longer returns the user, or when
+[`user_can_authenticate`](#refuse-suspended-or-deleted-users) refuses the user.
+Sliding sessions are refreshed as they are for requests.
 
 It never calls `get_user_from_request`, so a resolver that also accepts other
 credentials can use it for session tokens:
@@ -231,6 +232,112 @@ storage needs a `with_read_session(session)` method, which returns a copy of the
 storage whose user lookups run in `session`. The SQLModel accounts storage has
 one; with other accounts storages, `db_session` raises `TypeError`.
 
+With `user_can_authenticate`, the user must be checked before the refresh, so
+Cross-Auth checks a copy that the accounts storage loads in its own session,
+then refreshes the session, and only then loads the user you get back in `db`.
+That costs one more user lookup per call.
+
+### Refuse Suspended or Deleted Users
+
+Pass `user_can_authenticate` to refuse a user at every point Cross-Auth lets
+them in: each login, and each use of a session. It takes the user and returns
+whether they may sign in:
+
+```python
+def user_can_authenticate(user: User) -> bool:
+    return user.deleted_at is None and user.suspended_at is None
+
+
+auth = CrossAuth(
+    providers=[],
+    storage=secondary_storage,
+    accounts_storage=accounts_storage,
+    session_storage=session_storage,
+    user_can_authenticate=user_can_authenticate,
+)
+```
+
+When it returns `False`, logins are refused with `403 access_denied` ("Sign-in
+is not allowed") before the `login` hooks run and before anything is issued.
+That covers `auth.login()`, `auth.issue_session_token()`,
+`auth.sign_in_with_id_token()`, browser sign-in and `/token`, including a custom
+`token_issuer`. A user ID the accounts storage does not find is refused the same
+way. A session of a refused user counts as no session:
+
+- `get_current_user` returns `None`, `require_current_user` answers 401 and
+  `authenticate_session_token` returns `None`.
+- `GET /sessions`, `DELETE /sessions/{session_id}` and
+  `POST /sessions/revoke-others` answer `401 unauthorized`, like the other
+  routes that need a signed-in user.
+- `POST /logout` still works: it only ends the caller's own session.
+
+Cross-Auth asks only once it has verified who the user is. `auth.authenticate()`
+raises the refusal only after the password matches; a wrong password still
+returns `None`, so nobody learns whether an account may sign in without its
+password. In the same way, `auth.resolve_id_token_user()` checks once the token
+is verified, and browser sign-in once the provider has confirmed the identity.
+
+To answer with your own error, raise `CrossAuthException` instead of returning
+`False`. Cross-Auth uses it in place of its own, at login and on each use:
+
+```python
+from cross_auth.exceptions import CrossAuthException
+
+
+def user_can_authenticate(user: User) -> bool:
+    if user.deleted_at is not None:
+        return False
+    if user.suspended_at is not None:
+        raise CrossAuthException("account_suspended", "Account suspended", 403)
+    return True
+```
+
+Cross-Auth's routes answer with that error and status. `/token` answers it as a
+400 OAuth error, as it does for hook errors, and browser sign-in for an OAuth
+client redirects to the client with it. Your own calls raise it, including
+`get_current_user` and `require_current_user` used as dependencies, so register
+an exception handler:
+
+```python
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+
+@app.exception_handler(CrossAuthException)
+def cross_auth_error(request: Request, exc: CrossAuthException) -> JSONResponse:
+    return JSONResponse(
+        {"error": exc.error, "error_description": exc.error_description},
+        status_code=exc.status_code,
+    )
+```
+
+Refusing a user does not revoke their sessions, so lifting a suspension lets the
+user's sessions work again. To sign a user out for good, revoke their sessions
+too:
+
+```python
+user.suspended_at = datetime.now(tz=timezone.utc)
+db.commit()
+auth.revoke_all_sessions(user_id=user.id)
+```
+
+`user_can_authenticate` is the safety net behind that: it covers code that
+forgets to revoke, a login that races the revocation, and changes made directly
+in the database.
+
+Cross-Auth calls it with the user it loaded, on every authenticated request, so
+keep it to a quick check of the user's own fields. On each use it runs before
+the [sliding refresh](#sliding-sessions), so a refused request does not extend
+the session or move its `last_active_at`.
+
+A custom `get_user_from_request` decides itself which users it returns.
+`authenticate_session_token` applies `user_can_authenticate`, so a resolver that
+uses it for session tokens is covered; check users of other credentials, such as
+API keys, yourself.
+
+Without `user_can_authenticate`, every user may sign in, and logins do not load
+the user to ask.
+
 ### Sliding Sessions
 
 With `update_age` configured, reads refresh the stored session record — and the
@@ -245,10 +352,15 @@ from cross_auth.fastapi import SessionCookieMiddleware
 app.add_middleware(SessionCookieMiddleware)
 ```
 
-A sliding refresh succeeds only while the stored session is still active. If
-revocation wins the race between lookup and refresh, Cross-Auth rejects that
-session and does not extend its cookie. Expiry is also checked at the refresh
-attempt, so time spent in the initial lookup cannot revive an expired session.
+A sliding refresh succeeds only while the stored session is still active.
+`get_current_user` and `authenticate_session_token` load the session's user
+before they refresh, and with
+[`user_can_authenticate`](#refuse-suspended-or-deleted-users) every session read
+through `CrossAuth` checks the user first, so a session whose user is missing or
+refused is not extended. If revocation wins the race between lookup and refresh,
+Cross-Auth rejects that session and does not extend its cookie. Expiry is also
+checked at the refresh attempt, so time spent in the initial lookup cannot
+revive an expired session.
 
 Revocation does not cancel a request that has already authenticated. If refresh
 finishes first, a later revocation still invalidates the stored session for

@@ -75,6 +75,7 @@ def _build_auth(
     default_next_url: str = "/",
     normalize_email: Callable[[str], str] | None = None,
     oauth_server: OAuthServer | None = None,
+    user_can_authenticate: Callable[[User], bool] | None = None,
 ) -> CrossAuth:
     if config is None:
         config = {"session": {"cookies": {"auth": True}}}
@@ -88,6 +89,7 @@ def _build_auth(
         get_user_from_request=_bearer_user_resolver(accounts_storage),
         normalize_email=normalize_email,
         oauth_server=oauth_server,
+        user_can_authenticate=user_can_authenticate,
     )
 
 

@@ -19,6 +19,8 @@ _USER_AGENT_MAX_LENGTH = 512
 _CLIENT_MAX_LENGTH = 255
 
 SessionTokenHasher = Callable[[str], str]
+# Whether a user may sign in and keep using their sessions.
+UserCanAuthenticate = Callable[[User], bool]
 
 
 class SessionMetadata(TypedDict, total=False):
@@ -244,14 +246,51 @@ def authenticate_session_token(
     storage: SessionStorage,
     accounts_storage: AccountsStorage,
     config: SessionConfig | None = None,
+    *,
+    user_can_authenticate: UserCanAuthenticate | None = None,
 ) -> AuthenticatedSession | None:
-    session = get_session(session_token, storage, config)
+    """Return the active session ``session_token`` belongs to and its user.
+
+    Returns ``None`` when the token is unknown, revoked or expired, when the
+    user is not found, or when ``user_can_authenticate`` returns False; a
+    ``CrossAuthException`` it raises propagates. The user is checked before a
+    sliding refresh, so a refused token does not extend its session.
+    """
+    resolved = resolve_config(config)
+    session = _find_session(session_token, storage, resolved)
     if session is None:
         return None
+    user = _session_user(session, accounts_storage, user_can_authenticate)
+    if user is None:
+        return None
+    result = _refresh_session(session, storage, resolved)
+    if result is None:
+        return None
+    return AuthenticatedSession(result[0], user)
+
+
+def _session_user(
+    session: SessionRecord,
+    accounts_storage: AccountsStorage,
+    user_can_authenticate: UserCanAuthenticate | None,
+) -> User | None:
+    """Return the user of ``session``, or ``None`` if it may not use it."""
     user = accounts_storage.find_user_by_id(session.user_id)
     if user is None:
         return None
-    return AuthenticatedSession(session, user)
+    if user_can_authenticate is not None and not user_can_authenticate(user):
+        return None
+    return user
+
+
+def _find_session(
+    session_token: str, storage: SessionStorage, resolved: SessionConfig
+) -> SessionRecord | None:
+    """Look up the active session ``session_token`` belongs to, without refreshing it."""
+    return storage.get(
+        token_hash=hash_session_token(session_token, resolved["token_hasher"]),
+        now=datetime.now(tz=timezone.utc),
+    )
 
 
 def _get_session(
@@ -263,26 +302,34 @@ def _get_session(
 ) -> tuple[SessionRecord, bool] | None:
     """Resolve a session by token, returning (record, refreshed).
 
-    ``refreshed`` is True when the ``update_age`` window elapsed and the record
-    was rolled forward (extending ``expires_at``); callers serving cookies use
-    it to decide whether to reissue Set-Cookie with a fresh Max-Age.
+    See ``_refresh_session`` for ``refreshed``.
     """
-    now = datetime.now(tz=timezone.utc)
-    session = storage.get(
-        token_hash=hash_session_token(session_token, resolved["token_hasher"]),
-        now=now,
-    )
+    session = _find_session(session_token, storage, resolved)
     if session is None:
         return None
+    if not refresh:
+        return session, False
+    return _refresh_session(session, storage, resolved)
 
+
+def _refresh_session(
+    session: SessionRecord, storage: SessionStorage, resolved: SessionConfig
+) -> tuple[SessionRecord, bool] | None:
+    """Roll ``session`` forward once its ``update_age`` window elapsed.
+
+    Returns (record, refreshed), or ``None`` if the session ended before the
+    refresh. ``refreshed`` is True when the record was rolled forward
+    (extending ``expires_at``); callers serving cookies use it to decide
+    whether to reissue Set-Cookie with a fresh Max-Age.
+    """
     update_age = resolved.get("update_age")
-    if not refresh or update_age is None:
+    if update_age is None:
         return session, False
 
+    now = datetime.now(tz=timezone.utc)
     if now - session.updated_at < timedelta(seconds=update_age):
         return session, False
 
-    now = datetime.now(tz=timezone.utc)
     refreshed = storage.refresh(
         session.id,
         updated_at=now,
@@ -362,11 +409,22 @@ def get_current_user(
     storage: SessionStorage,
     accounts_storage: AccountsStorage,
     config: SessionConfig | None = None,
+    *,
+    user_can_authenticate: UserCanAuthenticate | None = None,
 ) -> User | None:
-    session = get_current_session(request, storage, config)
-    if session is None:
-        return None
-    return accounts_storage.find_user_by_id(session.user_id)
+    """Return the user of the request's session, or ``None``.
+
+    A session whose user is not found, or refused by ``user_can_authenticate``,
+    counts as no session; a ``CrossAuthException`` it raises propagates.
+    """
+    resolution = resolve_current_session(
+        request,
+        storage,
+        config,
+        accounts_storage=accounts_storage,
+        user_can_authenticate=user_can_authenticate,
+    )
+    return None if resolution is None else resolution.user
 
 
 @dataclass(frozen=True)
@@ -375,6 +433,8 @@ class ResolvedSession:
     token: str
     source: Literal["cookie", "bearer"]
     refreshed: bool
+    # Set when the session was resolved with an accounts storage.
+    user: User | None = None
 
 
 def resolve_current_session(
@@ -383,6 +443,8 @@ def resolve_current_session(
     config: SessionConfig | None = None,
     *,
     refresh: bool = True,
+    accounts_storage: AccountsStorage | None = None,
+    user_can_authenticate: UserCanAuthenticate | None = None,
 ) -> ResolvedSession | None:
     """Resolve the request's session, preferring the cookie over a bearer token.
 
@@ -390,6 +452,12 @@ def resolve_current_session(
     arrived on and whether the record was just refreshed, so a response-aware
     caller can roll the session cookie forward. Set ``refresh=False`` when
     resolving a session for logout so it is not extended before revocation.
+
+    With ``accounts_storage`` it also loads the session's user, before any
+    refresh: if the user is not found, or refused by ``user_can_authenticate``,
+    the request has no session, so a refused request does not extend it. The
+    session found first still decides: a bearer token is not tried instead.
+    A ``CrossAuthException`` the check raises propagates.
     """
     resolved = resolve_config(config)
 
@@ -400,10 +468,22 @@ def resolve_current_session(
     for source, token in candidates:
         if token is None:
             continue
-        result = _get_session(token, storage, resolved, refresh=refresh)
+        session = _find_session(token, storage, resolved)
+        if session is None:
+            continue
+        user = None
+        if accounts_storage is not None:
+            user = _session_user(session, accounts_storage, user_can_authenticate)
+            if user is None:
+                return None
+        result = (
+            _refresh_session(session, storage, resolved)
+            if refresh
+            else (session, False)
+        )
         if result is not None:
             record, refreshed = result
-            return ResolvedSession(record, token, source, refreshed)
+            return ResolvedSession(record, token, source, refreshed, user)
 
     return None
 

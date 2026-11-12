@@ -11,12 +11,16 @@ from ._login import issue_bearer_session, run_login, run_now
 from ._oauth_server import OAuthServer
 from ._session import (
     AuthenticatedSession,
+    ResolvedSession,
     SessionConfig,
     SessionMetadata,
+    UserCanAuthenticate,
     authenticate_session_token,
     create_session,
+    get_session,
     request_metadata,
     resolve_config,
+    resolve_current_session,
 )
 from ._storage import (
     AccountsStorage,
@@ -33,6 +37,13 @@ from .hooks import BeforeLoginEvent, HookRegistry
 StorageT = TypeVar("StorageT")
 
 
+def _sign_in_refused() -> CrossAuthException:
+    """The error for a user ``user_can_authenticate`` returned False for."""
+    return CrossAuthException(
+        "access_denied", error_description="Sign-in is not allowed", status_code=403
+    )
+
+
 class Context:
     def __init__(
         self,
@@ -47,11 +58,14 @@ class Context:
         hooks: HookRegistry | None = None,
         normalize_email: Callable[[str], str] | None = None,
         oauth_server: OAuthServer | None = None,
+        user_can_authenticate: UserCanAuthenticate | None = None,
     ):
         self.secondary_storage = secondary_storage
         self.accounts_storage = accounts_storage
         self.session_storage = session_storage
         self.get_user_from_request = get_user_from_request
+        # None lets every user sign in without loading them to ask.
+        self.user_can_authenticate = user_can_authenticate
         if oauth_server is not None and not isinstance(oauth_server, OAuthServer):
             raise TypeError("oauth_server must be an OAuthServer or None")
         self.oauth_server = oauth_server
@@ -83,6 +97,53 @@ class Context:
     def cookie_auth_enabled(self) -> bool:
         cookies = (self.config.get("session") or {}).get("cookies") or {}
         return cookies.get("auth", False)
+
+    def check_user_can_authenticate(self, user: User) -> None:
+        """Raise ``CrossAuthException`` unless ``user`` may sign in.
+
+        ``user_can_authenticate`` returning False raises ``access_denied``; an
+        exception it raises propagates. Call it only once the user's identity
+        is verified, so nobody learns an account's state without credentials.
+        """
+        user_can_authenticate = self.user_can_authenticate
+        if user_can_authenticate is not None and not user_can_authenticate(user):
+            raise _sign_in_refused()
+
+    def check_user_id_can_authenticate(self, user_id: str) -> None:
+        """``check_user_can_authenticate`` for the user with ``user_id``.
+
+        A user that is not found is refused. Without ``user_can_authenticate``
+        nothing is loaded.
+        """
+        if self.user_can_authenticate is None:
+            return
+        user = self.accounts_storage.find_user_by_id(user_id)
+        if user is None:
+            raise _sign_in_refused()
+        self.check_user_can_authenticate(user)
+
+    def resolve_current_session(
+        self, request: HTTPRequest, *, load_user: bool = False
+    ) -> ResolvedSession | None:
+        """Resolve the request's session, cookie first, then bearer token.
+
+        With ``load_user``, or with ``user_can_authenticate``, the session's
+        user is loaded before any sliding refresh: a session whose user is not
+        found or refused counts as unknown and is not extended. A
+        ``CrossAuthException`` from ``user_can_authenticate`` propagates.
+        """
+        session_storage = self.session_storage
+        if session_storage is None:
+            raise RuntimeError("Session flow not configured for this deployment")
+
+        check = load_user or self.user_can_authenticate is not None
+        return resolve_current_session(
+            request,
+            session_storage,
+            self.session_config,
+            accounts_storage=self.accounts_storage if check else None,
+            user_can_authenticate=self.user_can_authenticate,
+        )
 
     def create_session(
         self,
@@ -127,28 +188,53 @@ class Context:
     ) -> AuthenticatedSession | None:
         """Return the active session ``token`` belongs to and its user.
 
-        Returns ``None`` when the token is unknown, revoked or expired, or when
-        the accounts storage does not return its user. Sliding sessions are
-        refreshed as they are for requests.
+        Returns ``None`` when the token is unknown, revoked or expired, when
+        the accounts storage does not return its user, or when
+        ``user_can_authenticate`` returns False for it; an exception it raises
+        propagates. Sliding sessions are refreshed as they are for requests,
+        once the user is checked.
 
         Pass ``db_session`` to load the user in your own database session, so
         the returned user belongs to it. The accounts storage must have a
         ``with_read_session`` method, as the SQLModel one does. The session
-        lookup and any refresh run first, in the session storage's own
-        sessions, so a refresh never commits while this call has a transaction
-        open in ``db_session``.
+        lookup, the ``user_can_authenticate`` check and any refresh run first,
+        in the storages' own sessions, so a refresh never commits while this
+        call has a transaction open in ``db_session``.
         """
         session_storage = self.session_storage
         if session_storage is None:
             raise RuntimeError("Session flow not configured for this deployment")
 
-        accounts_storage = self.accounts_storage
-        if db_session is not None:
-            accounts_storage = _with_read_session(accounts_storage, db_session)
+        if db_session is None:
+            return authenticate_session_token(
+                token,
+                session_storage,
+                self.accounts_storage,
+                self.session_config,
+                user_can_authenticate=self.user_can_authenticate,
+            )
 
-        return authenticate_session_token(
-            token, session_storage, accounts_storage, self.session_config
-        )
+        reader = _with_read_session(self.accounts_storage, db_session)
+        if self.user_can_authenticate is None:
+            session = get_session(token, session_storage, self.session_config)
+        else:
+            # The check needs the user before the refresh, and the refresh
+            # must not commit after a read in db_session, so check a copy
+            # loaded in the accounts storage's own session.
+            checked = authenticate_session_token(
+                token,
+                session_storage,
+                self.accounts_storage,
+                self.session_config,
+                user_can_authenticate=self.user_can_authenticate,
+            )
+            session = None if checked is None else checked.session
+        if session is None:
+            return None
+        user = reader.find_user_by_id(session.user_id)
+        if user is None:
+            return None
+        return AuthenticatedSession(session, user)
 
     def issue_token(self, request: TokenIssueRequest) -> tuple[str, int]:
         """Log ``request.user_id`` in with a bearer token for the token endpoint.
@@ -181,6 +267,7 @@ class Context:
                 # A token_issuer's successful return is its commit point; core
                 # cannot see any transaction behind it.
                 on_commit=run_now,
+                check_user=self.check_user_id_can_authenticate,
             )
             return IssuedToken(*issued, on_commit=run_now)
 
@@ -196,6 +283,7 @@ class Context:
             hooks=self.hooks,
             session_storage=session_storage,
             session_config=self.session_config,
+            check_user=self.check_user_id_can_authenticate,
             metadata={
                 "client_id": request.client_id,
                 **request_metadata(request.http_request, self.session_config),

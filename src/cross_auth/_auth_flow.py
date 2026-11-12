@@ -114,6 +114,12 @@ def _same_id(left: Any, right: Any) -> bool:
     return str(left) == str(right)
 
 
+def _exception_response(e: CrossAuthException) -> Response:
+    return Response.error(
+        e.error, error_description=e.error_description, status_code=e.status_code
+    )
+
+
 def logout(request: HTTPRequest, context: Context) -> Response:
     """POST /logout — revoke the caller's session.
 
@@ -159,7 +165,11 @@ def disconnect_provider(
     context: Context,
 ) -> Response:
     """DELETE /{provider}/social-accounts[/{social_account_id}] — detach account."""
-    if (user := context.get_user_from_request(request)) is None:
+    try:
+        user = context.get_user_from_request(request)
+    except CrossAuthException as e:
+        return _exception_response(e)
+    if user is None:
         return Response.error(
             "unauthorized",
             error_description="Must be logged in to disconnect a social account",
@@ -299,7 +309,10 @@ def start_connect_flow(
 
     Supports ?next=/some/path to control post-connect redirect.
     """
-    user = context.get_user_from_request(request)
+    try:
+        user = context.get_user_from_request(request)
+    except CrossAuthException as e:
+        return _exception_response(e)
     if user is None:
         return Response.error(
             "unauthorized",
@@ -576,7 +589,10 @@ def _handle_oauth_callback(
         )
 
     if auth_request.flow in {"connect", "link"}:
-        user = context.get_user_from_request(request)
+        try:
+            user = context.get_user_from_request(request)
+        except CrossAuthException as e:
+            return _exception_response(e)
         # Bearer-only link clients authenticate again at finalize-link, since
         # the provider's browser redirect cannot carry their bearer header.
         if (user is None and auth_request.flow == "connect") or (
@@ -729,7 +745,10 @@ def _complete_oauth_callback(
             )
         except CrossAuthException as e:
             return _flow_error(
-                auth_request, error=e.error, error_description=e.error_description
+                auth_request,
+                error=e.error,
+                error_description=e.error_description,
+                status_code=e.status_code,
             )
 
     if auth_request.flow in {"session", "token"}:
@@ -797,6 +816,18 @@ def _complete_sign_in(
     except CrossAuthException as e:
         return _flow_error(
             auth_request, error=e.error, error_description=e.error_description
+        )
+
+    # Before an authorization code or a session is issued, so a refusal comes
+    # back on the flow's error path.
+    try:
+        context.check_user_can_authenticate(resolved_user.user)
+    except CrossAuthException as e:
+        return _flow_error(
+            auth_request,
+            error=e.error,
+            error_description=e.error_description,
+            status_code=e.status_code,
         )
 
     _require_committed_accounts(context)
@@ -910,6 +941,7 @@ def _complete_connect(
 
     if auth_request.allow_login:
         _check_login_link_email(provider, context, validated, user)
+        context.check_user_can_authenticate(user)
 
     attach_social_account(
         provider=provider,
@@ -969,6 +1001,8 @@ def _complete_session(
         hooks=context.hooks,
         session_storage=session_storage,
         session_config=context.session_config,
+        # _complete_sign_in has just checked this user.
+        check_user=None,
         metadata=request_metadata(request, context.session_config),
         login_method=auth_request.provider_id,
     )
@@ -1061,7 +1095,10 @@ def start_link_flow(
 
     Body: InitiateLinkRequest (JSON). Returns 200 with authorization URL.
     """
-    user = context.get_user_from_request(request)
+    try:
+        user = context.get_user_from_request(request)
+    except CrossAuthException as e:
+        return _exception_response(e)
     if not user:
         return Response.error(
             "unauthorized",
@@ -1153,7 +1190,10 @@ def finalize_link(
     context: Context,
 ) -> Response:
     """POST /{provider}/finalize-link — client redeems a link_code."""
-    user = context.get_user_from_request(request)
+    try:
+        user = context.get_user_from_request(request)
+    except CrossAuthException as e:
+        return _exception_response(e)
     if not user:
         return Response.error(
             "unauthorized", error_description="Not logged in", status_code=401
@@ -1293,6 +1333,13 @@ def finalize_link(
         _check_login_link_email(provider, context, validated, user)
     except CrossAuthException as e:
         return Response.error(e.error, error_description=e.error_description)
+
+    if allow_login:
+        # A new way to sign in is for users who may sign in.
+        try:
+            context.check_user_can_authenticate(user)
+        except CrossAuthException as e:
+            return _exception_response(e)
 
     try:
         resolved_account = attach_social_account(

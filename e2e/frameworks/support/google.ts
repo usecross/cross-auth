@@ -15,6 +15,7 @@ const IDENTITIES = {
   disconnect: { verified: true },
   "last-method": { verified: true },
   integration: { verified: true },
+  suspended: { verified: true },
   unverified: { verified: false },
   // Both example apps refuse sign-ins from this domain before writing.
   denied: { verified: true, domain: "blocked.example" },

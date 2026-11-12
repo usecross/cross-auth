@@ -574,8 +574,10 @@ def test_cookie_session_precedes_bearer_when_user_is_missing(
 
     durable_get.assert_called_once()
     assert resp.json() == {"user": None}
-    assert f"session_id={cookie_token}" in resp.headers.get("set-cookie", "")
-    assert cookie_record.expires_at == NOW + timedelta(seconds=80)
+    # The user is loaded before the sliding refresh, so a session without one
+    # is not extended.
+    assert "set-cookie" not in resp.headers
+    assert cookie_record.expires_at == NOW + timedelta(seconds=60)
     assert bearer_record.expires_at == NOW + timedelta(seconds=60)
 
 

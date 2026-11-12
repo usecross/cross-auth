@@ -67,6 +67,10 @@ export const django: Framework = {
         await state("seed-password-user", email, password)
       },
 
+      async setActive(email, active) {
+        await state("set-active", email, String(active))
+      },
+
       async facts(email) {
         return JSON.parse(await state("facts", email)) as AccountFacts
       },

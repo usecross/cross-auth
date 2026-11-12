@@ -642,3 +642,75 @@ def test_native_nonce_accepts_raw_and_sdk_hashed_unicode_values(
 
     assert created is True
     assert user.email == "nonce@example.com"
+
+
+def test_sign_in_refuses_a_user_user_can_authenticate_refuses(
+    secondary_storage: SecondaryStorage,
+    accounts_storage,
+):
+    provider = StubOIDCProvider(
+        {"sub": "native-1", "email": "test@example.com", "email_verified": True}
+    )
+    accounts_storage.create_social_account(
+        user_id="test",
+        provider="stub",
+        provider_user_id="native-1",
+        access_token=None,
+        refresh_token=None,
+        access_token_expires_at=None,
+        refresh_token_expires_at=None,
+        scope=None,
+        user_info={},
+        provider_email="test@example.com",
+        provider_email_verified=True,
+        is_login_method=True,
+    )
+    session_storage = MemorySessionStorage()
+    checked: list[str] = []
+
+    def user_can_authenticate(user) -> bool:
+        checked.append(str(user.id))
+        return False
+
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        provider,
+        session_storage=session_storage,
+        user_can_authenticate=user_can_authenticate,
+    )
+    logins: list[BeforeLoginEvent] = []
+    auth.before("login")(logins.append)
+
+    with pytest.raises(CrossAuthException, match="^access_denied$"):
+        auth.resolve_id_token_user("stub", VALID_TOKEN)
+    with pytest.raises(CrossAuthException, match="^access_denied$"):
+        auth.sign_in_with_id_token("stub", VALID_TOKEN)
+
+    # Each call checks once, after the token is verified.
+    assert provider.validated_tokens == [VALID_TOKEN, VALID_TOKEN]
+    assert checked == ["test", "test"]
+    assert logins == []
+    assert session_storage.records == {}
+
+
+def test_an_invalid_id_token_is_refused_before_user_can_authenticate(
+    secondary_storage: SecondaryStorage,
+    accounts_storage,
+):
+    provider = StubOIDCProvider(
+        {"sub": "native-1", "email": "test@example.com", "email_verified": True}
+    )
+    user_can_authenticate = Mock(return_value=False)
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        provider,
+        session_storage=MemorySessionStorage(),
+        user_can_authenticate=user_can_authenticate,
+    )
+
+    with pytest.raises(OAuth2Exception):
+        auth.sign_in_with_id_token("stub", "forged-token")
+
+    user_can_authenticate.assert_not_called()

@@ -284,6 +284,7 @@ def test_session_store_bound_to_an_application_transaction_is_rejected(
                 hooks=hooks,
                 session_storage=SessionStore(session_factory=factory),
                 session_config=None,
+                check_user=None,
             )
 
         assert outer.is_active

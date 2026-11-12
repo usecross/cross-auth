@@ -14,6 +14,10 @@ def seed_password_user(email: str, password: str) -> None:
     User.objects.create_user(email, email=email, password=password)
 
 
+def set_active(email: str, active: bool) -> None:
+    User.objects.filter(email__iexact=email).update(is_active=active)
+
+
 def facts(email: str) -> dict[str, object]:
     users = User.objects.filter(email__iexact=email)
     accounts = SocialAccount.objects.filter(provider="google").filter(
@@ -43,6 +47,9 @@ class Command(BaseCommand):
         seed = operations.add_parser("seed-password-user")
         seed.add_argument("email")
         seed.add_argument("password")
+        activate = operations.add_parser("set-active")
+        activate.add_argument("email")
+        activate.add_argument("active", choices=["true", "false"])
         read = operations.add_parser("facts")
         read.add_argument("email")
 
@@ -54,6 +61,13 @@ class Command(BaseCommand):
                 "password": str(password),
             }:
                 seed_password_user(email, password)
+                return None
+            case {
+                "operation": "set-active",
+                "email": str(email),
+                "active": str(active),
+            }:
+                set_active(email, active == "true")
                 return None
             case {"operation": "facts", "email": str(email)}:
                 return json.dumps(facts(email))

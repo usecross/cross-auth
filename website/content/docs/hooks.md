@@ -128,7 +128,7 @@ Use this as a quick guide when deciding where custom logic belongs.
 | Hook                       | Use it when you need to...                                              | Common `before` work                                                                                        | Common `after` work                                                                      |
 | -------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `authenticate`             | Customize password-based sign-in checks before a session is created     | Normalize email addresses, block specific accounts, enforce tenant-specific password login rules            | Audit successful and failed password authentication attempts                             |
-| `login`                    | Control every cookie or bearer login before its credential is issued    | Block login for service or suspended users, clamp session lifetimes, adjust the cookie login response       | Audit logins, add headers or cookies, publish "user logged in" telemetry                 |
+| `login`                    | Control every cookie or bearer login before its credential is issued    | Block login for service users, clamp session lifetimes, adjust the cookie login response                    | Audit logins, add headers or cookies, publish "user logged in" telemetry                 |
 | `logout`                   | Control session deletion and post-logout side effects                   | Require an active session, prevent logout in special flows, capture session context before deletion         | Audit logout activity, revoke related application state, trigger notifications           |
 | `session.revoke`           | Control signing out sessions from a session list                        | Refuse revoking protected sessions, require recent sign-in before signing out other devices                 | Audit revoked sessions, notify the user that devices were signed out                     |
 | `user.create`              | Apply policy and side effects around creation of a local user           | Enforce signup eligibility or invitation requirements                                                       | Send welcome events, create telemetry, start post-signup provisioning                    |
@@ -207,6 +207,12 @@ what the session records, or what the issuer receives as
 `TokenIssueRequest.login_method`, and what `AfterLoginEvent.login_method`
 reports.
 
+To refuse suspended or deleted users, pass
+[`user_can_authenticate`](/docs/session-authentication#refuse-suspended-or-deleted-users)
+to `CrossAuth` instead of writing a `login` hook: it runs before these hooks at
+every login, and also on every use of a session, which a `login` hook does not
+see. The `login` hooks never run for a user it refuses.
+
 `AfterLoginEvent` carries `user_id`, `credential`, `login_method`, `response`
 (cookie logins only), and `session_record`, which is `None` when a
 `token_issuer` minted the credential. The raw session token is never exposed to
@@ -222,8 +228,6 @@ from cross_auth.hooks import AfterLoginEvent, BeforeLoginEvent
 
 @auth.before("login")
 def apply_login_policy(event: BeforeLoginEvent) -> BeforeLoginEvent | None:
-    if event.user_id in suspended_users:
-        raise CrossAuthException("access_denied", "Account suspended", 403)
     if event.login_method == "password" and event.user_id in sso_only_users:
         raise CrossAuthException("access_denied", "Sign in with SSO", 403)
     if event.max_age is not None and event.max_age > MAX_SESSION_TTL:

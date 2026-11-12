@@ -23,7 +23,6 @@ from ._session import (
     get_user_session,
     make_clear_cookie,
     make_session_cookie,
-    resolve_current_session,
 )
 from ._storage import SessionRecord, SessionStatus, SessionStorage, session_status
 from .exceptions import CrossAuthException, InvalidCursorError
@@ -97,9 +96,12 @@ def _session_endpoint(
 ) -> Callable[[HTTPRequest, Context], Response]:
     @wraps(handler)
     def endpoint(request: HTTPRequest, context: Context) -> Response:
-        current = resolve_current_session(
-            request, _session_storage(context), context.session_config
-        )
+        # Like other session uses, a user user_can_authenticate refuses
+        # cannot list or revoke sessions; /logout still ends their own.
+        try:
+            current = context.resolve_current_session(request)
+        except CrossAuthException as e:
+            return _hook_error(e)
         if current is None:
             return Response.error(
                 "unauthorized", error_description="Not logged in", status_code=401

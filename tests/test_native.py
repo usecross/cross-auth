@@ -299,6 +299,7 @@ _IMPORT_ISOLATION_SCRIPT = textwrap.dedent(
         hooks=hooks,
         session_storage=session_storage,
         session_config=None,
+        check_user=setup.context.check_user_id_can_authenticate,
     )
     assert [cookie.name for cookie in response.cookies or []] == ["session_id"]
 
@@ -307,6 +308,7 @@ _IMPORT_ISOLATION_SCRIPT = textwrap.dedent(
         hooks=hooks,
         session_storage=session_storage,
         session_config=None,
+        check_user=setup.context.check_user_id_can_authenticate,
     )
     setup.context.hooks = hooks
     setup.context.oauth_server = OAuthServer(

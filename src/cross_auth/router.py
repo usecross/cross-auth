@@ -22,6 +22,7 @@ from ._context import AccountsStorage, Context, SecondaryStorage, User
 from ._issuer import Issuer
 from ._oauth_server import OAuthServer
 from ._route import Route
+from ._session import UserCanAuthenticate
 from ._session_routes import session_routes
 from ._setup import AuthSetup, build_auth_setup
 from ._storage import SessionStorage
@@ -167,6 +168,7 @@ class AuthRouter(APIRouter):
         hooks: HookRegistry | None = None,
         normalize_email: Callable[[str], str] | None = None,
         oauth_server: OAuthServer | None = None,
+        user_can_authenticate: UserCanAuthenticate | None = None,
     ):
         if trusted_origins is not None:
             warnings.warn(
@@ -184,6 +186,7 @@ class AuthRouter(APIRouter):
             hooks=hooks,
             normalize_email=normalize_email,
             oauth_server=oauth_server,
+            user_can_authenticate=user_can_authenticate,
         )
         self._mount(setup)
 
