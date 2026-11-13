@@ -293,17 +293,20 @@ def audit_logout(event: AfterLogoutEvent) -> None:
 ### `session.revoke`
 
 Runs around revoking sessions by id: the mounted `DELETE /sessions/{session_id}`
-and `POST /sessions/revoke-others` routes, and `auth.revoke_session()`,
-`auth.revoke_other_sessions()` and `auth.revoke_all_sessions()`. Logging out
-runs the [`logout`](#logout) hooks instead, so each revocation runs one of the
-two.
+and `POST /sessions/revoke-others` routes, `auth.revoke_session()`,
+`auth.revoke_other_sessions()` and `auth.revoke_all_sessions()`, and
+[`auth.change_password()`](/docs/session-authentication#change-a-password),
+which revokes the user's other sessions with `scope="others"`. Logging out runs
+the [`logout`](#logout) hooks instead, so each revocation runs one of the two.
 
 Both events carry the `user_id` and the `scope`: `"one"` revokes
 `session_record`, `"others"` every session of the user except `keep_session_id`,
-and `"all"` all of them. `request` is the route's request, or `None` when your
-code calls an `auth.revoke_*()` method. A before hook that raises
-`CrossAuthException` refuses the revocation, and the route answers with that
-error. A before hook cannot change what is revoked.
+and `"all"` all of them. `request` is the route's request, or the request passed
+to `auth.change_password()`, or `None` when your code calls an `auth.revoke_*()`
+method. A before hook that raises `CrossAuthException` refuses the revocation,
+and the route answers with that error. `change_password` stores the new password
+before it revokes, so a refusal there leaves the password changed. A before hook
+cannot change what is revoked.
 
 The before hook runs for every revocation, as the policy check for the request.
 Cross-Auth fixes which session it revokes before the hook runs, so a hook can

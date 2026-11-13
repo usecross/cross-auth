@@ -415,6 +415,9 @@ class TestListing:
             csrf_post(anonymous, "/remember/")
 
             sessions = listed(laptop)
+            # Listed while the clock still stands at T0: the sessions expire
+            # SESSION_COOKIE_AGE after it.
+            someone_elses = listed(someone_else)
 
         assert [
             (s["user_agent"], s["login_method"], s["is_current"]) for s in sessions
@@ -431,7 +434,7 @@ class TestListing:
             "is_current": False,
         }
         assert Session.objects.filter(user=user).count() == 3
-        assert [s["user_agent"] for s in listed(someone_else)] == ["Someone else"]
+        assert [s["user_agent"] for s in someone_elses] == ["Someone else"]
         assert Session.objects.get(user=other).user_agent == "Someone else"
 
     def test_session_keys_are_never_listed(self, google: FakeGoogle) -> None:

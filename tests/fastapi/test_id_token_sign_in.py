@@ -227,12 +227,13 @@ def test_resolve_id_token_user_works_inside_an_application_transaction(
 
 
 def test_repeat_sign_in_works_with_tokenless_sqlmodel_storage(
-    secondary_storage: SecondaryStorage,
+    secondary_storage: SecondaryStorage, request: pytest.FixtureRequest
 ):
     provider = StubOIDCProvider(
         {"sub": "tokenless-1", "email": "tokenless@example.com", "email_verified": True}
     )
     engine = make_sqlite_engine()
+    request.addfinalizer(engine.dispose)
     accounts_storage = LeanAccountsStore(session_factory=lambda: Session(engine))
     auth = _make_auth(secondary_storage, accounts_storage, provider)
 

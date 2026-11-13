@@ -759,6 +759,26 @@ Secondary storage has no commit callbacks: each `set`, `get`, `pop`, and
 `delete` completes on its own, and rolling back accounts or sessions does not
 restore a consumed authorization or link code.
 
+`auth.change_password()` (see
+[Change a Password](/docs/session-authentication#change-a-password)) also needs
+the accounts storage to have a `set_password` method; other accounts storages
+need not implement it, and `change_password` raises `TypeError` for one without
+it:
+
+```python
+def set_password(self, user_id: Any, password: str) -> User | None: ...
+```
+
+It stores a new password and returns the updated user, or `None` without writing
+anything when the user is not found. It receives the password itself, so hash it
+the way your password check reads it: Cross-Auth's `authenticate` reads a bcrypt
+hash from `hashed_password`, as `cross_auth._password.hash_password` makes. The
+SQLModel adapter has one: it stores that hash and applies `filter_user_query`,
+so a user it hides is not found, and refuses a password longer than bcrypt's 72
+bytes with `CrossAuthException("password_too_long")` before writing. The Django
+adapter has none: Django projects change passwords with Django's own views and
+`update_session_auth_hash`.
+
 Identity lookups should specify `user_id` for a user's connection or
 `is_login_method=True` for the login owner. An unfiltered identity lookup that
 matches multiple rows raises rather than selecting an arbitrary user.

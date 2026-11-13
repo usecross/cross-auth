@@ -11,8 +11,8 @@ section: Guides
 Cross-Auth does not install general CSRF protection or rate limiting. Apply both
 at your application's HTTP boundary, including routes you write around
 `authenticate()`, `sign_in_with_id_token()`, `resolve_id_token_user()`,
-`login()`, `logout()`, and session revocation. `SessionCookieMiddleware` only
-delivers refreshed session cookies.
+`login()`, `logout()`, `change_password()`, and session revocation.
+`SessionCookieMiddleware` only delivers refreshed session cookies.
 
 Browser OAuth callbacks have their own protection: expiring, single-use state,
 an initiating-browser binding cookie, provider binding, PKCE where supported,
@@ -23,17 +23,17 @@ does not grant permission to make cookie-authenticated requests.
 
 Route paths below are relative to where you include `auth.router`:
 
-| Route                                                         | Application protection                                                                                                                                                                        |
-| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /{provider}/connect`                                     | Check browser origin or a CSRF token before starting an account connection, even though this route uses GET.                                                                                  |
-| `POST /{provider}/link`, `POST /{provider}/finalize-link`     | Require CSRF protection when browser cookies can authenticate the request.                                                                                                                    |
-| `DELETE /{provider}/social-accounts[/id]`                     | Require CSRF protection and retain Cross-Auth's ownership checks.                                                                                                                             |
-| `GET` or `POST /{provider}/callback`                          | Keep Cross-Auth's OAuth checks. Exempt these exact routes from ordinary form-CSRF checks so provider callbacks work. Rate-limit them.                                                         |
-| `GET /{provider}/login`, `GET /{provider}/authorize`          | Rate-limit authorization starts and temporary-state allocation.                                                                                                                               |
-| `POST /token`                                                 | Rate-limit credential verification and token issuance. This endpoint returns a bearer token; it does not authenticate through the browser's session cookie or set that cookie.                |
-| `POST /logout`                                                | Require CSRF protection when the session cookie authenticates the request. A request that only sends `Authorization: Bearer` carries no ambient credential.                                   |
-| `DELETE /sessions/{id}`, `POST /sessions/revoke-others`       | Require CSRF protection when the session cookie authenticates the request, as for `/logout`. `GET /sessions` revokes nothing; like any authenticated request it can extend a sliding session. |
-| Your password/native login, logout, session-revocation routes | Apply CSRF checks to browser endpoints, including login before a user has a session. Use POST or DELETE for mutations. Apply rate limits before calling Cross-Auth.                           |
+| Route                                                                          | Application protection                                                                                                                                                                        |
+| ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /{provider}/connect`                                                      | Check browser origin or a CSRF token before starting an account connection, even though this route uses GET.                                                                                  |
+| `POST /{provider}/link`, `POST /{provider}/finalize-link`                      | Require CSRF protection when browser cookies can authenticate the request.                                                                                                                    |
+| `DELETE /{provider}/social-accounts[/id]`                                      | Require CSRF protection and retain Cross-Auth's ownership checks.                                                                                                                             |
+| `GET` or `POST /{provider}/callback`                                           | Keep Cross-Auth's OAuth checks. Exempt these exact routes from ordinary form-CSRF checks so provider callbacks work. Rate-limit them.                                                         |
+| `GET /{provider}/login`, `GET /{provider}/authorize`                           | Rate-limit authorization starts and temporary-state allocation.                                                                                                                               |
+| `POST /token`                                                                  | Rate-limit credential verification and token issuance. This endpoint returns a bearer token; it does not authenticate through the browser's session cookie or set that cookie.                |
+| `POST /logout`                                                                 | Require CSRF protection when the session cookie authenticates the request. A request that only sends `Authorization: Bearer` carries no ambient credential.                                   |
+| `DELETE /sessions/{id}`, `POST /sessions/revoke-others`                        | Require CSRF protection when the session cookie authenticates the request, as for `/logout`. `GET /sessions` revokes nothing; like any authenticated request it can extend a sliding session. |
+| Your password/native login, logout, password-change, session-revocation routes | Apply CSRF checks to browser endpoints, including login before a user has a session. Use POST or DELETE for mutations. Apply rate limits before calling Cross-Auth.                           |
 
 ## Protect browser requests in FastAPI
 
@@ -201,6 +201,28 @@ Before hooks can reject with `CrossAuthException`; after hooks run too late to
 block the operation. `/token` converts hook errors into HTTP 400 OAuth errors,
 so use the HTTP dependency or middleware for a real HTTP 429 and `Retry-After`.
 Your own routes must handle `CrossAuthException` from direct method calls.
+
+## Change passwords
+
+`auth.change_password()` signs the user's other devices out when they change
+their password, so a stolen session does not outlive the change the user makes
+to lock an attacker out. It needs the current password, so a stolen session
+alone cannot change the password and sign the real user out everywhere. A user
+without a password, such as one who signed up with a provider, sets a first one
+without it. See
+[Change a Password](/docs/session-authentication#change-a-password).
+
+Protect your password-change route like a login: require CSRF protection when
+the session cookie authenticates it, and rate-limit it per account, since it
+checks a password.
+
+Only `change_password()` revokes sessions. A password set any other way, such as
+from a reset link or an admin page, leaves the user's sessions signed in until
+you revoke them with `auth.revoke_all_sessions(user_id=...)`. The same goes for
+other changes that should sign devices out, such as a new email address or a
+reset second factor: call
+`auth.revoke_other_sessions(user_id=..., keep_session_id=...)` or
+`auth.revoke_all_sessions(user_id=...)`.
 
 ## Refuse suspended and deleted users
 

@@ -338,6 +338,74 @@ API keys, yourself.
 Without `user_can_authenticate`, every user may sign in, and logins do not load
 the user to ask.
 
+### Change a Password
+
+`auth.change_password()` changes the password of the user the request's session
+signs in, and signs their other devices out. A user who changes their password
+because someone else knows it locks that person out, even of a session they
+already hold:
+
+```python
+from pydantic import BaseModel
+
+
+class PasswordChange(BaseModel):
+    current_password: str | None
+    new_password: str
+
+
+@app.post("/change-password")
+def change_password(request: Request, body: PasswordChange):
+    auth.change_password(
+        request,
+        current_password=body.current_password,
+        new_password=body.new_password,
+    )
+    return {"ok": True}
+```
+
+It finds the user as `require_current_user` does, from the session cookie or
+`Authorization: Bearer ...`, and answers a request without a session, or with
+one `user_can_authenticate` refuses, with `401 unauthorized`. Then:
+
+1. `current_password` must match the user's password; a wrong or missing one
+   raises `400 invalid_password` and changes nothing. It is `None` only for a
+   user without a password, such as one who signed up with a provider and sets a
+   first password.
+2. The accounts storage hashes and stores `new_password` with its
+   [`set_password` method](/docs/storage#accountsstorage); an accounts storage
+   without one raises `TypeError`. The SQLModel storage stores a bcrypt hash and
+   refuses a password longer than bcrypt's 72 bytes with
+   `400 password_too_long`. Check your own rules, such as a minimum length,
+   before you call `change_password`.
+3. The user's other sessions are revoked through the
+   [`session.revoke` hooks](/docs/hooks#sessionrevoke), with `scope="others"`.
+   The session that made the change stays signed in, and its token does not
+   change. Pass `revoke_other_sessions=False` to keep the other sessions too.
+
+It returns the updated user. The password is stored before the sessions are
+revoked, so a `session.revoke` before hook that refuses raises once the password
+has changed. The revocation needs the new password committed first: until then,
+a login with the old one could start a session it misses. So with an accounts
+storage that joins your application transaction, `change_password` raises
+`RuntimeError` before changing anything, unless you pass
+`revoke_other_sessions=False`. The SQLModel storage commits each write before it
+returns.
+
+`change_password` raises `CrossAuthException` for these errors, so register an
+exception handler, as for
+[`user_can_authenticate`](#refuse-suspended-or-deleted-users), and rate-limit
+the route like a login: it checks a password. See
+[Security Integration](/docs/security#change-passwords).
+
+A password changed any other way, such as from a password reset link, an admin
+page or a script, signs no one out. Revoke the user's sessions yourself when it
+should:
+
+```python
+auth.revoke_all_sessions(user_id=user.id)
+```
+
 ### Sliding Sessions
 
 With `update_age` configured, reads refresh the stored session record — and the
@@ -440,14 +508,16 @@ This function uses **constant-time verification** -- it always runs bcrypt even
 for non-existent users, preventing timing attacks that could enumerate valid
 email addresses.
 
-Cross-Auth verifies passwords; your application hashes them when a user sets
-one. Store a bcrypt hash (the `$2b$` format produced by the `bcrypt` package or
-by passlib) in `hashed_password`. bcrypt uses only the first 72 bytes of a
-password, so any password that shares those bytes verifies against the hash.
-Decide how to handle longer passwords when hashing: reject them, as
-`bcrypt.hashpw` does from bcrypt 5, or hash them with SHA-256 first and bcrypt
-the digest. Verification compares the first 72 bytes either way, so users whose
-hash was made from a longer password keep signing in.
+Cross-Auth verifies passwords. [`change_password`](#change-a-password) hashes a
+new password through the accounts storage; elsewhere, such as at signup, your
+application hashes them. Store a bcrypt hash (the `$2b$` format produced by
+`cross_auth._password.hash_password`, the `bcrypt` package or passlib) in
+`hashed_password`. bcrypt uses only the first 72 bytes of a password, so any
+password that shares those bytes verifies against the hash. Decide how to handle
+longer passwords when hashing: reject them, as `bcrypt.hashpw` does from bcrypt
+5, or hash them with SHA-256 first and bcrypt the digest. Verification compares
+the first 72 bytes either way, so users whose hash was made from a longer
+password keep signing in.
 
 ### Creating Sessions
 

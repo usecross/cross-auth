@@ -21,6 +21,7 @@ except ImportError as exc:  # pragma: no cover - exercised only without the extr
         "Install it with: pip install 'cross-auth[sqlmodel]'"
     ) from exc
 
+from cross_auth._password import hash_password
 from cross_auth._storage import (
     CommitCallback,
     DisconnectResult,
@@ -809,6 +810,35 @@ class SQLModelAccountsStorage(
         if id is _NO_MATCH:
             return None
         return self._find_user(col(self.UserModel.id) == id)
+
+    def set_password(self, user_id: object, password: str) -> UserModelT | None:
+        """Store a bcrypt hash of ``password`` for the user and return them.
+
+        This makes the storage a ``PasswordStorage`` for
+        ``CrossAuth.change_password``; ``authenticate`` verifies the hash. A password longer than bcrypt's 72
+        bytes raises ``CrossAuthException`` before anything is written. Like
+        ``find_user_by_id`` this applies ``filter_user_query``, so a user it
+        hides is not found.
+        """
+        model = self.UserModel
+        user_id = _coerce_id(model, "id", user_id)
+        if user_id is _NO_MATCH:
+            return None
+        hashed_password = hash_password(password)
+        statement = self.filter_user_query(
+            select(model).where(col(model.id) == user_id)
+        )
+        with self._open_session() as session:
+            user = session.exec(statement).one_or_none()
+            if user is None:
+                return None
+            user.hashed_password = hashed_password
+            session.add(user)
+            session.commit()
+            # Load the columns the update changed, such as onupdate
+            # timestamps, so the user stays readable once the session closes.
+            user = session.exec(select(model).where(col(model.id) == user_id)).one()
+        return user
 
     def create_user(
         self,

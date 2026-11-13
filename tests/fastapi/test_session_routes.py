@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -33,9 +34,10 @@ SESSION_FIELDS = {
 
 
 @pytest.fixture
-def sqlite_session_storage() -> SessionStore:
+def sqlite_session_storage() -> Iterator[SessionStore]:
     engine = make_sqlite_engine()
-    return SessionStore(session_factory=lambda: Session(engine))
+    yield SessionStore(session_factory=lambda: Session(engine))
+    engine.dispose()
 
 
 @pytest.fixture

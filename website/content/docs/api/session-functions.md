@@ -72,6 +72,19 @@ number of revoked sessions.
 Revokes all active sessions for a user and returns the number of revoked
 sessions.
 
+### `change_password(request, current_password=..., new_password=..., revoke_other_sessions=True)`
+
+Changes the password of the user the request's session signs in, once
+`current_password` matches (`None` only for a user without a password), and
+returns the updated user. The accounts storage hashes and stores the new
+password. Then it revokes the user's other sessions, keeping the request's own,
+unless `revoke_other_sessions` is `False`. Raises `CrossAuthException`:
+`unauthorized` (401) without a session, `invalid_password` (400) for a wrong
+current password, and `password_too_long` (400) from the SQLModel storage for a
+password over bcrypt's 72 bytes. The accounts storage needs a `set_password`
+method, as the SQLModel one has; without one it raises `TypeError`. See
+[Change a Password](/docs/session-authentication#change-a-password).
+
 The three revoke methods run the
 [`session.revoke` hooks](/docs/hooks#sessionrevoke) with `request` set to
 `None`. Expired sessions keep their `expired` status and are not counted.

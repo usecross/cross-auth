@@ -3,6 +3,7 @@ from __future__ import annotations
 import bcrypt
 
 from ._storage import AccountsStorage, User
+from .exceptions import CrossAuthException
 
 # Pre-computed dummy hash for constant-time password verification
 # This prevents timing attacks that could enumerate valid users
@@ -13,8 +14,23 @@ DUMMY_PASSWORD_HASH = "$2b$12$K6qGJzUzL5H0yQKqVZKZFuJ9aZqZ5qH0yQKqVZKZFuJ9aZqZ5q
 # therefore compares the same 72 bytes; bcrypt 5 refuses longer input instead
 # of ignoring the rest, which would lock those users out without making their
 # hash any stronger. Guarding against long passwords belongs where they are
-# hashed: reject them or pre-hash them at signup.
+# hashed: hash_password rejects them.
 _BCRYPT_MAX_PASSWORD_BYTES = 72
+
+
+def hash_password(password: str) -> str:
+    """Return a bcrypt hash of ``password`` that ``authenticate`` verifies.
+
+    bcrypt reads only the first 72 bytes of a password, so a longer one raises
+    ``CrossAuthException`` (``password_too_long``) instead of being cut short.
+    """
+    secret = password.encode("utf-8")
+    if len(secret) > _BCRYPT_MAX_PASSWORD_BYTES:
+        raise CrossAuthException(
+            "password_too_long",
+            f"The password is longer than {_BCRYPT_MAX_PASSWORD_BYTES} bytes",
+        )
+    return bcrypt.hashpw(secret, bcrypt.gensalt()).decode("ascii")
 
 
 def _check_password(password: str, password_hash: str) -> bool:
