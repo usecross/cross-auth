@@ -128,9 +128,9 @@ session tokens or their hashes:
 By default it lists active sessions only. Pass `status=expired`,
 `status=revoked` or `status=all` to show a history instead, for example a list
 that also shows signed-out devices with when they expired or were revoked. Each
-session's `status` is `active`, `expired` or `revoked`. `last_active_at` is the
-sign-in time, then the latest sliding refresh, so with `update_age` it is
-accurate to within that interval.
+session's `status` is `active`, `expired` or `revoked`. `last_active_at` is when
+the session was last used, to within five minutes by default (see
+[Last Activity](#last-activity)).
 
 `current` marks the session that authenticated the request. Pages hold 50
 sessions; pass `limit` (1 to 100) to change that, and send a page's
@@ -445,6 +445,33 @@ features require it. `login()`, `logout()`, and session-management methods raise
 clearly when no `session_storage` is configured. With an `OAuthServer`, the
 built-in `/token` endpoint is registered, but successful token issuance requires
 `session_storage` or the server's `token_issuer`.
+
+### Last Activity
+
+A session's `last_active_at` records when it was last used, apart from its
+expiry. A request that uses the session, by cookie or bearer token, sets it to
+the current time once it is at least `activity_interval` seconds old: five
+minutes by default. A sessions list can then show "active 3 minutes ago" without
+a database write on every request. A sliding refresh sets it in the same write.
+Recording activity never moves `expires_at` or re-sends the cookie.
+
+```python
+CrossAuth(..., config={"session": {"activity_interval": 60}})
+```
+
+`activity_interval` is an int from `0`, which records every request, to a year.
+Set it to `None` to update `last_active_at` only at sign-in and on a sliding
+refresh.
+
+A session in use costs at most one write per interval, and an idle session none.
+Activity is recorded where a sliding refresh would be, after the same user
+checks, and never by logout. With a custom `get_user_from_request`, the session
+is read and its activity recorded before your resolver runs, as for a sliding
+refresh. Recording is best-effort: if the session storage fails to record it,
+Cross-Auth logs a warning and the request keeps its session. A custom session
+storage needs a [`record_activity` method](/docs/storage#sessionstorage) to
+record activity at all; without one, `last_active_at` moves only at sign-in and
+on a sliding refresh.
 
 ### Token Prefix
 

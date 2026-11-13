@@ -916,13 +916,38 @@ Return `None` without changing the record if it is missing, revoked, or expired.
 If the record's `updated_at` is already at or after the supplied `updated_at`, a
 concurrent refresh got there first: return the record unchanged, so a request
 that read the session before that refresh cannot move `expires_at` backwards. An
-omitted `last_active_at` preserves the stored value.
+omitted `last_active_at` preserves the stored value, and so does a stored one
+later than the supplied value, which another request recorded meanwhile.
 
 The SQLModel adapter enforces this with a conditional database update. Custom
 adapters must provide the same guarantee: a separate active-session lookup
 followed by an unconditional update allows revocation to race the refresh.
 Callers must supply the current time as `updated_at`; core reads the clock again
 after the initial lookup before attempting a sliding refresh.
+
+To record a session's use between sliding refreshes (see
+[Last Activity](/docs/session-authentication#last-activity)), the session
+storage also needs a `record_activity` method. Other session storages need not
+implement it: their sessions' `last_active_at` then moves only at sign-in and on
+a sliding refresh.
+
+```python
+def record_activity(
+    self,
+    session_id: Any,
+    *,
+    last_active_at: AwareDatetime,
+    since: AwareDatetime,
+) -> SessionRecord | None: ...
+```
+
+It sets only `last_active_at`. Update the session only if its `revoked_at` is
+null, its `expires_at` is at or after the supplied `last_active_at`, and its
+stored `last_active_at` is null or at or before `since`, in one conditional
+update like `refresh`. Return the updated record, or `None` if nothing changed.
+When several requests use the session at once, the first to commit records the
+use, and none moves `last_active_at` backwards. Leave `updated_at` and
+`expires_at` unchanged. The SQLModel adapter has one.
 
 `revoke` and `revoke_all_for_user` revoke only sessions that are still active at
 the supplied `revoked_at`: leave revoked and expired sessions unchanged, so an

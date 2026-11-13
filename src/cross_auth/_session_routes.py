@@ -55,8 +55,8 @@ class SessionInfo(BaseModel):
     )
     created_at: datetime
     last_active_at: datetime | None = Field(
-        description="When the session was last used: its sign-in, or its latest "
-        "sliding refresh (recorded at most once per update_age)"
+        description="When the session was last used, recorded at most once per "
+        "activity_interval (five minutes by default)"
     )
     expires_at: datetime
     revoked_at: datetime | None
