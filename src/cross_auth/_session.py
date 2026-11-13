@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import logging
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -11,10 +12,22 @@ from typing import Literal, TypedDict
 from cross_web import Cookie, HTTPRequest
 
 from ._request import get_header
-from ._storage import AccountsStorage, SessionRecord, SessionStorage, User
+from ._storage import (
+    AccountsStorage,
+    SessionActivityStorage,
+    SessionRecord,
+    SessionStorage,
+    User,
+)
 from ._token_format import generate_token
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_MAX_AGE = 86400
+_DEFAULT_ACTIVITY_INTERVAL = 300
+# A year. Sessions compare their last_active_at with now minus the interval,
+# which must stay a date that Python and the database can hold.
+_MAX_ACTIVITY_INTERVAL = 365 * 24 * 60 * 60
 _USER_AGENT_MAX_LENGTH = 512
 _CLIENT_MAX_LENGTH = 255
 
@@ -47,6 +60,12 @@ class SessionCookieConfig(TypedDict, total=False):
 class SessionConfig(TypedDict, total=False):
     max_age: int
     update_age: int | None
+    # How old, in seconds, a session's last_active_at gets before a request
+    # that uses the session sets it to the current time: 300 (five minutes)
+    # by default, 0 for every request, at most a year. If None, or if the
+    # session storage is not a SessionActivityStorage, it changes only at
+    # sign-in and on a sliding refresh.
+    activity_interval: int | None
     token_hasher: SessionTokenHasher
     # If set, new session tokens are "{token_prefix}_" plus 32 base62
     # characters and a checksum. Lookups accept any token, so sessions issued
@@ -73,6 +92,7 @@ _SESSION_COOKIE_DEFAULTS: SessionCookieConfig = {
 _SESSION_CONFIG_DEFAULTS: SessionConfig = {
     "max_age": _DEFAULT_MAX_AGE,
     "update_age": None,
+    "activity_interval": _DEFAULT_ACTIVITY_INTERVAL,
     "token_hasher": lambda session_token: hashlib.sha256(
         session_token.encode("utf-8")
     ).hexdigest(),
@@ -315,20 +335,18 @@ def _get_session(
 def _refresh_session(
     session: SessionRecord, storage: SessionStorage, resolved: SessionConfig
 ) -> tuple[SessionRecord, bool] | None:
-    """Roll ``session`` forward once its ``update_age`` window elapsed.
+    """Record a use of ``session``: roll it forward once ``update_age`` elapsed.
 
     Returns (record, refreshed), or ``None`` if the session ended before the
     refresh. ``refreshed`` is True when the record was rolled forward
     (extending ``expires_at``); callers serving cookies use it to decide
-    whether to reissue Set-Cookie with a fresh Max-Age.
+    whether to reissue Set-Cookie with a fresh Max-Age. A use that does not
+    roll the session forward can still update its ``last_active_at``.
     """
-    update_age = resolved.get("update_age")
-    if update_age is None:
-        return session, False
-
     now = datetime.now(tz=timezone.utc)
-    if now - session.updated_at < timedelta(seconds=update_age):
-        return session, False
+    update_age = resolved.get("update_age")
+    if update_age is None or now - session.updated_at < timedelta(seconds=update_age):
+        return _record_activity(session, storage, resolved, now), False
 
     refreshed = storage.refresh(
         session.id,
@@ -341,6 +359,47 @@ def _refresh_session(
     # A concurrent refresh that got there first comes back unchanged, with a
     # later updated_at; its expiry did not move, so there is no cookie to roll.
     return refreshed, refreshed.updated_at <= now
+
+
+def _record_activity(
+    session: SessionRecord,
+    storage: SessionStorage,
+    resolved: SessionConfig,
+    now: datetime,
+) -> SessionRecord:
+    """Set ``last_active_at`` to ``now`` once ``activity_interval`` has passed.
+
+    Returns ``session`` as it now is. Only a ``SessionActivityStorage`` records
+    activity. Best-effort: the request keeps its session, and a storage error
+    is logged instead of raised.
+    """
+    activity_interval = resolved.get("activity_interval")
+    if activity_interval is None or not isinstance(storage, SessionActivityStorage):
+        return session
+
+    since = now - timedelta(seconds=activity_interval)
+    if session.last_active_at is not None and session.last_active_at > since:
+        return session
+
+    try:
+        recorded = storage.record_activity(session.id, last_active_at=now, since=since)
+    except Exception:
+        logger.warning("Could not record a session's activity", exc_info=True)
+        return session
+    return session if recorded is None else recorded
+
+
+def validate_activity_interval(value: object) -> None:
+    """Raise ``ValueError`` unless ``value`` is ``None`` or 0 to a year in seconds."""
+    if value is not None and (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 0 <= value <= _MAX_ACTIVITY_INTERVAL
+    ):
+        raise ValueError(
+            "config['session']['activity_interval'] must be None or a number of "
+            f"seconds, an int from 0 to {_MAX_ACTIVITY_INTERVAL}"
+        )
 
 
 def get_user_session(

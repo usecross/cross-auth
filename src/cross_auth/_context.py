@@ -21,6 +21,7 @@ from ._session import (
     request_metadata,
     resolve_config,
     resolve_current_session,
+    validate_activity_interval,
 )
 from ._storage import (
     AccountsStorage,
@@ -84,6 +85,9 @@ class Context:
         token_prefix = (self.session_config or {}).get("token_prefix")
         if token_prefix is not None:
             validate_prefix(token_prefix)
+        validate_activity_interval(
+            resolve_config(self.session_config)["activity_interval"]
+        )
         self.default_next_url = default_next_url
         self.hooks = hooks if hooks is not None else HookRegistry()
 
