@@ -442,8 +442,11 @@ Omitting `allow_login` or setting it to `false` preserves an existing
 connection's login eligibility; it never disables login. Ordinary sign-in cannot
 promote a connection. With `user_can_authenticate`, `allow_login: true` is
 refused, after provider verification, for a user it refuses: a user who may not
-sign in gets no new way to sign in. Linking a connection without login is not
-refused.
+sign in gets no new way to sign in. Cross-Auth's default `get_user_from_request`
+treats a refused user's session as no session, so the link and connect routes
+answer 401 before they get there. Only a custom `get_user_from_request` that
+still returns a refused user reaches that check, and it can still link a
+connection without login.
 
 Each user can have only one connection to a given provider identity, and that
 identity can identify at most one user for login, under either schema. Sign-in

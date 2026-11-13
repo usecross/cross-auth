@@ -286,6 +286,8 @@ def serialize_session(
 def get_error_message(error: str | None) -> str | None:
     if error == "invalid_credentials":
         return "The demo credentials were invalid."
+    if error == "account_inactive":
+        return "This account is inactive."
     if error == "access_denied":
         return "GitHub login was cancelled."
     if error == "invalid_state":
@@ -585,7 +587,11 @@ def login(
     email: Annotated[str, Form()],
     password: Annotated[str, Form()],
 ) -> RedirectResponse:
-    user = auth.authenticate(email, password)
+    try:
+        user = auth.authenticate(email, password)
+    except CrossAuthException:
+        # The password matched, but user_can_authenticate refused the user.
+        return RedirectResponse(url="/?error=account_inactive", status_code=303)
     if user is None:
         return RedirectResponse(url="/?error=invalid_credentials", status_code=303)
 

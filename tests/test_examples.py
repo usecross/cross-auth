@@ -115,3 +115,29 @@ def test_fastapi_example_password_session_and_bearer_revocation() -> None:
             assert bearer.get("/api/me", headers=headers).status_code == 401
             assert browser.get("/api/me").status_code == 401
     """)
+
+
+def test_fastapi_example_password_login_refuses_an_inactive_user() -> None:
+    run_fastapi_example("""
+        from fastapi.testclient import TestClient
+        from sqlmodel import Session, select
+        from main import DEMO_EMAIL, User, app, engine
+
+        with Session(engine) as db:
+            user = db.exec(select(User).where(User.email == DEMO_EMAIL)).one()
+            user.is_active = False
+            db.add(user)
+            db.commit()
+
+        with TestClient(app) as browser:
+            login = browser.post("/login", data={
+                "email": DEMO_EMAIL, "password": "password123",
+            }, follow_redirects=False)
+            assert login.status_code == 303, login.text
+            assert login.headers["location"] == "/?error=account_inactive"
+            assert "cross_auth_example_session" not in browser.cookies
+            wrong = browser.post("/login", data={
+                "email": DEMO_EMAIL, "password": "wrong",
+            }, follow_redirects=False)
+            assert wrong.headers["location"] == "/?error=invalid_credentials"
+    """)
