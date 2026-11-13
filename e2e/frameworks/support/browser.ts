@@ -16,8 +16,8 @@ interface BrowserUI {
 export function createBrowserApp(
   baseURL: string,
   ui: BrowserUI,
-): Omit<App, "seedPasswordUser" | "facts"> {
-  const app: Omit<App, "seedPasswordUser" | "facts"> = {
+): Omit<App, "seedPasswordUser" | "setActive" | "facts"> {
+  const app: Omit<App, "seedPasswordUser" | "setActive" | "facts"> = {
     baseURL,
     googleCallbackUrl: `${baseURL}/auth/google/callback`,
 

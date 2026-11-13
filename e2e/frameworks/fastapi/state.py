@@ -1,6 +1,7 @@
 """Seeds and reads the FastAPI example's database for the shared browser suite.
 
     state.py seed-password-user EMAIL PASSWORD
+    state.py set-active EMAIL true|false
     state.py facts EMAIL
 
 Works on the worker's SQLite file (``E2E_DATABASE``), without importing the app
@@ -22,9 +23,18 @@ def seed_password_user(email: str, password: str) -> None:
     hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
     with sqlite3.connect(DATABASE) as db:
         db.execute(
-            "INSERT INTO user (email, email_verified, hashed_password, display_name)"
-            " VALUES (?, 1, ?, ?)",
+            "INSERT INTO user"
+            " (email, email_verified, hashed_password, display_name, is_active)"
+            " VALUES (?, 1, ?, ?, 1)",
             (email, hashed, email),
+        )
+
+
+def set_active(email: str, active: bool) -> None:
+    with sqlite3.connect(DATABASE) as db:
+        db.execute(
+            "UPDATE user SET is_active = ? WHERE lower(email) = lower(?)",
+            (active, email),
         )
 
 
@@ -61,6 +71,8 @@ def facts(email: str) -> dict[str, object]:
 match sys.argv[1:]:
     case ["seed-password-user", email, password]:
         seed_password_user(email, password)
+    case ["set-active", email, ("true" | "false") as active]:
+        set_active(email, active == "true")
     case ["facts", email]:
         print(json.dumps(facts(email)))
     case _:

@@ -13,12 +13,15 @@ examples.
 
 ### `authenticate(email, password)`
 
-Verifies email/password credentials. Returns the `User` or `None`.
+Verifies email/password credentials. Returns the `User` or `None`. Once the
+password matches, raises `CrossAuthException` for a user `user_can_authenticate`
+refuses.
 
 ### `login(user_id, response=...)`
 
 Creates a session and sets the session cookie directly on the provided FastAPI
-`Response`.
+`Response`. Raises `CrossAuthException` for a user `user_can_authenticate`
+refuses, before the `login` hooks run.
 
 ### `logout(request, response=...)`
 
@@ -36,7 +39,8 @@ Registers a typed hook that runs after a Cross-Auth lifecycle event succeeds.
 ### `get_current_user(request)`
 
 A bound method usable as a FastAPI dependency. Resolves the current user from
-the session cookie or `Authorization: Bearer ...` header. Returns `User | None`.
+the session cookie or `Authorization: Bearer ...` header. Returns `User | None`;
+`None` also for a user `user_can_authenticate` refuses.
 
 ### `require_current_user(request)`
 

@@ -154,6 +154,9 @@ class User(SQLModelUser, table=True):
     email_verified: bool = False
     # Extra demo column populated by the user.create hook.
     display_name: str | None = None
+    # Clear it to suspend the user: user_can_authenticate refuses their logins
+    # and their sessions until it is set again.
+    is_active: bool = True
 
     social_accounts: list[SocialAccount] = Relationship(
         back_populates="user", sa_relationship_kwargs={"lazy": "selectin"}
@@ -283,6 +286,8 @@ def serialize_session(
 def get_error_message(error: str | None) -> str | None:
     if error == "invalid_credentials":
         return "The demo credentials were invalid."
+    if error == "account_inactive":
+        return "This account is inactive."
     if error == "access_denied":
         return "GitHub login was cancelled."
     if error == "invalid_state":
@@ -315,12 +320,17 @@ def record_hook_event(name: str, **fields: str) -> None:
     del hook_events[MAX_HOOK_EVENTS:]
 
 
+def user_can_authenticate(user: UserProtocol) -> bool:
+    return isinstance(user, User) and user.is_active
+
+
 def resolve_auth_user(request: HTTPRequest) -> User | None:
     session_user = get_session_user(
         request,
         session_storage,
         accounts_storage,
         SESSION_CONFIG,
+        user_can_authenticate=user_can_authenticate,
     )
     if session_user is not None:
         return cast(User, session_user)
@@ -415,6 +425,7 @@ auth = CrossAuth(
     accounts_storage=accounts_storage,
     session_storage=session_storage,
     get_user_from_request=resolve_auth_user,
+    user_can_authenticate=user_can_authenticate,
     default_next_url="/profile",
     # Explicit here; needed when redirect URIs must not be derived from the
     # incoming request (e.g. behind a proxy).
@@ -576,7 +587,11 @@ def login(
     email: Annotated[str, Form()],
     password: Annotated[str, Form()],
 ) -> RedirectResponse:
-    user = auth.authenticate(email, password)
+    try:
+        user = auth.authenticate(email, password)
+    except CrossAuthException:
+        # The password matched, but user_can_authenticate refused the user.
+        return RedirectResponse(url="/?error=account_inactive", status_code=303)
     if user is None:
         return RedirectResponse(url="/?error=invalid_credentials", status_code=303)
 

@@ -29,6 +29,9 @@ from .hooks import (
 
 _IssuedT = TypeVar("_IssuedT")
 
+# Raises CrossAuthException unless the user with this id may sign in.
+UserCheck = Callable[[str], None]
+
 
 def run_login(
     event: BeforeLoginEvent,
@@ -36,15 +39,21 @@ def run_login(
     hooks: HookRegistry,
     issue: Callable[[BeforeLoginEvent], tuple[_IssuedT, SessionRecord | None]],
     on_commit: Callable[[CommitCallback], None],
+    check_user: UserCheck | None,
 ) -> tuple[_IssuedT, BeforeLoginEvent]:
     """Run one ``login`` lifecycle around issuing a credential.
 
-    ``issue`` creates the credential from the approved event and returns it
-    with the Cross Auth session it created, if any. ``on_commit`` belongs to
-    whatever stores the credential and schedules the after hook once it is
-    committed. Hook exceptions propagate: a before-hook failure issues nothing;
-    an after-hook failure leaves the issued credential in place.
+    ``check_user`` refuses a user who may not sign in, before the before
+    hooks run; pass ``None`` only when the caller has just checked the user
+    it logs in. ``issue`` creates the credential from the approved event and
+    returns it with the Cross Auth session it created, if any. ``on_commit``
+    belongs to whatever stores the credential and schedules the after hook
+    once it is committed. Hook exceptions propagate: a before-hook failure
+    issues nothing; an after-hook failure leaves the issued credential in
+    place.
     """
+    if check_user is not None:
+        check_user(event.user_id)
     approved = hooks.run_before("login", event)
     _check_login_rewrite(event, approved)
 
@@ -72,7 +81,8 @@ class BrowserLogin(Protocol):
         """Log ``user`` in through ``run_login`` and return the response.
 
         ``login_method`` is the provider's id. Raise ``CrossAuthException`` to
-        refuse a user the framework does not allow to sign in.
+        refuse a user the framework does not allow to sign in. The callback
+        has already checked the context's ``user_can_authenticate``.
         """
         ...
 
@@ -140,13 +150,14 @@ def login_with_session(
     hooks: HookRegistry,
     session_storage: SessionStorage,
     session_config: SessionConfig | None,
+    check_user: UserCheck | None,
     metadata: SessionMetadata | None = None,
     login_method: str | None = None,
 ) -> Response:
     """Log in with one new session and its cookie appended to ``response``.
 
-    Returns the hook response; adapters decide how to send it and how to
-    surface hook exceptions.
+    ``check_user`` is as for ``run_login``. Returns the hook response;
+    adapters decide how to send it and how to surface hook exceptions.
     """
     require_immediate_commit(
         session_storage.on_commit,
@@ -186,6 +197,7 @@ def login_with_session(
         hooks=hooks,
         issue=issue,
         on_commit=session_storage.on_commit,
+        check_user=check_user,
     )
     return hook_response
 
@@ -196,11 +208,15 @@ def issue_bearer_session(
     hooks: HookRegistry,
     session_storage: SessionStorage,
     session_config: SessionConfig | None,
+    check_user: UserCheck | None,
     max_age: int | None = None,
     metadata: SessionMetadata | None = None,
     login_method: str | None = None,
 ) -> tuple[str, SessionRecord, int]:
-    """Log in with one new session; return its bearer token, record and max_age."""
+    """Log in with one new session; return its bearer token, record and max_age.
+
+    ``check_user`` is as for ``run_login``.
+    """
     resolved = resolve_config(session_config)
 
     def issue(
@@ -230,6 +246,7 @@ def issue_bearer_session(
         hooks=hooks,
         issue=issue,
         on_commit=session_storage.on_commit,
+        check_user=check_user,
     )
     assert approved.max_age is not None
     return session_token, session_record, approved.max_age

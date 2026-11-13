@@ -202,6 +202,27 @@ block the operation. `/token` converts hook errors into HTTP 400 OAuth errors,
 so use the HTTP dependency or middleware for a real HTTP 429 and `Retry-After`.
 Your own routes must handle `CrossAuthException` from direct method calls.
 
+## Refuse suspended and deleted users
+
+When you suspend or delete a user, revoke their sessions with
+`auth.revoke_all_sessions(user_id=...)`, and pass `user_can_authenticate` to
+`CrossAuth` as the safety net behind it. Cross-Auth then asks it at every login
+and on every use of a session, which covers code that forgets to revoke, a login
+that races the revocation, and changes made directly in the database. See
+[Refuse Suspended or Deleted Users](/docs/session-authentication#refuse-suspended-or-deleted-users).
+
+Cross-Auth asks only after it has verified who is signing in: after the password
+matches, the ID token is verified, or the provider has confirmed the identity. A
+wrong password or a forged token gets the same answer as before, so the refusal
+does not tell anyone without the credentials that an account exists or is
+suspended. Your own sign-in routes should keep that order.
+
+A custom `get_user_from_request` decides itself which users it returns:
+`authenticate_session_token` applies `user_can_authenticate`, but check users of
+other credentials, such as API keys, yourself. In Django, Cross-Auth uses
+Django's own rule instead; see
+[How Cross Auth fits into Django](/docs/django#how-cross-auth-fits-into-django).
+
 ## Cookie and deployment settings
 
 Session cookies default to Secure, HttpOnly, SameSite=Lax, path `/`, and no

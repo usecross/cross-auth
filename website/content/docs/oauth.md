@@ -279,6 +279,15 @@ tokens are revocable session records, not JWTs. Configure `session_storage` on
 `CrossAuth` to enable token issuance; without it or a `token_issuer`, `/token`
 returns an OAuth error instead of minting a token.
 
+With
+[`user_can_authenticate`](/docs/session-authentication#refuse-suspended-or-deleted-users),
+the provider callback checks the user before it issues an authorization code: a
+refused user is sent back to the client's `redirect_uri` with
+`error=access_denied` (or your own error) and the client's `state`, and no code
+is issued. Redeeming a code at `/token` checks the user again, so a user
+suspended in between gets no token. `/token` answers a refusal as a 400 OAuth
+error with `access_denied` or your error's `error` and `error_description`.
+
 ### Custom token issuers
 
 `OAuthServer(token_issuer=...)` replaces the session token with your own
@@ -297,6 +306,8 @@ oauth_server = OAuthServer(get_client=clients.get, token_issuer=issue_token)
 ```
 
 The `login` hooks run around the call; Cross-Auth creates no session for it.
+`user_can_authenticate` runs before the hooks, so your issuer is never called
+for a refused user.
 
 `request.login_method` says how the user signed in: the provider id (such as
 `"github"`) for the authorization code grant, and `"password"` for the password
@@ -429,7 +440,13 @@ verification. If another user already owns login for that identity, Cross-Auth
 rejects the promotion with `account_already_linked` before updating credentials.
 Omitting `allow_login` or setting it to `false` preserves an existing
 connection's login eligibility; it never disables login. Ordinary sign-in cannot
-promote a connection.
+promote a connection. With `user_can_authenticate`, `allow_login: true` is
+refused, after provider verification, for a user it refuses: a user who may not
+sign in gets no new way to sign in. Cross-Auth's default `get_user_from_request`
+treats a refused user's session as no session, so the link and connect routes
+answer 401 before they get there. Only a custom `get_user_from_request` that
+still returns a refused user reaches that check, and it can still link a
+connection without login.
 
 Each user can have only one connection to a given provider identity, and that
 identity can identify at most one user for login, under either schema. Sign-in

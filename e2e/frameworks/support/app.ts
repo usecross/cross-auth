@@ -36,6 +36,10 @@ export interface App {
   expectSignedOut(page: Page): Promise<void>
 
   seedPasswordUser(email: string, password: string): Promise<void>
+  // Suspends (false) or restores (true) the users with this email the way the
+  // app's own rule reads it: Django's is_active, or the FastAPI example's
+  // column behind user_can_authenticate.
+  setActive(email: string, active: boolean): Promise<void>
   facts(email: string): Promise<AccountFacts>
 }
 

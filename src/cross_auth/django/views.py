@@ -297,6 +297,9 @@ class DjangoLogin:
             hooks=self.bridge.login_hooks(user),
             issue=issue,
             on_commit=self.on_commit,
+            # Django's own rule, the backend's user_can_authenticate, is
+            # checked above; Django contexts set no core user_can_authenticate.
+            check_user=None,
         )
         return issued
 
