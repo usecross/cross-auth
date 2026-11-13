@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal, TypedDict
 
 from pydantic import AwareDatetime
-from typing_extensions import Protocol
+from typing_extensions import Protocol, runtime_checkable
 
 DisconnectResult = Literal["disconnected", "not_found", "last_login_method"]
 
@@ -82,6 +82,26 @@ class User(Protocol):
 
     @property
     def has_usable_password(self) -> bool: ...
+
+
+@runtime_checkable
+class PasswordStorage(Protocol):
+    """An accounts storage that can store new passwords.
+
+    ``CrossAuth.change_password`` needs one; other accounts storages need not
+    implement it.
+    """
+
+    def set_password(self, user_id: Any, password: str) -> User | None:
+        """Store ``password`` as the user's password and return the updated user.
+
+        Hash it the way your password check reads it: Cross-Auth's
+        ``authenticate`` reads a bcrypt hash from ``hashed_password``, as
+        ``cross_auth._password.hash_password`` makes. Return ``None`` without
+        writing if the user is not found. Commit before returning, or join the
+        application transaction ``on_commit`` follows.
+        """
+        ...
 
 
 class SecondaryStorage(Protocol):

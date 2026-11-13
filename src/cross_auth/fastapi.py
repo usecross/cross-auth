@@ -28,12 +28,13 @@ from ._login import (
     issue_bearer_session,
     login_with_session,
     logout_session,
+    require_immediate_commit,
     revoke_user_session,
     revoke_user_sessions,
 )
 from ._native import resolve_id_token_user as _resolve_id_token_user
 from ._oauth_server import OAuthServer
-from ._password import authenticate
+from ._password import _verify_password, authenticate
 from ._request import make_http_request
 from ._session import (
     AuthenticatedSession,
@@ -47,6 +48,7 @@ from ._session import (
 from ._setup import build_auth_setup
 from ._storage import (
     AccountsStorage,
+    PasswordStorage,
     SecondaryStorage,
     SessionListOrder,
     SessionListResult,
@@ -56,6 +58,7 @@ from ._storage import (
     User,
 )
 from ._tokens import TokenKind
+from .exceptions import CrossAuthException
 from .hooks import (
     AfterAuthenticateEvent,
     AfterLoginEvent,
@@ -381,6 +384,78 @@ class CrossAuth:
             hooks=self._context.hooks,
             session_storage=self._require_session_storage(),
         )
+
+    def change_password(
+        self,
+        request: FastAPIRequest,
+        *,
+        current_password: str | None,
+        new_password: str,
+        revoke_other_sessions: bool = True,
+    ) -> User:
+        """Change the password of the request's user and return the updated user.
+
+        The accounts storage must have a ``set_password`` method, as the SQLModel
+        one does; with another, this raises ``TypeError``. The user is the one
+        the request's session signs in, as for ``require_current_user``;
+        without one this raises ``unauthorized`` (401). ``current_password`` must match the user's password, and is
+        ``None`` only for a user without one, who sets a first password.
+        Otherwise this raises ``invalid_password`` (400) and changes nothing.
+        The accounts storage hashes and stores ``new_password``; the SQLModel
+        one refuses a password longer than bcrypt's 72 bytes with
+        ``password_too_long`` (400).
+
+        Then, with ``revoke_other_sessions``, the user's other sessions are
+        revoked through the ``session.revoke`` hooks, with scope ``"others"``,
+        and the request's session stays signed in. A hook that refuses raises
+        once the password has changed. Revoking needs an accounts storage whose
+        writes commit before it returns, as the SQLModel one's do; with one
+        that joined an application transaction, this raises ``RuntimeError``
+        before changing anything. Check the new password against your own
+        rules, such as a minimum length, before calling this.
+        """
+        session_storage = self._require_session_storage()
+        accounts_storage = self._context.accounts_storage
+        if not isinstance(accounts_storage, PasswordStorage):
+            raise TypeError(
+                f"{type(accounts_storage).__name__} cannot change passwords: "
+                "it has no set_password method"
+            )
+        if revoke_other_sessions:
+            # Until the new password commits, a login with the old one could
+            # start a session that the revocation misses.
+            require_immediate_commit(
+                accounts_storage.on_commit,
+                "change_password cannot revoke the other sessions while the "
+                "password change is uncommitted; do not run it inside an "
+                "application transaction",
+            )
+        current = self._resolve_session(request, load_user=True)
+        if current is None or current.user is None:
+            raise CrossAuthException("unauthorized", "Not logged in", status_code=401)
+        user = current.user
+        if current_password is None:
+            # Only a user without a password may set one without proving it.
+            correct = user.hashed_password is None
+        else:
+            correct = _verify_password(user, current_password)
+        if not correct:
+            raise CrossAuthException(
+                "invalid_password", "The current password is not correct"
+            )
+
+        updated = accounts_storage.set_password(user.id, new_password)
+        if updated is None:
+            raise CrossAuthException("unauthorized", "Not logged in", status_code=401)
+        if revoke_other_sessions:
+            revoke_user_sessions(
+                current.record.user_id,
+                keep_session_id=current.record.id,
+                hooks=self._context.hooks,
+                session_storage=session_storage,
+                request=make_http_request(AsyncHTTPRequest.from_fastapi(request)),
+            )
+        return updated
 
     def sign_in_with_id_token(
         self,

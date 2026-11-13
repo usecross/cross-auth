@@ -8,7 +8,13 @@ import pytest
 from cross_web import HTTPRequest, TestingHTTPRequestAdapter
 
 from cross_auth import AccountsStorage, SessionStorage
-from cross_auth._password import DUMMY_PASSWORD_HASH, _verify_password, authenticate
+from cross_auth._password import (
+    DUMMY_PASSWORD_HASH,
+    _check_password,
+    _verify_password,
+    authenticate,
+    hash_password,
+)
 from cross_auth._session import (
     SessionConfig,
     clean_ip,
@@ -24,6 +30,7 @@ from cross_auth._session import (
 )
 from cross_auth._storage import User
 from cross_auth._token_format import is_well_formed
+from cross_auth.exceptions import CrossAuthException
 
 TEST_PASSWORD = "password123"  # noqa: S105
 
@@ -78,6 +85,22 @@ def test_verify_password_rejects_a_hash_bcrypt_cannot_read():
     user = cast(User, Mock(hashed_password=foreign))
 
     assert _verify_password(user, TEST_PASSWORD) is False
+
+
+def test_hash_password_makes_a_hash_authenticate_verifies():
+    hashed = hash_password("a new password")
+
+    assert _check_password("a new password", hashed)
+    assert not _check_password("another password", hashed)
+
+
+def test_hash_password_takes_72_bytes_and_refuses_more():
+    assert _check_password("x" * 72, hash_password("x" * 72))
+
+    with pytest.raises(CrossAuthException) as exc:
+        hash_password("é" * 36 + "x")
+
+    assert exc.value.error == "password_too_long"
 
 
 def test_authenticate_success(accounts_storage: AccountsStorage):

@@ -6,6 +6,8 @@ from sqlalchemy import inspect
 from sqlalchemy.orm import object_session
 from sqlmodel import Field, Session
 
+from cross_auth._password import authenticate
+from cross_auth._storage import PasswordStorage
 from cross_auth._storage import User as UserProtocol
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.storage.sqlmodel import (
@@ -849,3 +851,48 @@ def test_extra_fields_cannot_replace_standard_fields(engine):
             is_login_method=True,
             extra_fields={"provider": "google"},
         )
+
+
+def test_set_password_stores_a_hash_authenticate_verifies(store):
+    user = store.create_user(
+        user_info={}, email="person@example.com", email_verified=True
+    )
+
+    updated = store.set_password(user.id, "a new password")
+
+    assert isinstance(store, PasswordStorage)
+    assert updated is not None
+    # Readable once the adapter's session has closed, onupdate columns too.
+    assert updated.hashed_password is not None
+    assert updated.updated_at is not None
+    assert authenticate("person@example.com", "a new password", store) is not None
+    assert authenticate("person@example.com", "wrong password", store) is None
+
+
+def test_set_password_does_not_find_unknown_or_hidden_users(engine, store):
+    hidden = SoftDeleteAccountsStore(session_factory=lambda: Session(engine))
+    deleted = store.create_user(
+        user_info={}, email="gone@example.com", email_verified=True
+    )
+    with Session(engine) as session:
+        row = session.get(User, deleted.id)
+        assert row is not None
+        row.deleted = True
+        session.commit()
+
+    assert store.set_password(123456, "a new password") is None
+    assert store.set_password("not-an-id", "a new password") is None
+    assert hidden.set_password(deleted.id, "a new password") is None
+    assert store.find_user_by_id(deleted.id).hashed_password is None
+
+
+def test_set_password_refuses_a_password_bcrypt_would_cut(store):
+    user = store.create_user(
+        user_info={}, email="person@example.com", email_verified=True
+    )
+
+    with pytest.raises(CrossAuthException) as exc:
+        store.set_password(user.id, "é" * 37)
+
+    assert exc.value.error == "password_too_long"
+    assert store.find_user_by_id(user.id).hashed_password is None
