@@ -20,6 +20,7 @@ from cross_auth._storage import (
     CommitCallback,
     DisconnectResult,
     SecondaryStorage,
+    SessionActivityStorage,
     SessionListOrder,
     SessionListResult,
     SessionStatus,
@@ -149,7 +150,9 @@ _SESSION_ORDER: dict[
 }
 
 
-class MemorySessionStorage(SessionStorage):
+class BasicMemorySessionStorage(SessionStorage):
+    """A session storage that cannot record activity between refreshes."""
+
     def __init__(self):
         self.records: dict[str, MemorySessionRecord] = {}
 
@@ -250,7 +253,9 @@ class MemorySessionStorage(SessionStorage):
             return record
         record.updated_at = updated_at
         record.expires_at = expires_at
-        if last_active_at is not None:
+        if last_active_at is not None and (
+            record.last_active_at is None or record.last_active_at < last_active_at
+        ):
             record.last_active_at = last_active_at
         return record
 
@@ -278,6 +283,26 @@ class MemorySessionStorage(SessionStorage):
                 record.revoked_at = revoked_at
                 count += 1
         return count
+
+
+class MemorySessionStorage(BasicMemorySessionStorage, SessionActivityStorage):
+    def record_activity(
+        self,
+        session_id: Any,
+        *,
+        last_active_at: datetime,
+        since: datetime,
+    ) -> MemorySessionRecord | None:
+        record = self.get_any(session_id)
+        if (
+            record is None
+            or record.revoked_at is not None
+            or record.expires_at < last_active_at
+            or (record.last_active_at is not None and record.last_active_at > since)
+        ):
+            return None
+        record.last_active_at = last_active_at
+        return record
 
 
 class DeferredSessionStorage(MemorySessionStorage):

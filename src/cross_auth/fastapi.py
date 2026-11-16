@@ -50,6 +50,7 @@ from ._storage import (
     AccountsStorage,
     PasswordStorage,
     SecondaryStorage,
+    SessionActivityStorage,
     SessionListOrder,
     SessionListResult,
     SessionRecord,
@@ -238,9 +239,10 @@ class CrossAuth:
         propagates.
         """
         if self._context.get_user_from_request != self._default_get_user_from_request:
-            # Preserve the custom-resolver contract: sliding sessions refresh
-            # implicitly before the callback runs, even when the callback uses
-            # another authentication mechanism.
+            # Preserve the custom-resolver contract: sliding sessions refresh,
+            # and sessions record their activity, implicitly before the
+            # callback runs, even when the callback uses another
+            # authentication mechanism.
             self._queue_session_refresh(request)
             return self._resolve_user(request)
 
@@ -319,7 +321,11 @@ class CrossAuth:
         session_storage = self._context.session_storage
         if session_storage is None:
             return
-        if resolve_config(self._context.session_config).get("update_age") is None:
+        resolved = resolve_config(self._context.session_config)
+        records_activity = resolved.get("activity_interval") is not None and isinstance(
+            session_storage, SessionActivityStorage
+        )
+        if resolved.get("update_age") is None and not records_activity:
             return
         self.get_current_session(request)
 

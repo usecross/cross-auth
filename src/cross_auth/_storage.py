@@ -253,7 +253,8 @@ class SessionStorage(Protocol):
         already at or after updated_at, a concurrent refresh got there first:
         return the row without changing it, so a stale refresh never moves
         expires_at backwards. When last_active_at is None, preserve the stored
-        value rather than clearing it.
+        value rather than clearing it, and keep a stored last_active_at later
+        than the one supplied, which a concurrent use may have recorded.
         """
         ...
 
@@ -294,6 +295,34 @@ class SessionStorage(Protocol):
         calls it after the outermost transaction commits (not after an inner
         savepoint) and drops it if that transaction rolls back. Let callback
         exceptions propagate; they cannot undo the committed write.
+        """
+        ...
+
+
+@runtime_checkable
+class SessionActivityStorage(Protocol):
+    """A session storage that can record a session's use between refreshes.
+
+    With one, a session's ``last_active_at`` follows its use, as
+    ``activity_interval`` sets. Other session storages need not implement it:
+    their sessions' ``last_active_at`` moves only at sign-in and on a sliding
+    refresh.
+    """
+
+    def record_activity(
+        self,
+        session_id: Any,
+        *,
+        last_active_at: AwareDatetime,
+        since: AwareDatetime,
+    ) -> SessionRecord | None:
+        """Atomically set last_active_at on a session last active at or before since.
+
+        Update only a session that is not revoked, whose expires_at is not
+        earlier than last_active_at, and whose stored last_active_at is null or
+        at or before since; leave every other field unchanged. Concurrent
+        requests then record a use once, and never move last_active_at
+        backwards. Return the updated session, or None if it was not updated.
         """
         ...
 

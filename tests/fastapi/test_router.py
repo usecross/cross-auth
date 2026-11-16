@@ -439,7 +439,7 @@ def test_router(test_app: FastAPI):
                                     {"type": "null"},
                                 ],
                                 "title": "Last Active At",
-                                "description": "When the session was last used: its sign-in, or its latest sliding refresh (recorded at most once per update_age)",
+                                "description": "When the session was last used, recorded at most once per activity_interval (five minutes by default)",
                             },
                             "expires_at": {
                                 "type": "string",

@@ -56,13 +56,14 @@ from cross_auth import SessionConfig
 
 ### Fields
 
-| Field          | Type                   | Default | Description                                                                                                                                                       |
-| -------------- | ---------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `max_age`      | `int`                  | `86400` | Session lifetime in seconds (24 hours); also the session cookie's `Max-Age`.                                                                                      |
-| `update_age`   | `int \| None`          | `None`  | Sliding-session interval. After this many seconds a read rolls `expires_at` forward; cookie clients also get a fresh `Set-Cookie` so the browser copy slides too. |
-| `token_hasher` | `Callable[[str], str]` | SHA-256 | Hash function for persisted tokens.                                                                                                                               |
-| `token_prefix` | `str \| None`          | `None`  | Prefix for new session tokens, which then carry a checksum; see [Token Prefix](/docs/session-authentication#token-prefix).                                        |
-| `cookies`      | `SessionCookieConfig`  | —       | Session cookie attributes (see below).                                                                                                                            |
+| Field               | Type                   | Default | Description                                                                                                                                                                                                                                                      |
+| ------------------- | ---------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `max_age`           | `int`                  | `86400` | Session lifetime in seconds (24 hours); also the session cookie's `Max-Age`.                                                                                                                                                                                     |
+| `update_age`        | `int \| None`          | `None`  | Sliding-session interval. After this many seconds a read rolls `expires_at` forward; cookie clients also get a fresh `Set-Cookie` so the browser copy slides too.                                                                                                |
+| `activity_interval` | `int \| None`          | `300`   | How old `last_active_at` gets, in seconds (`0` to a year), before a request that uses the session updates it; `0` updates it on every request, `None` only at sign-in and on a sliding refresh. See [Last Activity](/docs/session-authentication#last-activity). |
+| `token_hasher`      | `Callable[[str], str]` | SHA-256 | Hash function for persisted tokens.                                                                                                                                                                                                                              |
+| `token_prefix`      | `str \| None`          | `None`  | Prefix for new session tokens, which then carry a checksum; see [Token Prefix](/docs/session-authentication#token-prefix).                                                                                                                                       |
+| `cookies`           | `SessionCookieConfig`  | —       | Session cookie attributes (see below).                                                                                                                                                                                                                           |
 
 ### Example
 

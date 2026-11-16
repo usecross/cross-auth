@@ -9,7 +9,15 @@ from datetime import datetime, timezone
 from typing import Any, ClassVar, Generic, Self, TypeVar, overload
 
 try:
-    from sqlalchemy import BigInteger, SmallInteger, and_, inspect, or_, update
+    from sqlalchemy import (
+        BigInteger,
+        SmallInteger,
+        and_,
+        case,
+        inspect,
+        or_,
+        update,
+    )
     from sqlalchemy.engine import Connection
     from sqlalchemy.exc import IntegrityError
     from sqlalchemy.orm.attributes import set_committed_value
@@ -544,13 +552,17 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
         session_id = _coerce_id(model, "id", session_id)
         if session_id is _NO_MATCH:
             return None
-        values = {
+        values: dict[str, object] = {
             "updated_at": _bind_datetime(model, "updated_at", updated_at),
             "expires_at": _bind_datetime(model, "expires_at", expires_at),
         }
         if last_active_at is not None:
-            values["last_active_at"] = _bind_datetime(
-                model, "last_active_at", last_active_at
+            stored = col(model.last_active_at)
+            proposed = _bind_datetime(model, "last_active_at", last_active_at)
+            # Keep a later use that another request recorded meanwhile.
+            values["last_active_at"] = case(
+                (or_(stored == None, stored < proposed), proposed),  # noqa: E711
+                else_=stored,
             )
 
         active = (
@@ -577,6 +589,46 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
                         *active, col(model.updated_at) >= updated_at_bound
                     )
                 ).first()
+            session.commit()
+        return _prepare_session_record(record)
+
+    def record_activity(
+        self,
+        session_id: object,
+        *,
+        last_active_at: datetime,
+        since: datetime,
+    ) -> SessionModelT | None:
+        """Record a use of the session; this makes the storage a ``SessionActivityStorage``."""
+        model = self.SessionModel
+
+        session_id = _coerce_id(model, "id", session_id)
+        if session_id is _NO_MATCH:
+            return None
+        with self._open_session() as session:
+            statement = (
+                update(model)
+                .where(
+                    col(model.id) == session_id,
+                    col(model.revoked_at) == None,  # noqa: E711
+                    col(model.expires_at)
+                    >= _bind_datetime(model, "expires_at", last_active_at),
+                    # Once per interval: when concurrent requests use the
+                    # session, the first to commit records the use.
+                    or_(
+                        col(model.last_active_at) == None,  # noqa: E711
+                        col(model.last_active_at)
+                        <= _bind_datetime(model, "last_active_at", since),
+                    ),
+                )
+                .values(
+                    last_active_at=_bind_datetime(
+                        model, "last_active_at", last_active_at
+                    )
+                )
+                .returning(model)
+            )
+            record = session.scalars(statement).one_or_none()
             session.commit()
         return _prepare_session_record(record)
 
