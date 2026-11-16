@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
-import logging
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -20,8 +19,6 @@ from ._storage import (
     User,
 )
 from ._token_format import generate_token
-
-logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_AGE = 86400
 _DEFAULT_ACTIVITY_INTERVAL = 300
@@ -370,8 +367,8 @@ def _record_activity(
     """Set ``last_active_at`` to ``now`` once ``activity_interval`` has passed.
 
     Returns ``session`` as it now is. Only a ``SessionActivityStorage`` records
-    activity. Best-effort: the request keeps its session, and a storage error
-    is logged instead of raised.
+    activity. The storage keeps it best-effort: it handles its own database
+    errors, so an exception it raises is a bug and propagates.
     """
     activity_interval = resolved.get("activity_interval")
     if activity_interval is None or not isinstance(storage, SessionActivityStorage):
@@ -381,11 +378,7 @@ def _record_activity(
     if session.last_active_at is not None and session.last_active_at > since:
         return session
 
-    try:
-        recorded = storage.record_activity(session.id, last_active_at=now, since=since)
-    except Exception:
-        logger.warning("Could not record a session's activity", exc_info=True)
-        return session
+    recorded = storage.record_activity(session.id, last_active_at=now, since=since)
     return session if recorded is None else recorded
 
 

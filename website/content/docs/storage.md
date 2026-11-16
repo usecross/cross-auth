@@ -949,6 +949,12 @@ When several requests use the session at once, the first to commit records the
 use, and none moves `last_active_at` backwards. Leave `updated_at` and
 `expires_at` unchanged. The SQLModel adapter has one.
 
+Keep `record_activity` best-effort: when the database refuses the update, log
+the error and return `None`, so a timestamp shown in a sessions list never fails
+a request. Cross-Auth does not catch what it raises, so catch only your
+database's errors and let bugs fail loudly. The SQLModel adapter catches
+SQLAlchemy's errors and logs them on the `cross_auth.storage.sqlmodel` logger.
+
 `revoke` and `revoke_all_for_user` revoke only sessions that are still active at
 the supplied `revoked_at`: leave revoked and expired sessions unchanged, so an
 expired session keeps its `expired` status. `revoke` returns whether it revoked

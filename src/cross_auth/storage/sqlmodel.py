@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -19,7 +20,7 @@ try:
         update,
     )
     from sqlalchemy.engine import Connection
-    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.exc import IntegrityError, SQLAlchemyError
     from sqlalchemy.orm.attributes import set_committed_value
     from sqlmodel import Session, SQLModel, col, select
     from sqlmodel.sql.expression import SelectOfScalar
@@ -46,6 +47,8 @@ from cross_auth.storage._sqlmodel_models import (
     SQLModelSocialAccount,
     SQLModelUser,
 )
+
+logger = logging.getLogger(__name__)
 
 SessionModelT = TypeVar("SessionModelT", bound=SQLModelSession)
 UserModelT = TypeVar("UserModelT", bound=SQLModelUser)
@@ -599,37 +602,45 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
         last_active_at: datetime,
         since: datetime,
     ) -> SessionModelT | None:
-        """Record a use of the session; this makes the storage a ``SessionActivityStorage``."""
+        """Record a use of the session; this makes the storage a ``SessionActivityStorage``.
+
+        Best-effort: a database error is logged and answers ``None``, so a
+        failed write does not fail the request using the session.
+        """
         model = self.SessionModel
 
         session_id = _coerce_id(model, "id", session_id)
         if session_id is _NO_MATCH:
             return None
-        with self._open_session() as session:
-            statement = (
-                update(model)
-                .where(
-                    col(model.id) == session_id,
-                    col(model.revoked_at) == None,  # noqa: E711
-                    col(model.expires_at)
-                    >= _bind_datetime(model, "expires_at", last_active_at),
-                    # Once per interval: when concurrent requests use the
-                    # session, the first to commit records the use.
-                    or_(
-                        col(model.last_active_at) == None,  # noqa: E711
-                        col(model.last_active_at)
-                        <= _bind_datetime(model, "last_active_at", since),
-                    ),
-                )
-                .values(
-                    last_active_at=_bind_datetime(
-                        model, "last_active_at", last_active_at
-                    )
-                )
-                .returning(model)
+        statement = (
+            update(model)
+            .where(
+                col(model.id) == session_id,
+                col(model.revoked_at) == None,  # noqa: E711
+                col(model.expires_at)
+                >= _bind_datetime(model, "expires_at", last_active_at),
+                # Once per interval: when concurrent requests use the session,
+                # the first to commit records the use.
+                or_(
+                    col(model.last_active_at) == None,  # noqa: E711
+                    col(model.last_active_at)
+                    <= _bind_datetime(model, "last_active_at", since),
+                ),
             )
-            record = session.scalars(statement).one_or_none()
-            session.commit()
+            .values(
+                last_active_at=_bind_datetime(model, "last_active_at", last_active_at)
+            )
+            .returning(model)
+        )
+        # Around the whole session too: a factory can connect as it is called,
+        # and closing the session can fail with the connection.
+        try:
+            with self._open_session() as session:
+                record = session.scalars(statement).one_or_none()
+                session.commit()
+        except SQLAlchemyError:
+            logger.warning("Could not record a session's activity", exc_info=True)
+            return None
         return _prepare_session_record(record)
 
     def revoke(self, session_id: object, *, revoked_at: datetime) -> bool:

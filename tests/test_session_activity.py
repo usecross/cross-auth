@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from unittest import mock
@@ -170,40 +169,36 @@ def test_refused_user_does_not_record_activity(
 
 
 @time_machine.travel(NOW, tick=False)
-def test_failed_activity_write_keeps_the_session(
-    session_storage: MemorySessionStorage, monkeypatch, caplog
+def test_an_error_from_record_activity_propagates(
+    session_storage: MemorySessionStorage, monkeypatch
 ):
+    # Storages keep recording best-effort by handling their own database
+    # errors, so anything they raise is a bug and must not be hidden.
     token, record = create_session("test", session_storage)
 
     def fail(session_id, *, last_active_at, since):
-        raise RuntimeError("database is read-only")
+        raise TypeError("record_activity() got an unexpected keyword argument")
 
     monkeypatch.setattr(session_storage, "record_activity", fail)
 
     with (
         time_machine.travel(NOW + timedelta(hours=1), tick=False),
-        caplog.at_level(logging.WARNING, logger="cross_auth._session"),
+        pytest.raises(TypeError, match="unexpected keyword"),
     ):
-        session = get_session(token, session_storage)
+        get_session(token, session_storage)
 
-    assert session is record
     assert record.last_active_at == NOW
-    assert caplog.messages == ["Could not record a session's activity"]
 
 
 @time_machine.travel(NOW, tick=False)
-def test_storage_without_record_activity_keeps_the_previous_behaviour(caplog):
+def test_storage_without_record_activity_keeps_the_previous_behaviour():
     storage = BasicMemorySessionStorage()
     token, record = create_session("test", storage)
 
-    with (
-        time_machine.travel(NOW + timedelta(hours=1), tick=False),
-        caplog.at_level(logging.WARNING, logger="cross_auth._session"),
-    ):
+    with time_machine.travel(NOW + timedelta(hours=1), tick=False):
         assert get_session(token, storage) is record
 
     assert record.last_active_at == NOW
-    assert caplog.messages == []
 
 
 @time_machine.travel(NOW, tick=False)
