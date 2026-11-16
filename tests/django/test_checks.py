@@ -131,12 +131,12 @@ def test_session_activity_interval_must_be_seconds(value: object) -> None:
     assert "SESSION_ACTIVITY_INTERVAL'] must be a number of seconds" in errors[0].msg
 
 
-def test_session_activity_interval_defaults_to_a_minute() -> None:
+def test_session_activity_interval_defaults_to_five_minutes() -> None:
     from datetime import timedelta
 
     from cross_auth.django.conf import get_settings
 
-    assert get_settings().session_activity_interval == timedelta(minutes=1)
+    assert get_settings().session_activity_interval == timedelta(minutes=5)
     with override_settings(CROSS_AUTH={"SESSION_ACTIVITY_INTERVAL": 0}):
         assert get_settings().session_activity_interval == timedelta(0)
     with override_settings(CROSS_AUTH={"SESSION_ACTIVITY_INTERVAL": 31_536_000}):

@@ -201,9 +201,9 @@ class Context:
         Pass ``db_session`` to load the user in your own database session, so
         the returned user belongs to it. The accounts storage must have a
         ``with_read_session`` method, as the SQLModel one does. The session
-        lookup, the ``user_can_authenticate`` check and any refresh run first,
-        in the storages' own sessions, so a refresh never commits while this
-        call has a transaction open in ``db_session``.
+        lookup, the ``user_can_authenticate`` check, any refresh and the
+        activity recording run first, in the storages' own sessions, so they
+        never commit while this call has a transaction open in ``db_session``.
         """
         session_storage = self.session_storage
         if session_storage is None:

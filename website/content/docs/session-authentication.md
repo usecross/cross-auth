@@ -225,17 +225,21 @@ def current_user(
     return result.user  # relationships load, and you can change and commit it
 ```
 
-The session lookup and any sliding-session refresh run first, in the session
-storage's own sessions, so the refresh never commits while Cross-Auth has a
-transaction open in `db`. Cross-Auth never commits or closes `db`. The accounts
-storage needs a `with_read_session(session)` method, which returns a copy of the
-storage whose user lookups run in `session`. The SQLModel accounts storage has
-one; with other accounts storages, `db_session` raises `TypeError`.
+The session lookup, any sliding-session refresh and the
+[activity](#last-activity) recording run first, in the session storage's own
+sessions, so they never commit while Cross-Auth has a transaction open in `db`.
+Cross-Auth never commits or closes `db`. The accounts storage needs a
+`with_read_session(session)` method, which returns a copy of the storage whose
+user lookups run in `session`. The SQLModel accounts storage has one; with other
+accounts storages, `db_session` raises `TypeError`.
 
 With `user_can_authenticate`, the user must be checked before the refresh, so
 Cross-Auth checks a copy that the accounts storage loads in its own session,
 then refreshes the session, and only then loads the user you get back in `db`.
-That costs one more user lookup per call.
+That costs one more user lookup per call. Without it, the user is loaded only
+after the refresh and the activity recording, so a session whose user was
+deleted still records that use before the call returns `None`. Revoke or delete
+a user's sessions when you delete the user.
 
 ### Refuse Suspended or Deleted Users
 
@@ -467,11 +471,12 @@ A session in use costs at most one write per interval, and an idle session none.
 Activity is recorded where a sliding refresh would be, after the same user
 checks, and never by logout. With a custom `get_user_from_request`, the session
 is read and its activity recorded before your resolver runs, as for a sliding
-refresh. Recording is best-effort: if the session storage fails to record it,
-Cross-Auth logs a warning and the request keeps its session. A custom session
-storage needs a [`record_activity` method](/docs/storage#sessionstorage) to
-record activity at all; without one, `last_active_at` moves only at sign-in and
-on a sliding refresh.
+refresh. Recording is best-effort: when the database refuses the update, the
+SQLModel storage logs a warning on the `cross_auth.storage.sqlmodel` logger and
+the request keeps its session. A custom session storage needs a
+[`record_activity` method](/docs/storage#sessionstorage) to record activity at
+all, and handles its own database errors the same way; without one,
+`last_active_at` moves only at sign-in and on a sliding refresh.
 
 ### Token Prefix
 

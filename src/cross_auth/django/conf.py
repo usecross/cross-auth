@@ -206,7 +206,7 @@ def get_settings() -> CrossAuthSettings:
         session_activity_interval=_seconds(
             raw,
             "SESSION_ACTIVITY_INTERVAL",
-            60,
+            300,
             maximum=_MAX_SESSION_ACTIVITY_INTERVAL,
         ),
         session_store_ip=_bool(raw, "SESSION_STORE_IP", True),

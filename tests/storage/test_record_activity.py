@@ -1,10 +1,13 @@
 """record_activity moves only last_active_at, once per interval, on active rows."""
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
 import time_machine
+from sqlalchemy import event
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session
 
 from cross_auth._session import create_session, get_session
@@ -147,3 +150,51 @@ def test_session_lookup_returns_the_recorded_use(activity_store):
 
     assert session is not None
     assert session.last_active_at == NOW + timedelta(minutes=5)
+
+
+def test_a_database_error_is_logged_and_keeps_the_session(
+    activity_store, signup_engine, caplog
+):
+    with time_machine.travel(NOW, tick=False):
+        token, _ = create_session("u1", activity_store, max_age=3600)
+
+    def fail_update(connection, cursor, statement, parameters, context, executemany):
+        if statement.startswith("UPDATE usersession"):
+            raise OperationalError(
+                statement, parameters, Exception("database is locked")
+            )
+
+    event.listen(signup_engine, "before_cursor_execute", fail_update)
+    try:
+        with (
+            time_machine.travel(NOW + timedelta(minutes=5), tick=False),
+            caplog.at_level(logging.WARNING, logger="cross_auth.storage.sqlmodel"),
+        ):
+            session = get_session(token, activity_store)
+    finally:
+        event.remove(signup_engine, "before_cursor_execute", fail_update)
+
+    assert session is not None
+    assert session.last_active_at == NOW
+    assert activity_store.get_any(session.id).last_active_at == NOW
+    [record] = caplog.records
+    assert record.getMessage() == "Could not record a session's activity"
+    assert record.exc_info is not None
+
+
+def test_a_failed_connection_is_logged_and_records_nothing(activity_store, caplog):
+    original = create(activity_store)
+
+    def connect():
+        # A factory such as Session(engine.connect()) connects as it is called.
+        raise OperationalError("connect", {}, Exception("connection refused"))
+
+    unreachable = SessionStore(session_factory=connect)
+    with caplog.at_level(logging.WARNING, logger="cross_auth.storage.sqlmodel"):
+        result = unreachable.record_activity(
+            original.id, last_active_at=NOW, since=SINCE
+        )
+
+    assert result is None
+    assert activity_store.get_any(original.id).last_active_at == EARLIER
+    assert caplog.messages == ["Could not record a session's activity"]

@@ -632,7 +632,7 @@ Each time Django saves a session, Cross Auth fills these columns of
 | `user_agent`    | The browser's `User-Agent` header, cleaned: unprintable characters become spaces, runs of whitespace become one space, and it is cut to 512 characters.                                                                                                                                 |
 | `ip`            | The request's `REMOTE_ADDR`; see [behind a proxy](#behind-a-proxy). `None` with `SESSION_STORE_IP` off.                                                                                                                                                                                 |
 | `created_at`    | When the user signed in, or when an anonymous session started. Each login sets it again, even when Django keeps the session key. A new key without a login, such as after a password change, keeps it.                                                                                  |
-| `last_activity` | When a request last used the session. Saving the session sets it; otherwise it is updated at most once a minute (`SESSION_ACTIVITY_INTERVAL`), and only by requests that read the session or the user.                                                                                  |
+| `last_activity` | When a request last used the session. Saving the session sets it; otherwise it is updated at most once per `SESSION_ACTIVITY_INTERVAL`, five minutes by default, and only by requests that read the session or the user.                                                                |
 | `public_id`     | A random ID that names the session on your pages, because `session_key` is the session cookie itself and must never be shown. Like `created_at`, each login gives a new one and a new key without a login keeps it, so a page listing the sessions stays valid after a password change. |
 
 Logging out, `clearsessions` and deleting a user delete their rows.
@@ -902,7 +902,7 @@ reports invalid values.
 | `REQUIRE_VERIFIED_EMAIL`    | `True`             | Refuse to create users when Google does not report the email as verified.                                                                                          |
 | `ACCOUNT_LINKING`           | `{}`               | `enabled`: attach a Google sign-in to the user with the same verified email. `allow_different_emails`: see Step 13.                                                |
 | `BASE_URL`                  | the request's host | Public origin, such as `https://example.com`, used to build the redirect URI.                                                                                      |
-| `SESSION_ACTIVITY_INTERVAL` | `60`               | Seconds between `last_activity` updates of a [session](#sessions) that nothing else saves, from `0` (every request that reads the session) to `31536000` (a year). |
+| `SESSION_ACTIVITY_INTERVAL` | `300`              | Seconds between `last_activity` updates of a [session](#sessions) that nothing else saves, from `0` (every request that reads the session) to `31536000` (a year). |
 | `SESSION_STORE_IP`          | `True`             | Whether [sessions](#sessions) store the request's `REMOTE_ADDR`. When off, sessions store no IP and clear the one they have the next time they are saved or used.  |
 
 `ACCOUNT_LINKING["enabled"]` is off by default. Turning it on lets anyone who

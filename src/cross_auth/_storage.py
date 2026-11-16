@@ -323,6 +323,10 @@ class SessionActivityStorage(Protocol):
         at or before since; leave every other field unchanged. Concurrent
         requests then record a use once, and never move last_active_at
         backwards. Return the updated session, or None if it was not updated.
+
+        Keep it best-effort: on a database error, log it and return None, so
+        a failed write does not fail the request using the session. Cross-Auth
+        does not catch what this raises.
         """
         ...
 

@@ -212,7 +212,7 @@ class TestLastActivity:
             sign_in(client, google)
             assert stored(client).last_activity == T0
 
-            clock.shift(59)
+            clock.shift(299)
             with CaptureQueriesContext(connection) as queries:
                 assert whoami(client)["authenticated"] is True
             assert not [q for q in queries if q["sql"].startswith("UPDATE")]
@@ -220,22 +220,22 @@ class TestLastActivity:
 
             clock.shift(1)
             whoami(client)
-            assert stored(client).last_activity == T0 + timedelta(seconds=60)
+            assert stored(client).last_activity == T0 + timedelta(seconds=300)
 
             clock.shift(30)
             whoami(client)
-            assert stored(client).last_activity == T0 + timedelta(seconds=60)
+            assert stored(client).last_activity == T0 + timedelta(seconds=300)
 
     def test_activity_update_records_the_new_device(self, google: FakeGoogle) -> None:
         with time_machine.travel(T0, tick=False) as clock:
             client = browser()
             sign_in(client, google)
 
-            clock.shift(120)
+            clock.shift(300)
             client.get("/", headers={"User-Agent": "Phone"}, REMOTE_ADDR="::1")
 
             session = stored(client)
-            assert session.last_activity == T0 + timedelta(seconds=120)
+            assert session.last_activity == T0 + timedelta(seconds=300)
             assert (session.user_agent, session.ip) == ("Phone", "::1")
             # Activity alone does not move the start of the session.
             assert session.created_at == T0
@@ -339,12 +339,12 @@ class TestLastActivity:
             first.load()
             second.load()
 
-            clock.shift(90)
+            clock.shift(300)
             first.record_activity()
             clock.shift(5)
             second.record_activity()
 
-            assert stored(client).last_activity == T0 + timedelta(seconds=90)
+            assert stored(client).last_activity == T0 + timedelta(seconds=300)
 
     def test_an_older_time_never_replaces_a_newer_one(self) -> None:
         make_user("person@example.com", password="secret")
@@ -382,7 +382,7 @@ class TestLastActivity:
             client = browser()
             sign_in(client, google)
 
-            clock.shift(60)
+            clock.shift(300)
             with (
                 connection.execute_wrapper(fail_updates),
                 caplog.at_level(logging.WARNING, "cross_auth.django.sessions"),
