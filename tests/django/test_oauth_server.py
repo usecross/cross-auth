@@ -404,9 +404,15 @@ class TestCallback:
     def test_creates_the_user_but_no_browser_session(self, google: FakeGoogle) -> None:
         client = browser()
         logins: list[object] = []
-        user_logged_in.connect(lambda **kwargs: logins.append(kwargs), weak=False)
 
-        code_for(client, google, Pkce())
+        def native_login(sender: object, **kwargs: Any) -> None:
+            logins.append(kwargs)
+
+        user_logged_in.connect(native_login)
+        try:
+            code_for(client, google, Pkce())
+        finally:
+            user_logged_in.disconnect(native_login)
 
         user = get_user_model()._default_manager.get()
         assert user.get_username() or user.pk
