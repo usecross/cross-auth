@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cache
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -16,6 +16,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.core.signals import setting_changed
 from django.utils.module_loading import import_string
 
+from cross_auth._clients import ClientResolver
 from cross_auth._config import AccountLinkingConfig
 from cross_auth.social_providers.oauth import OAuth2Provider
 
@@ -68,6 +69,20 @@ def create_user(
 
 
 @dataclass(frozen=True)
+class OAuthServerSettings:
+    """``CROSS_AUTH["OAUTH_SERVER"]``: sign-in for your own SPA and native clients."""
+
+    # Looks up a registered client by its ID; None for an unknown one.
+    get_client: ClientResolver
+    # How long a new bearer token lasts, in seconds.
+    token_max_age: int
+    # How old, in seconds, a token's session gets before a request that uses
+    # it extends it by token_max_age. None: a token ends token_max_age after
+    # it was issued, however much it is used.
+    token_update_age: int | None
+
+
+@dataclass(frozen=True)
 class CrossAuthSettings:
     providers: Mapping[str, OAuth2Provider]
     create_user: UserFactory
@@ -84,6 +99,8 @@ class CrossAuthSettings:
     session_activity_interval: timedelta
     # Whether cross_auth.django.sessions stores the request's REMOTE_ADDR.
     session_store_ip: bool
+    # None: the authorize, token and logout views answer "not found".
+    oauth_server: OAuthServerSettings | None
 
 
 _KNOWN_KEYS = frozenset(
@@ -96,9 +113,16 @@ _KNOWN_KEYS = frozenset(
         "BASE_URL",
         "SESSION_ACTIVITY_INTERVAL",
         "SESSION_STORE_IP",
+        "OAUTH_SERVER",
     }
 )
 _ACCOUNT_LINKING_KEYS = frozenset({"enabled", "allow_different_emails"})
+_OAUTH_SERVER_KEYS = frozenset({"get_client", "token_max_age", "token_update_age"})
+# A day, like Cross Auth's sessions elsewhere.
+_DEFAULT_TOKEN_MAX_AGE = 24 * 60 * 60
+# Ten years. A token's expiry is now plus its age, which must stay a date
+# that Python and the database can hold.
+_MAX_TOKEN_AGE = 10 * 365 * 24 * 60 * 60
 # A year. Sessions compare their last_activity with now minus the interval,
 # which must stay a date that Python and the database can hold.
 _MAX_SESSION_ACTIVITY_INTERVAL = 365 * 24 * 60 * 60
@@ -166,6 +190,64 @@ def _account_linking(value: object) -> AccountLinkingConfig:
     )
 
 
+def _token_age(
+    raw: Mapping[Any, object], key: str, default: int | None, *, minimum: int
+) -> int | None:
+    value = raw.get(key, default)
+    if value is None and default is None:
+        return None
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not minimum <= value <= _MAX_TOKEN_AGE
+    ):
+        raise ImproperlyConfigured(
+            f"CROSS_AUTH['OAUTH_SERVER']['{key}'] must be a number of seconds, "
+            f"an int from {minimum} to {_MAX_TOKEN_AGE}"
+            + (" or None" if default is None else "")
+        )
+    return value
+
+
+def _oauth_server(value: object) -> OAuthServerSettings | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ImproperlyConfigured("CROSS_AUTH['OAUTH_SERVER'] must be a dict")
+    if not settings.USE_TZ:
+        # Core compares a token's times with the current time in UTC; without
+        # time zone support Django hands back naive local times.
+        raise ImproperlyConfigured("CROSS_AUTH['OAUTH_SERVER'] needs USE_TZ = True")
+    raw = cast("Mapping[Any, object]", value)
+    unknown = set(raw) - _OAUTH_SERVER_KEYS
+    if unknown:
+        raise ImproperlyConfigured(
+            "Unsupported CROSS_AUTH['OAUTH_SERVER'] key(s): "
+            + ", ".join(sorted(map(str, unknown)))
+        )
+
+    path = raw.get("get_client")
+    if not isinstance(path, str):
+        raise ImproperlyConfigured(
+            "CROSS_AUTH['OAUTH_SERVER']['get_client'] must be the dotted path of "
+            "a function that returns the OAuthClient with a client ID, or None"
+        )
+    get_client = import_string(path)
+    if not callable(get_client):
+        raise ImproperlyConfigured(
+            f"CROSS_AUTH['OAUTH_SERVER']['get_client'] {path!r} is not callable"
+        )
+
+    token_max_age = _token_age(raw, "token_max_age", _DEFAULT_TOKEN_MAX_AGE, minimum=1)
+    assert token_max_age is not None
+
+    return OAuthServerSettings(
+        get_client=get_client,
+        token_max_age=token_max_age,
+        token_update_age=_token_age(raw, "token_update_age", None, minimum=0),
+    )
+
+
 @cache
 def get_settings() -> CrossAuthSettings:
     raw: Mapping[str, Any] = getattr(settings, "CROSS_AUTH", {})
@@ -210,11 +292,12 @@ def get_settings() -> CrossAuthSettings:
             maximum=_MAX_SESSION_ACTIVITY_INTERVAL,
         ),
         session_store_ip=_bool(raw, "SESSION_STORE_IP", True),
+        oauth_server=_oauth_server(raw.get("OAUTH_SERVER")),
     )
 
 
 def _reset(*, setting: str, **kwargs: object) -> None:
-    if setting in {"CROSS_AUTH", "AUTH_USER_MODEL"}:
+    if setting in {"CROSS_AUTH", "AUTH_USER_MODEL", "USE_TZ"}:
         get_settings.cache_clear()
 
 

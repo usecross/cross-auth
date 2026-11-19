@@ -1,4 +1,5 @@
-"""Browser views for provider sign-in, linking, and disconnecting.
+"""Browser views for provider sign-in, linking, and disconnecting, and the
+OAuth server's views for SPA and native clients.
 
 Every view runs Cross Auth's shared OAuth flow; this module only adapts
 requests and responses and completes sign-in with ``django.contrib.auth``.
@@ -6,6 +7,12 @@ Mutations are POSTs protected by ``CsrfViewMiddleware`` (a system check
 requires it); the provider callback is a GET verified by OAuth state, browser
 binding, PKCE, and the OpenID Connect nonce. Each request sends
 ``cross_auth.django.signals`` through its own ``_Signals`` bridge.
+
+The OAuth server's views exist with ``CROSS_AUTH["OAUTH_SERVER"]``; without
+it they answer "not found". ``authorize`` starts a sign-in that ends at the
+client's redirect URI with a one-time code. ``token`` and ``logout`` are
+called by the client's own code, from another origin or a native app: they
+are exempt from CSRF checks, read no cookie, and answer in JSON.
 """
 
 from __future__ import annotations
@@ -13,22 +20,24 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from functools import wraps
-from typing import Concatenate, Literal, ParamSpec
+from typing import Concatenate, Literal, ParamSpec, Protocol
 
 from cross_web import HTTPRequest
 from cross_web import Response as CrossWebResponse
+from cross_web.request._django import DjangoHTTPRequestAdapter
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth import login as django_login
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.contrib.sessions.backends.db import SessionStore as DatabaseSessionStore
-from django.core.exceptions import ImproperlyConfigured
+from django.core.exceptions import ImproperlyConfigured, PermissionDenied
 from django.db import connections, router, transaction
 from django.dispatch import Signal
 from django.http import Http404, HttpRequest, HttpResponse, HttpResponseNotAllowed
 from django.shortcuts import render, resolve_url
 from django.utils.cache import add_never_cache_headers
 from django.utils.http import url_has_allowed_host_and_scheme
+from django.views.decorators.csrf import csrf_exempt
 
 from cross_auth._authorization import AuthRequest
 from cross_auth._auth_flow import (
@@ -36,18 +45,27 @@ from cross_auth._auth_flow import (
     handle_callback,
     start_connect_flow,
     start_session_flow,
+    start_token_flow,
 )
+from cross_auth._auth_flow import logout as revoke_bearer_session
+from cross_auth._config import Config
 from cross_auth._context import Context
+from cross_auth._issuer import Issuer
 from cross_auth._login import require_immediate_commit, run_login
+from cross_auth._oauth_server import OAuthServer
 from cross_auth._storage import CommitCallback, SocialAccount, User
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.hooks import (
     AfterLoginEvent,
+    AfterLogoutEvent,
+    AfterOAuthAuthorizeEvent,
     AfterOAuthDisconnectEvent,
     AfterSocialAccountCreateEvent,
     AfterSocialAccountUpdateEvent,
     AfterUserCreateEvent,
     BeforeLoginEvent,
+    BeforeLogoutEvent,
+    BeforeOAuthAuthorizeEvent,
     BeforeOAuthDisconnectEvent,
     BeforeSocialAccountCreateEvent,
     BeforeSocialAccountUpdateEvent,
@@ -60,7 +78,14 @@ from . import models, signals
 from .backends import BACKEND, CrossAuthBackend
 from .conf import get_settings
 from .sessions import LOGIN_METHOD_SESSION_KEY, SessionStore
-from .storage import DjangoAccountsStorage, DjangoSecondaryStorage, DjangoUser
+from .storage import (
+    DjangoAccountsStorage,
+    DjangoSecondaryStorage,
+    DjangoSessionRecord,
+    DjangoSessionStorage,
+    DjangoUser,
+)
+from .tokens import _can_authenticate, _session_config
 
 _SAMESITE: dict[str, Literal["Lax", "Strict", "None"]] = {
     "lax": "Lax",
@@ -109,8 +134,25 @@ def _native_account(account: SocialAccount) -> models.SocialAccount:
     return account
 
 
+_Flow = Literal["login", "link", "authorize"]
 # Signals name flows after the views that start them.
-_FLOWS: dict[str, Literal["login", "link"]] = {"session": "login", "connect": "link"}
+_FLOWS: dict[str, _Flow] = {
+    "session": "login",
+    "connect": "link",
+    "token": "authorize",
+}
+_INACTIVE = "This account is inactive."
+
+
+def _refused(error: PermissionDenied) -> CrossAuthException:
+    """A receiver's refusal, as Cross Auth's flows report one to an API client.
+
+    The token and logout views answer in JSON, where Django's 403 page would
+    be no use to the client.
+    """
+    return CrossAuthException(
+        "access_denied", str(error) or "Permission denied", status_code=403
+    )
 
 
 class _Signals:
@@ -124,8 +166,11 @@ class _Signals:
         self.request = request
         self.provider = provider.id
         # Set once the callback is verified; a link sends social_account_linked.
-        self.flow: Literal["login", "link"] | None = None
+        self.flow: _Flow | None = None
         self.hooks = HookRegistry()
+        # Only the authorize view's flow runs these two.
+        self.hooks.register_before("oauth.authorize", self._before_authorize)
+        self.hooks.register_after("oauth.authorize", self._authorize_started)
         self.hooks.register_before("user.create", self._before_user_create)
         self.hooks.register_after("user.create", self._user_created)
         self.hooks.register_before(
@@ -146,6 +191,12 @@ class _Signals:
             provider=self.provider,
             **kwargs,
         )
+
+    def _before_authorize(self, event: BeforeOAuthAuthorizeEvent) -> None:
+        self.send(signals.before_authorization, flow="authorize", user_id=None)
+
+    def _authorize_started(self, event: AfterOAuthAuthorizeEvent) -> None:
+        self.send(signals.authorization_started, flow="authorize")
 
     def verified(self, auth_request: AuthRequest, validated: ValidatedUserInfo) -> None:
         self.flow = _FLOWS[auth_request.flow]
@@ -237,6 +288,96 @@ class _Signals:
         return hooks
 
 
+class _TokenSignals:
+    """Sends the login signals around the bearer token the token view issues.
+
+    Core runs its ``login`` hooks there, once the client exchanges its code,
+    so that is when ``before_login`` can still refuse the user.
+    """
+
+    def __init__(self, request: HttpRequest) -> None:
+        self.request = request
+        self.user: DjangoUser | None = None
+        self.hooks = HookRegistry()
+        self.hooks.register_before("login", self._before_login)
+        self.hooks.register_after("login", self._after_login)
+
+    def _before_login(self, event: BeforeLoginEvent) -> None:
+        user = DjangoAccountsStorage().find_user_by_id(event.user_id)
+        if user is None:
+            raise CrossAuthException(
+                "access_denied", "Sign-in is not allowed", status_code=403
+            )
+        self.user = user
+        try:
+            signals.before_login.send(
+                sender=get_user_model(),
+                request=self.request,
+                provider=event.login_method,
+                user_id=event.user_id,
+                email=user.email,
+            )
+        except PermissionDenied as error:
+            raise _refused(error) from error
+
+    def _after_login(self, event: AfterLoginEvent) -> None:
+        assert self.user is not None
+        signals.after_login.send(
+            sender=get_user_model(),
+            request=self.request,
+            provider=event.login_method,
+            user=self.user.native,
+        )
+
+
+class _LogoutSignals:
+    """Sends the session signals around the logout view revoking tokens."""
+
+    def __init__(self, request: HttpRequest) -> None:
+        self.request = request
+        self.hooks = HookRegistry()
+        self.hooks.register_before("logout", self._before_logout)
+        self.hooks.register_after("logout", self._after_logout)
+
+    @staticmethod
+    def _named(
+        record: object, scope: Literal["current", "all"]
+    ) -> tuple[DjangoSessionRecord, str, str | None]:
+        """Return the record with the signals' ``scope`` and ``session_id``."""
+        if not isinstance(record, DjangoSessionRecord):
+            raise TypeError("Cross Auth's Django views need DjangoSessionStorage")
+        if scope == "all":
+            return record, "all", None
+        return record, "one", str(record.id)
+
+    def _before_logout(self, event: BeforeLogoutEvent) -> None:
+        if event.session_record is None:
+            # No token, or one that is unknown, expired or already revoked.
+            return
+        record, scope, session_id = self._named(event.session_record, event.scope)
+        try:
+            signals.before_session_revoke.send(
+                sender=get_user_model(),
+                request=self.request,
+                user_id=str(record.user_id),
+                scope=scope,
+                session_id=session_id,
+            )
+        except PermissionDenied as error:
+            raise _refused(error) from error
+
+    def _after_logout(self, event: AfterLogoutEvent) -> None:
+        record, scope, session_id = self._named(event.session_record, event.scope)
+        signals.session_revoked.send(
+            sender=get_user_model(),
+            request=self.request,
+            user=record.native.user,
+            scope=scope,
+            session_id=session_id,
+            revoked_count=event.revoked_count,
+        )
+
+
 class DjangoLogin:
     """Completes a verified provider sign-in with ``django.contrib.auth``."""
 
@@ -298,7 +439,7 @@ class DjangoLogin:
             issue=issue,
             on_commit=self.on_commit,
             # Django's own rule, the backend's user_can_authenticate, is
-            # checked above; Django contexts set no core user_can_authenticate.
+            # checked above, and by the context before the callback gets here.
             check_user=None,
         )
         return issued
@@ -334,12 +475,42 @@ def _next_url(request: HttpRequest) -> str:
     return _default_next_url()
 
 
-def _context(request: HttpRequest, bridge: _Signals) -> Context:
+class _Bridge(Protocol):
+    """Whatever sends a view's signals from core's hooks."""
+
+    hooks: HookRegistry
+
+
+def _may_sign_in(user: User) -> bool:
+    """Refuse a user Django's backend refuses, with the login's own error.
+
+    The cookie login checks the same rule itself. A sign-in for a bearer
+    token never gets there, so the context checks it for both: before an
+    authorization code is issued, and again before its token is.
+    """
+    if not _can_authenticate(user):
+        raise CrossAuthException("access_denied", _INACTIVE, status_code=403)
+    return True
+
+
+def _context(request: HttpRequest, bridge: _Bridge) -> Context:
     """Build the core context, whose hooks send ``bridge``'s signals."""
     conf = get_settings()
     accounts = DjangoAccountsStorage()
     secondary = DjangoSecondaryStorage()
-    for alias in {accounts.alias, secondary.alias}:
+    aliases = {accounts.alias, secondary.alias}
+    config: Config = {
+        "account_linking": conf.account_linking,
+        "require_verified_email": conf.require_verified_email,
+    }
+    sessions = None
+    oauth_server = None
+    if conf.oauth_server is not None:
+        sessions = DjangoSessionStorage()
+        aliases.add(sessions.alias)
+        config["session"] = _session_config(conf)
+        oauth_server = OAuthServer(get_client=conf.oauth_server.get_client)
+    for alias in aliases:
         if connections[alias].in_atomic_block:
             raise ImproperlyConfigured(
                 "Cross Auth's Django views must not run inside transaction.atomic"
@@ -347,15 +518,46 @@ def _context(request: HttpRequest, bridge: _Signals) -> Context:
     return Context(
         secondary_storage=secondary,
         accounts_storage=accounts,
+        session_storage=sessions,
         get_user_from_request=lambda _: _current_user(request),
         base_url=conf.base_url,
-        config={
-            "account_linking": conf.account_linking,
-            "require_verified_email": conf.require_verified_email,
-        },
+        config=config,
         default_next_url=_default_next_url(),
         hooks=bridge.hooks,
+        oauth_server=oauth_server,
+        user_can_authenticate=_may_sign_in,
     )
+
+
+def _require_oauth_server() -> None:
+    if get_settings().oauth_server is None:
+        raise Http404("The OAuth server is not enabled")
+
+
+class _ClientRequestAdapter(DjangoHTTPRequestAdapter):
+    """The request of an OAuth client's own code, not of a browser page.
+
+    Its form is a plain dict, as core's token endpoint reads it. It has no
+    cookies: the client authenticates with what it sends in the body or the
+    ``Authorization`` header, so a browser's cookies must change nothing on
+    views that skip CSRF checks.
+    """
+
+    @property
+    def post_data(self) -> dict[str, str]:
+        return self.request.POST.dict()
+
+    @property
+    def cookies(self) -> dict[str, str]:
+        return {}
+
+
+def _to_json(response: CrossWebResponse) -> HttpResponse:
+    """Send core's response as it is: JSON errors stay JSON, and no cookie is set."""
+    result = HttpResponse(response.body or b"", status=response.status_code)
+    for name, value in (response.headers or {}).items():
+        result[name] = value
+    return result
 
 
 def _to_django(request: HttpRequest, response: CrossWebResponse) -> HttpResponse:
@@ -428,6 +630,58 @@ def link(request: HttpRequest, provider: str) -> HttpResponse:
     if user is not None:
         bridge.send(signals.authorization_started, flow="link")
     return _to_django(request, response)
+
+
+@_auth_view("GET")
+def authorize(request: HttpRequest, provider: str) -> HttpResponse:
+    """Start a sign-in with ``provider`` for one of your OAuth clients.
+
+    The client sends the user's browser here with ``client_id``,
+    ``redirect_uri``, ``response_type=code``, a PKCE ``code_challenge`` with
+    ``code_challenge_method=S256`` and, optionally, ``state`` and
+    ``login_hint``. The sign-in ends at ``redirect_uri`` with a one-time
+    ``code`` for the token view, or with an ``error``.
+    """
+    _require_oauth_server()
+    oauth_provider = _provider(provider)
+    bridge = _Signals(request, oauth_provider)
+    response = start_token_flow(
+        oauth_provider, HTTPRequest.from_django(request), _context(request, bridge)
+    )
+    return _to_django(request, response)
+
+
+@csrf_exempt
+@_auth_view("POST")
+def token(request: HttpRequest) -> HttpResponse:
+    """Exchange the code a sign-in ended with for a bearer token.
+
+    The client posts a form with ``grant_type=authorization_code``, ``code``,
+    ``client_id``, ``redirect_uri`` and the PKCE ``code_verifier``.
+    """
+    _require_oauth_server()
+    response = Issuer().token(
+        HTTPRequest(_ClientRequestAdapter(request)),
+        _context(request, _TokenSignals(request)),
+    )
+    return _to_json(response)
+
+
+@csrf_exempt
+@_auth_view("POST")
+def logout(request: HttpRequest) -> HttpResponse:
+    """Revoke the bearer token in the request's ``Authorization`` header.
+
+    A JSON body of ``{"scope": "all"}`` revokes every bearer token of the
+    token's user. Answers 204, also without a token to revoke. It does not
+    end a browser's Django session: use Django's ``logout`` for that.
+    """
+    _require_oauth_server()
+    response = revoke_bearer_session(
+        HTTPRequest(_ClientRequestAdapter(request)),
+        _context(request, _LogoutSignals(request)),
+    )
+    return _to_json(response)
 
 
 @_auth_view("GET")

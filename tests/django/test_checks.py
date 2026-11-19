@@ -143,6 +143,94 @@ def test_session_activity_interval_defaults_to_five_minutes() -> None:
         assert get_settings().session_activity_interval == timedelta(days=365)
 
 
+GET_CLIENT = "tests.django.clients.get_client"
+
+
+def test_the_oauth_server_is_off_by_default() -> None:
+    from cross_auth.django.conf import get_settings
+
+    assert get_settings().oauth_server is None
+
+
+def test_oauth_server_defaults() -> None:
+    from cross_auth.django.conf import get_settings
+
+    from .clients import get_client
+
+    with override_settings(CROSS_AUTH={"OAUTH_SERVER": {"get_client": GET_CLIENT}}):
+        assert check_settings() == []
+        oauth_server = get_settings().oauth_server
+
+    assert oauth_server is not None
+    assert oauth_server.get_client is get_client
+    # A day, and not extended by use: core's defaults.
+    assert oauth_server.token_max_age == 86400
+    assert oauth_server.token_update_age is None
+
+
+@pytest.mark.parametrize(
+    ("options", "ages"),
+    [
+        ({"token_max_age": 1}, (1, None)),
+        ({"token_max_age": 2592000, "token_update_age": 0}, (2592000, 0)),
+        ({"token_update_age": 3600}, (86400, 3600)),
+        ({"token_update_age": None}, (86400, None)),
+    ],
+)
+def test_oauth_server_token_ages(
+    options: dict[str, object], ages: tuple[int, int | None]
+) -> None:
+    from cross_auth.django.conf import get_settings
+
+    value = {"OAUTH_SERVER": {"get_client": GET_CLIENT, **options}}
+    with override_settings(CROSS_AUTH=value):
+        oauth_server = get_settings().oauth_server
+
+    assert oauth_server is not None
+    assert (oauth_server.token_max_age, oauth_server.token_update_age) == ages
+
+
+def test_the_oauth_server_needs_time_zone_support() -> None:
+    value = {"OAUTH_SERVER": {"get_client": GET_CLIENT}}
+    with override_settings(CROSS_AUTH=value, USE_TZ=False):
+        errors = check_settings()
+    with override_settings(CROSS_AUTH={}, USE_TZ=False):
+        without = check_settings()
+
+    assert [error.id for error in errors] == ["cross_auth.E001"]
+    assert errors[0].msg == "CROSS_AUTH['OAUTH_SERVER'] needs USE_TZ = True"
+    assert without == []
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        (GET_CLIENT, "['OAUTH_SERVER'] must be a dict"),
+        ({}, "['get_client'] must be the dotted path of a function"),
+        ({"get_client": print}, "['get_client'] must be the dotted path"),
+        ({"get_client": "tests.django.missing.get_client"}, "No module named"),
+        ({"get_client": "tests.django.clients.SPA_REDIRECT"}, "is not callable"),
+        (
+            {"get_client": GET_CLIENT, "password_grant": True},
+            "Unsupported CROSS_AUTH['OAUTH_SERVER'] key(s): password_grant",
+        ),
+        ({"get_client": GET_CLIENT, "token_max_age": 0}, "an int from 1 to"),
+        ({"get_client": GET_CLIENT, "token_max_age": None}, "an int from 1 to"),
+        ({"get_client": GET_CLIENT, "token_max_age": True}, "['token_max_age']"),
+        ({"get_client": GET_CLIENT, "token_max_age": 3600.0}, "['token_max_age']"),
+        ({"get_client": GET_CLIENT, "token_max_age": 10**10}, "['token_max_age']"),
+        ({"get_client": GET_CLIENT, "token_update_age": -1}, "an int from 0 to"),
+        ({"get_client": GET_CLIENT, "token_update_age": "1"}, "or None"),
+    ],
+)
+def test_invalid_oauth_server_settings_are_errors(value: object, message: str) -> None:
+    with override_settings(CROSS_AUTH={"OAUTH_SERVER": value}):
+        errors = check_settings()
+
+    assert [error.id for error in errors] == ["cross_auth.E001"]
+    assert message in errors[0].msg
+
+
 DJANGO_SESSION_MIDDLEWARE = "django.contrib.sessions.middleware.SessionMiddleware"
 SESSION_MIDDLEWARE = "cross_auth.django.sessions.SessionMiddleware"
 

@@ -9,27 +9,38 @@ alias, writes join it and ``on_commit`` waits for its outermost commit.
 
 from __future__ import annotations
 
+import logging
+import uuid
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from django.contrib.auth import get_user_model
+from django.contrib.sessions.backends.base import VALID_KEY_CHARS
 from django.core.exceptions import ImproperlyConfigured, ValidationError
-from django.db import IntegrityError, router, transaction
-from django.db.models import F, Q
+from django.db import DatabaseError, IntegrityError, router, transaction
+from django.db.models import Case, F, Q, Value, When
 from django.utils import timezone
+from django.utils.crypto import get_random_string
 
 from cross_auth._storage import (
     CommitCallback,
     DisconnectResult,
+    SessionListOrder,
+    SessionStatus,
     SocialAccountCreate,
     UserCreate,
+    session_status,
 )
 from cross_auth._storage import User as CrossAuthUser
-from cross_auth.exceptions import CrossAuthException
+from cross_auth.exceptions import CrossAuthException, InvalidCursorError
+from cross_auth.storage._cursor import decode_cursor, encode_cursor
 
 from .conf import get_settings
-from .models import ExpiringValue, SocialAccount
+from .models import ExpiringValue, Session, SocialAccount
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from django.contrib.auth.base_user import AbstractBaseUser
@@ -423,4 +434,354 @@ class DjangoSecondaryStorage:
     def clear_expired(self) -> int:
         """Delete expired values; call from scheduled maintenance, not requests."""
         deleted, _ = self._values().filter(expires_at__lte=timezone.now()).delete()
+        return deleted
+
+
+@dataclass(frozen=True)
+class DjangoSessionRecord:
+    """A bearer token's session, as Cross Auth's ``SessionRecord`` reads it.
+
+    ``id`` is the row's ``public_id``, which is safe to show and to send
+    back; the row's session key and token hash are not part of the record.
+    ``native`` is the row itself, as it was when the record was read.
+    """
+
+    native: Session
+
+    @property
+    def id(self) -> uuid.UUID:
+        return self.native.public_id
+
+    @property
+    def user_id(self) -> Any:
+        return self.native.user_id
+
+    @property
+    def created_at(self) -> datetime:
+        return self.native.created_at
+
+    @property
+    def updated_at(self) -> datetime:
+        return self.native.updated_at
+
+    @property
+    def expires_at(self) -> datetime:
+        return self.native.expire_date
+
+    @property
+    def last_active_at(self) -> datetime | None:
+        return self.native.last_activity
+
+    @property
+    def revoked_at(self) -> datetime | None:
+        return self.native.revoked_at
+
+    @property
+    def client_id(self) -> str | None:
+        return self.native.client_id
+
+    @property
+    def client_name(self) -> str | None:
+        return self.native.client_name
+
+    @property
+    def user_agent(self) -> str | None:
+        return self.native.user_agent
+
+    @property
+    def ip(self) -> str | None:
+        return self.native.ip
+
+    @property
+    def login_method(self) -> str | None:
+        return self.native.login_method
+
+    @property
+    def status(self) -> SessionStatus:
+        return session_status(self)
+
+
+@dataclass(frozen=True)
+class DjangoSessionList:
+    records: list[DjangoSessionRecord]
+    next_cursor: str | None
+
+
+# order_by -> (model field, descending?)
+_SESSION_ORDER: dict[SessionListOrder, tuple[str, bool]] = {
+    "updated_at_desc": ("updated_at", True),
+    "updated_at_asc": ("updated_at", False),
+    "created_at_desc": ("created_at", True),
+    "created_at_asc": ("created_at", False),
+    "expires_at_desc": ("expire_date", True),
+    "expires_at_asc": ("expire_date", False),
+}
+
+
+def _public_id(session_id: object) -> uuid.UUID | None:
+    if isinstance(session_id, uuid.UUID):
+        return session_id
+    try:
+        return uuid.UUID(str(session_id))
+    except ValueError:
+        return None
+
+
+class DjangoSessionStorage:
+    """Implements ``cross_auth.SessionStorage`` for the sessions of bearer tokens.
+
+    They are rows of ``cross_auth.django.models.Session`` with a
+    ``token_hash``. Browser sessions share the table, but this storage never
+    reads or changes them: Django's session store owns those. A session is
+    named by its ``public_id``.
+
+    A revoked session keeps its row, with ``revoked_at`` set, until it would
+    have expired. ``clearsessions`` then deletes it if ``SESSION_ENGINE`` is
+    ``cross_auth.django.sessions``; with another engine, call
+    ``clear_expired`` from scheduled maintenance.
+    """
+
+    def __init__(self) -> None:
+        self.alias = router.db_for_write(Session)
+        self._user_pk = get_user_model()._meta.pk
+
+    def _sessions(self) -> QuerySet[Session]:
+        # Read from the database that writes them: a replica could still show
+        # a session that was just revoked.
+        return Session.objects.using(self.alias).filter(token_hash__isnull=False)
+
+    def _user_sessions(self, user_id: object) -> QuerySet[Session]:
+        try:
+            user_pk = self._user_pk.to_python(user_id)
+        except ValidationError:
+            return self._sessions().none()
+
+        return self._sessions().filter(user_id=user_pk)
+
+    def _one(self, session_id: object) -> QuerySet[Session]:
+        public_id = _public_id(session_id)
+        if public_id is None:
+            return self._sessions().none()
+
+        return self._sessions().filter(public_id=public_id)
+
+    def on_commit(self, callback: CommitCallback) -> None:
+        transaction.on_commit(callback, using=self.alias, robust=False)
+
+    def create(
+        self,
+        *,
+        token_hash: str,
+        user_id: object,
+        created_at: datetime,
+        updated_at: datetime,
+        expires_at: datetime,
+        client_id: str | None = None,
+        client_name: str | None = None,
+        user_agent: str | None = None,
+        ip: str | None = None,
+        last_active_at: datetime | None = None,
+        login_method: str | None = None,
+    ) -> DjangoSessionRecord:
+        store = Session.get_session_store_class()()
+        session = Session(
+            # Django requires both. The key is random and given to nobody,
+            # and the data is an empty session, as a session store reads it.
+            session_key=get_random_string(32, VALID_KEY_CHARS),
+            session_data=store.encode({}),
+            expire_date=expires_at,
+            user_id=self._user_pk.to_python(user_id),
+            token_hash=token_hash,
+            created_at=created_at,
+            updated_at=updated_at,
+            last_activity=last_active_at or created_at,
+            client_id=client_id,
+            client_name=client_name,
+            user_agent=user_agent,
+            ip=ip,
+            login_method=login_method,
+        )
+        session.save(force_insert=True, using=self.alias)
+
+        return DjangoSessionRecord(session)
+
+    def get(self, *, token_hash: str, now: datetime) -> DjangoSessionRecord | None:
+        session = (
+            self._sessions()
+            # A session is active up to and including its expiry instant,
+            # like cross_auth.session_status.
+            .filter(
+                token_hash=token_hash, revoked_at__isnull=True, expire_date__gte=now
+            )
+            .first()
+        )
+
+        return None if session is None else DjangoSessionRecord(session)
+
+    def get_any(self, session_id: object) -> DjangoSessionRecord | None:
+        session = self._one(session_id).first()
+
+        return None if session is None else DjangoSessionRecord(session)
+
+    def list_for_user(
+        self,
+        user_id: object,
+        *,
+        now: datetime,
+        status: SessionStatus | None = None,
+        order_by: SessionListOrder = "updated_at_desc",
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> DjangoSessionList:
+        if limit < 1:
+            raise ValueError("limit must be >= 1")
+        try:
+            field, descending = _SESSION_ORDER[order_by]
+        except KeyError:
+            raise ValueError(f"Unsupported order_by: {order_by!r}") from None
+
+        sessions = self._user_sessions(user_id)
+        if status == "revoked":
+            sessions = sessions.filter(revoked_at__isnull=False)
+        elif status == "active":
+            sessions = sessions.filter(revoked_at__isnull=True, expire_date__gte=now)
+        elif status == "expired":
+            sessions = sessions.filter(revoked_at__isnull=True, expire_date__lt=now)
+
+        if cursor is not None:
+            decoded = decode_cursor(cursor)
+            if decoded.order_by != order_by:
+                raise InvalidCursorError(
+                    f"Cursor was created with order_by={decoded.order_by!r}, "
+                    f"not {order_by!r}"
+                )
+            if not isinstance(decoded.row_id, uuid.UUID):
+                raise InvalidCursorError("Invalid session pagination cursor")
+            beyond = "lt" if descending else "gt"
+            sessions = sessions.filter(
+                Q(**{f"{field}__{beyond}": decoded.value})
+                | Q(**{field: decoded.value, f"public_id__{beyond}": decoded.row_id})
+            )
+
+        prefix = "-" if descending else ""
+        rows = list(
+            sessions.order_by(f"{prefix}{field}", f"{prefix}public_id")[: limit + 1]
+        )
+        records = [DjangoSessionRecord(session) for session in rows[:limit]]
+        next_cursor = None
+        if len(rows) > limit:
+            last = rows[limit - 1]
+            next_cursor = encode_cursor(order_by, getattr(last, field), last.public_id)
+
+        return DjangoSessionList(records=records, next_cursor=next_cursor)
+
+    def refresh(
+        self,
+        session_id: object,
+        *,
+        updated_at: datetime,
+        expires_at: datetime,
+        last_active_at: datetime | None = None,
+    ) -> DjangoSessionRecord | None:
+        active = self._one(session_id).filter(
+            revoked_at__isnull=True, expire_date__gte=updated_at
+        )
+        values: dict[str, object] = {
+            "updated_at": updated_at,
+            "expire_date": expires_at,
+        }
+        if last_active_at is not None:
+            # Keep a later use that another request recorded meanwhile.
+            values["last_activity"] = Case(
+                When(last_activity__lt=last_active_at, then=Value(last_active_at)),
+                default=F("last_activity"),
+            )
+
+        with transaction.atomic(using=self.alias):
+            # Only move forward: a request that read the session before a
+            # newer refresh committed must not roll its expiry back.
+            if active.filter(updated_at__lt=updated_at).update(**values):
+                session = self._one(session_id).first()
+            else:
+                # Either the session stopped being active, or a newer refresh
+                # already moved it past updated_at; return it in the latter
+                # case.
+                session = active.filter(updated_at__gte=updated_at).first()
+
+        return None if session is None else DjangoSessionRecord(session)
+
+    def record_activity(
+        self,
+        session_id: object,
+        *,
+        last_active_at: datetime,
+        since: datetime,
+    ) -> DjangoSessionRecord | None:
+        """Record a use of the session; this makes the storage a ``SessionActivityStorage``.
+
+        Best-effort: a database error is logged and answers ``None``, so a
+        failed write does not fail the request using the session.
+        """
+        try:
+            with transaction.atomic(using=self.alias):
+                # Once per interval: when concurrent requests use the session,
+                # the first to commit records the use.
+                recorded = (
+                    self._one(session_id)
+                    .filter(
+                        revoked_at__isnull=True,
+                        expire_date__gte=last_active_at,
+                        last_activity__lte=since,
+                    )
+                    .update(last_activity=last_active_at)
+                )
+                session = self._one(session_id).first() if recorded else None
+        except DatabaseError:
+            logger.warning("Could not record a session's activity", exc_info=True)
+            return None
+
+        return None if session is None else DjangoSessionRecord(session)
+
+    def revoke(self, session_id: object, *, revoked_at: datetime) -> bool:
+        return (
+            self._one(session_id)
+            # Don't shift the time of an already revoked session, and leave
+            # an expired one expired.
+            .filter(revoked_at__isnull=True, expire_date__gte=revoked_at)
+            .update(revoked_at=revoked_at)
+            > 0
+        )
+
+    def revoke_all_for_user(
+        self,
+        user_id: object,
+        *,
+        revoked_at: datetime,
+        except_session_id: object | None = None,
+    ) -> int:
+        """Revoke the user's active bearer tokens.
+
+        The user's browser sessions stay signed in: Django owns those. Use
+        ``revoke_other_sessions`` from ``cross_auth.django.sessions`` to sign
+        out both kinds.
+        """
+        sessions = self._user_sessions(user_id).filter(
+            revoked_at__isnull=True, expire_date__gte=revoked_at
+        )
+        if except_session_id is not None:
+            kept = _public_id(except_session_id)
+            # An id that can't match any row excludes nothing.
+            if kept is not None:
+                sessions = sessions.exclude(public_id=kept)
+
+        return sessions.update(revoked_at=revoked_at)
+
+    def clear_expired(self) -> int:
+        """Delete expired sessions, revoked ones among them.
+
+        ``clearsessions`` already does this when ``SESSION_ENGINE`` is
+        ``cross_auth.django.sessions``. With another engine, call it from
+        scheduled maintenance, not requests.
+        """
+        deleted, _ = self._sessions().filter(expire_date__lt=timezone.now()).delete()
         return deleted

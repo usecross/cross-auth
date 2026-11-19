@@ -11,6 +11,13 @@ Cross Auth sign-in) and from the request (user agent and IP), so a user's
 sessions can be listed and revoked with ``list_sessions``,
 ``revoke_session`` and ``revoke_other_sessions``. Only the ``db`` engine is
 provided; there is no cache or ``cached_db`` variant.
+
+The same table holds the sessions of the bearer tokens that the OAuth server
+issues (``CROSS_AUTH["OAUTH_SERVER"]``). The helpers above list and revoke
+them with the browser sessions. This store never loads, changes or deletes
+one by its session key, so a token's row cannot serve as a session cookie.
+``clear_expired``, and so ``clearsessions``, deletes expired rows of both
+kinds.
 """
 
 from __future__ import annotations
@@ -142,6 +149,7 @@ class SessionStore(_DatabaseSessionStore):
             ),
             created_at=now,
             last_activity=now,
+            updated_at=now,
         )
         if self._client is not None:
             session.user_agent = self._client.user_agent
@@ -245,6 +253,7 @@ class SessionStore(_DatabaseSessionStore):
             "user_id": session.user_id,
             "login_method": session.login_method,
             "last_activity": session.last_activity,
+            "updated_at": session.updated_at,
         }
 
         if session.session_key != key:
@@ -256,9 +265,19 @@ class SessionStore(_DatabaseSessionStore):
         if self._login_pending:
             columns.update(public_id=session.public_id, created_at=session.created_at)
 
-        rows = self.model.objects.using(using).filter(session_key=key)
+        return (
+            self._browser_sessions(using).filter(session_key=key).update(**columns) > 0
+        )
 
-        return rows.update(**columns) > 0
+    def _browser_sessions(self, using: str) -> QuerySet[Session]:
+        """The rows this store may load, change and delete.
+
+        A bearer token's session lives in the same table under a random
+        session key. That key is given to nobody, and leaving those rows out
+        here too means the store could not use one even if it were sent as a
+        session cookie.
+        """
+        return self.model.objects.using(using).filter(token_hash__isnull=True)
 
     def _saved(self, session: Session) -> None:
         self._row = _Row.of(session)
@@ -269,7 +288,7 @@ class SessionStore(_DatabaseSessionStore):
 
     def _get_session_from_db(self) -> Session | None:
         session = (
-            self.model.objects.using(self.alias)
+            self._browser_sessions(self.alias)
             .filter(session_key=self.session_key, expire_date__gt=timezone.now())
             .first()
         )
@@ -295,7 +314,7 @@ class SessionStore(_DatabaseSessionStore):
     def delete(self, session_key: str | None = None) -> None:
         key = session_key if session_key is not None else self.session_key
         if key is not None:
-            self.model.objects.using(self.alias).filter(session_key=key).delete()
+            self._browser_sessions(self.alias).filter(session_key=key).delete()
 
     async def adelete(self, session_key: str | None = None) -> None:
         await sync_to_async(self.delete)(session_key)
@@ -332,7 +351,7 @@ class SessionStore(_DatabaseSessionStore):
         conf = get_settings()
         now = timezone.now()
         since = now - conf.session_activity_interval
-        rows = self.model.objects.using(self.alias).filter(session_key=row.session_key)
+        rows = self._browser_sessions(self.alias).filter(session_key=row.session_key)
         if row.last_activity > since:
             if row.ip is not None and not conf.session_store_ip:
                 if self._update(rows, ip=None):

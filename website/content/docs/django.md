@@ -637,6 +637,12 @@ Each time Django saves a session, Cross Auth fills these columns of
 
 Logging out, `clearsessions` and deleting a user delete their rows.
 
+The table has five more columns. `updated_at` is when the session's expiry was
+last set, which for a browser session is each time Django saves it.
+`token_hash`, `client_id`, `client_name` and `revoked_at` are empty for a
+browser session: they belong to the bearer tokens of the
+[OAuth server](#sign-in-for-spa-and-native-clients).
+
 ### List and revoke sessions
 
 `cross_auth.django.sessions` has three helpers for the signed-in user's
@@ -645,10 +651,11 @@ sessions and know which one is current:
 
 - `list_sessions(request)` returns the user's sessions, newest first, as
   `SessionInfo` objects with `id`, `login_method`, `user_agent`, `ip`,
-  `created_at`, `last_activity`, `expires_at` and `is_current`. Expired sessions
-  are left out, and so are sessions that Django would log out: those that a
-  password change ended, or whose authentication backend is no longer in
-  `AUTHENTICATION_BACKENDS`. Anonymous requests get an empty list.
+  `created_at`, `last_activity`, `expires_at`, `is_current`, `client_id` and
+  `client_name`. Expired sessions are left out, and so are sessions that Django
+  would log out: those that a password change ended, or whose authentication
+  backend is no longer in `AUTHENTICATION_BACKENDS`. Anonymous requests get an
+  empty list.
 - `revoke_session(request, session_id)` signs out the active session whose `id`
   is `session_id` and returns whether it found one. Another user's session, an
   expired one, or one that `list_sessions` leaves out because Django already
@@ -661,6 +668,12 @@ sessions and know which one is current:
 Both send the
 [`before_session_revoke` and `session_revoked`](#signals-reference) signals, so
 a receiver can refuse a revocation or record it.
+
+With the [OAuth server](#sign-in-for-spa-and-native-clients), the three helpers
+also cover the user's bearer tokens. Each token is listed as a session whose
+`client_id` is the client it was issued to; a browser session has none. Revoking
+one stops the token, and `revoke_other_sessions` stops all of them with the
+other browser sessions.
 
 For example, a page that lists the sessions with a button to sign out each one,
 and one to sign out everywhere else:
@@ -784,6 +797,237 @@ client's address on. There are two right fixes:
   the `cross_auth.django.sessions` logger records a warning and the response is
   sent as usual.
 
+## Sign-in for SPA and native clients
+
+A single-page app on another origin, or an iOS, macOS or Android app, cannot use
+Django's session cookie. Cross Auth's OAuth server gives such a client a bearer
+token instead. The user signs in with Google in a browser, and the client's own
+code receives a token that it sends with each API request.
+
+It is off until you set `CROSS_AUTH["OAUTH_SERVER"]`:
+
+```python
+CROSS_AUTH = {
+    "PROVIDERS": [...],
+    "OAUTH_SERVER": {
+        "get_client": "core.clients.get_client",
+        # Both optional. By default a token lasts a day, however much it is used.
+        "token_max_age": 30 * 24 * 60 * 60,
+        "token_update_age": 24 * 60 * 60,
+    },
+}
+```
+
+It needs `USE_TZ = True`, Django's default, and one more migration: run
+`migrate` after you upgrade.
+
+### Register your clients
+
+`get_client` is the dotted path of a function that takes a client ID and returns
+that client, or `None` for an unknown ID. A client is a
+`cross_auth.OAuthClient`: its ID, and the exact addresses its sign-ins may end
+at.
+
+```python
+# core/clients.py
+from cross_auth import OAuthClient
+
+CLIENTS = {
+    "web": OAuthClient(
+        client_id="web",
+        redirect_uris=("https://app.example.com/callback",),
+    ),
+    "ios": OAuthClient(
+        client_id="ios",
+        redirect_uris=("com.example.app:/callback",),
+        application_type="native",
+    ),
+}
+
+
+def get_client(client_id):
+    return CLIENTS.get(client_id)
+```
+
+Cross Auth calls it at every step of a sign-in, so it can read clients from your
+database, and removing a client stops the sign-ins it has under way.
+[Register clients](/docs/oauth#register-clients) describes which redirect URIs a
+web and a native client may use.
+
+### The sign-in
+
+The URLs you included in [Step 6](#step-6-add-the-urls) now have three more
+views:
+
+| View      | Address                         | Called by                                    |
+| --------- | ------------------------------- | -------------------------------------------- |
+| authorize | `GET auth/<provider>/authorize` | The user's browser, sent there by the client |
+| token     | `POST auth/token`               | The client's own code                        |
+| logout    | `POST auth/logout`              | The client's own code                        |
+
+None of the three has a trailing slash. A sign-in takes four steps:
+
+1. **The client opens the authorize view** in the user's browser. A native app
+   uses the system's sign-in browser for this, such as
+   `ASWebAuthenticationSession`. The address carries the client's ID, one of its
+   redirect URIs, a PKCE challenge and, optionally, a `state` value and a
+   `login_hint`:
+
+   ```text
+   https://example.com/auth/google/authorize
+     ?client_id=web
+     &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback
+     &response_type=code
+     &code_challenge=<the SHA-256 of the client's code verifier, base64url>
+     &code_challenge_method=S256
+     &state=<a random value the client checks when the sign-in returns>
+   ```
+
+2. **The user signs in with Google.** Cross Auth finds or creates the Django
+   user as it does for a browser sign-in, then sends the browser to the redirect
+   URI with a `code` and the client's `state`. A sign-in that fails arrives
+   there too, with `error` and `error_description` in place of the code. Only a
+   request whose client or redirect URI is not registered shows the error page
+   instead, because nothing is sent to an address you did not register.
+
+3. **The client posts the code to the token view** as a form, with the code
+   verifier it kept:
+
+   ```text
+   POST /auth/token
+   Content-Type: application/x-www-form-urlencoded
+
+   grant_type=authorization_code&code=<code>&client_id=web
+     &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback
+     &code_verifier=<verifier>
+   ```
+
+   The answer is JSON:
+
+   ```json
+   {
+     "access_token": "<token>",
+     "token_type": "Bearer",
+     "expires_in": 2592000,
+     "scope": ""
+   }
+   ```
+
+   A code works once, within ten minutes, and only with the client ID, redirect
+   URI and verifier of its sign-in. Errors are JSON with status 400, such as
+   `{"error": "invalid_grant", "error_description": "Authorization code not found"}`.
+
+4. **The client sends the token** with each request to your API, as
+   `Authorization: Bearer <token>`.
+
+To sign out, the client posts to the logout view with the same header. That
+revokes the token; a JSON body of `{"scope": "all"}` revokes every bearer token
+of the user. It answers 204, also when there was no token to revoke, and it does
+not end a browser's Django session.
+
+The sign-in is for the client, not for the browser that carried it: Django's
+`login()` is not called, no session cookie is set, and `request.user` on later
+requests from that browser is as it was.
+
+The token and logout views are called from other origins and from native apps,
+so they are exempt from CSRF checks. They read no cookie, so a browser's cookies
+cannot act through them. A single-page app on another origin also needs CORS
+headers on these two views and on your API, for example from
+[django-cors-headers](https://github.com/adamchainz/django-cors-headers).
+
+### Authenticate API requests
+
+`authenticate_bearer` reads the request's `Authorization` header and returns the
+token's user and session, or `None`:
+
+```python
+# core/api.py
+from django.http import JsonResponse
+
+from cross_auth.django.tokens import authenticate_bearer
+
+
+def profile(request):
+    authenticated = authenticate_bearer(request)
+    if authenticated is None:
+        return JsonResponse({"error": "invalid_token"}, status=401)
+
+    return JsonResponse(
+        {
+            "email": authenticated.user.email,
+            "client": authenticated.session.client_id,
+        }
+    )
+```
+
+`authenticated.user` is an instance of your user model. `authenticated.session`
+describes the token's session: its `id`, the `client_id` it was issued to,
+`login_method`, `user_agent`, `ip`, `created_at`, `expires_at` and
+`last_active_at`. It returns `None` without a bearer token, for a token that is
+unknown, expired or revoked, and for a user who is no longer active. It does not
+set `request.user`. With Django REST framework or Django Ninja, call it from an
+authentication class.
+
+### How long a token lasts
+
+- **`token_max_age`** is a new token's lifetime in seconds. The default is
+  `86400`, a day.
+- **`token_update_age`** decides whether use extends a token. With `None`, the
+  default, a token ends `token_max_age` after it was issued and the user signs
+  in again. With a number of seconds, a request that uses the token after that
+  long extends it by `token_max_age` again. With the values in the example
+  above, a client that is used at least once every 30 days stays signed in, and
+  each token is extended at most once a day.
+
+There are no refresh tokens. A token's `last_activity` follows its use at most
+once per [`SESSION_ACTIVITY_INTERVAL`](#settings-reference).
+
+### Where tokens are kept
+
+A token's session is a row of `cross_auth.django.models.Session`, the table of
+Cross Auth's [session engine](#sessions). The token itself is not stored, only
+its SHA-256 hash in `token_hash`. The row also has the `user`, the `client_id`,
+the `login_method`, the `user_agent` and `ip` of the request to the token view,
+and `created_at`, `updated_at`, `last_activity` and `revoked_at`.
+
+- **Your session engine can stay as it is.** The OAuth server works with
+  Django's `db` and `cached_db` engines too. With Cross Auth's engine, the
+  [session helpers](#list-and-revoke-sessions) list and revoke the user's tokens
+  with their browser sessions, and `clearsessions` deletes expired tokens. With
+  another engine, call `DjangoSessionStorage().clear_expired()`, from
+  `cross_auth.django.storage`, in a scheduled job.
+- **A token is never a session cookie.** Its row has a random session key that
+  is given to nobody, and Cross Auth's engine does not load, change or delete a
+  token's row.
+- **A revoked token keeps its row** until it would have expired, with
+  `revoked_at` set. A revoked browser session is deleted, as before.
+- **A password change does not end tokens.** Django ends a user's other browser
+  sessions through a hash that tokens do not have. Call `revoke_other_sessions`
+  after a password change to end them too.
+- **Inactive users** are refused when Google sends them back, when the client
+  exchanges its code, and each time a token is used. Their tokens are not
+  revoked, so they work again if the user becomes active again.
+
+### Run code around a client's sign-in
+
+The [signals](#signals-reference) of a browser sign-in are sent here too, with
+`"authorize"` as their `flow`. Two things differ:
+
+- **`before_login` and `after_login` are sent by the token view,** when the
+  client exchanges its code, not by the callback. A receiver that keeps an allow
+  list therefore covers both kinds of sign-in.
+- **A refusal there is JSON.** When a `before_login` or `before_session_revoke`
+  receiver raises `PermissionDenied` in the token or logout view, the client
+  gets `access_denied` with the exception's message as `error_description`, in
+  place of Django's 403 page.
+
+### Not in the Django integration yet
+
+The [FastAPI integration's OAuth server](/docs/oauth) can also connect another
+provider from a signed-in client, list and revoke sessions over JSON, and mint
+tokens with your own issuer. The Django integration does not have these yet. The
+deprecated password grant is not offered.
+
 ## Signals reference
 
 `cross_auth.django.signals` defines the signals below. Their sender is your user
@@ -799,24 +1043,24 @@ instances: your user model, or `cross_auth.django.models.SocialAccount` (the
 Google connection, with `user_id`, `provider_user_id`, `provider_email`,
 `provider_email_verified` and `is_login_method`). Use `.pk` on them.
 
-| Signal                             | Sent                                                                                                                                                          | Arguments                                                                                                                   |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `before_authorization`             | By the login and link views, before they store anything and redirect to Google.                                                                               | `flow` (`"login"` or `"link"`), `user_id` (the signed-in user's for `"link"`, `None` for `"login"`)                         |
-| `authorization_started`            | After the view stored the sign-in attempt, just before the redirect.                                                                                          | `flow`; for `"link"`, `request.user` is the user linking                                                                    |
-| `before_callback`                  | When Google's callback is verified (state, browser, PKCE code exchange, ID token signature and nonce), before any user or connection is looked up or written. | `flow`, `provider_user_id`, `email` and `email_verified` as Google reported them, `user_id` (as for `before_authorization`) |
-| `before_user_create`               | Before a first sign-in creates a user. Nothing is written yet.                                                                                                | `email` (normalized), `email_verified`                                                                                      |
-| `user_created`                     | After the user, the rows your `CREATE_USER` factory wrote and the Google connection are committed.                                                            | `user`                                                                                                                      |
-| `before_social_account_create`     | Before a Google account is connected to a user: at sign-up, inside its transaction, or by a link.                                                             | `user_id`, `provider_user_id`, `email`, `email_verified`, `is_login_method`                                                 |
-| `social_account_created`           | After the new connection is committed.                                                                                                                        | `social_account`                                                                                                            |
-| `before_social_account_update`     | Before a connection is refreshed with Google's latest email: on every later sign-in, and when a link reconnects it.                                           | `social_account_id`, `user_id`, `provider_user_id`, the new `email` and `email_verified`, the stored `is_login_method`      |
-| `social_account_updated`           | After the refresh is committed.                                                                                                                               | `social_account`                                                                                                            |
-| `social_account_linked`            | After a link's connection is committed, following `social_account_created` or `social_account_updated`. Never sent by sign-ins.                               | `social_account`                                                                                                            |
-| `before_login`                     | Before Django's `login()`, once the user is known.                                                                                                            | `user_id`, `email` (the user's, or `None`)                                                                                  |
-| `after_login`                      | After `login()` and after the session is saved to the database.                                                                                               | `user`                                                                                                                      |
-| `before_social_account_disconnect` | Before the disconnect view removes one of the signed-in user's connections.                                                                                   | `social_account_id`, `user_id`, `provider_user_id`                                                                          |
-| `social_account_disconnected`      | After the removal is committed. Not sent when the connection was the user's last way to sign in and stayed.                                                   | `social_account`, the removed row; its `pk` and `user_id` still name it                                                     |
-| `before_session_revoke`            | Before `revoke_session` or `revoke_other_sessions` signs out sessions. `revoke_session` sends it only for an active session of the signed-in user.            | `user_id`, `scope` (`"one"` or `"others"`), `session_id` (the `id` for `"one"`, `None` for `"others"`)                      |
-| `session_revoked`                  | After sessions were signed out and the deletion is committed. Not sent when none were.                                                                        | `user` (`request.user`), `scope`, `session_id`, `revoked_count`                                                             |
+| Signal                             | Sent                                                                                                                                                                  | Arguments                                                                                                                               |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `before_authorization`             | By the login, link and authorize views, before they store anything and redirect to Google. The authorize view sends it only for a registered client and redirect URI. | `flow` (`"login"`, `"link"` or `"authorize"`), `user_id` (the signed-in user's for `"link"`, `None` otherwise)                          |
+| `authorization_started`            | After the view stored the sign-in attempt, just before the redirect.                                                                                                  | `flow`; for `"link"`, `request.user` is the user linking                                                                                |
+| `before_callback`                  | When Google's callback is verified (state, browser, PKCE code exchange, ID token signature and nonce), before any user or connection is looked up or written.         | `flow`, `provider_user_id`, `email` and `email_verified` as Google reported them, `user_id` (as for `before_authorization`)             |
+| `before_user_create`               | Before a first sign-in creates a user. Nothing is written yet.                                                                                                        | `email` (normalized), `email_verified`                                                                                                  |
+| `user_created`                     | After the user, the rows your `CREATE_USER` factory wrote and the Google connection are committed.                                                                    | `user`                                                                                                                                  |
+| `before_social_account_create`     | Before a Google account is connected to a user: at sign-up, inside its transaction, or by a link.                                                                     | `user_id`, `provider_user_id`, `email`, `email_verified`, `is_login_method`                                                             |
+| `social_account_created`           | After the new connection is committed.                                                                                                                                | `social_account`                                                                                                                        |
+| `before_social_account_update`     | Before a connection is refreshed with Google's latest email: on every later sign-in, and when a link reconnects it.                                                   | `social_account_id`, `user_id`, `provider_user_id`, the new `email` and `email_verified`, the stored `is_login_method`                  |
+| `social_account_updated`           | After the refresh is committed.                                                                                                                                       | `social_account`                                                                                                                        |
+| `social_account_linked`            | After a link's connection is committed, following `social_account_created` or `social_account_updated`. Never sent by sign-ins.                                       | `social_account`                                                                                                                        |
+| `before_login`                     | Before Django's `login()`, once the user is known. For a client's sign-in, by the token view before it issues the token.                                              | `user_id`, `email` (the user's, or `None`)                                                                                              |
+| `after_login`                      | After `login()` and after the session is saved to the database. For a client's sign-in, after the token's session is stored.                                          | `user`                                                                                                                                  |
+| `before_social_account_disconnect` | Before the disconnect view removes one of the signed-in user's connections.                                                                                           | `social_account_id`, `user_id`, `provider_user_id`                                                                                      |
+| `social_account_disconnected`      | After the removal is committed. Not sent when the connection was the user's last way to sign in and stayed.                                                           | `social_account`, the removed row; its `pk` and `user_id` still name it                                                                 |
+| `before_session_revoke`            | Before `revoke_session` or `revoke_other_sessions` signs out sessions, and before the logout view revokes bearer tokens. Only for an active session of the user.      | `user_id`, `scope` (`"one"`, `"others"`, or `"all"` for a logout of every token), `session_id` (the `id` for `"one"`, `None` otherwise) |
+| `session_revoked`                  | After sessions were signed out and the change is committed. Not sent when none were.                                                                                  | `user` (`request.user`; the token's user from the logout view), `scope`, `session_id`, `revoked_count`                                  |
 
 The flows send them in this order:
 
@@ -827,6 +1071,8 @@ The flows send them in this order:
 | Connect Google        | `before_authorization`, `authorization_started`, `before_callback`, `before_social_account_create`, `social_account_created`, `social_account_linked`; for a connection the user already has, `before_social_account_update` and `social_account_updated` instead of the first two |
 | Disconnect            | `before_social_account_disconnect`, `social_account_disconnected`                                                                                                                                                                                                                  |
 | Revoke a session      | `before_session_revoke`, `session_revoked`; for the current session `user_logged_out` in between                                                                                                                                                                                   |
+| Client's sign-in      | As a first or later sign-in up to the account signals, sent by the authorize view and the callback; then `before_login` and `after_login` from the token view, without `user_logged_in`                                                                                            |
+| Client's logout       | `before_session_revoke`, then `session_revoked` if a token was revoked                                                                                                                                                                                                             |
 | Revoke other sessions | `before_session_revoke`, then `session_revoked` if any session was signed out                                                                                                                                                                                                      |
 
 `user_logged_in` is Django's own signal, sent by `login()`.
@@ -894,16 +1140,17 @@ def google_connected(sender, social_account, **kwargs):
 All settings live in the `CROSS_AUTH` dictionary. Django's `check` command
 reports invalid values.
 
-| Key                         | Default            | Meaning                                                                                                                                                            |
-| --------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `PROVIDERS`                 | `[]`               | Provider instances. Only `GoogleProvider` is supported.                                                                                                            |
-| `CREATE_USER`               | Django's manager   | Dotted path of the user factory for first sign-ins.                                                                                                                |
-| `PASSWORD_LOGIN`            | `True`             | Whether a usable Django password counts as a way to sign in when disconnecting.                                                                                    |
-| `REQUIRE_VERIFIED_EMAIL`    | `True`             | Refuse to create users when Google does not report the email as verified.                                                                                          |
-| `ACCOUNT_LINKING`           | `{}`               | `enabled`: attach a Google sign-in to the user with the same verified email. `allow_different_emails`: see Step 13.                                                |
-| `BASE_URL`                  | the request's host | Public origin, such as `https://example.com`, used to build the redirect URI.                                                                                      |
-| `SESSION_ACTIVITY_INTERVAL` | `300`              | Seconds between `last_activity` updates of a [session](#sessions) that nothing else saves, from `0` (every request that reads the session) to `31536000` (a year). |
-| `SESSION_STORE_IP`          | `True`             | Whether [sessions](#sessions) store the request's `REMOTE_ADDR`. When off, sessions store no IP and clear the one they have the next time they are saved or used.  |
+| Key                         | Default            | Meaning                                                                                                                                                                                                                                                                                                   |
+| --------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PROVIDERS`                 | `[]`               | Provider instances. Only `GoogleProvider` is supported.                                                                                                                                                                                                                                                   |
+| `CREATE_USER`               | Django's manager   | Dotted path of the user factory for first sign-ins.                                                                                                                                                                                                                                                       |
+| `PASSWORD_LOGIN`            | `True`             | Whether a usable Django password counts as a way to sign in when disconnecting.                                                                                                                                                                                                                           |
+| `REQUIRE_VERIFIED_EMAIL`    | `True`             | Refuse to create users when Google does not report the email as verified.                                                                                                                                                                                                                                 |
+| `ACCOUNT_LINKING`           | `{}`               | `enabled`: attach a Google sign-in to the user with the same verified email. `allow_different_emails`: see Step 13.                                                                                                                                                                                       |
+| `BASE_URL`                  | the request's host | Public origin, such as `https://example.com`, used to build the redirect URI.                                                                                                                                                                                                                             |
+| `SESSION_ACTIVITY_INTERVAL` | `300`              | Seconds between `last_activity` updates of a [session](#sessions) that nothing else saves, from `0` (every request that reads the session) to `31536000` (a year).                                                                                                                                        |
+| `SESSION_STORE_IP`          | `True`             | Whether [sessions](#sessions) store the request's `REMOTE_ADDR`. When off, sessions store no IP and clear the one they have the next time they are saved or used.                                                                                                                                         |
+| `OAUTH_SERVER`              | off                | [Sign-in for SPA and native clients](#sign-in-for-spa-and-native-clients). `get_client`: dotted path of the function that returns a client by its ID. `token_max_age`: a token's lifetime in seconds, `86400` by default. `token_update_age`: seconds after which use extends a token, `None` by default. |
 
 `ACCOUNT_LINKING["enabled"]` is off by default. Turning it on lets anyone who
 controls a Google account with a matching, verified email sign in to an existing
@@ -922,7 +1169,9 @@ and has to sign in and connect the provider instead.
   which is protected by the single-use state, the browser cookie, PKCE and the
   ID token's nonce instead. The `next` value must be a local path that Django's
   `url_has_allowed_host_and_scheme` accepts; anything else goes to
-  `LOGIN_REDIRECT_URL`.
+  `LOGIN_REDIRECT_URL`. The OAuth server's token and logout views are exempt
+  from CSRF checks and read no cookie; its authorize view is a GET that only
+  redirects to registered addresses.
 - **Sessions.** Cross Auth requires the `db` or `cached_db` session engine, or
   its own [session engine](#sessions), and saves the session before sending
   `after_login`. Existing session data is kept when an anonymous visitor signs
