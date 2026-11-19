@@ -147,7 +147,9 @@ the session was last used, to within five minutes by default (see
 show "Chrome on macOS" instead of the raw header:
 
 - `browser` is the browser or another client, such as `"curl"`, and `os` the
-  operating system. Either is `null` when the user agent doesn't name one.
+  operating system. Either is `null` when the user agent doesn't name one. Many
+  browsers, such as Arc, Brave and Dia, send Chrome's user agent, so they are
+  listed as `"Chrome"`.
 - `mobile` is `true` when the operating system is a phone or tablet one, such as
   iOS or Android. A user agent names the operating system, not the kind of
   device, so an Android TV counts as mobile, and an iPad that asks for desktop

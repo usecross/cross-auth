@@ -19,7 +19,8 @@ each session a `device`, and so does the Django integration's
 }
 ```
 
-- `browser` can also be another client, such as `"curl"`.
+- `browser` can also be another client, such as `"curl"`. Many browsers, such as
+  Arc, Brave and Dia, send Chrome's user agent, so they are listed as Chrome.
 - `mobile` is true when the operating system is a phone or tablet one, such as
   iOS or Android. User agents name the operating system, not the kind of device,
   so an Android TV counts as mobile, and an iPad that asks for desktop sites

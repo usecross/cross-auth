@@ -742,9 +742,10 @@ its `browser` (or another client, such as `"curl"`), its `os`, whether that
 operating system is a phone or tablet one (`mobile`), and its RFC 9110
 `products`. User agents name the operating system, not the kind of device, so an
 Android TV counts as mobile, and an iPad that asks for desktop sites sends a
-Mac's user agent and doesn't. `device` is `None` without a user agent, or when
-the user agent names no browser or operating system and lists no products. For
-staff tools, query the model directly; for example,
+Mac's user agent and doesn't. Many browsers, such as Arc, Brave and Dia, send
+Chrome's user agent, so they are listed as Chrome. `device` is `None` without a
+user agent, or when the user agent names no browser or operating system and
+lists no products. For staff tools, query the model directly; for example,
 `Session.objects.filter(user=user).delete()` signs a user out everywhere.
 
 ### Behind a proxy
