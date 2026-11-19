@@ -148,7 +148,12 @@ def test_list_describes_each_session_without_its_token(
         "client_id": "cli",
         "client_name": "Command line",
         "user_agent": "curl/8",
-        "device": {"browser": "curl", "os": None, "mobile": False},
+        "device": {
+            "browser": "curl",
+            "os": None,
+            "mobile": False,
+            "products": [{"name": "curl", "version": "8"}],
+        },
         "ip": "203.0.113.7",
         "login_method": "github",
         "created_at": _iso(record.created_at),

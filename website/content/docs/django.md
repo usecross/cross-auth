@@ -735,13 +735,15 @@ urlpatterns = [
 {% endblock %}
 ```
 
-`user_agent` is that cleaned header, not a description. `device` describes it:
-its `browser` (or another client, such as `"curl"`), its `os`, and whether it is
-`mobile`, a phone or a tablet, parsed with
-[`ua-parser`](https://pypi.org/project/ua-parser/). It is `None` when the user
-agent names neither a browser nor an operating system. For staff tools, query
-the model directly; for example, `Session.objects.filter(user=user).delete()`
-signs a user out everywhere.
+`user_agent` is that cleaned header, not a description. `device` describes it,
+as in
+[the JSON session routes](/docs/session-authentication#list-and-revoke-sessions):
+its `browser` (or another client, such as `"curl"`), its `os`, whether that
+operating system is a phone or tablet one (`mobile`), and its RFC 9110
+`products`. It is `None` without a user agent, or when the user agent names no
+browser or operating system and lists no products. For staff tools, query the
+model directly; for example, `Session.objects.filter(user=user).delete()` signs
+a user out everywhere.
 
 ### Behind a proxy
 

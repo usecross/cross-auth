@@ -1,6 +1,6 @@
 import pytest
 
-from cross_auth._user_agent import SessionDevice, describe_user_agent
+from cross_auth._user_agent import SessionDevice, SessionProduct, describe_user_agent
 
 CHROME_MAC = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -28,26 +28,81 @@ CHROME_ANDROID = (
     "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
 )
 FIREFOX_ANDROID = "Mozilla/5.0 (Android 14; Mobile; rv:132.0) Gecko/132.0 Firefox/132.0"
+WINDOWS_PHONE = (
+    "Mozilla/5.0 (Windows Phone 10.0; Android 6.0.1; Microsoft; Lumia 950) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/52.0.2743.116 Mobile "
+    "Safari/537.36 Edge/15.14977"
+)
 
 
 @pytest.mark.parametrize(
-    ("user_agent", "device"),
+    ("user_agent", "browser", "os", "mobile"),
     [
-        (CHROME_MAC, SessionDevice(browser="Chrome", os="macOS", mobile=False)),
-        (SAFARI_MAC, SessionDevice(browser="Safari", os="macOS", mobile=False)),
-        (EDGE_WINDOWS, SessionDevice(browser="Edge", os="Windows", mobile=False)),
-        (FIREFOX_LINUX, SessionDevice(browser="Firefox", os="Linux", mobile=False)),
-        (SAFARI_IPHONE, SessionDevice(browser="Safari", os="iOS", mobile=True)),
-        (CHROME_IPAD, SessionDevice(browser="Chrome", os="iOS", mobile=True)),
-        (CHROME_ANDROID, SessionDevice(browser="Chrome", os="Android", mobile=True)),
-        (FIREFOX_ANDROID, SessionDevice(browser="Firefox", os="Android", mobile=True)),
-        ("curl/8.7.1", SessionDevice(browser="curl", os=None, mobile=False)),
+        (CHROME_MAC, "Chrome", "macOS", False),
+        (SAFARI_MAC, "Safari", "macOS", False),
+        (EDGE_WINDOWS, "Edge", "Windows", False),
+        (FIREFOX_LINUX, "Firefox", "Linux", False),
+        (SAFARI_IPHONE, "Safari", "iOS", True),
+        (CHROME_IPAD, "Chrome", "iOS", True),
+        (CHROME_ANDROID, "Chrome", "Android", True),
+        (FIREFOX_ANDROID, "Firefox", "Android", True),
+        (WINDOWS_PHONE, "Edge", "Windows Phone", True),
+        ("curl/8.7.1", "curl", None, False),
+        ("my-cli/1.2.0", None, None, False),
     ],
 )
-def test_describes_browsers_and_clients(user_agent: str, device: SessionDevice):
-    assert describe_user_agent(user_agent) == device
+def test_names_the_browser_and_os(
+    user_agent: str, browser: str | None, os: str | None, mobile: bool
+):
+    device = describe_user_agent(user_agent)
+
+    assert device is not None
+    assert (device.browser, device.os, device.mobile) == (browser, os, mobile)
 
 
-@pytest.mark.parametrize("user_agent", [None, "", "my-cli/1.0", "Laptop"])
-def test_returns_none_when_it_names_no_browser_or_os(user_agent: str | None):
+@pytest.mark.parametrize(
+    ("user_agent", "products"),
+    [
+        (
+            CHROME_MAC,
+            [
+                ("Mozilla", "5.0"),
+                ("AppleWebKit", "537.36"),
+                ("Chrome", "131.0.0.0"),
+                ("Safari", "537.36"),
+            ],
+        ),
+        ("my-cli/1.2.0 extension/3", [("my-cli", "1.2.0"), ("extension", "3")]),
+        ("Laptop", [("Laptop", None)]),
+        ("a/1 (nested (comment) and \\) an escaped one) b/2", [("a", "1"), ("b", "2")]),
+    ],
+)
+def test_lists_the_products_without_comments(
+    user_agent: str, products: list[tuple[str, str | None]]
+):
+    device = describe_user_agent(user_agent)
+
+    assert device is not None
+    assert device.products == tuple(
+        SessionProduct(name=name, version=version) for name, version in products
+    )
+
+
+@pytest.mark.parametrize(
+    "user_agent", ["a/1 b@2", "a/", "a/1 (no closing parenthesis", "a/1 )"]
+)
+def test_lists_no_products_outside_the_grammar(user_agent: str):
+    assert describe_user_agent(user_agent) is None
+
+
+def test_a_browser_outside_the_grammar_is_still_named():
+    in_app = SAFARI_IPHONE + " [FBAN/FBIOS;FBAV/490.0]"
+
+    assert describe_user_agent(in_app) == SessionDevice(
+        browser="Facebook", os="iOS", mobile=True, products=()
+    )
+
+
+@pytest.mark.parametrize("user_agent", [None, ""])
+def test_returns_none_without_a_user_agent(user_agent: str | None):
     assert describe_user_agent(user_agent) is None

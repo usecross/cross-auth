@@ -507,7 +507,7 @@ requires-dist = [
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10.1" },
     { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0" },
     { name = "sqlmodel", marker = "extra == 'sqlmodel'", specifier = ">=0.0.28" },
-    { name = "ua-parser", specifier = ">=1.0.0" },
+    { name = "ua-parser", specifier = ">=1.0.2" },
 ]
 provides-extras = ["redis", "sqlmodel", "django"]
 

@@ -112,7 +112,17 @@ session tokens or their hashes:
       "client_id": null,
       "client_name": null,
       "user_agent": "Mozilla/5.0 …",
-      "device": { "browser": "Chrome", "os": "macOS", "mobile": false },
+      "device": {
+        "browser": "Chrome",
+        "os": "macOS",
+        "mobile": false,
+        "products": [
+          { "name": "Mozilla", "version": "5.0" },
+          { "name": "AppleWebKit", "version": "537.36" },
+          { "name": "Chrome", "version": "131.0.0.0" },
+          { "name": "Safari", "version": "537.36" }
+        ]
+      },
       "ip": "203.0.113.7",
       "login_method": "github",
       "created_at": "2026-11-04T09:12:44Z",
@@ -133,14 +143,27 @@ session's `status` is `active`, `expired` or `revoked`. `last_active_at` is when
 the session was last used, to within five minutes by default (see
 [Last Activity](#last-activity)).
 
-`device` is what `user_agent` says about where the user signed in: the `browser`
-(or another client, such as `"curl"`), the `os`, and whether it is `mobile`, a
-phone or a tablet. Show it as "Chrome on macOS" instead of the raw header. It is
-`null` when the user agent names neither a browser nor an operating system, such
-as a custom client's `my-app/1.0`. Cross-Auth parses the stored user agent with
-[`ua-parser`](https://pypi.org/project/ua-parser/) each time it lists sessions,
-so nothing extra is stored. ua-parser caches the user agents it has seen;
-install `ua-parser[regex]` for a faster parser.
+`device` is what `user_agent` says about where the user signed in, so a page can
+show "Chrome on macOS" instead of the raw header:
+
+- `browser` is the browser or another client, such as `"curl"`, and `os` the
+  operating system. Either is `null` when the user agent doesn't name one.
+- `mobile` is `true` when the operating system is a phone or tablet one, such as
+  iOS or Android. A user agent names the operating system, not the kind of
+  device, so an Android TV counts as mobile, and an iPad that asks for desktop
+  sites sends a Mac's user agent and doesn't.
+- `products` lists the user agent's `name/version` products, most significant
+  first, as [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110#field.user-agent)
+  defines them, without the comments in parentheses. A client that `browser`
+  doesn't know, such as `my-cli/1.2.0 extension/3`, is still described by them.
+  `products` is empty when the user agent doesn't follow that grammar.
+
+`device` is `null` without a user agent, or when it names no browser or
+operating system and lists no products. Cross-Auth parses the stored user agent
+each time it lists sessions, so nothing extra is stored. Browsers and operating
+systems come from [`ua-parser`](https://pypi.org/project/ua-parser/), which
+caches the user agents it has seen; install `ua-parser[regex]` for a faster
+parser.
 
 `current` marks the session that authenticated the request. Pages hold 50
 sessions; pass `limit` (1 to 100) to change that, and send a page's
@@ -165,6 +188,8 @@ them, like `/logout`: see [Security Integration](/docs/security). To build your
 own pages instead, use `auth.list_sessions()`, `auth.get_session()`,
 `auth.revoke_session()`, `auth.revoke_other_sessions()` and
 `auth.revoke_all_sessions()`; the revoke methods run the same hooks.
+`describe_user_agent(record.user_agent)` gives a session record the same
+`device` as `GET /sessions`.
 
 ### Get Current User
 

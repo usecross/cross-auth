@@ -50,8 +50,9 @@ class SessionInfo(BaseModel):
     client_name: str | None
     user_agent: str | None
     device: SessionDevice | None = Field(
-        description="What user_agent says about the device; null when it names "
-        "neither a browser nor an operating system"
+        description="What user_agent says about the device; null without a "
+        "user agent, or when it names no browser or operating system and lists "
+        "no products"
     )
     ip: str | None
     login_method: str | None = Field(

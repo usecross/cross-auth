@@ -44,15 +44,15 @@ class SessionInfo:
     # logins, such as Django's password login.
     login_method: str | None
     user_agent: str | None
-    # The browser and operating system that user_agent names, or None when it
-    # names neither.
-    device: SessionDevice | None
     ip: str | None
     created_at: datetime
     last_activity: datetime
     expires_at: datetime
     # Whether this is the session of the request that listed it.
     is_current: bool
+    # What user_agent says about the device: its browser, operating system and
+    # products. None without a user agent, or when it says none of those.
+    device: SessionDevice | None = None
 
 
 def _store(request: HttpRequest) -> SessionStore:
@@ -118,12 +118,12 @@ def list_sessions(request: HttpRequest) -> list[SessionInfo]:
             id=str(session.public_id),
             login_method=session.login_method,
             user_agent=session.user_agent,
-            device=describe_user_agent(session.user_agent),
             ip=session.ip,
             created_at=session.created_at,
             last_activity=session.last_activity,
             expires_at=session.expire_date,
             is_current=session.session_key == store.session_key,
+            device=describe_user_agent(session.user_agent),
         )
         for session in sessions
         if _signed_in(session.get_decoded(), user)

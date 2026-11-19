@@ -413,13 +413,21 @@ def test_router(test_app: FastAPI):
                             "mobile": {
                                 "type": "boolean",
                                 "title": "Mobile",
-                                "description": "Whether the device is a phone or a tablet",
+                                "description": "Whether the operating system is a phone or tablet one, such as iOS or Android",
+                            },
+                            "products": {
+                                "items": {
+                                    "$ref": "#/components/schemas/SessionProduct"
+                                },
+                                "type": "array",
+                                "title": "Products",
+                                "description": "The products the user agent lists, most significant first, as RFC 9110 defines them; empty when it does not follow that grammar",
                             },
                         },
                         "type": "object",
-                        "required": ["browser", "os", "mobile"],
+                        "required": ["browser", "os", "mobile", "products"],
                         "title": "SessionDevice",
-                        "description": "The browser and operating system that a session's user agent names.",
+                        "description": "What a session's user agent says about the device behind it.",
                     },
                     "SessionInfo": {
                         "properties": {
@@ -447,7 +455,7 @@ def test_router(test_app: FastAPI):
                                     {"$ref": "#/components/schemas/SessionDevice"},
                                     {"type": "null"},
                                 ],
-                                "description": "What user_agent says about the device; null when it names neither a browser nor an operating system",
+                                "description": "What user_agent says about the device; null without a user agent, or when it names no browser or operating system and lists no products",
                             },
                             "ip": {
                                 "anyOf": [{"type": "string"}, {"type": "null"}],
@@ -525,6 +533,19 @@ def test_router(test_app: FastAPI):
                         "type": "object",
                         "required": ["sessions", "next_cursor"],
                         "title": "SessionList",
+                    },
+                    "SessionProduct": {
+                        "properties": {
+                            "name": {"type": "string", "title": "Name"},
+                            "version": {
+                                "anyOf": [{"type": "string"}, {"type": "null"}],
+                                "title": "Version",
+                            },
+                        },
+                        "type": "object",
+                        "required": ["name", "version"],
+                        "title": "SessionProduct",
+                        "description": 'One of the products a user agent lists, such as "my-cli/1.2.0".',
                     },
                     "HTTPValidationError": {
                         "properties": {

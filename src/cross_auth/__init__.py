@@ -25,6 +25,7 @@ from cross_auth._storage import (
     session_status,
 )
 from cross_auth._tokens import TokenIssueRequest, TokenIssuer, TokenKind
+from cross_auth._user_agent import SessionDevice, SessionProduct, describe_user_agent
 from cross_auth.hooks import (
     AfterAuthenticateEvent,
     AfterLoginEvent,
@@ -115,6 +116,8 @@ __all__ = [
     "SecondaryStorage",
     "SessionConfig",
     "SessionCookieConfig",
+    "SessionDevice",
+    "SessionProduct",
     "get_bearer_token",
     "SessionListOrder",
     "SessionListResult",
@@ -123,6 +126,7 @@ __all__ = [
     "SessionStorage",
     "SocialAccount",
     "SocialAccountCreate",
+    "describe_user_agent",
     "normalize_email",
     "session_status",
     "TokenExchangeParams",

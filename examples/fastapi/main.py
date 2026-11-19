@@ -24,6 +24,7 @@ from cross_auth import (
     SecondaryStorage,
     SessionConfig,
     SessionStatus,
+    describe_user_agent,
 )
 from cross_auth import User as UserProtocol
 from cross_auth._session import get_current_user as get_session_user
@@ -243,16 +244,11 @@ def serialize_user(user: User) -> dict[str, Any]:
 def session_access_label(record: SessionRecord) -> str:
     if record.client_id:
         return f"Authorized Application ({record.client_name or record.client_id})"
-    if record.user_agent:
-        if "Chrome" in record.user_agent:
-            browser = "Chrome"
-        elif "Firefox" in record.user_agent:
-            browser = "Firefox"
-        elif "Safari" in record.user_agent:
-            browser = "Safari"
-        else:
-            browser = "Browser"
-        return f"Browser ({browser})"
+    device = describe_user_agent(record.user_agent)
+    if device is not None and device.browser:
+        if device.os:
+            return f"Browser ({device.browser} on {device.os})"
+        return f"Browser ({device.browser})"
     return "Browser"
 
 
