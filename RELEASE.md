@@ -21,7 +21,9 @@ each session a `device`, and so does the Django integration's
 
 - `browser` can also be another client, such as `"curl"`.
 - `mobile` is true when the operating system is a phone or tablet one, such as
-  iOS or Android.
+  iOS or Android. User agents name the operating system, not the kind of device,
+  so an Android TV counts as mobile, and an iPad that asks for desktop sites
+  sends a Mac's user agent and doesn't.
 - `products` lists the user agent's `name/version` products, most significant
   first, as RFC 9110 defines them, so a client that `browser` doesn't know, such
   as `my-cli/1.2.0`, is still described.

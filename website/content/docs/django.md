@@ -740,10 +740,12 @@ as in
 [the JSON session routes](/docs/session-authentication#list-and-revoke-sessions):
 its `browser` (or another client, such as `"curl"`), its `os`, whether that
 operating system is a phone or tablet one (`mobile`), and its RFC 9110
-`products`. It is `None` without a user agent, or when the user agent names no
-browser or operating system and lists no products. For staff tools, query the
-model directly; for example, `Session.objects.filter(user=user).delete()` signs
-a user out everywhere.
+`products`. User agents name the operating system, not the kind of device, so an
+Android TV counts as mobile, and an iPad that asks for desktop sites sends a
+Mac's user agent and doesn't. `device` is `None` without a user agent, or when
+the user agent names no browser or operating system and lists no products. For
+staff tools, query the model directly; for example,
+`Session.objects.filter(user=user).delete()` signs a user out everywhere.
 
 ### Behind a proxy
 

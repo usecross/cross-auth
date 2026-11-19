@@ -10,7 +10,7 @@ from pydantic import Field
 from ua_parser import parse
 
 # uap-core names the mobile builds of desktop browsers apart; `mobile` already
-# says the session is on a phone or tablet.
+# says the operating system is a phone or tablet one.
 _BROWSER_NAMES = {
     "Chrome Mobile": "Chrome",
     "Chrome Mobile iOS": "Chrome",
