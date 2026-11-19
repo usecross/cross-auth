@@ -953,6 +953,7 @@ class TestLogout:
 
         assert response.status_code == 204
         assert response.content == b""
+        assert "Content-Type" not in response
         assert response.cookies == {}
         assert me(token).status_code == 401
         assert me(other).status_code == 200

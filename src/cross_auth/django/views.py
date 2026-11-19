@@ -555,6 +555,9 @@ class _ClientRequestAdapter(DjangoHTTPRequestAdapter):
 def _to_json(response: CrossWebResponse) -> HttpResponse:
     """Send core's response as it is: JSON errors stay JSON, and no cookie is set."""
     result = HttpResponse(response.body or b"", status=response.status_code)
+    if not response.body:
+        # Django names a content type even when there is no content.
+        del result["Content-Type"]
     for name, value in (response.headers or {}).items():
         result[name] = value
     return result
