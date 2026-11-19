@@ -644,7 +644,7 @@ sessions. They take the request, so they always act on `request.user`'s own
 sessions and know which one is current:
 
 - `list_sessions(request)` returns the user's sessions, newest first, as
-  `SessionInfo` objects with `id`, `login_method`, `user_agent`, `ip`,
+  `SessionInfo` objects with `id`, `login_method`, `user_agent`, `device`, `ip`,
   `created_at`, `last_activity`, `expires_at` and `is_current`. Expired sessions
   are left out, and so are sessions that Django would log out: those that a
   password change ended, or whose authentication backend is no longer in
@@ -702,18 +702,22 @@ urlpatterns = [
 ]
 ```
 
+<!-- prettier-ignore -->
 ```html
 <!-- core/templates/core/sessions.html -->
-{% extends "core/base.html" %} {% block content %}
+{% extends "core/base.html" %}
+{% block content %}
 <h1>Where you're signed in</h1>
 <ul>
   {% for session in sessions %}
   <li>
-    {{ session.user_agent|default:"Unknown browser" }} {% if
-    session.login_method %}· signed in with {{ session.login_method }}{% endif
-    %} · active {{ session.last_activity|timesince }} ago {% if session.ip %}·
-    {{ session.ip }}{% endif %} {% if session.is_current %} (this browser) {%
-    else %}
+    {{ session.device.browser|default:"Unknown browser" }}{% if session.device.os %} on {{ session.device.os }}{% endif %}
+    {% if session.login_method %}· signed in with {{ session.login_method }}{% endif %}
+    · active {{ session.last_activity|timesince }} ago
+    {% if session.ip %}· {{ session.ip }}{% endif %}
+    {% if session.is_current %}
+    (this browser)
+    {% else %}
     <form method="post" action="{% url 'revoke_session' %}">
       {% csrf_token %}
       <input type="hidden" name="session" value="{{ session.id }}" />
@@ -731,11 +735,13 @@ urlpatterns = [
 {% endblock %}
 ```
 
-`user_agent` is that cleaned header, not a description. To show "Chrome on
-macOS", parse it with a library such as
-[`ua-parser`](https://pypi.org/project/ua-parser/). For staff tools, query the
-model directly; for example, `Session.objects.filter(user=user).delete()` signs
-a user out everywhere.
+`user_agent` is that cleaned header, not a description. `device` describes it:
+its `browser` (or another client, such as `"curl"`), its `os`, and whether it is
+`mobile`, a phone or a tablet, parsed with
+[`ua-parser`](https://pypi.org/project/ua-parser/). It is `None` when the user
+agent names neither a browser nor an operating system. For staff tools, query
+the model directly; for example, `Session.objects.filter(user=user).delete()`
+signs a user out everywhere.
 
 ### Behind a proxy
 

@@ -22,6 +22,8 @@ from django.http import HttpRequest
 from django.utils import timezone
 from django.utils.crypto import constant_time_compare
 
+from cross_auth._user_agent import SessionDevice, describe_user_agent
+
 from . import signals
 
 if TYPE_CHECKING:
@@ -42,6 +44,9 @@ class SessionInfo:
     # logins, such as Django's password login.
     login_method: str | None
     user_agent: str | None
+    # The browser and operating system that user_agent names, or None when it
+    # names neither.
+    device: SessionDevice | None
     ip: str | None
     created_at: datetime
     last_activity: datetime
@@ -113,6 +118,7 @@ def list_sessions(request: HttpRequest) -> list[SessionInfo]:
             id=str(session.public_id),
             login_method=session.login_method,
             user_agent=session.user_agent,
+            device=describe_user_agent(session.user_agent),
             ip=session.ip,
             created_at=session.created_at,
             last_activity=session.last_activity,

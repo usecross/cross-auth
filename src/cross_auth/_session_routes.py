@@ -25,6 +25,7 @@ from ._session import (
     make_session_cookie,
 )
 from ._storage import SessionRecord, SessionStatus, SessionStorage, session_status
+from ._user_agent import SessionDevice, describe_user_agent
 from .exceptions import CrossAuthException, InvalidCursorError
 from .utils._response import Response
 
@@ -48,6 +49,10 @@ class SessionInfo(BaseModel):
     )
     client_name: str | None
     user_agent: str | None
+    device: SessionDevice | None = Field(
+        description="What user_agent says about the device; null when it names "
+        "neither a browser nor an operating system"
+    )
     ip: str | None
     login_method: str | None = Field(
         description='How the user signed in: a provider id, "password", or '
@@ -137,6 +142,7 @@ def _session_info(
         client_id=record.client_id,
         client_name=record.client_name,
         user_agent=record.user_agent,
+        device=describe_user_agent(record.user_agent),
         ip=record.ip,
         login_method=record.login_method,
         created_at=record.created_at,

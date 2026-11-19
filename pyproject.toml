@@ -11,6 +11,7 @@ dependencies = [
     "bcrypt>=4.0.0",
     "PyJWT[crypto]>=2.10.1",
     "httpx>=0.28.1",
+    "ua-parser>=1.0.0",
 ]
 
 [project.optional-dependencies]

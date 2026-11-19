@@ -112,6 +112,7 @@ session tokens or their hashes:
       "client_id": null,
       "client_name": null,
       "user_agent": "Mozilla/5.0 …",
+      "device": { "browser": "Chrome", "os": "macOS", "mobile": false },
       "ip": "203.0.113.7",
       "login_method": "github",
       "created_at": "2026-11-04T09:12:44Z",
@@ -131,6 +132,15 @@ that also shows signed-out devices with when they expired or were revoked. Each
 session's `status` is `active`, `expired` or `revoked`. `last_active_at` is when
 the session was last used, to within five minutes by default (see
 [Last Activity](#last-activity)).
+
+`device` is what `user_agent` says about where the user signed in: the `browser`
+(or another client, such as `"curl"`), the `os`, and whether it is `mobile`, a
+phone or a tablet. Show it as "Chrome on macOS" instead of the raw header. It is
+`null` when the user agent names neither a browser nor an operating system, such
+as a custom client's `my-app/1.0`. Cross-Auth parses the stored user agent with
+[`ua-parser`](https://pypi.org/project/ua-parser/) each time it lists sessions,
+so nothing extra is stored. ua-parser caches the user agents it has seen;
+install `ua-parser[regex]` for a faster parser.
 
 `current` marks the session that authenticated the request. Pages hold 50
 sessions; pass `limit` (1 to 100) to change that, and send a page's

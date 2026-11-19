@@ -398,6 +398,29 @@ def test_router(test_app: FastAPI):
                         "required": ["revoked"],
                         "title": "RevokedSessions",
                     },
+                    "SessionDevice": {
+                        "properties": {
+                            "browser": {
+                                "anyOf": [{"type": "string"}, {"type": "null"}],
+                                "title": "Browser",
+                                "description": 'The browser or other client, such as "Chrome" or "curl"',
+                            },
+                            "os": {
+                                "anyOf": [{"type": "string"}, {"type": "null"}],
+                                "title": "Os",
+                                "description": 'The operating system, such as "macOS", "Windows" or "iOS"',
+                            },
+                            "mobile": {
+                                "type": "boolean",
+                                "title": "Mobile",
+                                "description": "Whether the device is a phone or a tablet",
+                            },
+                        },
+                        "type": "object",
+                        "required": ["browser", "os", "mobile"],
+                        "title": "SessionDevice",
+                        "description": "The browser and operating system that a session's user agent names.",
+                    },
                     "SessionInfo": {
                         "properties": {
                             "id": {"type": "string", "title": "Id"},
@@ -418,6 +441,13 @@ def test_router(test_app: FastAPI):
                             "user_agent": {
                                 "anyOf": [{"type": "string"}, {"type": "null"}],
                                 "title": "User Agent",
+                            },
+                            "device": {
+                                "anyOf": [
+                                    {"$ref": "#/components/schemas/SessionDevice"},
+                                    {"type": "null"},
+                                ],
+                                "description": "What user_agent says about the device; null when it names neither a browser nor an operating system",
                             },
                             "ip": {
                                 "anyOf": [{"type": "string"}, {"type": "null"}],
@@ -466,6 +496,7 @@ def test_router(test_app: FastAPI):
                             "client_id",
                             "client_name",
                             "user_agent",
+                            "device",
                             "ip",
                             "login_method",
                             "created_at",

@@ -427,6 +427,7 @@ class TestListing:
             "id": str(phone_row.public_id),
             "login_method": "google",
             "user_agent": "Phone",
+            "device": None,
             "ip": "198.51.100.1",
             "created_at": "2026-10-30T12:00:00Z",
             "last_activity": "2026-10-30T12:00:00Z",
@@ -447,6 +448,19 @@ class TestListing:
 
         for client in (phone, laptop):
             assert client.cookies[settings.SESSION_COOKIE_NAME].value not in body
+
+    def test_describes_the_browser_and_os(self) -> None:
+        make_user("person@example.com", password="secret")
+        client = browser()
+        password_login(client, "person@example.com")
+
+        [session] = listed(client)
+
+        assert session["device"] == {
+            "browser": "Chrome",
+            "os": "macOS",
+            "mobile": False,
+        }
 
     def test_anonymous_request_lists_nothing(self) -> None:
         client = browser()
