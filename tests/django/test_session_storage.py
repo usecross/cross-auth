@@ -14,7 +14,7 @@ import logging
 import uuid
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
-from typing import Any, cast
+from typing import Any
 
 import pytest
 import time_machine
@@ -320,7 +320,9 @@ def test_revocation_after_lookup_prevents_refresh(
     store: DjangoSessionStorage, user: AbstractBaseUser, bulk: bool
 ) -> None:
     original = _aged(store, user, expires_at=NOW + timedelta(hours=1))
-    loaded = store.get(token_hash=cast(str, original.native.token_hash), now=NOW)
+    token_hash = original.native.token_hash
+    assert token_hash is not None
+    loaded = store.get(token_hash=token_hash, now=NOW)
     assert loaded is not None
 
     other_request = DjangoSessionStorage()
@@ -710,7 +712,11 @@ def test_list_rejects_an_unknown_order(
     store: DjangoSessionStorage, user: AbstractBaseUser
 ) -> None:
     with pytest.raises(ValueError, match="Unsupported order_by"):
-        store.list_for_user(str(user.pk), now=NOW, order_by=cast(Any, "id_desc"))
+        store.list_for_user(
+            str(user.pk),
+            now=NOW,
+            order_by="id_desc",  # ty: ignore[invalid-argument-type]
+        )
 
 
 def test_list_rejects_non_positive_limit(

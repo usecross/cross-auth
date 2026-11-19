@@ -641,7 +641,8 @@ The table has five more columns. `updated_at` is when the session's expiry was
 last set, which for a browser session is each time Django saves it.
 `token_hash`, `client_id`, `client_name` and `revoked_at` are empty for a
 browser session: they belong to the bearer tokens of the
-[OAuth server](#sign-in-for-spa-and-native-clients).
+[OAuth server](#sign-in-for-spa-and-native-clients), which leaves `client_name`
+empty too.
 
 ### List and revoke sessions
 
@@ -651,11 +652,10 @@ sessions and know which one is current:
 
 - `list_sessions(request)` returns the user's sessions, newest first, as
   `SessionInfo` objects with `id`, `login_method`, `user_agent`, `ip`,
-  `created_at`, `last_activity`, `expires_at`, `is_current`, `client_id` and
-  `client_name`. Expired sessions are left out, and so are sessions that Django
-  would log out: those that a password change ended, or whose authentication
-  backend is no longer in `AUTHENTICATION_BACKENDS`. Anonymous requests get an
-  empty list.
+  `created_at`, `last_activity`, `expires_at`, `is_current` and `client_id`.
+  Expired sessions are left out, and so are sessions that Django would log out:
+  those that a password change ended, or whose authentication backend is no
+  longer in `AUTHENTICATION_BACKENDS`. Anonymous requests get an empty list.
 - `revoke_session(request, session_id)` signs out the active session whose `id`
   is `session_id` and returns whether it found one. Another user's session, an
   expired one, or one that `list_sessions` leaves out because Django already

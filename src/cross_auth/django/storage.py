@@ -671,7 +671,12 @@ class DjangoSessionStorage:
         next_cursor = None
         if len(rows) > limit:
             last = rows[limit - 1]
-            next_cursor = encode_cursor(order_by, getattr(last, field), last.public_id)
+            order_value = {
+                "updated_at": last.updated_at,
+                "created_at": last.created_at,
+                "expire_date": last.expire_date,
+            }[field]
+            next_cursor = encode_cursor(order_by, order_value, last.public_id)
 
         return DjangoSessionList(records=records, next_cursor=next_cursor)
 

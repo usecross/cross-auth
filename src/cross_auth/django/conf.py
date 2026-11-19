@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cache
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -218,7 +218,11 @@ def _oauth_server(value: object) -> OAuthServerSettings | None:
         # Core compares a token's times with the current time in UTC; without
         # time zone support Django hands back naive local times.
         raise ImproperlyConfigured("CROSS_AUTH['OAUTH_SERVER'] needs USE_TZ = True")
-    raw = cast("Mapping[Any, object]", value)
+
+    return _oauth_server_settings(value)
+
+
+def _oauth_server_settings(raw: Mapping[Any, object]) -> OAuthServerSettings:
     unknown = set(raw) - _OAUTH_SERVER_KEYS
     if unknown:
         raise ImproperlyConfigured(

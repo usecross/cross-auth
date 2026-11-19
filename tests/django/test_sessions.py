@@ -435,7 +435,6 @@ class TestListing:
             "expires_at": phone_row.expire_date.isoformat().replace("+00:00", "Z"),
             "is_current": False,
             "client_id": None,
-            "client_name": None,
         }
         assert Session.objects.filter(user=user).count() == 3
         assert [s["user_agent"] for s in someone_elses] == ["Someone else"]
@@ -1082,16 +1081,13 @@ class TestRevokeSignals:
         assert Session.objects.filter(pk=stored(old).pk).exists()
 
 
-def issue_token(
-    user: AbstractBaseUser, *, client_name: str | None = "Example app"
-) -> DjangoSessionRecord:
+def issue_token(user: AbstractBaseUser) -> DjangoSessionRecord:
     """The session of a bearer token, as the OAuth server's token view stores one."""
     _, record = create_session(
         str(user.pk),
         DjangoSessionStorage(),
         metadata={
             "client_id": "spa",
-            "client_name": client_name,
             "user_agent": "ExampleApp/3.2",
             "ip": "198.51.100.9",
         },
@@ -1143,9 +1139,7 @@ class TestBearerTokens:
             "expires_at": "2026-10-31T12:01:00Z",
             "is_current": False,
             "client_id": "spa",
-            "client_name": "Example app",
         }
-        assert sessions[1]["client_name"] is None
 
     def test_lists_only_the_users_own_active_tokens(self, google: FakeGoogle) -> None:
         user = password_user()

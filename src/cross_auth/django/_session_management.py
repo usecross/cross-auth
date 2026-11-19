@@ -52,10 +52,9 @@ class SessionInfo:
     expires_at: datetime
     # Whether this is the session of the request that listed it.
     is_current: bool
-    # The OAuth client a bearer token was issued to. A browser session has
-    # neither.
+    # The OAuth client a bearer token was issued to; None for a browser
+    # session.
     client_id: str | None = None
-    client_name: str | None = None
 
 
 def _store(request: HttpRequest) -> SessionStore:
@@ -138,7 +137,6 @@ def list_sessions(request: HttpRequest) -> list[SessionInfo]:
             expires_at=session.expire_date,
             is_current=session.session_key == store.session_key,
             client_id=session.client_id,
-            client_name=session.client_name,
         )
         for session in sessions
         if _active(session, user)

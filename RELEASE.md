@@ -34,14 +34,14 @@ and the token's session, or `None`.
 Run `migrate` after upgrading. `cross_auth.django.models.Session` gets five
 columns: `updated_at`, and `token_hash`, `client_id`, `client_name` and
 `revoked_at` for the sessions of bearer tokens, which are kept in that table
-through the new `DjangoSessionStorage`. Only a token's hash is stored. The
-migration is needed whether or not you use the OAuth server.
+through the new `DjangoSessionStorage`. Only a token's hash is stored, and
+nothing fills `client_name` yet. The migration is needed whether or not you use
+the OAuth server.
 
 With `SESSION_ENGINE = "cross_auth.django.sessions"`:
 
-- `list_sessions` also lists the user's bearer tokens, and `SessionInfo` has two
-  new fields, `client_id` and `client_name`, which are `None` for a browser
-  session.
+- `list_sessions` also lists the user's bearer tokens, and `SessionInfo` has a
+  new field, `client_id`, which is `None` for a browser session.
 - `revoke_session` and `revoke_other_sessions` also revoke bearer tokens. A
   revoked token keeps its row, with `revoked_at` set, until it would have
   expired; a revoked browser session is still deleted.

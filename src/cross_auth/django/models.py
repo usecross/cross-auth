@@ -140,6 +140,8 @@ class Session(AbstractBaseSession):
     # The OAuth client a bearer token was issued to; null for a browser
     # session.
     client_id = models.CharField(max_length=255, null=True, blank=True)
+    # Kept because Cross Auth's session records have one. The token view
+    # gives it no value: an OAuthClient has no name.
     client_name = models.CharField(max_length=255, null=True, blank=True)
     # Set when a bearer token's session is revoked. The row stays until it
     # expires. A revoked browser session is deleted instead, so it has none.
