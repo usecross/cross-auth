@@ -643,9 +643,10 @@ would have expired. An anonymous session that ends is deleted at once, and
 deleting a user deletes their rows.
 
 The table has five more columns. `updated_at` is when the session's expiry was
-last set, which for a browser session is each time Django saves it.
-`token_hash`, `client_id`, `client_name` and `revoked_at` are empty for a
-browser session: they belong to the bearer tokens of the
+last set, which for a browser session is each time Django saves it. `revoked_at`
+is set when a session of either kind ends before it expires, as described above.
+`token_hash`, `client_id` and `client_name` are empty for a browser session:
+they belong to the bearer tokens of the
 [OAuth server](#sign-in-for-spa-and-native-clients), which leaves `client_name`
 empty too.
 
