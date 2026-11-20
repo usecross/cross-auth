@@ -1088,6 +1088,69 @@ provider from a signed-in client, list and revoke sessions over JSON, and mint
 tokens with your own issuer. The Django integration does not have these yet. The
 deprecated password grant is not offered.
 
+## Provider tokens
+
+By default Cross Auth keeps none of the tokens a provider issues at sign-in. To
+call the provider's API on a user's behalf later, keep them with
+`PROVIDER_TOKENS`. Cross Auth stores them only encrypted, with functions you
+supply, so your project keeps the key:
+
+```python
+# settings.py
+CROSS_AUTH = {
+    # ...
+    "PROVIDER_TOKENS": {
+        "encrypt": "myproject.tokens.encrypt",
+        "decrypt": "myproject.tokens.decrypt",
+    },
+}
+```
+
+```python
+# myproject/tokens.py
+from cryptography.fernet import Fernet, InvalidToken
+from django.conf import settings
+
+fernet = Fernet(settings.PROVIDER_TOKEN_KEY)
+
+
+def encrypt(value: str) -> str:
+    return fernet.encrypt(value.encode()).decode()
+
+
+def decrypt(value: str) -> str | None:
+    try:
+        return fernet.decrypt(value.encode()).decode()
+    except InvalidToken:
+        return None
+```
+
+`decrypt` returns `None` for a value it cannot read, for example after the key
+changes. The token then counts as missing, and the next sign-in stores a new
+one.
+
+Each sign-in, and each time the user connects the provider again through the
+link view, replaces the identity's tokens, their expiry times and the granted
+scope. Read them from the user's `SocialAccount`:
+
+```python
+from cross_auth.django.models import SocialAccount
+
+account = SocialAccount.objects.get(user=request.user, provider="google")
+account.access_token  # decrypted, or None
+account.access_token_expires_at
+account.refresh_token
+account.scope
+```
+
+Cross Auth does not refresh an expired access token. To get a fresh one, send
+the user through the link view again; providers usually complete it without
+asking.
+
+Turning `PROVIDER_TOKENS` off stops storing tokens. An identity's stored tokens
+are cleared the next time it is written. To remove them all at once, update the
+`SocialAccount` rows yourself.
+
 ## Signals reference
 
 `cross_auth.django.signals` defines the signals below. Their sender is your user
@@ -1212,6 +1275,7 @@ reports invalid values.
 | `SESSION_ACTIVITY_INTERVAL` | `300`              | Seconds between `last_activity` updates of a [session](#sessions) that nothing else saves, from `0` (every request that reads the session) to `31536000` (a year).                                                                                                                                        |
 | `SESSION_STORE_IP`          | `True`             | Whether [sessions](#sessions) store the request's `REMOTE_ADDR`. When off, sessions store no IP and clear the one they have the next time they are saved or used.                                                                                                                                         |
 | `OAUTH_SERVER`              | off                | [Sign-in for SPA and native clients](#sign-in-for-spa-and-native-clients). `get_client`: dotted path of the function that returns a client by its ID. `token_max_age`: a token's lifetime in seconds, `86400` by default. `token_update_age`: seconds after which use extends a token, `None` by default. |
+| `PROVIDER_TOKENS`           | off                | [Keep providers' tokens](#provider-tokens), encrypted. `encrypt` and `decrypt`: dotted paths of the functions that encrypt a token and decrypt it, or return `None`.                                                                                                                                      |
 
 `ACCOUNT_LINKING["enabled"]` is off by default. Turning it on lets anyone who
 controls a Google account with a matching, verified email sign in to an existing
@@ -1268,8 +1332,9 @@ and has to sign in and connect the provider instead.
   for busy sites, or use PostgreSQL.
 - **Errors** render `cross_auth/error.html` with the error code and a
   description. Override the template in your own app to style it.
-- **Provider tokens** from Google are not stored. Only the Google account ID,
-  its email, and whether Google verified it are kept.
+- **Provider tokens** are not stored unless you set
+  [`PROVIDER_TOKENS`](#provider-tokens). Without it, only the provider account
+  ID, its email, and whether the provider verified it are kept.
 
 ## Multi-factor authentication
 
