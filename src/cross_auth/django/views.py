@@ -715,9 +715,10 @@ def logout(request: HttpRequest) -> HttpResponse:
 
     A JSON body of ``{"scope": "all"}`` revokes every session of the token's
     user: their bearer tokens and, with ``cross_auth.django.sessions`` as the
-    session engine, their browser sessions. Answers 204, also without a token
-    to revoke. It reads no cookie, so it never ends the session of the browser
-    that sends the request: use Django's ``logout`` for that.
+    session engine, their browser sessions, including one the sender itself
+    has. Answers 204, also without a token to revoke. It reads no cookie, so
+    without that scope it never ends a browser's session: use Django's
+    ``logout`` for that.
     """
     _require_oauth_server()
     response = revoke_bearer_session(

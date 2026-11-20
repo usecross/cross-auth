@@ -240,12 +240,15 @@ def revoke_session(request: HttpRequest, session_id: str) -> bool:
     # public_id, not session key: a session keeps its public_id when its key
     # changes, even while it is being revoked.
     sessions = _unexpired(store, user).filter(public_id=public_id)
-    if sessions.filter(token_hash__isnull=True, session_key=store.session_key).exists():
-        # The store marks the row revoked as it logs out.
+    current = sessions.filter(
+        token_hash__isnull=True, session_key=store.session_key
+    ).exists()
+    # Ended by public_id, also when it is the request's own session: another
+    # request of that session may give it a new key at any moment, and a
+    # logout that ends it by the key this request holds would then miss it.
+    revoked = end_sessions(sessions)
+    if current:
         logout(request)
-        revoked = 1
-    else:
-        revoked = end_sessions(sessions)
 
     if revoked:
         _revoked(

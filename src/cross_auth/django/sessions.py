@@ -330,11 +330,12 @@ class SessionStore(_DatabaseSessionStore):
             return
 
         sessions = self._browser_sessions(self.alias).filter(session_key=key)
-        # A session that signed a user in keeps its row, marked revoked: a
-        # logout, or Django ending it after a password change. Nobody misses
-        # an anonymous one.
-        end_sessions(sessions.filter(user__isnull=False))
+        # Nobody misses an anonymous session. One that signed a user in keeps
+        # its row, marked revoked: a logout, or Django ending it after a
+        # password change. In this order, a row that gets its user between
+        # the two statements is still ended rather than left signed in.
         sessions.filter(user__isnull=True).delete()
+        end_sessions(sessions.filter(user__isnull=False))
 
     async def adelete(self, session_key: str | None = None) -> None:
         await sync_to_async(self.delete)(session_key)

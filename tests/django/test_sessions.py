@@ -653,6 +653,40 @@ class TestRevoking:
         assert ended(before).session_key == phone_request.session_key
         assert SessionStore(phone_request.session_key).load() == {}
 
+    def test_the_requests_own_session_is_revoked_even_if_its_key_changes(
+        self,
+    ) -> None:
+        user = make_user("person@example.com", password="secret")
+        laptop = browser()
+        password_login(laptop, "person@example.com")
+        before = stored(laptop)
+        # Another request of the same session, which changes its key...
+        other_request = SessionStore(before.session_key)
+        assert other_request[SESSION_KEY] == str(user.pk)
+        rotated = False
+
+        def rotate_first(
+            execute: Execute, sql: str, params: Any, many: bool, context: Any
+        ) -> Any:
+            nonlocal rotated
+            if not rotated and writes_to_sessions(sql, "UPDATE"):
+                rotated = True
+                other_request.cycle_key()
+            return execute(sql, params, many, context)
+
+        # ...after the revoke found the session to be its own, and before it
+        # ends it. Ending it by the key the request holds would miss it.
+        with connection.execute_wrapper(rotate_first):
+            response = csrf_post(laptop, "/sessions/", {"id": str(before.public_id)})
+
+        assert rotated
+        assert other_request.session_key != before.session_key
+        assert response.json() == {"revoked": True}
+        assert live() == []
+        assert ended(before).session_key == other_request.session_key
+        assert SessionStore(other_request.session_key).load() == {}
+        assert whoami(laptop)["authenticated"] is False
+
     def test_a_session_revoked_before_its_key_changes_stays_revoked(self) -> None:
         user = make_user("person@example.com", password="secret")
         phone, laptop = browser(), browser()
@@ -756,7 +790,9 @@ class TestLifecycle:
         call_command("clearsessions")
         assert Session.objects.filter(pk=session.pk).exists()
 
-        Session.objects.filter(pk=session.pk).update(expire_date=T0 - timedelta(days=1))
+        Session.objects.filter(pk=session.pk).update(
+            expire_date=datetime.now(timezone.utc) - timedelta(days=1)
+        )
         call_command("clearsessions")
         assert not Session.objects.exists()
 

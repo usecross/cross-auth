@@ -932,7 +932,9 @@ the user instead: their bearer tokens and, with Cross Auth's
 there was no token to revoke.
 
 The logout view is for clients. It reads no cookie, so a browser's own "Sign
-out" form must post to Django's logout view, not to this one.
+out" form must post to Django's logout view, not to this one. With
+`{"scope": "all"}` it does end browser sessions, as any session of the user: a
+page that sends its user's token with that scope is signed out too.
 
 The sign-in is for the client, not for the browser that carried it: Django's
 `login()` is not called, no session cookie is set, and `request.user` on later
