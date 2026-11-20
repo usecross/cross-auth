@@ -23,6 +23,7 @@ from django.utils import timezone
 from django.utils.crypto import constant_time_compare
 
 from . import signals
+from .conf import get_settings
 
 if TYPE_CHECKING:
     from django.db.models import QuerySet
@@ -101,11 +102,32 @@ def _signed_in(data: dict[str, Any], user: AbstractBaseUser) -> bool:
     )
 
 
+def end_sessions(sessions: QuerySet[Session], *, at: datetime | None = None) -> int:
+    """Mark the sessions among ``sessions`` that are not revoked yet as revoked.
+
+    Their rows stay until they would have expired, so a user's sessions keep
+    a record of the ones that ended. Their data is emptied: a browser
+    session's holds what signed its user in. With
+    ``CROSS_AUTH["SESSION_STORE_IP"]`` off they lose a stored IP too, since
+    nothing will use them again to clear it. Returns how many were revoked
+    now.
+    """
+    changes: dict[str, object] = {
+        "revoked_at": at or timezone.now(),
+        "session_data": sessions.model.get_session_store_class()().encode({}),
+    }
+    if not get_settings().session_store_ip:
+        changes["ip"] = None
+
+    return sessions.filter(revoked_at__isnull=True).update(**changes)
+
+
 def _active(session: Session, user: AbstractBaseUser) -> bool:
     """Whether an unexpired session still signs ``user`` in."""
+    if session.revoked_at is not None:
+        return False
     if session.token_hash is not None:
-        # A bearer token's session: revoked ones keep their row.
-        return session.revoked_at is None
+        return True
 
     return _signed_in(session.get_decoded(), user)
 
@@ -114,7 +136,7 @@ def list_sessions(request: HttpRequest) -> list[SessionInfo]:
     """Return the signed-in user's active sessions, newest first.
 
     That is the user's browser sessions and the sessions of the bearer tokens
-    the OAuth server issued for them. Expired sessions, revoked tokens, and
+    the OAuth server issued for them. Expired and revoked sessions, and
     browser sessions that a password change or a removed authentication
     backend ended, are left out.
     Returns an empty list for anonymous requests.
@@ -156,7 +178,7 @@ def _revoked(
     session_id: str | None,
     revoked_count: int,
 ) -> None:
-    """Send ``session_revoked`` once the deletion is committed."""
+    """Send ``session_revoked`` once the revocation is committed."""
     transaction.on_commit(
         lambda: _send(
             signals.session_revoked,
@@ -172,13 +194,13 @@ def _revoked(
 
 
 def _unexpired(store: SessionStore, user: AbstractBaseUser) -> QuerySet[Session]:
-    """The user's unexpired sessions, read from the database that deletes them.
+    """The user's sessions that have neither expired nor been revoked.
 
-    Reading them from a replica could miss a session that the primary still
-    has, and leave it signed in.
+    Read from the database that revokes them: a replica could miss a session
+    that the primary still has, and leave it signed in.
     """
     return store.model.objects.using(store.alias).filter(
-        user=user, expire_date__gt=timezone.now()
+        user=user, expire_date__gt=timezone.now(), revoked_at__isnull=True
     )
 
 
@@ -187,11 +209,10 @@ def revoke_session(request: HttpRequest, session_id: str) -> bool:
 
     Another user's session, an expired one, or one that Django already treats
     as logged out (see ``list_sessions``) is never touched. Revoking the
-    current session logs the request out with Django's ``logout()``. A
-    browser session's row is deleted; a bearer token's is kept, marked
-    revoked, until it would have expired. Sends ``before_session_revoke`` and,
-    once the session is signed out, ``session_revoked``. Returns whether a
-    session was revoked.
+    current session logs the request out with Django's ``logout()``. The
+    session's row is kept, marked revoked, until it would have expired. Sends
+    ``before_session_revoke`` and, once the session is signed out,
+    ``session_revoked``. Returns whether a session was revoked.
     """
     store = _store(request)
     user = _user(request)
@@ -219,13 +240,12 @@ def revoke_session(request: HttpRequest, session_id: str) -> bool:
     # public_id, not session key: a session keeps its public_id when its key
     # changes, even while it is being revoked.
     sessions = _unexpired(store, user).filter(public_id=public_id)
-    if found.token_hash is not None:
-        revoked = _revoke_tokens(sessions)
-    elif sessions.filter(session_key=store.session_key).exists():
+    if sessions.filter(token_hash__isnull=True, session_key=store.session_key).exists():
+        # The store marks the row revoked as it logs out.
         logout(request)
         revoked = 1
     else:
-        revoked, _ = sessions.filter(token_hash__isnull=True).delete()
+        revoked = end_sessions(sessions)
 
     if revoked:
         _revoked(
@@ -247,8 +267,8 @@ def revoke_other_sessions(request: HttpRequest) -> int:
     ``before_session_revoke`` and, if any session was signed out,
     ``session_revoked``. Returns how many were revoked: only sessions that
     ``list_sessions`` shows count. Expired ones are left for
-    ``clearsessions``, and those that Django already treats as logged out are
-    removed on their next request.
+    ``clearsessions``, and those that Django already treats as logged out end
+    on their next request.
     """
     store = _store(request)
     user = _user(request)
@@ -277,8 +297,8 @@ def revoke_other_sessions(request: HttpRequest) -> int:
     # Both kinds or neither: a failure must not leave half of them signed in
     # without saying so.
     with transaction.atomic(using=store.alias):
-        deleted, _ = browsers.filter(public_id__in=signed_in).delete()
-        revoked = deleted + _revoke_tokens(sessions)
+        revoked = end_sessions(browsers.filter(public_id__in=signed_in))
+        revoked += end_sessions(sessions.filter(token_hash__isnull=False))
     if revoked:
         _revoked(
             request,
@@ -290,14 +310,3 @@ def revoke_other_sessions(request: HttpRequest) -> int:
         )
 
     return revoked
-
-
-def _revoke_tokens(sessions: QuerySet[Session]) -> int:
-    """Mark the bearer tokens' sessions among ``sessions`` revoked.
-
-    Their rows stay, unlike a browser session's, until they would have
-    expired. Returns how many were revoked now.
-    """
-    return sessions.filter(token_hash__isnull=False, revoked_at__isnull=True).update(
-        revoked_at=timezone.now()
-    )

@@ -143,8 +143,9 @@ class Session(AbstractBaseSession):
     # Kept because Cross Auth's session records have one. The token view
     # gives it no value: an OAuthClient has no name.
     client_name = models.CharField(max_length=255, null=True, blank=True)
-    # Set when a bearer token's session is revoked. The row stays until it
-    # expires. A revoked browser session is deleted instead, so it has none.
+    # Set when a session that signed a user in ends before it expires: a
+    # logout or a revocation. The row stays until it would have expired, with
+    # its session data emptied.
     revoked_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self) -> str:

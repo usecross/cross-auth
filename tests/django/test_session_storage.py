@@ -939,19 +939,76 @@ def _browser_session(user: AbstractBaseUser) -> Session:
     return Session.objects.get(session_key=browser.session_key)
 
 
-def test_the_storage_leaves_browser_sessions_alone(
+def test_the_storage_lists_signed_in_browser_sessions_with_tokens(
+    store: DjangoSessionStorage, user: AbstractBaseUser, other: AbstractBaseUser
+) -> None:
+    with time_machine.travel(NOW, tick=False):
+        browser = _browser_session(user)
+        _browser_session(other)
+    token = _make(store, user, updated=NOW + timedelta(minutes=1))
+
+    listed = store.list_for_user(str(user.pk), now=NOW).records
+
+    assert [record.id for record in listed] == [token.id, browser.public_id]
+    found = store.get_any(browser.public_id)
+    assert found is not None
+    assert (found.client_id, found.user_id) == (None, user.pk)
+    assert found.expires_at == browser.expire_date
+    assert _status(store, browser.public_id) == "active"
+
+
+def test_the_storage_revokes_a_browser_session(
     store: DjangoSessionStorage, user: AbstractBaseUser
 ) -> None:
     with time_machine.travel(NOW, tick=False):
         browser = _browser_session(user)
-    assert browser.user_id == user.pk
-    # While the browser session is active, and after it was last saved: each
-    # call below would change the row if the storage took browser sessions.
+    later = NOW + timedelta(hours=1)
+
+    assert store.revoke(browser.public_id, revoked_at=later) is True
+    assert store.revoke(browser.public_id, revoked_at=later + timedelta(1)) is False
+
+    row = Session.objects.get(session_key=browser.session_key)
+    assert row.revoked_at == later
+    # What signed the user in is gone from the row, and the cookie is no use.
+    assert row.get_decoded() == {}
+    with time_machine.travel(later, tick=False):
+        assert SessionStore(browser.session_key).load() == {}
+        assert _stored(store, browser.public_id).status == "revoked"
+
+
+def test_revoking_all_of_a_users_sessions_ends_browser_sessions_too(
+    store: DjangoSessionStorage, user: AbstractBaseUser, other: AbstractBaseUser
+) -> None:
+    with time_machine.travel(NOW, tick=False):
+        browser = _browser_session(user)
+        theirs = _browser_session(other)
+    token = _make(store, user, token_hash="a")
+    kept = _make(store, user, token_hash="b")
+    later = NOW + timedelta(hours=1)
+
+    count = store.revoke_all_for_user(
+        str(user.pk), revoked_at=later, except_session_id=kept.id
+    )
+
+    assert count == 2
+    assert _stored(store, browser.public_id).revoked_at == later
+    assert _stored(store, token.id).revoked_at == later
+    assert _stored(store, kept.id).revoked_at is None
+    assert _stored(store, theirs.public_id).revoked_at is None
+
+
+def test_the_storage_does_not_extend_or_record_the_use_of_browser_sessions(
+    store: DjangoSessionStorage, user: AbstractBaseUser
+) -> None:
+    # Django's session store does that. A browser session has no token, so
+    # the storage cannot find it by one either.
+    with time_machine.travel(NOW, tick=False):
+        browser = _browser_session(user)
+    # While the session is active, and after it was last saved: each call
+    # below would change the row if the storage took it for a token's.
     later = NOW + timedelta(hours=1)
     assert browser.updated_at < later < browser.expire_date
 
-    assert store.get_any(browser.public_id) is None
-    assert store.list_for_user(str(user.pk), now=later).records == []
     assert (
         store.refresh(
             browser.public_id, updated_at=later, expires_at=later + timedelta(days=1)
@@ -962,8 +1019,6 @@ def test_the_storage_leaves_browser_sessions_alone(
         store.record_activity(browser.public_id, last_active_at=later, since=later)
         is None
     )
-    assert store.revoke(browser.public_id, revoked_at=later) is False
-    assert store.revoke_all_for_user(str(user.pk), revoked_at=later) == 0
     with time_machine.travel(browser.expire_date + timedelta(days=1), tick=False):
         assert store.clear_expired() == 0
 
@@ -971,6 +1026,22 @@ def test_the_storage_leaves_browser_sessions_alone(
     assert unchanged.revoked_at is None
     assert unchanged.expire_date == browser.expire_date
     assert unchanged.last_activity == browser.last_activity
+    assert unchanged.updated_at == browser.updated_at
+
+
+def test_an_anonymous_browser_session_is_nobodys(
+    store: DjangoSessionStorage, user: AbstractBaseUser
+) -> None:
+    with time_machine.travel(NOW, tick=False):
+        anonymous = SessionStore()
+        anonymous["cart"] = 1
+        anonymous.save()
+    row = Session.objects.get(session_key=anonymous.session_key)
+    assert row.user_id is None
+
+    assert store.get_any(row.public_id) is None
+    assert store.revoke(row.public_id, revoked_at=NOW + timedelta(hours=1)) is False
+    assert Session.objects.get(pk=row.pk).revoked_at is None
 
 
 def test_a_browser_session_has_no_token_columns(user: AbstractBaseUser) -> None:
