@@ -33,7 +33,11 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class SessionInfo:
-    """One of the signed-in user's sessions, as ``list_sessions`` gives it."""
+    """One of the signed-in user's sessions, as ``list_sessions`` gives it.
+
+    It is a browser session, or the session of a bearer token that the OAuth
+    server issued to one of your clients.
+    """
 
     # The session's public_id: safe to show and to post back to
     # revoke_session, unlike the session key.
@@ -48,6 +52,9 @@ class SessionInfo:
     expires_at: datetime
     # Whether this is the session of the request that listed it.
     is_current: bool
+    # The OAuth client a bearer token was issued to; None for a browser
+    # session.
+    client_id: str | None = None
 
 
 def _store(request: HttpRequest) -> SessionStore:
@@ -94,11 +101,22 @@ def _signed_in(data: dict[str, Any], user: AbstractBaseUser) -> bool:
     )
 
 
+def _active(session: Session, user: AbstractBaseUser) -> bool:
+    """Whether an unexpired session still signs ``user`` in."""
+    if session.token_hash is not None:
+        # A bearer token's session: revoked ones keep their row.
+        return session.revoked_at is None
+
+    return _signed_in(session.get_decoded(), user)
+
+
 def list_sessions(request: HttpRequest) -> list[SessionInfo]:
     """Return the signed-in user's active sessions, newest first.
 
-    Expired sessions, and sessions that a password change or a removed
-    authentication backend ended, are left out.
+    That is the user's browser sessions and the sessions of the bearer tokens
+    the OAuth server issued for them. Expired sessions, revoked tokens, and
+    browser sessions that a password change or a removed authentication
+    backend ended, are left out.
     Returns an empty list for anonymous requests.
     """
     store = _store(request)
@@ -118,9 +136,10 @@ def list_sessions(request: HttpRequest) -> list[SessionInfo]:
             last_activity=session.last_activity,
             expires_at=session.expire_date,
             is_current=session.session_key == store.session_key,
+            client_id=session.client_id,
         )
         for session in sessions
-        if _signed_in(session.get_decoded(), user)
+        if _active(session, user)
     ]
 
 
@@ -168,9 +187,11 @@ def revoke_session(request: HttpRequest, session_id: str) -> bool:
 
     Another user's session, an expired one, or one that Django already treats
     as logged out (see ``list_sessions``) is never touched. Revoking the
-    current session logs the request out with Django's ``logout()``. Sends
-    ``before_session_revoke`` and, once the session is signed out,
-    ``session_revoked``. Returns whether a session was revoked.
+    current session logs the request out with Django's ``logout()``. A
+    browser session's row is deleted; a bearer token's is kept, marked
+    revoked, until it would have expired. Sends ``before_session_revoke`` and,
+    once the session is signed out, ``session_revoked``. Returns whether a
+    session was revoked.
     """
     store = _store(request)
     user = _user(request)
@@ -183,7 +204,7 @@ def revoke_session(request: HttpRequest, session_id: str) -> bool:
         return False
 
     found = _unexpired(store, user).filter(public_id=public_id).first()
-    if found is None or not _signed_in(found.get_decoded(), user):
+    if found is None or not _active(found, user):
         return False
 
     _send(
@@ -198,11 +219,13 @@ def revoke_session(request: HttpRequest, session_id: str) -> bool:
     # public_id, not session key: a session keeps its public_id when its key
     # changes, even while it is being revoked.
     sessions = _unexpired(store, user).filter(public_id=public_id)
-    if sessions.filter(session_key=store.session_key).exists():
+    if found.token_hash is not None:
+        revoked = _revoke_tokens(sessions)
+    elif sessions.filter(session_key=store.session_key).exists():
         logout(request)
         revoked = 1
     else:
-        revoked, _ = sessions.delete()
+        revoked, _ = sessions.filter(token_hash__isnull=True).delete()
 
     if revoked:
         _revoked(
@@ -220,7 +243,8 @@ def revoke_session(request: HttpRequest, session_id: str) -> bool:
 def revoke_other_sessions(request: HttpRequest) -> int:
     """Sign out the signed-in user's other active sessions, keeping this one.
 
-    Sends ``before_session_revoke`` and, if any session was signed out,
+    Their bearer tokens are revoked with their other browser sessions. Sends
+    ``before_session_revoke`` and, if any session was signed out,
     ``session_revoked``. Returns how many were revoked: only sessions that
     ``list_sessions`` shows count. Expired ones are left for
     ``clearsessions``, and those that Django already treats as logged out are
@@ -243,21 +267,37 @@ def revoke_other_sessions(request: HttpRequest) -> int:
     if store.session_key is not None:
         sessions = sessions.exclude(session_key=store.session_key)
 
+    browsers = sessions.filter(token_hash__isnull=True)
     signed_in = [
         session.public_id
-        for session in sessions
+        for session in browsers
         if _signed_in(session.get_decoded(), user)
     ]
 
-    deleted, _ = sessions.filter(public_id__in=signed_in).delete()
-    if deleted:
+    # Both kinds or neither: a failure must not leave half of them signed in
+    # without saying so.
+    with transaction.atomic(using=store.alias):
+        deleted, _ = browsers.filter(public_id__in=signed_in).delete()
+        revoked = deleted + _revoke_tokens(sessions)
+    if revoked:
         _revoked(
             request,
             store.alias,
             user,
             scope="others",
             session_id=None,
-            revoked_count=deleted,
+            revoked_count=revoked,
         )
 
-    return deleted
+    return revoked
+
+
+def _revoke_tokens(sessions: QuerySet[Session]) -> int:
+    """Mark the bearer tokens' sessions among ``sessions`` revoked.
+
+    Their rows stay, unlike a browser session's, until they would have
+    expired. Returns how many were revoked now.
+    """
+    return sessions.filter(token_hash__isnull=False, revoked_at__isnull=True).update(
+        revoked_at=timezone.now()
+    )

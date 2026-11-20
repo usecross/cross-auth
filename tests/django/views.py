@@ -9,6 +9,7 @@ from cross_auth.django.sessions import (
     revoke_other_sessions,
     revoke_session,
 )
+from cross_auth.django.tokens import authenticate_bearer
 
 
 def home(request: HttpRequest) -> HttpResponse:
@@ -45,4 +46,19 @@ def sessions(request: HttpRequest) -> HttpResponse:
         return JsonResponse({"revoked": revoke_other_sessions(request)})
     return JsonResponse(
         {"sessions": [asdict(session) for session in list_sessions(request)]}
+    )
+
+
+def me(request: HttpRequest) -> HttpResponse:
+    """An API view for the OAuth server's clients, as an application writes one."""
+    authenticated = authenticate_bearer(request)
+    if authenticated is None:
+        return JsonResponse({"error": "invalid_token"}, status=401)
+    return JsonResponse(
+        {
+            "user_id": str(authenticated.user.pk),
+            "client_id": authenticated.session.client_id,
+            "session_id": str(authenticated.session.id),
+            "django_user": request.user.is_authenticated,
+        }
     )

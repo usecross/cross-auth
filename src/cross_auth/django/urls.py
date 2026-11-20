@@ -13,6 +13,12 @@ app_name = "cross_auth"
 urlpatterns = [
     path("<str:provider>/login/", views.login, name="login"),
     path("<str:provider>/link/", views.link, name="link"),
+    # The OAuth server's views, for SPA and native clients. Like the callback,
+    # they have no trailing slash: clients build these addresses themselves,
+    # and a POST cannot be redirected to add one.
+    path("<str:provider>/authorize", views.authorize, name="authorize"),
+    path("token", views.token, name="token"),
+    path("logout", views.logout, name="logout"),
     # Cross Auth derives the callback URL from the login and link URLs by
     # replacing their last segment, so it stays a sibling without a slash.
     path("<str:provider>/callback", views.callback, name="callback"),

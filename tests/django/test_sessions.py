@@ -30,11 +30,13 @@ from django.db import IntegrityError, OperationalError, connection
 from django.test import Client, RequestFactory, override_settings
 from django.test.utils import CaptureQueriesContext
 
+from cross_auth._session import create_session
 from cross_auth.django.models import Session
 from cross_auth.django.sessions import (
     LOGIN_METHOD_SESSION_KEY,
     SessionStore,
 )
+from cross_auth.django.storage import DjangoSessionRecord, DjangoSessionStorage
 
 from .fake_google import FakeGoogle
 from .support import connect, csrf_post, make_user, sign_in, whoami
@@ -432,6 +434,7 @@ class TestListing:
             "last_activity": "2026-10-30T12:00:00Z",
             "expires_at": phone_row.expire_date.isoformat().replace("+00:00", "Z"),
             "is_current": False,
+            "client_id": None,
         }
         assert Session.objects.filter(user=user).count() == 3
         assert [s["user_agent"] for s in someone_elses] == ["Someone else"]
@@ -1076,3 +1079,211 @@ class TestRevokeSignals:
         assert self.session_signals() == []
         # The expired session is left for clearsessions.
         assert Session.objects.filter(pk=stored(old).pk).exists()
+
+
+def issue_token(user: AbstractBaseUser) -> DjangoSessionRecord:
+    """The session of a bearer token, as the OAuth server's token view stores one."""
+    _, record = create_session(
+        str(user.pk),
+        DjangoSessionStorage(),
+        metadata={
+            "client_id": "spa",
+            "user_agent": "ExampleApp/3.2",
+            "ip": "198.51.100.9",
+        },
+        login_method="google",
+    )
+    assert isinstance(record, DjangoSessionRecord)
+    return record
+
+
+def status_of(record: DjangoSessionRecord) -> str:
+    current = DjangoSessionStorage().get_any(record.id)
+    assert current is not None
+    return current.status
+
+
+class TestBearerTokens:
+    """The helpers treat a bearer token's session as one more of the user's."""
+
+    @pytest.fixture(autouse=True)
+    def recorded(self) -> Iterator[None]:
+        signals.events.clear()
+        signals.handlers.clear()
+        yield
+        signals.events.clear()
+        signals.handlers.clear()
+
+    def test_lists_tokens_with_the_browser_sessions(self, google: FakeGoogle) -> None:
+        user = password_user()
+        laptop = browser()
+        with time_machine.travel(T0, tick=False):
+            sign_in(laptop, google)
+        with time_machine.travel(T0 + timedelta(minutes=1), tick=False):
+            token = issue_token(user)
+
+        with time_machine.travel(T0 + timedelta(minutes=2), tick=False):
+            sessions = listed(laptop)
+
+        assert [(s["client_id"], s["is_current"]) for s in sessions] == [
+            ("spa", False),
+            (None, True),
+        ]
+        assert sessions[0] == {
+            "id": str(token.id),
+            "login_method": "google",
+            "user_agent": "ExampleApp/3.2",
+            "ip": "198.51.100.9",
+            "created_at": "2026-10-30T12:01:00Z",
+            "last_activity": "2026-10-30T12:01:00Z",
+            "expires_at": "2026-10-31T12:01:00Z",
+            "is_current": False,
+            "client_id": "spa",
+        }
+
+    def test_lists_only_the_users_own_active_tokens(self, google: FakeGoogle) -> None:
+        user = password_user()
+        other = make_user("other@example.com")
+        laptop = browser()
+        sign_in(laptop, google)
+        active = issue_token(user)
+        revoked = issue_token(user)
+        DjangoSessionStorage().revoke(revoked.id, revoked_at=datetime.now(timezone.utc))
+        expired = issue_token(user)
+        Session.objects.filter(public_id=expired.id).update(
+            expire_date=T0 - timedelta(days=1)
+        )
+        issue_token(other)
+
+        tokens = [s["id"] for s in listed(laptop) if s["client_id"] is not None]
+
+        assert tokens == [str(active.id)]
+
+    def test_revokes_one_token_and_keeps_its_row(self, google: FakeGoogle) -> None:
+        user = password_user()
+        laptop = browser()
+        sign_in(laptop, google)
+        token, kept = issue_token(user), issue_token(user)
+
+        response = csrf_post(laptop, "/sessions/", {"id": str(token.id)})
+
+        assert response.json() == {"revoked": True}
+        assert status_of(token) == "revoked"
+        assert status_of(kept) == "active"
+        assert whoami(laptop)["authenticated"] is True
+        assert str(token.id) not in [s["id"] for s in listed(laptop)]
+        # Revoked once: its time does not move.
+        row = Session.objects.get(public_id=token.id)
+        assert csrf_post(laptop, "/sessions/", {"id": str(token.id)}).json() == {
+            "revoked": False
+        }
+        assert Session.objects.get(public_id=token.id).revoked_at == row.revoked_at
+
+    def test_never_revokes_another_users_token(self, google: FakeGoogle) -> None:
+        password_user()
+        theirs = issue_token(make_user("other@example.com"))
+        laptop = browser()
+        sign_in(laptop, google)
+
+        response = csrf_post(laptop, "/sessions/", {"id": str(theirs.id)})
+
+        assert response.json() == {"revoked": False}
+        assert csrf_post(laptop, "/sessions/").json() == {"revoked": 0}
+        assert status_of(theirs) == "active"
+        assert signals.events == [] or "session_revoked" not in [
+            name for name, _ in signals.events
+        ]
+
+    def test_revoking_the_other_sessions_revokes_tokens_too(
+        self, google: FakeGoogle
+    ) -> None:
+        user = password_user()
+        current, phone = browser(), browser()
+        sign_in(current, google)
+        sign_in(phone, google)
+        active = issue_token(user)
+        already = issue_token(user)
+        earlier = datetime.now(timezone.utc) - timedelta(hours=1)
+        DjangoSessionStorage().revoke(already.id, revoked_at=earlier)
+        expired = issue_token(user)
+        Session.objects.filter(public_id=expired.id).update(
+            expire_date=T0 - timedelta(days=1)
+        )
+        theirs = issue_token(make_user("other@example.com"))
+        signals.events.clear()
+
+        response = csrf_post(current, "/sessions/")
+
+        # The phone's browser session and the one active token.
+        assert response.json() == {"revoked": 2}
+        assert whoami(current)["authenticated"] is True
+        assert whoami(phone)["authenticated"] is False
+        assert status_of(active) == "revoked"
+        assert status_of(theirs) == "active"
+        assert Session.objects.get(public_id=already.id).revoked_at == earlier
+        assert Session.objects.get(public_id=expired.id).revoked_at is None
+        [after] = [
+            kwargs for name, kwargs in signals.events if name == "session_revoked"
+        ]
+        assert (after["scope"], after["revoked_count"]) == ("others", 2)
+
+    def test_revoking_a_token_sends_the_session_signals(
+        self, google: FakeGoogle
+    ) -> None:
+        user = password_user()
+        laptop = browser()
+        sign_in(laptop, google)
+        token = issue_token(user)
+        signals.events.clear()
+
+        csrf_post(laptop, "/sessions/", {"id": str(token.id)})
+
+        events = [
+            (name, kwargs)
+            for name, kwargs in signals.events
+            if name in {"before_session_revoke", "session_revoked", "user_logged_out"}
+        ]
+        assert [name for name, _ in events] == [
+            "before_session_revoke",
+            "session_revoked",
+        ]
+        [(_, before), (_, after)] = events
+        assert (before["user_id"], before["scope"], before["session_id"]) == (
+            str(user.pk),
+            "one",
+            str(token.id),
+        )
+        assert (after["scope"], after["session_id"], after["revoked_count"]) == (
+            "one",
+            str(token.id),
+            1,
+        )
+
+    def test_before_session_revoke_can_keep_a_token(self, google: FakeGoogle) -> None:
+        user = password_user()
+        laptop = browser()
+        sign_in(laptop, google)
+        token = issue_token(user)
+
+        def refuse(**kwargs: Any) -> None:
+            raise PermissionDenied("Not allowed.")
+
+        signals.handlers["before_session_revoke"] = refuse
+
+        assert csrf_post(laptop, "/sessions/", {"id": str(token.id)}).status_code == 403
+        assert csrf_post(laptop, "/sessions/").status_code == 403
+        assert status_of(token) == "active"
+
+    def test_a_password_change_does_not_end_a_token(self, google: FakeGoogle) -> None:
+        # Django ends the user's other browser sessions through their auth
+        # hash. A token has none: revoke_other_sessions is what ends it.
+        user = password_user()
+        laptop = browser()
+        sign_in(laptop, google)
+        token = issue_token(user)
+
+        change_password(laptop)
+
+        assert str(token.id) in [s["id"] for s in listed(laptop)]
+        assert csrf_post(laptop, "/sessions/").json() == {"revoked": 1}
+        assert status_of(token) == "revoked"

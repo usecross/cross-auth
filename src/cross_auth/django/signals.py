@@ -14,6 +14,11 @@ already created its user before ``before_login`` runs. Success signals follow
 their completed state write, account commit or saved session; user and account
 notifications carry native model instances.
 
+A refusal during the OAuth server's sign-in for one of your clients goes to
+the client instead, as ``access_denied`` with the exception's message as its
+``error_description``: at the client's redirect URI from the authorize view
+and the callback, and as JSON from the token and logout views.
+
 Signals are sent with ``Signal.send()``: a receiver's exception propagates and
 return values are ignored.
 
@@ -27,14 +32,19 @@ that signal belongs to failed calls to Django's ``authenticate()``.
 from django.dispatch import Signal
 
 before_authorization = Signal()
-"""Sent by the login and link views before they redirect to the provider.
+"""Sent by the login, link and authorize views before they redirect to the
+provider.
 
-Arguments: ``flow`` (``"login"`` or ``"link"``) and ``user_id``, the signed-in
-user's for ``"link"`` and ``None`` for ``"login"``. Refusing stores no state.
+Arguments: ``flow`` (``"login"``, ``"link"`` or ``"authorize"``, the OAuth
+server's sign-in for one of your clients) and ``user_id``, the signed-in
+user's for ``"link"`` and ``None`` otherwise. Refusing stores no state. The
+authorize view sends it only for a request whose client and redirect URI are
+registered.
 """
 
 authorization_started = Signal()
-"""Sent once the login or link view stored its state, before the redirect.
+"""Sent once the login, link or authorize view stored its state, before the
+redirect.
 
 Arguments: ``flow``. For ``"link"``, ``request.user`` is the user linking.
 """
@@ -47,7 +57,7 @@ The state, browser binding, PKCE code exchange and ID token (signature,
 audience, nonce) have all been checked. Arguments: ``flow``,
 ``provider_user_id``, ``email`` and ``email_verified`` as the provider
 reported them, and ``user_id``, the linking user's for ``"link"`` and ``None``
-for ``"login"``.
+for ``"login"`` and ``"authorize"``.
 """
 
 before_user_create = Signal()
@@ -106,6 +116,12 @@ before_login = Signal()
 Arguments: ``user_id`` (the primary key as a string) and ``email``. On a first
 sign-in the user already exists; refuse in ``before_user_create`` to stop
 sign-ups.
+
+A sign-in for one of the OAuth server's clients sends it from the token view,
+when the client exchanges its code for a bearer token: the callback has
+already sent the client that code. Refusing there issues no token, and the
+client gets ``access_denied`` as JSON. It gets no ``flow`` argument there
+either, as in a browser sign-in.
 """
 
 after_login = Signal()
@@ -113,6 +129,10 @@ after_login = Signal()
 
 Arguments: ``user``, the native user. Django's ``user_logged_in`` was sent
 before it. A failing receiver cannot undo the login.
+
+The token view sends it once a bearer token's session is stored. That is not
+a Django login: ``user_logged_in`` is not sent and ``request.user`` is not
+the user.
 """
 
 before_social_account_disconnect = Signal()
@@ -132,19 +152,23 @@ Arguments: ``social_account``, the removed ``cross_auth.SocialAccount``; its
 
 before_session_revoke = Signal()
 """Sent by ``revoke_session`` and ``revoke_other_sessions`` in
-``cross_auth.django.sessions`` before they sign out any session.
+``cross_auth.django.sessions`` before they sign out any session, and by the
+OAuth server's logout view before it revokes bearer tokens.
 
-Arguments: ``user_id``, ``scope`` (``"one"`` for ``revoke_session``,
-``"others"`` for ``revoke_other_sessions``) and ``session_id``, the session's
-``id`` for ``"one"`` and ``None`` for ``"others"``. ``revoke_session`` sends it
-only for an active session of the signed-in user. No ``provider``. Refusing
-signs nothing out.
+Arguments: ``user_id``, ``scope`` and ``session_id``. ``scope`` is ``"one"``
+for ``revoke_session`` and for a logout of the request's own token,
+``"others"`` for ``revoke_other_sessions``, and ``"all"`` for a logout of
+every bearer token of the user. ``session_id`` is the session's ``id`` for
+``"one"`` and ``None`` otherwise. It is sent only for an active session of
+the user. No ``provider``. Refusing signs nothing out; the logout view then
+answers ``access_denied`` as JSON in place of Django's 403 response.
 """
 
 session_revoked = Signal()
 """Sent once sessions were signed out; not sent when none were.
 
-Arguments: ``user`` (``request.user``, as Django's ``user_logged_out`` sends
-it), ``scope``, ``session_id`` and ``revoked_count``, how many sessions were
-signed out. No ``provider``.
+Arguments: ``user``, ``scope``, ``session_id`` and ``revoked_count``, how many
+sessions were signed out. ``user`` is ``request.user``, as Django's
+``user_logged_out`` sends it; from the logout view, where ``request.user`` is
+not signed in, it is the token's user. No ``provider``.
 """

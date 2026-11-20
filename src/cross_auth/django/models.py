@@ -91,13 +91,20 @@ class ExpiringValue(models.Model):
 
 
 class Session(AbstractBaseSession):
-    """A Django session that knows its user, login method and device.
+    """A Django session that knows its user, login method and device, or the
+    session of a bearer token.
 
     The session store of ``SESSION_ENGINE = "cross_auth.django.sessions"``
-    keeps sessions here instead of in ``django_session``, and fills the
-    columns from the session's data and its request each time it saves.
+    keeps browser sessions here instead of in ``django_session``, and fills
+    the columns from the session's data and its request each time it saves.
     Read them, but change sessions through Django or the helpers in
     ``cross_auth.django.sessions``.
+
+    The OAuth server (``CROSS_AUTH["OAUTH_SERVER"]``) keeps the session of
+    each bearer token it issues here too, through ``DjangoSessionStorage``.
+    Such a row has a ``token_hash``. Its ``session_key`` and ``session_data``
+    only fill the columns Django requires: the key is random and given to
+    nobody, and the session store never loads the row.
 
     ``session_key`` is the session cookie's value: never show it. Pages and
     forms name a session by ``public_id``.
@@ -122,6 +129,23 @@ class Session(AbstractBaseSession):
     ip = models.GenericIPAddressField(null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
     last_activity = models.DateTimeField(default=timezone.now)
+    # When expire_date was last set: at each save of a browser session, and
+    # when a bearer token's session is issued or rolled forward.
+    updated_at = models.DateTimeField(default=timezone.now)
+    # The hash of the bearer token this session belongs to; null for a
+    # browser session. The token itself is not stored.
+    token_hash = models.CharField(
+        max_length=255, null=True, blank=True, unique=True, editable=False
+    )
+    # The OAuth client a bearer token was issued to; null for a browser
+    # session.
+    client_id = models.CharField(max_length=255, null=True, blank=True)
+    # Kept because Cross Auth's session records have one. The token view
+    # gives it no value: an OAuthClient has no name.
+    client_name = models.CharField(max_length=255, null=True, blank=True)
+    # Set when a bearer token's session is revoked. The row stays until it
+    # expires. A revoked browser session is deleted instead, so it has none.
+    revoked_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self) -> str:
         return str(self.public_id)

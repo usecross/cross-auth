@@ -4,6 +4,7 @@ from typing import Any
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.base_user import AbstractBaseUser
+from django.core.exceptions import PermissionDenied
 
 from cross_auth.django.conf import create_user
 
@@ -80,3 +81,14 @@ def with_duplicate_profile(
     )
     Profile.objects.using(using).create(user=user, display_name="duplicate")
     return user
+
+
+def refuse_everyone(
+    *,
+    email: str,
+    user_info: Mapping[str, Any],
+    extra_fields: Mapping[str, Any],
+    using: str,
+) -> AbstractBaseUser:
+    """Refuse the sign-up, as a factory that keeps an allow list would."""
+    raise PermissionDenied("This account has no access.")

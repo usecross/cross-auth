@@ -8,5 +8,6 @@ urlpatterns = [
     path("private/", views.private, name="private"),
     path("remember/", views.remember),
     path("sessions/", views.sessions),
+    path("api/me", views.me),
     path("", views.home, name="home"),
 ]
