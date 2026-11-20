@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from django.conf import settings
 from django.contrib.sessions.base_session import AbstractBaseSession
 from django.db import models
 from django.utils import timezone
+
+from .conf import get_settings
 
 if TYPE_CHECKING:
     from .sessions import SessionStore
@@ -19,7 +20,8 @@ class SocialAccount(models.Model):
     One row owns each provider identity: the database rejects a second user
     connecting the same ``(provider, provider_user_id)``. The provider's email
     and its verification flag stay on this row; they never change the user's
-    own email. Provider access and refresh tokens are not stored.
+    own email. Provider access and refresh tokens are stored, encrypted, only
+    when ``CROSS_AUTH["PROVIDER_TOKENS"]`` is set.
     """
 
     # Django adds these fields; declare them for type checkers. ``user_id``
@@ -52,27 +54,29 @@ class SocialAccount(models.Model):
     def __str__(self) -> str:
         return f"{self.provider}:{self.provider_user_id}"
 
-    # The pilot keeps provider credentials out of the database. Cross Auth's
-    # SocialAccount protocol reads them, so they are always empty here.
+    # Providers' credentials, kept only when CROSS_AUTH["PROVIDER_TOKENS"] is
+    # set. The tokens are stored as the application's encrypt function returns
+    # them; read them through access_token and refresh_token.
+    encrypted_access_token = models.TextField(null=True, blank=True, editable=False)
+    encrypted_refresh_token = models.TextField(null=True, blank=True, editable=False)
+    access_token_expires_at = models.DateTimeField(null=True, blank=True)
+    refresh_token_expires_at = models.DateTimeField(null=True, blank=True)
+    scope = models.TextField(null=True, blank=True)
+
     @property
     def access_token(self) -> str | None:
-        return None
+        return _decrypt(self.encrypted_access_token)
 
     @property
     def refresh_token(self) -> str | None:
-        return None
+        return _decrypt(self.encrypted_refresh_token)
 
-    @property
-    def access_token_expires_at(self) -> datetime | None:
-        return None
 
-    @property
-    def refresh_token_expires_at(self) -> datetime | None:
+def _decrypt(value: str | None) -> str | None:
+    tokens = get_settings().provider_tokens
+    if value is None or tokens is None:
         return None
-
-    @property
-    def scope(self) -> str | None:
-        return None
+    return tokens.decrypt(value)
 
 
 class ExpiringValue(models.Model):

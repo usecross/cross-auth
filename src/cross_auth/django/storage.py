@@ -14,7 +14,8 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from datetime import timezone as dt_timezone
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from django.contrib.auth import get_user_model
 from django.contrib.sessions.backends.base import VALID_KEY_CHARS
@@ -95,6 +96,61 @@ def _coerce_pk(model: type[Model], value: object) -> object:
         return model._meta.pk.to_python(value)
     except (TypeError, ValueError, ValidationError):
         return _NO_MATCH
+
+
+class _Credentials(TypedDict):
+    """The SocialAccount fields that hold a provider's credentials."""
+
+    encrypted_access_token: str | None
+    encrypted_refresh_token: str | None
+    access_token_expires_at: datetime | None
+    refresh_token_expires_at: datetime | None
+    scope: str | None
+
+
+def _utc(value: datetime | None) -> datetime | None:
+    """A naive time from a hook counts as UTC, as in the SQLModel storage.
+
+    Django would otherwise read it in ``TIME_ZONE`` and store another instant.
+    """
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=dt_timezone.utc)
+
+
+def _credentials(
+    *,
+    access_token: str | None,
+    refresh_token: str | None,
+    access_token_expires_at: datetime | None,
+    refresh_token_expires_at: datetime | None,
+    scope: str | None,
+) -> _Credentials:
+    """The credential fields to write, encrypted.
+
+    Without ``CROSS_AUTH["PROVIDER_TOKENS"]`` they are all empty, so turning
+    the setting off clears a row's credentials the next time it is written.
+    """
+    tokens = get_settings().provider_tokens
+    if tokens is None:
+        access_token = refresh_token = scope = None
+        access_token_expires_at = refresh_token_expires_at = None
+
+    def encrypt(value: str | None) -> str | None:
+        if value is None or tokens is None:
+            return None
+        encrypted = tokens.encrypt(value)
+        if not isinstance(encrypted, str):
+            raise TypeError("CROSS_AUTH['PROVIDER_TOKENS']['encrypt'] must return str")
+        return encrypted
+
+    return _Credentials(
+        encrypted_access_token=encrypt(access_token),
+        encrypted_refresh_token=encrypt(refresh_token),
+        access_token_expires_at=_utc(access_token_expires_at),
+        refresh_token_expires_at=_utc(refresh_token_expires_at),
+        scope=scope,
+    )
 
 
 def _check_no_extra_fields(extra_fields: Mapping[str, Any] | None) -> None:
@@ -233,6 +289,13 @@ class DjangoAccountsStorage:
                     provider_email=data["provider_email"],
                     provider_email_verified=data["provider_email_verified"],
                     is_login_method=data["is_login_method"],
+                    **_credentials(
+                        access_token=data["access_token"],
+                        refresh_token=data["refresh_token"],
+                        access_token_expires_at=data["access_token_expires_at"],
+                        refresh_token_expires_at=data["refresh_token_expires_at"],
+                        scope=data["scope"],
+                    ),
                 )
         except IntegrityError as error:
             if data is not None and self.has_social_account(
@@ -283,6 +346,13 @@ class DjangoAccountsStorage:
                     provider_email=provider_email,
                     provider_email_verified=provider_email_verified,
                     is_login_method=is_login_method,
+                    **_credentials(
+                        access_token=access_token,
+                        refresh_token=refresh_token,
+                        access_token_expires_at=access_token_expires_at,
+                        refresh_token_expires_at=refresh_token_expires_at,
+                        scope=scope,
+                    ),
                 )
         except IntegrityError as error:
             existing = self.find_social_account(
@@ -319,6 +389,13 @@ class DjangoAccountsStorage:
             "provider_email": provider_email,
             "provider_email_verified": provider_email_verified,
             "updated_at": timezone.now(),
+            **_credentials(
+                access_token=access_token,
+                refresh_token=refresh_token,
+                access_token_expires_at=access_token_expires_at,
+                refresh_token_expires_at=refresh_token_expires_at,
+                scope=scope,
+            ),
         }
         # Exclusive identity ownership means promotion cannot create a second
         # login owner.

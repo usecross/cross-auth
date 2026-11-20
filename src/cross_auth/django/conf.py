@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cache
@@ -83,6 +83,17 @@ class OAuthServerSettings:
 
 
 @dataclass(frozen=True)
+class ProviderTokenSettings:
+    """``CROSS_AUTH["PROVIDER_TOKENS"]``: keep providers' tokens, encrypted."""
+
+    # Turns a token into the text stored in its place.
+    encrypt: Callable[[str], str]
+    # Turns stored text back into the token, or returns None when it cannot,
+    # for example after a key change. The token then counts as missing.
+    decrypt: Callable[[str], str | None]
+
+
+@dataclass(frozen=True)
 class CrossAuthSettings:
     providers: Mapping[str, OAuth2Provider]
     create_user: UserFactory
@@ -101,6 +112,8 @@ class CrossAuthSettings:
     session_store_ip: bool
     # None: the authorize, token and logout views answer "not found".
     oauth_server: OAuthServerSettings | None
+    # None: providers' access and refresh tokens are not stored.
+    provider_tokens: ProviderTokenSettings | None
 
 
 _KNOWN_KEYS = frozenset(
@@ -114,10 +127,12 @@ _KNOWN_KEYS = frozenset(
         "SESSION_ACTIVITY_INTERVAL",
         "SESSION_STORE_IP",
         "OAUTH_SERVER",
+        "PROVIDER_TOKENS",
     }
 )
 _ACCOUNT_LINKING_KEYS = frozenset({"enabled", "allow_different_emails"})
 _OAUTH_SERVER_KEYS = frozenset({"get_client", "token_max_age", "token_update_age"})
+_PROVIDER_TOKEN_KEYS = ("encrypt", "decrypt")
 # A day, like Cross Auth's sessions elsewhere.
 _DEFAULT_TOKEN_MAX_AGE = 24 * 60 * 60
 # Ten years. A token's expiry is now plus its age, which must stay a date
@@ -252,6 +267,44 @@ def _oauth_server_settings(raw: Mapping[Any, object]) -> OAuthServerSettings:
     )
 
 
+def _provider_tokens(value: object) -> ProviderTokenSettings | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ImproperlyConfigured("CROSS_AUTH['PROVIDER_TOKENS'] must be a dict")
+    if set(value) != set(_PROVIDER_TOKEN_KEYS):
+        raise ImproperlyConfigured(
+            "CROSS_AUTH['PROVIDER_TOKENS'] needs exactly the keys 'encrypt' and "
+            "'decrypt'"
+        )
+    if not settings.USE_TZ:
+        # Core passes token expiry times as aware datetimes.
+        raise ImproperlyConfigured("CROSS_AUTH['PROVIDER_TOKENS'] needs USE_TZ = True")
+    return _provider_token_settings(value)
+
+
+def _provider_token_settings(raw: Mapping[Any, object]) -> ProviderTokenSettings:
+    return ProviderTokenSettings(
+        encrypt=_token_function(raw, "encrypt"),
+        decrypt=_token_function(raw, "decrypt"),
+    )
+
+
+def _token_function(raw: Mapping[Any, object], key: str) -> Callable[[str], Any]:
+    path = raw[key]
+    if not isinstance(path, str):
+        raise ImproperlyConfigured(
+            f"CROSS_AUTH['PROVIDER_TOKENS']['{key}'] must be the dotted path of a "
+            "function"
+        )
+    function = import_string(path)
+    if not callable(function):
+        raise ImproperlyConfigured(
+            f"CROSS_AUTH['PROVIDER_TOKENS']['{key}'] {path!r} is not callable"
+        )
+    return function
+
+
 @cache
 def get_settings() -> CrossAuthSettings:
     raw: Mapping[str, Any] = getattr(settings, "CROSS_AUTH", {})
@@ -297,6 +350,7 @@ def get_settings() -> CrossAuthSettings:
         ),
         session_store_ip=_bool(raw, "SESSION_STORE_IP", True),
         oauth_server=_oauth_server(raw.get("OAUTH_SERVER")),
+        provider_tokens=_provider_tokens(raw.get("PROVIDER_TOKENS")),
     )
 
 
