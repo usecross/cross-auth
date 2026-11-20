@@ -14,7 +14,8 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from datetime import timezone as dt_timezone
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from django.contrib.auth import get_user_model
 from django.contrib.sessions.backends.base import VALID_KEY_CHARS
@@ -97,6 +98,26 @@ def _coerce_pk(model: type[Model], value: object) -> object:
         return _NO_MATCH
 
 
+class _Credentials(TypedDict):
+    """The SocialAccount fields that hold a provider's credentials."""
+
+    encrypted_access_token: str | None
+    encrypted_refresh_token: str | None
+    access_token_expires_at: datetime | None
+    refresh_token_expires_at: datetime | None
+    scope: str | None
+
+
+def _utc(value: datetime | None) -> datetime | None:
+    """A naive time from a hook counts as UTC, as in the SQLModel storage.
+
+    Django would otherwise read it in ``TIME_ZONE`` and store another instant.
+    """
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=dt_timezone.utc)
+
+
 def _credentials(
     *,
     access_token: str | None,
@@ -104,8 +125,8 @@ def _credentials(
     access_token_expires_at: datetime | None,
     refresh_token_expires_at: datetime | None,
     scope: str | None,
-) -> dict[str, Any]:
-    """The SocialAccount fields that hold a provider's credentials.
+) -> _Credentials:
+    """The credential fields to write, encrypted.
 
     Without ``CROSS_AUTH["PROVIDER_TOKENS"]`` they are all empty, so turning
     the setting off clears a row's credentials the next time it is written.
@@ -123,13 +144,13 @@ def _credentials(
             raise TypeError("CROSS_AUTH['PROVIDER_TOKENS']['encrypt'] must return str")
         return encrypted
 
-    return {
-        "encrypted_access_token": encrypt(access_token),
-        "encrypted_refresh_token": encrypt(refresh_token),
-        "access_token_expires_at": access_token_expires_at,
-        "refresh_token_expires_at": refresh_token_expires_at,
-        "scope": scope,
-    }
+    return _Credentials(
+        encrypted_access_token=encrypt(access_token),
+        encrypted_refresh_token=encrypt(refresh_token),
+        access_token_expires_at=_utc(access_token_expires_at),
+        refresh_token_expires_at=_utc(refresh_token_expires_at),
+        scope=scope,
+    )
 
 
 def _check_no_extra_fields(extra_fields: Mapping[str, Any] | None) -> None:

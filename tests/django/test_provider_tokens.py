@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -88,6 +88,19 @@ def test_tokens_are_stored_encrypted_and_read_back() -> None:
     assert row.refresh_token == "refresh"
     assert row.access_token_expires_at == expires
     assert row.scope == "openid email profile"
+
+
+@keeping_tokens()
+@override_settings(TIME_ZONE="America/New_York")
+def test_a_naive_expiry_counts_as_utc() -> None:
+    storage = DjangoAccountsStorage()
+    account = create_account(storage, identity_data(make_user("p@example.com").pk))
+
+    update(storage, account, access_token_expires_at=datetime(2026, 11, 20, 12, 0))
+
+    row = SocialAccount.objects.get(pk=account.pk)
+    # New York is five hours behind: read there, this would be 17:00 UTC.
+    assert row.access_token_expires_at == datetime(2026, 11, 20, 12, 0, tzinfo=UTC)
 
 
 @keeping_tokens()

@@ -284,23 +284,25 @@ def _provider_tokens(value: object) -> ProviderTokenSettings | None:
 
 
 def _provider_token_settings(raw: Mapping[Any, object]) -> ProviderTokenSettings:
-    functions: dict[str, Callable[[str], Any]] = {}
-    for key in _PROVIDER_TOKEN_KEYS:
-        path = raw[key]
-        if not isinstance(path, str):
-            raise ImproperlyConfigured(
-                f"CROSS_AUTH['PROVIDER_TOKENS']['{key}'] must be the dotted path "
-                "of a function"
-            )
-        function = import_string(path)
-        if not callable(function):
-            raise ImproperlyConfigured(
-                f"CROSS_AUTH['PROVIDER_TOKENS']['{key}'] {path!r} is not callable"
-            )
-        functions[key] = function
     return ProviderTokenSettings(
-        encrypt=functions["encrypt"], decrypt=functions["decrypt"]
+        encrypt=_token_function(raw, "encrypt"),
+        decrypt=_token_function(raw, "decrypt"),
     )
+
+
+def _token_function(raw: Mapping[Any, object], key: str) -> Callable[[str], Any]:
+    path = raw[key]
+    if not isinstance(path, str):
+        raise ImproperlyConfigured(
+            f"CROSS_AUTH['PROVIDER_TOKENS']['{key}'] must be the dotted path of a "
+            "function"
+        )
+    function = import_string(path)
+    if not callable(function):
+        raise ImproperlyConfigured(
+            f"CROSS_AUTH['PROVIDER_TOKENS']['{key}'] {path!r} is not callable"
+        )
+    return function
 
 
 @cache
