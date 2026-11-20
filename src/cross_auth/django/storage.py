@@ -37,6 +37,7 @@ from cross_auth._storage import User as CrossAuthUser
 from cross_auth.exceptions import CrossAuthException, InvalidCursorError
 from cross_auth.storage._cursor import decode_cursor, encode_cursor
 
+from ._session_management import end_sessions
 from .conf import get_settings
 from .models import ExpiringValue, Session, SocialAccount
 
@@ -439,11 +440,13 @@ class DjangoSecondaryStorage:
 
 @dataclass(frozen=True)
 class DjangoSessionRecord:
-    """A bearer token's session, as Cross Auth's ``SessionRecord`` reads it.
+    """A user's session, as Cross Auth's ``SessionRecord`` reads it.
 
-    ``id`` is the row's ``public_id``, which is safe to show and to send
-    back; the row's session key and token hash are not part of the record.
-    ``native`` is the row itself, as it was when the record was read.
+    It is a bearer token's session or a browser's; ``client_id`` is ``None``
+    for a browser's. ``id`` is the row's ``public_id``, which is safe to show
+    and to send back; the row's session key and token hash are not part of
+    the record. ``native`` is the row itself, as it was when the record was
+    read.
     """
 
     native: Session
@@ -528,12 +531,19 @@ def _public_id(session_id: object) -> uuid.UUID | None:
 
 
 class DjangoSessionStorage:
-    """Implements ``cross_auth.SessionStorage`` for the sessions of bearer tokens.
+    """Implements ``cross_auth.SessionStorage`` on ``cross_auth.django.models.Session``.
 
-    They are rows of ``cross_auth.django.models.Session`` with a
-    ``token_hash``. Browser sessions share the table, but this storage never
-    reads or changes them: Django's session store owns those. A session is
-    named by its ``public_id``.
+    It creates, finds, extends and records the use of the sessions of bearer
+    tokens: the rows with a ``token_hash``. With
+    ``SESSION_ENGINE = "cross_auth.django.sessions"`` the signed-in browser
+    sessions share the table, and this storage lists and revokes those too,
+    so a user's sessions are one list whichever way they signed in. Django's
+    session store still creates and saves them. A session is named by its
+    ``public_id``.
+
+    A browser session counts as active here until Django ends it. One that a
+    password change ended is only marked the next time its browser sends a
+    request, so until then it is still listed as active.
 
     A revoked session keeps its row, with ``revoked_at`` set, until it would
     have expired. ``clearsessions`` then deletes it if ``SESSION_ENGINE`` is
@@ -556,9 +566,17 @@ class DjangoSessionStorage:
         self._user_pk = user_model._meta.pk
 
     def _sessions(self) -> QuerySet[Session]:
+        """Every session of a user: bearer tokens' and signed-in browsers'."""
         # Read from the database that writes them: a replica could still show
         # a session that was just revoked.
-        return Session.objects.using(self.alias).filter(token_hash__isnull=False)
+        return Session.objects.using(self.alias).filter(user__isnull=False)
+
+    def _tokens(self) -> QuerySet[Session]:
+        """The sessions this storage issues, extends and records the use of.
+
+        Django's session store does that for browser sessions.
+        """
+        return self._sessions().filter(token_hash__isnull=False)
 
     def _user_sessions(self, user_id: object) -> QuerySet[Session]:
         try:
@@ -574,6 +592,9 @@ class DjangoSessionStorage:
             return self._sessions().none()
 
         return self._sessions().filter(public_id=public_id)
+
+    def _one_token(self, session_id: object) -> QuerySet[Session]:
+        return self._one(session_id).filter(token_hash__isnull=False)
 
     def on_commit(self, callback: CommitCallback) -> None:
         transaction.on_commit(callback, using=self.alias, robust=False)
@@ -617,7 +638,7 @@ class DjangoSessionStorage:
 
     def get(self, *, token_hash: str, now: datetime) -> DjangoSessionRecord | None:
         session = (
-            self._sessions()
+            self._tokens()
             # A session is active up to and including its expiry instant,
             # like cross_auth.session_status.
             .filter(
@@ -641,7 +662,7 @@ class DjangoSessionStorage:
         """
         try:
             with transaction.atomic(using=self.alias):
-                self._one(session.public_id).update(ip=None)
+                self._one_token(session.public_id).update(ip=None)
         except DatabaseError:
             logger.warning("Could not clear a session's IP", exc_info=True)
             return
@@ -717,7 +738,7 @@ class DjangoSessionStorage:
         expires_at: datetime,
         last_active_at: datetime | None = None,
     ) -> DjangoSessionRecord | None:
-        active = self._one(session_id).filter(
+        active = self._one_token(session_id).filter(
             revoked_at__isnull=True, expire_date__gte=updated_at
         )
         values: dict[str, object] = {
@@ -735,7 +756,7 @@ class DjangoSessionStorage:
             # Only move forward: a request that read the session before a
             # newer refresh committed must not roll its expiry back.
             if active.filter(updated_at__lt=updated_at).update(**values):
-                session = self._one(session_id).first()
+                session = self._one_token(session_id).first()
             else:
                 # Either the session stopped being active, or a newer refresh
                 # already moved it past updated_at; return it in the latter
@@ -761,7 +782,7 @@ class DjangoSessionStorage:
                 # Once per interval: when concurrent requests use the session,
                 # the first to commit records the use.
                 recorded = (
-                    self._one(session_id)
+                    self._one_token(session_id)
                     .filter(
                         revoked_at__isnull=True,
                         expire_date__gte=last_active_at,
@@ -769,7 +790,7 @@ class DjangoSessionStorage:
                     )
                     .update(last_activity=last_active_at)
                 )
-                session = self._one(session_id).first() if recorded else None
+                session = self._one_token(session_id).first() if recorded else None
         except DatabaseError:
             logger.warning("Could not record a session's activity", exc_info=True)
             return None
@@ -777,14 +798,11 @@ class DjangoSessionStorage:
         return None if session is None else DjangoSessionRecord(session)
 
     def revoke(self, session_id: object, *, revoked_at: datetime) -> bool:
-        return (
-            self._one(session_id)
-            # Don't shift the time of an already revoked session, and leave
-            # an expired one expired.
-            .filter(revoked_at__isnull=True, expire_date__gte=revoked_at)
-            .update(revoked_at=revoked_at)
-            > 0
-        )
+        # end_sessions leaves an already revoked session's time as it is;
+        # an expired session stays expired.
+        active = self._one(session_id).filter(expire_date__gte=revoked_at)
+
+        return end_sessions(active, at=revoked_at) > 0
 
     def revoke_all_for_user(
         self,
@@ -793,29 +811,22 @@ class DjangoSessionStorage:
         revoked_at: datetime,
         except_session_id: object | None = None,
     ) -> int:
-        """Revoke the user's active bearer tokens.
-
-        The user's browser sessions stay signed in: Django owns those. Use
-        ``revoke_other_sessions`` from ``cross_auth.django.sessions`` to sign
-        out both kinds.
-        """
-        sessions = self._user_sessions(user_id).filter(
-            revoked_at__isnull=True, expire_date__gte=revoked_at
-        )
+        """Revoke the user's active sessions: bearer tokens and browser sessions."""
+        sessions = self._user_sessions(user_id).filter(expire_date__gte=revoked_at)
         if except_session_id is not None:
             kept = _public_id(except_session_id)
             # An id that can't match any row excludes nothing.
             if kept is not None:
                 sessions = sessions.exclude(public_id=kept)
 
-        return sessions.update(revoked_at=revoked_at)
+        return end_sessions(sessions, at=revoked_at)
 
     def clear_expired(self) -> int:
-        """Delete expired sessions, revoked ones among them.
+        """Delete the expired sessions of bearer tokens, revoked ones among them.
 
-        ``clearsessions`` already does this when ``SESSION_ENGINE`` is
-        ``cross_auth.django.sessions``. With another engine, call it from
-        scheduled maintenance, not requests.
+        ``clearsessions`` already does this, for browser sessions too, when
+        ``SESSION_ENGINE`` is ``cross_auth.django.sessions``. With another
+        engine, call it from scheduled maintenance, not requests.
         """
-        deleted, _ = self._sessions().filter(expire_date__lt=timezone.now()).delete()
+        deleted, _ = self._tokens().filter(expire_date__lt=timezone.now()).delete()
         return deleted

@@ -1088,9 +1088,10 @@ class TestLogout:
         assert me(second).status_code == 401
         assert me(someone_else).status_code == 200
 
-    def test_scope_all_leaves_browser_sessions_signed_in(
+    def test_scope_all_cannot_reach_sessions_of_djangos_own_engine(
         self, google: FakeGoogle
     ) -> None:
+        # They are in django_session, not in Cross Auth's table.
         client = browser()
         sign_in(client, google)
         token = token_for(google)
@@ -1098,6 +1099,39 @@ class TestLogout:
         logout(token, {"scope": "all"})
 
         assert whoami(client)["authenticated"] is True
+
+    def test_scope_all_ends_browser_sessions_of_cross_auths_engine(
+        self, google: FakeGoogle
+    ) -> None:
+        middleware = [
+            "cross_auth.django.sessions.SessionMiddleware"
+            if name == "django.contrib.sessions.middleware.SessionMiddleware"
+            else name
+            for name in settings.MIDDLEWARE
+        ]
+        with override_settings(
+            SESSION_ENGINE="cross_auth.django.sessions", MIDDLEWARE=middleware
+        ):
+            client, someone_else = browser(), browser()
+            sign_in(client, google)
+            sign_in(someone_else, google, Account(sub="other", email="o@gmail.com"))
+            token = token_for(google)
+            signals.events.clear()
+
+            response = logout(token, {"scope": "all"})
+
+            assert response.status_code == 204
+            assert whoami(client)["authenticated"] is False
+            assert whoami(someone_else)["authenticated"] is True
+            assert me(token).status_code == 401
+            # The token and the browser session.
+            assert payload("session_revoked")["revoked_count"] == 2
+
+            # A logout of the request's own token ends only that token.
+            sign_in(client, google)
+            own = token_for(google)
+            assert logout(own).status_code == 204
+            assert whoami(client)["authenticated"] is True
 
     @pytest.mark.parametrize("token", [None, "not-a-token"])
     def test_without_a_token_to_revoke_it_still_answers_204(

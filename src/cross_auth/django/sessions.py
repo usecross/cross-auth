@@ -12,12 +12,17 @@ sessions can be listed and revoked with ``list_sessions``,
 ``revoke_session`` and ``revoke_other_sessions``. Only the ``db`` engine is
 provided; there is no cache or ``cached_db`` variant.
 
+A signed-in session that ends keeps its row, with ``revoked_at`` set and its
+data emptied, until it would have expired: when the user logs out, when it is
+revoked, or when Django ends it after a password change. The store treats
+such a row as gone. An anonymous session that ends is deleted.
+
 The same table holds the sessions of the bearer tokens that the OAuth server
 issues (``CROSS_AUTH["OAUTH_SERVER"]``). The helpers above list and revoke
 them with the browser sessions. This store never loads, changes or deletes
 one by its session key, so a token's row cannot serve as a session cookie.
 ``clear_expired``, and so ``clearsessions``, deletes expired rows of both
-kinds.
+kinds, revoked ones among them.
 """
 
 from __future__ import annotations
@@ -45,6 +50,7 @@ from django.utils import timezone
 from cross_auth._session import clean_ip, clean_user_agent
 
 from ._session_management import SessionInfo as SessionInfo
+from ._session_management import end_sessions
 from ._session_management import list_sessions as list_sessions
 from ._session_management import revoke_other_sessions as revoke_other_sessions
 from ._session_management import revoke_session as revoke_session
@@ -265,9 +271,7 @@ class SessionStore(_DatabaseSessionStore):
         if self._login_pending:
             columns.update(public_id=session.public_id, created_at=session.created_at)
 
-        return (
-            self._browser_sessions(using).filter(session_key=key).update(**columns) > 0
-        )
+        return self._live_sessions(using).filter(session_key=key).update(**columns) > 0
 
     def _browser_sessions(self, using: str) -> QuerySet[Session]:
         """The rows this store may load, change and delete.
@@ -279,6 +283,15 @@ class SessionStore(_DatabaseSessionStore):
         """
         return self.model.objects.using(using).filter(token_hash__isnull=True)
 
+    def _live_sessions(self, using: str) -> QuerySet[Session]:
+        """The browser sessions that have not ended.
+
+        A revoked one keeps its row until it would have expired, but nothing
+        may load it or write to it again: a request that still holds its key
+        must not bring it back.
+        """
+        return self._browser_sessions(using).filter(revoked_at__isnull=True)
+
     def _saved(self, session: Session) -> None:
         self._row = _Row.of(session)
         self._login_pending = False
@@ -288,7 +301,7 @@ class SessionStore(_DatabaseSessionStore):
 
     def _get_session_from_db(self) -> Session | None:
         session = (
-            self._browser_sessions(self.alias)
+            self._live_sessions(self.alias)
             .filter(session_key=self.session_key, expire_date__gt=timezone.now())
             .first()
         )
@@ -313,8 +326,16 @@ class SessionStore(_DatabaseSessionStore):
 
     def delete(self, session_key: str | None = None) -> None:
         key = session_key if session_key is not None else self.session_key
-        if key is not None:
-            self._browser_sessions(self.alias).filter(session_key=key).delete()
+        if key is None:
+            return
+
+        sessions = self._browser_sessions(self.alias).filter(session_key=key)
+        # Nobody misses an anonymous session. One that signed a user in keeps
+        # its row, marked revoked: a logout, or Django ending it after a
+        # password change. In this order, a row that gets its user between
+        # the two statements is still ended rather than left signed in.
+        sessions.filter(user__isnull=True).delete()
+        end_sessions(sessions.filter(user__isnull=False))
 
     async def adelete(self, session_key: str | None = None) -> None:
         await sync_to_async(self.delete)(session_key)
@@ -351,7 +372,7 @@ class SessionStore(_DatabaseSessionStore):
         conf = get_settings()
         now = timezone.now()
         since = now - conf.session_activity_interval
-        rows = self._browser_sessions(self.alias).filter(session_key=row.session_key)
+        rows = self._live_sessions(self.alias).filter(session_key=row.session_key)
         if row.last_activity > since:
             if row.ip is not None and not conf.session_store_ip:
                 if self._update(rows, ip=None):

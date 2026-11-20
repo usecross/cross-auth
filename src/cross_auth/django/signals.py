@@ -158,7 +158,7 @@ OAuth server's logout view before it revokes bearer tokens.
 Arguments: ``user_id``, ``scope`` and ``session_id``. ``scope`` is ``"one"``
 for ``revoke_session`` and for a logout of the request's own token,
 ``"others"`` for ``revoke_other_sessions``, and ``"all"`` for a logout of
-every bearer token of the user. ``session_id`` is the session's ``id`` for
+every session of the user. ``session_id`` is the session's ``id`` for
 ``"one"`` and ``None`` otherwise. It is sent only for an active session of
 the user. No ``provider``. Refusing signs nothing out; the logout view then
 answers ``access_denied`` as JSON in place of Django's 403 response.

@@ -635,12 +635,18 @@ Each time Django saves a session, Cross Auth fills these columns of
 | `last_activity` | When a request last used the session. Saving the session sets it; otherwise it is updated at most once per `SESSION_ACTIVITY_INTERVAL`, five minutes by default, and only by requests that read the session or the user.                                                                |
 | `public_id`     | A random ID that names the session on your pages, because `session_key` is the session cookie itself and must never be shown. Like `created_at`, each login gives a new one and a new key without a login keeps it, so a page listing the sessions stays valid after a password change. |
 
-Logging out, `clearsessions` and deleting a user delete their rows.
+A session that signed a user in keeps its row when it ends before it expires: on
+logout, when it is [revoked](#list-and-revoke-sessions), or when Django ends it
+after a password change. The row gets a `revoked_at` time, its session data is
+emptied, and its cookie no longer loads it. `clearsessions` deletes it once it
+would have expired. An anonymous session that ends is deleted at once, and
+deleting a user deletes their rows.
 
 The table has five more columns. `updated_at` is when the session's expiry was
-last set, which for a browser session is each time Django saves it.
-`token_hash`, `client_id`, `client_name` and `revoked_at` are empty for a
-browser session: they belong to the bearer tokens of the
+last set, which for a browser session is each time Django saves it. `revoked_at`
+is set when a session of either kind ends before it expires, as described above.
+`token_hash`, `client_id` and `client_name` are empty for a browser session:
+they belong to the bearer tokens of the
 [OAuth server](#sign-in-for-spa-and-native-clients), which leaves `client_name`
 empty too.
 
@@ -921,9 +927,15 @@ None of the three has a trailing slash. A sign-in takes four steps:
    `Authorization: Bearer <token>`.
 
 To sign out, the client posts to the logout view with the same header. That
-revokes the token; a JSON body of `{"scope": "all"}` revokes every bearer token
-of the user. It answers 204, also when there was no token to revoke, and it does
-not end a browser's Django session.
+revokes the token. A JSON body of `{"scope": "all"}` revokes every session of
+the user instead: their bearer tokens and, with Cross Auth's
+[session engine](#sessions), their browser sessions. It answers 204, also when
+there was no token to revoke.
+
+The logout view is for clients. It reads no cookie, so a browser's own "Sign
+out" form must post to Django's logout view, not to this one. With
+`{"scope": "all"}` it does end browser sessions, as any session of the user: a
+page that sends its user's token with that scope is signed out too.
 
 The sign-in is for the client, not for the browser that carried it: Django's
 `login()` is not called, no session cookie is set, and `request.user` on later
@@ -1004,13 +1016,52 @@ and `created_at`, `updated_at`, `last_activity` and `revoked_at`.
   is given to nobody, and Cross Auth's engine does not load, change or delete a
   token's row.
 - **A revoked token keeps its row** until it would have expired, with
-  `revoked_at` set. A revoked browser session is deleted, as before.
-- **A password change does not end tokens.** Django ends a user's other browser
-  sessions through a hash that tokens do not have. Call `revoke_other_sessions`
-  after a password change to end them too.
+  `revoked_at` set, as a browser session does.
+- **A password change does not end tokens.** See
+  [after a password change](#after-a-password-change).
 - **Inactive users** are refused when Google sends them back, when the client
   exchanges its code, and each time a token is used. Their tokens are not
   revoked, so they work again if the user becomes active again.
+
+### After a password change
+
+When a user changes their password, Django ends their other browser sessions
+itself, and keeps the one that made the change. It does not end their bearer
+tokens: an app or command line tool that was signed in stays signed in.
+
+To end the tokens too, call `revoke_other_sessions` once the password is
+changed. For example, with Django's own view:
+
+```python
+# core/views.py
+from django.contrib.auth.views import PasswordChangeView
+
+from cross_auth.django.sessions import revoke_other_sessions
+
+
+class ChangePassword(PasswordChangeView):
+    def form_valid(self, form):
+        response = super().form_valid(form)
+        # Django has ended the user's other browser sessions. This ends
+        # their bearer tokens as well.
+        revoke_other_sessions(self.request)
+        return response
+```
+
+`revoke_other_sessions` needs Cross Auth's [session engine](#sessions). With
+another engine, revoke the tokens through the storage:
+
+```python
+from django.utils import timezone
+
+from cross_auth.django.storage import DjangoSessionStorage
+
+DjangoSessionStorage().revoke_all_for_user(user.pk, revoked_at=timezone.now())
+```
+
+A password set any other way, such as from a reset link or in the admin, does
+the same as a change: Django ends the user's browser sessions, and their tokens
+stay until you revoke them.
 
 ### Run code around a client's sign-in
 

@@ -101,6 +101,20 @@ def expire(client: Client) -> None:
     )
 
 
+def ended(session: Session) -> Session:
+    """The row of a signed-in session that ended: kept, revoked, and emptied."""
+    row = Session.objects.get(public_id=session.public_id)
+    assert row.revoked_at is not None
+    assert row.get_decoded() == {}
+    assert row.user_id == session.user_id
+    return row
+
+
+def live() -> list[Session]:
+    """The sessions that have not ended."""
+    return list(Session.objects.filter(revoked_at__isnull=True))
+
+
 def writes_to_sessions(sql: str, statement: str) -> bool:
     return sql.startswith(statement) and "cross_auth_session" in sql
 
@@ -513,13 +527,23 @@ class TestRevoking:
         phone, laptop = browser(), browser()
         sign_in(phone, google)
         sign_in(laptop, google)
+        phone_session = stored(phone)
 
-        response = csrf_post(laptop, "/sessions/", {"id": str(stored(phone).public_id)})
+        with time_machine.travel(T0, tick=False):
+            response = csrf_post(
+                laptop, "/sessions/", {"id": str(phone_session.public_id)}
+            )
 
         assert response.json() == {"revoked": True}
         assert whoami(phone)["authenticated"] is False
         assert whoami(laptop)["authenticated"] is True
-        assert Session.objects.filter(user__isnull=False).count() == 1
+        assert live() == [stored(laptop)]
+        # The phone's session keeps its row until it would have expired.
+        row = ended(phone_session)
+        assert row.revoked_at == T0
+        assert row.session_key == phone_session.session_key
+        assert row.expire_date == phone_session.expire_date
+        assert (row.user_agent, row.login_method) == (USER_AGENT, "google")
 
     def test_never_revokes_another_users_session(self, google: FakeGoogle) -> None:
         password_user()
@@ -557,15 +581,16 @@ class TestRevoking:
     def test_revoking_the_current_session_logs_out(self, google: FakeGoogle) -> None:
         client = browser()
         sign_in(client, google)
+        session = stored(client)
 
-        response = csrf_post(
-            client, "/sessions/", {"id": str(stored(client).public_id)}
-        )
+        response = csrf_post(client, "/sessions/", {"id": str(session.public_id)})
 
         assert response.json() == {"revoked": True}
         assert response.cookies[settings.SESSION_COOKIE_NAME].value == ""
         assert whoami(client)["authenticated"] is False
-        assert not Session.objects.exists()
+        assert live() == []
+        [row] = Session.objects.all()
+        assert ended(session) == row
 
     def test_revokes_the_other_sessions(self, google: FakeGoogle) -> None:
         password_user()
@@ -611,19 +636,56 @@ class TestRevoking:
             execute: Execute, sql: str, params: Any, many: bool, context: Any
         ) -> Any:
             nonlocal rotated
-            if not rotated and writes_to_sessions(sql, "DELETE"):
+            if not rotated and writes_to_sessions(sql, "UPDATE"):
                 rotated = True
                 phone_request.cycle_key()
             return execute(sql, params, many, context)
 
-        # ...after the laptop's revoke found the session and before it deletes.
+        # ...after the laptop's revoke found the session and before it marks
+        # it revoked.
         with connection.execute_wrapper(rotate_first):
             response = csrf_post(laptop, "/sessions/", {"id": str(before.public_id)})
 
         assert rotated
         assert phone_request.session_key != before.session_key
         assert response.json() == {"revoked": True}
-        assert list(Session.objects.filter(user=user)) == [stored(laptop)]
+        assert live() == [stored(laptop)]
+        assert ended(before).session_key == phone_request.session_key
+        assert SessionStore(phone_request.session_key).load() == {}
+
+    def test_the_requests_own_session_is_revoked_even_if_its_key_changes(
+        self,
+    ) -> None:
+        user = make_user("person@example.com", password="secret")
+        laptop = browser()
+        password_login(laptop, "person@example.com")
+        before = stored(laptop)
+        # Another request of the same session, which changes its key...
+        other_request = SessionStore(before.session_key)
+        assert other_request[SESSION_KEY] == str(user.pk)
+        rotated = False
+
+        def rotate_first(
+            execute: Execute, sql: str, params: Any, many: bool, context: Any
+        ) -> Any:
+            nonlocal rotated
+            if not rotated and writes_to_sessions(sql, "UPDATE"):
+                rotated = True
+                other_request.cycle_key()
+            return execute(sql, params, many, context)
+
+        # ...after the revoke found the session to be its own, and before it
+        # ends it. Ending it by the key the request holds would miss it.
+        with connection.execute_wrapper(rotate_first):
+            response = csrf_post(laptop, "/sessions/", {"id": str(before.public_id)})
+
+        assert rotated
+        assert other_request.session_key != before.session_key
+        assert response.json() == {"revoked": True}
+        assert live() == []
+        assert ended(before).session_key == other_request.session_key
+        assert SessionStore(other_request.session_key).load() == {}
+        assert whoami(laptop)["authenticated"] is False
 
     def test_a_session_revoked_before_its_key_changes_stays_revoked(self) -> None:
         user = make_user("person@example.com", password="secret")
@@ -642,8 +704,12 @@ class TestRevoking:
         phone_request.cycle_key()
 
         assert SESSION_KEY not in phone_request
-        assert list(Session.objects.filter(user=user)) == [stored(laptop)]
-        assert not Session.objects.filter(public_id=before.public_id).exists()
+        assert list(Session.objects.filter(user=user, revoked_at__isnull=True)) == [
+            stored(laptop)
+        ]
+        # The revoked row did not move to the new key, and stays revoked.
+        assert ended(before).session_key == before.session_key
+        assert phone_request.session_key != before.session_key
 
 
 class TestLifecycle:
@@ -657,13 +723,77 @@ class TestLifecycle:
 
         assert list(Session.objects.values_list("pk", flat=True)) == [stored(active).pk]
 
-    def test_logout_deletes_the_session(self, google: FakeGoogle) -> None:
+    def test_logout_ends_the_session_and_keeps_its_row(
+        self, google: FakeGoogle
+    ) -> None:
         client = browser()
         sign_in(client, google)
+        session = stored(client)
 
         csrf_post(client, "/accounts/logout/")
 
         assert whoami(client)["authenticated"] is False
+        assert live() == []
+        assert [ended(session)] == list(Session.objects.all())
+
+    def test_the_cookie_of_an_ended_session_signs_nobody_in(
+        self, google: FakeGoogle
+    ) -> None:
+        client = browser()
+        sign_in(client, google)
+        session = stored(client)
+        csrf_post(client, "/accounts/logout/")
+
+        # Someone who kept the cookie sends it again, and writes to the session.
+        thief = browser()
+        thief.cookies[settings.SESSION_COOKIE_NAME] = session.session_key
+        assert whoami(thief)["authenticated"] is False
+        assert csrf_post(thief, "/remember/", {"value": "mine"}).status_code == 200
+
+        assert thief.cookies[settings.SESSION_COOKIE_NAME].value != session.session_key
+        assert ended(session).session_key == session.session_key
+        assert whoami(thief)["authenticated"] is False
+
+    @pytest.mark.parametrize("store_ip", [True, False])
+    def test_an_ended_session_keeps_its_ip_only_while_sessions_store_one(
+        self, google: FakeGoogle, store_ip: bool
+    ) -> None:
+        client = browser()
+        sign_in(client, google)
+        session = stored(client)
+        assert session.ip == IP
+
+        with override_settings(
+            CROSS_AUTH={**settings.CROSS_AUTH, "SESSION_STORE_IP": store_ip}
+        ):
+            SessionStore(session.session_key).flush()
+
+        assert ended(session).ip == (IP if store_ip else None)
+
+    def test_an_anonymous_session_that_ends_is_deleted(self) -> None:
+        client = browser()
+        csrf_post(client, "/remember/")
+        session = stored(client)
+
+        SessionStore(session.session_key).flush()
+
+        assert not Session.objects.exists()
+
+    def test_clearsessions_deletes_ended_sessions_once_they_expire(
+        self, google: FakeGoogle
+    ) -> None:
+        client = browser()
+        sign_in(client, google)
+        session = stored(client)
+        csrf_post(client, "/accounts/logout/")
+
+        call_command("clearsessions")
+        assert Session.objects.filter(pk=session.pk).exists()
+
+        Session.objects.filter(pk=session.pk).update(
+            expire_date=datetime.now(timezone.utc) - timedelta(days=1)
+        )
+        call_command("clearsessions")
         assert not Session.objects.exists()
 
     def test_login_rotates_the_key_without_leaving_rows(
@@ -680,14 +810,17 @@ class TestLifecycle:
         assert session.get_decoded()["remembered"] == "yes"
         assert list(Session.objects.all()) == [session]
 
-        # Another user in the same browser: Django flushes the session.
+        # Another user in the same browser: Django flushes the session, which
+        # ends the first user's.
+        first = session
         other = make_user("other@example.com", password="secret")
         password_login(client, "other@example.com")
 
         session = stored(client)
         assert session.user_id == other.pk
         assert "remembered" not in session.get_decoded()
-        assert list(Session.objects.all()) == [session]
+        assert live() == [session]
+        assert ended(first).session_key == first.session_key
 
     @pytest.mark.parametrize("gone", ["deleted", "expired"])
     def test_a_cookie_without_a_session_starts_a_new_one(self, gone: str) -> None:

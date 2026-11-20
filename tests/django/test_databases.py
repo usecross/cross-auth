@@ -187,7 +187,10 @@ def test_current_session_logout_uses_captured_database() -> None:
     [session] = list_sessions(request)
     assert revoke_session(request, session.id)
     assert not request.user.is_authenticated
-    assert not Session.objects.using("other").exists()
+    # Ended on the captured database, where its row is kept.
+    [row] = Session.objects.using("other")
+    assert row.revoked_at is not None
+    assert not Session.objects.using("default").exists()
 
 
 def test_session_engine_listing_revocation_and_signal_use_one_database() -> None:
@@ -226,7 +229,9 @@ def test_session_engine_listing_revocation_and_signal_use_one_database() -> None
             assert not calls
         assert calls == ["revoked"]
         assert len(list_sessions(request)) == 1
-        assert Session.objects.using("other").count() == 1
+        sessions = Session.objects.using("other")
+        assert sessions.filter(revoked_at__isnull=True).count() == 1
+        assert sessions.filter(revoked_at__isnull=False).count() == 1
         assert not Session.objects.using("default").exists()
     finally:
         signals.session_revoked.disconnect(revoked)
