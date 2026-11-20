@@ -12,7 +12,14 @@ The OAuth server's views exist with ``CROSS_AUTH["OAUTH_SERVER"]``; without
 it they answer "not found". ``authorize`` starts a sign-in that ends at the
 client's redirect URI with a one-time code. ``token`` and ``logout`` are
 called by the client's own code, from another origin or a native app: they
-are exempt from CSRF checks, read no cookie, and answer in JSON.
+are exempt from CSRF checks and read no cookie. The token and every OAuth
+error they answer with are JSON; a logout that succeeds has no body.
+
+A receiver that refuses a step of a client's sign-in with
+``PermissionDenied`` does not get Django's 403 page, which would strand the
+user in the client's sign-in browser. The refusal goes to the client as
+``access_denied``: at its redirect URI from ``authorize`` and the callback,
+and as JSON from ``token`` and ``logout``.
 """
 
 from __future__ import annotations
@@ -73,6 +80,7 @@ from cross_auth.hooks import (
     HookRegistry,
 )
 from cross_auth.social_providers.oauth import OAuth2Provider, ValidatedUserInfo
+from cross_auth.utils._response import Response as FlowResponse
 
 from . import models, signals
 from .backends import BACKEND, CrossAuthBackend
@@ -145,14 +153,16 @@ _INACTIVE = "This account is inactive."
 
 
 def _refused(error: PermissionDenied) -> CrossAuthException:
-    """A receiver's refusal, as Cross Auth's flows report one to an API client.
+    """A receiver's refusal, as Cross Auth's flows report one to an OAuth client.
 
-    The token and logout views answer in JSON, where Django's 403 page would
-    be no use to the client.
+    Core turns it into ``access_denied`` at the client's redirect URI or in
+    JSON, where Django's 403 page would be no use to the client.
     """
-    return CrossAuthException(
-        "access_denied", str(error) or "Permission denied", status_code=403
-    )
+    return CrossAuthException("access_denied", _reason(error), status_code=403)
+
+
+def _reason(error: PermissionDenied) -> str:
+    return str(error) or "Permission denied"
 
 
 class _Signals:
@@ -167,6 +177,9 @@ class _Signals:
         self.provider = provider.id
         # Set once the callback is verified; a link sends social_account_linked.
         self.flow: _Flow | None = None
+        # Where a client's sign-in reports a refusal: its redirect URI and
+        # state, once the callback is verified to belong to one.
+        self.client: tuple[str, str | None] | None = None
         self.hooks = HookRegistry()
         # Only the authorize view's flow runs these two.
         self.hooks.register_before("oauth.authorize", self._before_authorize)
@@ -193,13 +206,22 @@ class _Signals:
         )
 
     def _before_authorize(self, event: BeforeOAuthAuthorizeEvent) -> None:
-        self.send(signals.before_authorization, flow="authorize", user_id=None)
+        try:
+            self.send(signals.before_authorization, flow="authorize", user_id=None)
+        except PermissionDenied as error:
+            # Core sends it to the client's redirect URI, which it has just
+            # checked against the client's registration.
+            raise _refused(error) from error
 
     def _authorize_started(self, event: AfterOAuthAuthorizeEvent) -> None:
         self.send(signals.authorization_started, flow="authorize")
 
     def verified(self, auth_request: AuthRequest, validated: ValidatedUserInfo) -> None:
         self.flow = _FLOWS[auth_request.flow]
+        if auth_request.flow == "token" and auth_request.client_redirect_uri:
+            # Core checked this URI against the client's registration before
+            # it exchanged the provider's code.
+            self.client = (auth_request.client_redirect_uri, auth_request.client_state)
         self.send(
             signals.before_callback,
             flow=self.flow,
@@ -271,6 +293,22 @@ class _Signals:
         self.send(
             signals.social_account_disconnected,
             social_account=_native_account(event.social_account),
+        )
+
+    def refusal(self, error: PermissionDenied) -> CrossWebResponse:
+        """Answer a refusal raised while the callback completed a sign-in.
+
+        A client's sign-in sends it to the client. Any other flow keeps
+        Django's 403 response: the exception is raised again.
+        """
+        if self.client is None:
+            raise error
+        redirect_uri, state = self.client
+        return FlowResponse.error_redirect(
+            redirect_uri,
+            error="access_denied",
+            error_description=_reason(error),
+            state=state,
         )
 
     def login_hooks(self, user: DjangoUser) -> HookRegistry:
@@ -692,13 +730,17 @@ def callback(request: HttpRequest, provider: str) -> HttpResponse:
     """Finish a sign-in or link when the provider redirects back."""
     oauth_provider = _provider(provider)
     bridge = _Signals(request, oauth_provider)
-    response = handle_callback(
-        oauth_provider,
-        HTTPRequest.from_django(request),
-        _context(request, bridge),
-        login=DjangoLogin(request, bridge),
-        on_verified=bridge.verified,
-    )
+    try:
+        response = handle_callback(
+            oauth_provider,
+            HTTPRequest.from_django(request),
+            _context(request, bridge),
+            login=DjangoLogin(request, bridge),
+            on_verified=bridge.verified,
+        )
+    except PermissionDenied as error:
+        # From a receiver, or from the CREATE_USER factory.
+        response = bridge.refusal(error)
     return _to_django(request, response)
 
 

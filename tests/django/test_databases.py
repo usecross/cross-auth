@@ -12,11 +12,16 @@ from django.db import transaction
 from django.db.models import Model
 from django.test import RequestFactory, override_settings
 
+from cross_auth._session import create_session, get_session
 from cross_auth._storage import SocialAccountCreate, User
 from cross_auth.django import signals
 from cross_auth.django.models import Session, SocialAccount
 from cross_auth.django.sessions import SessionStore, list_sessions, revoke_session
-from cross_auth.django.storage import DjangoAccountsStorage, DjangoSecondaryStorage
+from cross_auth.django.storage import (
+    DjangoAccountsStorage,
+    DjangoSecondaryStorage,
+    DjangoSessionStorage,
+)
 
 from .support import CUSTOM_USER, identity_data, make_user
 from .testapp.models import Profile
@@ -38,6 +43,11 @@ class SplitIdentityRouter(PrimaryRouter):
         return "default" if model is SocialAccount else "other"
 
 
+class SplitSessionRouter(PrimaryRouter):
+    def db_for_write(self, model: type[Model], **hints: Any) -> str:
+        return "default" if model is Session else "other"
+
+
 def signup(storage: DjangoAccountsStorage) -> None:
     storage.create_user_with_identity(
         user={
@@ -55,6 +65,29 @@ def test_split_native_and_identity_routes_are_rejected_before_factory() -> None:
         with pytest.raises(ImproperlyConfigured, match="share a write database"):
             DjangoAccountsStorage()
     assert get_user_model()._default_manager.using("other").count() == 0
+
+
+def test_split_native_and_token_session_routes_are_rejected() -> None:
+    # A token's row points to its user. Found out when the storage is built,
+    # which every OAuth server view does first, not when a row cannot be
+    # inserted: by then the client's one-time code is used up.
+    with override_settings(DATABASE_ROUTERS=[SplitSessionRouter()]):
+        with pytest.raises(ImproperlyConfigured, match="share a write database"):
+            DjangoSessionStorage()
+
+
+def test_token_sessions_use_the_captured_database() -> None:
+    with override_settings(DATABASE_ROUTERS=[PrimaryRouter()]):
+        user = make_user("person@example.com", using="other")
+        storage = DjangoSessionStorage()
+        token, created = create_session(str(user.pk), storage)
+        found = get_session(token, storage)
+
+    assert storage.alias == "other"
+    assert found is not None
+    assert found.id == created.id
+    assert Session.objects.using("other").filter(token_hash__isnull=False).count() == 1
+    assert Session.objects.using("default").count() == 0
 
 
 @pytest.mark.parametrize("factory", ["return_unsaved", "return_wrong_database"])

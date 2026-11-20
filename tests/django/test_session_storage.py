@@ -856,6 +856,63 @@ def test_on_commit_follows_the_outermost_transaction(
     assert calls == ["autocommit", "outer"]
 
 
+@pytest.mark.parametrize("store_ip", [True, False])
+def test_get_clears_a_stored_ip_once_sessions_store_none(
+    store: DjangoSessionStorage, user: AbstractBaseUser, store_ip: bool
+) -> None:
+    record = store.create(
+        token_hash="abc",
+        user_id=str(user.pk),
+        created_at=NOW,
+        updated_at=NOW,
+        expires_at=NOW + timedelta(days=1),
+        user_agent="Agent",
+        ip="203.0.113.7",
+    )
+
+    with override_settings(CROSS_AUTH={"SESSION_STORE_IP": store_ip}):
+        found = store.get(token_hash="abc", now=NOW)
+
+    expected = "203.0.113.7" if store_ip else None
+    assert found is not None
+    assert found.ip == expected
+    assert _stored(store, record.id).ip == expected
+    assert _stored(store, record.id).user_agent == "Agent"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_database_error_while_clearing_an_ip_keeps_the_session(
+    store: DjangoSessionStorage,
+    user: AbstractBaseUser,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    record = store.create(
+        token_hash="abc",
+        user_id=str(user.pk),
+        created_at=NOW,
+        updated_at=NOW,
+        expires_at=NOW + timedelta(days=1),
+        ip="203.0.113.7",
+    )
+
+    def fail_update(execute: Any, sql: str, params: Any, many: bool, context: Any):
+        if sql.lstrip().upper().startswith("UPDATE "):
+            raise OperationalError("database is locked")
+        return execute(sql, params, many, context)
+
+    with (
+        override_settings(CROSS_AUTH={"SESSION_STORE_IP": False}),
+        caplog.at_level(logging.WARNING, logger="cross_auth.django.storage"),
+        connection.execute_wrapper(fail_update),
+    ):
+        found = store.get(token_hash="abc", now=NOW)
+
+    assert found is not None
+    assert found.ip == "203.0.113.7"
+    assert _stored(store, record.id).ip == "203.0.113.7"
+    assert caplog.messages == ["Could not clear a session's IP"]
+
+
 # What is Django's own: browser sessions share the table.
 
 
@@ -885,20 +942,30 @@ def _browser_session(user: AbstractBaseUser) -> Session:
 def test_the_storage_leaves_browser_sessions_alone(
     store: DjangoSessionStorage, user: AbstractBaseUser
 ) -> None:
-    browser = _browser_session(user)
+    with time_machine.travel(NOW, tick=False):
+        browser = _browser_session(user)
     assert browser.user_id == user.pk
-    later = NOW + timedelta(days=365)
+    # While the browser session is active, and after it was last saved: each
+    # call below would change the row if the storage took browser sessions.
+    later = NOW + timedelta(hours=1)
+    assert browser.updated_at < later < browser.expire_date
 
     assert store.get_any(browser.public_id) is None
-    assert store.list_for_user(str(user.pk), now=NOW).records == []
-    assert store.refresh(browser.public_id, updated_at=later, expires_at=later) is None
+    assert store.list_for_user(str(user.pk), now=later).records == []
+    assert (
+        store.refresh(
+            browser.public_id, updated_at=later, expires_at=later + timedelta(days=1)
+        )
+        is None
+    )
     assert (
         store.record_activity(browser.public_id, last_active_at=later, since=later)
         is None
     )
-    assert store.revoke(browser.public_id, revoked_at=NOW) is False
-    assert store.revoke_all_for_user(str(user.pk), revoked_at=NOW) == 0
-    assert store.clear_expired() == 0
+    assert store.revoke(browser.public_id, revoked_at=later) is False
+    assert store.revoke_all_for_user(str(user.pk), revoked_at=later) == 0
+    with time_machine.travel(browser.expire_date + timedelta(days=1), tick=False):
+        assert store.clear_expired() == 0
 
     unchanged = Session.objects.get(session_key=browser.session_key)
     assert unchanged.revoked_at is None

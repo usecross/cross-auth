@@ -14,6 +14,11 @@ already created its user before ``before_login`` runs. Success signals follow
 their completed state write, account commit or saved session; user and account
 notifications carry native model instances.
 
+A refusal during the OAuth server's sign-in for one of your clients goes to
+the client instead, as ``access_denied`` with the exception's message as its
+``error_description``: at the client's redirect URI from the authorize view
+and the callback, and as JSON from the token and logout views.
+
 Signals are sent with ``Signal.send()``: a receiver's exception propagates and
 return values are ignored.
 
@@ -115,8 +120,8 @@ sign-ups.
 A sign-in for one of the OAuth server's clients sends it from the token view,
 when the client exchanges its code for a bearer token: the callback has
 already sent the client that code. Refusing there issues no token, and the
-client gets ``access_denied`` as JSON, with the exception's message as its
-``error_description``, in place of Django's 403 response.
+client gets ``access_denied`` as JSON. It gets no ``flow`` argument there
+either, as in a browser sign-in.
 """
 
 after_login = Signal()

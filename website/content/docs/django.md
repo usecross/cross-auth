@@ -974,10 +974,11 @@ authentication class.
   `86400`, a day.
 - **`token_update_age`** decides whether use extends a token. With `None`, the
   default, a token ends `token_max_age` after it was issued and the user signs
-  in again. With a number of seconds, a request that uses the token after that
-  long extends it by `token_max_age` again. With the values in the example
-  above, a client that is used at least once every 30 days stays signed in, and
-  each token is extended at most once a day.
+  in again. With a number of seconds, a request that uses the token at least
+  that long after its end was last set moves the end to `token_max_age` from
+  that request. With the values in the example above, the end moves at most once
+  a day, each time to 30 days ahead, so a client in regular use stays signed in.
+  A token that is not used before its end is gone.
 
 There are no refresh tokens. A token's `last_activity` follows its use at most
 once per [`SESSION_ACTIVITY_INTERVAL`](#settings-reference).
@@ -990,6 +991,9 @@ its SHA-256 hash in `token_hash`. The row also has the `user`, the `client_id`,
 the `login_method`, the `user_agent` and `ip` of the request to the token view,
 and `created_at`, `updated_at`, `last_activity` and `revoked_at`.
 
+- **Tokens and users share a database.** A token's row points to its user, so a
+  database router must send `Session` and your user model to the same database.
+  The OAuth server's views raise `ImproperlyConfigured` otherwise.
 - **Your session engine can stay as it is.** The OAuth server works with
   Django's `db` and `cached_db` engines too. With Cross Auth's engine, the
   [session helpers](#list-and-revoke-sessions) list and revoke the user's tokens
@@ -1010,16 +1014,21 @@ and `created_at`, `updated_at`, `last_activity` and `revoked_at`.
 
 ### Run code around a client's sign-in
 
-The [signals](#signals-reference) of a browser sign-in are sent here too, with
-`"authorize"` as their `flow`. Two things differ:
+The [signals](#signals-reference) of a browser sign-in are sent here too. Those
+that have a `flow` argument get `"authorize"` as its value; `before_login` and
+`after_login` have none in either kind of sign-in. Two things differ:
 
 - **`before_login` and `after_login` are sent by the token view,** when the
   client exchanges its code, not by the callback. A receiver that keeps an allow
   list therefore covers both kinds of sign-in.
-- **A refusal there is JSON.** When a `before_login` or `before_session_revoke`
-  receiver raises `PermissionDenied` in the token or logout view, the client
-  gets `access_denied` with the exception's message as `error_description`, in
-  place of Django's 403 page.
+- **A refusal goes to the client.** Django's 403 page would strand the user in
+  the client's sign-in browser. When a `before_*` receiver or your
+  [`CREATE_USER`](#custom-user-models) factory raises `PermissionDenied` during
+  a client's sign-in, the client gets `access_denied`, with the exception's
+  message as `error_description`: at its redirect URI from the authorize view
+  and the callback, and as JSON from the token and logout views. Only
+  `before_login` can refuse a token; an exception from `after_login` arrives
+  after the token is stored.
 
 ### Not in the Django integration yet
 
@@ -1078,13 +1087,14 @@ The flows send them in this order:
 `user_logged_in` is Django's own signal, sent by `login()`.
 
 - **Refusing.** Raise `PermissionDenied` from any `before_*` receiver. Django
-  answers with its 403 page and the step does not happen: no state is stored,
-  nobody is created, connected, refreshed, logged in, disconnected or signed
-  out, and the later signals are not sent. Refusing in
-  `before_social_account_create` at sign-up rolls back the new user too.
-  Refusing in `before_login` on a first sign-in leaves the new user in place;
-  refuse sign-ups in `before_user_create` instead, or a Google account before
-  anything is written in `before_callback`.
+  answers with its 403 page, or
+  [the client is told](#run-code-around-a-clients-sign-in) during a client's
+  sign-in, and the step does not happen: no state is stored, nobody is created,
+  connected, refreshed, logged in, disconnected or signed out, and the later
+  signals are not sent. Refusing in `before_social_account_create` at sign-up
+  rolls back the new user too. Refusing in `before_login` on a first sign-in
+  leaves the new user in place; refuse sign-ups in `before_user_create` instead,
+  or a Google account before anything is written in `before_callback`.
 - **Refusing a provider.** Like every signal, `before_login` gets `provider`, so
   it can stop sign-ins with a provider you no longer accept while leaving users
   and their connections in place:

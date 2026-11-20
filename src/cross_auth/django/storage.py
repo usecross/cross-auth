@@ -539,11 +539,21 @@ class DjangoSessionStorage:
     have expired. ``clearsessions`` then deletes it if ``SESSION_ENGINE`` is
     ``cross_auth.django.sessions``; with another engine, call
     ``clear_expired`` from scheduled maintenance.
+
+    A session row points to its user, so both must be written to the same
+    database; construction fails otherwise.
     """
 
     def __init__(self) -> None:
+        user_model = get_user_model()
         self.alias = router.db_for_write(Session)
-        self._user_pk = get_user_model()._meta.pk
+        if router.db_for_write(user_model) != self.alias:
+            # Found out here, not when a token's row cannot be inserted: by
+            # then the client's one-time code is used up.
+            raise ImproperlyConfigured(
+                "Cross Auth users and Session must share a write database"
+            )
+        self._user_pk = user_model._meta.pk
 
     def _sessions(self) -> QuerySet[Session]:
         # Read from the database that writes them: a replica could still show
@@ -615,8 +625,27 @@ class DjangoSessionStorage:
             )
             .first()
         )
+        if session is None:
+            return None
+        if session.ip is not None and not get_settings().session_store_ip:
+            self._clear_ip(session)
 
-        return None if session is None else DjangoSessionRecord(session)
+        return DjangoSessionRecord(session)
+
+    def _clear_ip(self, session: Session) -> None:
+        """Forget the IP of a session issued while sessions still stored one.
+
+        Like a browser session, a token's session loses it the next time it
+        is used once ``CROSS_AUTH["SESSION_STORE_IP"]`` is off. Best-effort,
+        as recording activity is: a database error is logged, not raised.
+        """
+        try:
+            with transaction.atomic(using=self.alias):
+                self._one(session.public_id).update(ip=None)
+        except DatabaseError:
+            logger.warning("Could not clear a session's IP", exc_info=True)
+            return
+        session.ip = None
 
     def get_any(self, session_id: object) -> DjangoSessionRecord | None:
         session = self._one(session_id).first()

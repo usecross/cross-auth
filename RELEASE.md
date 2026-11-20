@@ -47,15 +47,22 @@ With `SESSION_ENGINE = "cross_auth.django.sessions"`:
   expired; a revoked browser session is still deleted.
 - `clearsessions` also deletes expired tokens.
 
-The OAuth server does not need that engine. It needs `USE_TZ = True`.
+The OAuth server does not need that engine. It needs `USE_TZ = True`, and a
+database router must send `Session` and your user model to the same database.
+With `CROSS_AUTH["SESSION_STORE_IP"]` off, a token's session stores no IP, and
+one issued earlier loses its IP the next time the token is used.
 
 Signals:
 
 - `before_authorization`, `authorization_started` and `before_callback` have a
   third `flow`, `"authorize"`, for a client's sign-in.
 - `before_login` and `after_login` are also sent by the token view, when a
-  client exchanges its code. A `PermissionDenied` there answers the client with
-  `access_denied` as JSON.
+  client exchanges its code.
+- A `PermissionDenied` from a `before_*` receiver, or from your `CREATE_USER`
+  factory, during a client's sign-in goes to the client as `access_denied`
+  instead of Django's 403 page: at its redirect URI from the authorize view and
+  the callback, and as JSON from the token and logout views. Refuse a token in
+  `before_login`; `after_login` runs once the token is stored.
 - `before_session_revoke` and `session_revoked` are also sent by the logout
   view, with `scope` `"one"` or the new `"all"`.
 

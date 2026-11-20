@@ -16,7 +16,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
 import time_machine
@@ -146,9 +146,17 @@ def code_for(
     return redirected(response, overrides.get("redirect_uri") or SPA_REDIRECT)["code"]
 
 
-def exchange(code: str, pkce: Pkce, /, **overrides: str) -> Any:
+def post_token(form: dict[str, str]) -> Any:
+    """Post a form to the token view as an OAuth client does: URL-encoded."""
     return app().post(
         "/auth/token",
+        urlencode(form),
+        content_type="application/x-www-form-urlencoded",
+    )
+
+
+def exchange(code: str, pkce: Pkce, /, **overrides: str) -> Any:
+    return post_token(
         {
             "grant_type": "authorization_code",
             "code": code,
@@ -156,7 +164,7 @@ def exchange(code: str, pkce: Pkce, /, **overrides: str) -> Any:
             "redirect_uri": SPA_REDIRECT,
             "code_verifier": pkce.verifier,
             **overrides,
-        },
+        }
     )
 
 
@@ -228,7 +236,7 @@ class TestWithoutTheOAuthServer:
 
     def test_its_views_are_not_found(self) -> None:
         assert authorize(browser()).status_code == 404
-        assert app().post("/auth/token", {"grant_type": "x"}).status_code == 404
+        assert post_token({"grant_type": "x"}).status_code == 404
         assert app().post("/auth/logout").status_code == 404
         assert ExpiringValue.objects.count() == 0
 
@@ -362,7 +370,13 @@ class TestAuthorize:
 
         response = authorize(browser())
 
-        assert response.status_code == 403
+        # Sent to the client, which gets its state back: Django's 403 page
+        # would strand the user in the client's sign-in browser.
+        assert redirected(response) == {
+            "error": "access_denied",
+            "error_description": "Not allowed.",
+            "state": "client-state",
+        }
         assert sent() == ["before_authorization"]
         assert ExpiringValue.objects.count() == 0
 
@@ -498,16 +512,84 @@ class TestCallback:
 
         response = google.callback(client, authorization)
 
-        assert response.status_code == 403
+        assert redirected(response) == {
+            "error": "access_denied",
+            "error_description": "Not allowed.",
+            "state": "client-state",
+        }
         assert get_user_model()._default_manager.count() == 0
+        assert authorization_codes() == 0
+
+    @pytest.mark.parametrize(
+        "signal", ["before_user_create", "before_social_account_create"]
+    )
+    def test_a_refused_sign_up_reaches_the_client(
+        self, google: FakeGoogle, signal: str
+    ) -> None:
+        signals.handlers[signal] = refuse
+        client = browser()
+        authorization = google.authorize(authorize(client, state=None))
+
+        response = google.callback(client, authorization)
+
+        assert redirected(response) == {
+            "error": "access_denied",
+            "error_description": "Not allowed.",
+        }
+        assert get_user_model()._default_manager.count() == 0
+        assert authorization_codes() == 0
+
+    def test_a_refused_returning_user_reaches_the_client(
+        self, google: FakeGoogle
+    ) -> None:
+        code_for(browser(), google, Pkce())
+        signals.handlers["before_social_account_update"] = refuse
+        client = browser()
+        authorization = google.authorize(authorize(client))
+
+        response = google.callback(client, authorization)
+
+        assert redirected(response)["error"] == "access_denied"
+        assert authorization_codes() == 1
+
+    def test_a_refusal_from_the_user_factory_reaches_the_client(
+        self, google: FakeGoogle
+    ) -> None:
+        # How an application keeps an allow list for new users.
+        with override_settings(
+            CROSS_AUTH={
+                **settings.CROSS_AUTH,
+                "CREATE_USER": "tests.django.factories.refuse_everyone",
+            }
+        ):
+            client = browser()
+            authorization = google.authorize(authorize(client))
+
+            response = google.callback(client, authorization)
+
+        assert redirected(response) == {
+            "error": "access_denied",
+            "error_description": "This account has no access.",
+            "state": "client-state",
+        }
+        assert get_user_model()._default_manager.count() == 0
+
+    def test_a_browser_sign_in_keeps_django_403_for_the_same_refusals(
+        self, google: FakeGoogle
+    ) -> None:
+        signals.handlers["before_callback"] = refuse
+
+        response = sign_in(browser(), google)
+
+        assert response.status_code == 403
+        assert "Location" not in response
 
 
 class TestToken:
     def test_exchanges_the_code_for_a_bearer_token(self, google: FakeGoogle) -> None:
         pkce = Pkce()
-        code = code_for(browser(), google, pkce)
-
         with time_machine.travel(T0, tick=False):
+            code = code_for(browser(), google, pkce)
             response = exchange(code, pkce)
 
         assert response.status_code == 200
@@ -541,8 +623,8 @@ class TestToken:
     def test_token_max_age_sets_the_lifetime(self, google: FakeGoogle) -> None:
         with oauth_server(token_max_age=30 * DAY):
             pkce = Pkce()
-            code = code_for(browser(), google, pkce)
             with time_machine.travel(T0, tick=False):
+                code = code_for(browser(), google, pkce)
                 body = exchange(code, pkce).json()
 
         assert body["expires_in"] == 30 * DAY
@@ -555,6 +637,26 @@ class TestToken:
             session = row_of(token_for(google))
 
         assert (session.user_agent, session.ip) == (USER_AGENT, None)
+
+    def test_turning_ip_storage_off_clears_a_tokens_ip_on_its_next_use(
+        self, google: FakeGoogle
+    ) -> None:
+        with time_machine.travel(T0, tick=False):
+            token = token_for(google)
+            assert me(token).status_code == 200
+        assert row_of(token).ip == IP
+
+        with override_settings(
+            CROSS_AUTH={**settings.CROSS_AUTH, "SESSION_STORE_IP": False}
+        ):
+            # Within the activity interval: it does not wait for it.
+            with time_machine.travel(T0 + timedelta(minutes=1), tick=False):
+                assert me(token).status_code == 200
+
+        session = row_of(token)
+        assert session.ip is None
+        assert session.user_agent == USER_AGENT
+        assert session.last_activity == T0
 
     def test_a_code_works_once(self, google: FakeGoogle) -> None:
         pkce = Pkce()
@@ -626,7 +728,7 @@ class TestToken:
         ],
     )
     def test_a_malformed_request_is_a_json_error(self, form: dict[str, str]) -> None:
-        response = app().post("/auth/token", form)
+        response = post_token(form)
 
         assert response.status_code == 400
         assert "error" in error_of(response)
@@ -634,14 +736,13 @@ class TestToken:
     def test_the_password_grant_is_not_offered(self) -> None:
         make_user("person@example.com", password="secret")
 
-        response = app().post(
-            "/auth/token",
+        response = post_token(
             {
                 "grant_type": "password",
                 "client_id": "spa",
                 "username": "person@example.com",
                 "password": "secret",
-            },
+            }
         )
 
         assert response.status_code == 400
