@@ -6,8 +6,9 @@ Google on a profile page, and Django's own sessions and logout.
 
 The settings, URLs, signals and Cross Auth wiring follow the guide. The pages
 are React components in [`../frontend`](../frontend), shared with the FastAPI
-example and rendered with [cross-inertia](https://github.com/usecross/cross-inertia)
-instead of the guide's Django templates: `core/views.py` renders them with
+example and rendered with
+[cross-inertia](https://github.com/usecross/cross-inertia) instead of the
+guide's Django templates: `core/views.py` renders them with
 `cross_inertia.django.render`, `core/inertia.py` shares the CSRF token, the
 signed-in user and URLs with every page, and `core.views.LoginView` is Django's
 `LoginView` with its form rendered by the frontend.

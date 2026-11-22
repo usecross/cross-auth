@@ -16,8 +16,8 @@ backend as if Cross-Auth were a standalone authentication server.
 
 ## Run It
 
-From the repo root, first build the backend's own pages (shared React
-components in `examples/frontend`), then start the backend demo:
+From the repo root, first build the backend's own pages (shared React components
+in `examples/frontend`), then start the backend demo:
 
 ```bash
 (cd examples/frontend && bun install && bun run build)

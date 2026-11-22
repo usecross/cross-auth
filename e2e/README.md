@@ -72,8 +72,8 @@ frameworks/
   [emulate](https://emulate.dev) (pinned in `package.json`) on a free loopback
   port, passing `GOOGLE_EMULATOR_URL` to the owned application process.
 - Global setup (`global-setup.ts`, shared by both suites) builds the examples'
-  shared React frontend in `examples/frontend` once, so both backends serve
-  its production bundle. Run `bun install` there first.
+  shared React frontend in `examples/frontend` once, so both backends serve its
+  production bundle. Run `bun install` there first.
 - Each scenario starts the real example app (`examples/django` with
   `manage.py runserver`, `examples/fastapi` with uvicorn) on its worker's port,
   with a fresh SQLite database in a temporary directory. Ports start at `8180`,
