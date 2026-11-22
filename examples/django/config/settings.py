@@ -33,10 +33,13 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "django.contrib.sessions.middleware.SessionMiddleware",
+    # Cross Auth's sessions, which two-factor authentication needs.
+    "cross_auth.django.sessions.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # Sends logins that wait for a second factor to the verify page.
+    "cross_auth.django.mfa.MFAMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "cross_inertia.django.InertiaMiddleware",
@@ -109,6 +112,8 @@ AUTHENTICATION_BACKENDS = [
     "cross_auth.django.backends.CrossAuthBackend",
 ]
 
+SESSION_ENGINE = "cross_auth.django.sessions"
+
 LOGIN_URL = "login"
 LOGIN_REDIRECT_URL = "home"
 LOGOUT_REDIRECT_URL = "home"
@@ -120,4 +125,11 @@ CROSS_AUTH = {
             client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
         ),
     ],
+    # Two-factor authentication with an authenticator app. Users turn it on at
+    # /settings/2fa/; secrets are encrypted with keys derived from SECRET_KEY.
+    "MFA": {
+        "issuer": "Cross Auth Django example",
+        # Sign-ins that wait for a code go to the example's own page.
+        "verify_url": "two_factor_verify",
+    },
 }

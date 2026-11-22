@@ -129,6 +129,9 @@ class Session(AbstractBaseSession):
     # The provider of a Cross Auth sign-in; null for anonymous sessions and
     # other logins, such as Django's password login.
     login_method = models.TextField(null=True, blank=True)
+    # The second factor the session's sign-in passed: "totp" or
+    # "recovery_code"; null when it needed none.
+    mfa_method = models.CharField(max_length=32, null=True, blank=True)
     user_agent = models.CharField(max_length=512, null=True, blank=True)
     ip = models.GenericIPAddressField(null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
@@ -160,3 +163,60 @@ class Session(AbstractBaseSession):
         from .sessions import SessionStore
 
         return SessionStore
+
+
+class MFAFactor(models.Model):
+    """A confirmed second factor of a user, such as an authenticator app.
+
+    Exists only once its first code checked out. ``data`` holds the factor
+    type's own fields; for TOTP, the secret encrypted with keys derived from
+    ``SECRET_KEY``. Never show it. ``failed_attempts`` and ``locked_until``
+    are the user's 2FA lockout, kept the same on every factor of the user.
+    """
+
+    if TYPE_CHECKING:
+        id: int
+        user_id: Any
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="cross_auth_mfa_factors",
+    )
+    type = models.CharField(max_length=32)
+    name = models.CharField(max_length=255, null=True, blank=True)
+    data = models.JSONField(default=dict, editable=False)
+    last_used_step = models.BigIntegerField(null=True, blank=True, editable=False)
+    created_at = models.DateTimeField(default=timezone.now)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    failed_attempts = models.PositiveIntegerField(default=0)
+    locked_until = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "MFA factor"
+
+    def __str__(self) -> str:
+        return self.name or self.type
+
+
+class RecoveryCode(models.Model):
+    """One hashed recovery code; each works once."""
+
+    if TYPE_CHECKING:
+        id: int
+        user_id: Any
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="cross_auth_recovery_codes",
+    )
+    code_hash = models.CharField(max_length=64, editable=False)
+    created_at = models.DateTimeField(default=timezone.now)
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "code_hash"])]
+
+    def __str__(self) -> str:
+        return f"recovery code {self.pk}"

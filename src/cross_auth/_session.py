@@ -216,6 +216,7 @@ def create_session(
     token_prefix: str | None = None,
     login_method: str | None = None,
     store_ip: bool = True,
+    mfa_method: str | None = None,
 ) -> tuple[str, SessionRecord]:
     session_token = (
         secrets.token_urlsafe(32)
@@ -225,6 +226,9 @@ def create_session(
     now = datetime.now(tz=timezone.utc)
     expires_at = now + timedelta(seconds=max_age)
     cleaned_metadata = clean_session_metadata(metadata)
+    # Passed only after 2FA, so session storages written before it keep
+    # working in applications that do not turn it on.
+    extra = {} if mfa_method is None else {"mfa_method": mfa_method}
     session_record = storage.create(
         token_hash=hash_session_token(session_token, token_hasher),
         user_id=user_id,
@@ -237,6 +241,7 @@ def create_session(
         ip=cleaned_metadata["ip"] if store_ip else None,
         last_active_at=now,
         login_method=login_method,
+        **extra,
     )
     return session_token, session_record
 

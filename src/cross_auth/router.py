@@ -22,10 +22,12 @@ from ._context import AccountsStorage, Context, SecondaryStorage, User
 from ._issuer import Issuer
 from ._oauth_server import OAuthServer
 from ._route import Route
+from ._mfa import RequiresMFA
+from ._mfa_routes import mfa_routes
 from ._session import UserCanAuthenticate
 from ._session_routes import session_routes
 from ._setup import AuthSetup, build_auth_setup
-from ._storage import SessionStorage
+from ._storage import MFAStorage, SessionStorage
 from .hooks import HookRegistry
 from .social_providers.oauth import OAuth2Provider
 
@@ -169,6 +171,8 @@ class AuthRouter(APIRouter):
         normalize_email: Callable[[str], str] | None = None,
         oauth_server: OAuthServer | None = None,
         user_can_authenticate: UserCanAuthenticate | None = None,
+        mfa_storage: MFAStorage | None = None,
+        requires_mfa: RequiresMFA | None = None,
     ):
         if trusted_origins is not None:
             warnings.warn(
@@ -187,6 +191,8 @@ class AuthRouter(APIRouter):
             normalize_email=normalize_email,
             oauth_server=oauth_server,
             user_can_authenticate=user_can_authenticate,
+            mfa_storage=mfa_storage,
+            requires_mfa=requires_mfa,
         )
         self._mount(setup)
 
@@ -250,6 +256,8 @@ class AuthRouter(APIRouter):
                 )
             )
             provider_routes.extend(session_routes())
+            if setup.context.mfa is not None:
+                provider_routes.extend(mfa_routes())
         if self.issuer is not None and oauth_server is not None:
             provider_routes.extend(
                 self.issuer.routes(password_grant=oauth_server.password_grant)

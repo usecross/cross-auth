@@ -1,4 +1,12 @@
 from .events import (
+    AfterMFAChallengeEvent,
+    AfterMFAVerifyEvent,
+    BeforeMFAFactorCreateEvent,
+    AfterMFAFactorCreateEvent,
+    BeforeMFAFactorDeleteEvent,
+    AfterMFAFactorDeleteEvent,
+    AfterMFARecoveryCodesRegenerateEvent,
+    MFAVerifyPurpose,
     AfterAuthenticateEvent,
     AfterLoginEvent,
     AfterLogoutEvent,
@@ -39,6 +47,14 @@ from .events import (
 from .registry import HookRegistry
 
 __all__ = [
+    "AfterMFAChallengeEvent",
+    "AfterMFAVerifyEvent",
+    "BeforeMFAFactorCreateEvent",
+    "AfterMFAFactorCreateEvent",
+    "BeforeMFAFactorDeleteEvent",
+    "AfterMFAFactorDeleteEvent",
+    "AfterMFARecoveryCodesRegenerateEvent",
+    "MFAVerifyPurpose",
     "AfterAuthenticateEvent",
     "AfterLoginEvent",
     "AfterLogoutEvent",

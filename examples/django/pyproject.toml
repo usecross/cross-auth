@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "cross-auth[django]",
     "cross-inertia>=0.22.3",
+    "qrcode>=8.0",
 ]
 
 [tool.uv.sources]

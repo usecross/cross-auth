@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Two-factor authentication</title>
+  </head>
+  <body>
+    <h1>Two-factor authentication</h1>
+    {% if error == "invalid_code" %}
+      <p role="alert">That code is not correct. Try again.</p>
+    {% elif error == "mfa_locked" %}
+      <p role="alert">Too many wrong codes. Wait a few minutes, then sign in again.</p>
+    {% elif error == "mfa_enrollment_required" %}
+      <p role="alert">This account must turn on two-factor authentication before it can sign in.</p>
+    {% elif error %}
+      <p role="alert">This sign-in has expired.</p>
+    {% endif %}
+    {% if expired %}
+      <p><a href="{{ login_url }}">Sign in again</a></p>
+    {% else %}
+      {% if "totp" in methods %}
+        <form method="post" action="{% url 'cross_auth:mfa_verify' %}">
+          {% csrf_token %}
+          <input type="hidden" name="next" value="{{ next }}">
+          <label for="mfa-code">Code from your authenticator app</label>
+          <input id="mfa-code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]*" required autofocus>
+          <button type="submit">Verify</button>
+        </form>
+      {% endif %}
+      {% if "recovery_code" in methods %}
+        <details>
+          <summary>Use a recovery code</summary>
+          <form method="post" action="{% url 'cross_auth:mfa_verify' %}">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{{ next }}">
+            <label for="mfa-recovery-code">Recovery code</label>
+            <input id="mfa-recovery-code" name="recovery_code" autocomplete="off" autocapitalize="none" spellcheck="false" required>
+            <button type="submit">Verify</button>
+          </form>
+        </details>
+      {% endif %}
+    {% endif %}
+  </body>
+</html>

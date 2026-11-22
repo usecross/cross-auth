@@ -1,3 +1,5 @@
+import { Link } from "@inertiajs/react"
+
 import { Actions, Grid, Hero, Pill, PostForm, Section } from "../../components/ui"
 import { DjangoPage } from "../../layouts"
 import { useDjango } from "./shared"
@@ -9,9 +11,10 @@ interface Props {
     provider_email: string
     disconnect_url: string
   }[]
+  two_factor_url: string
 }
 
-export default function Profile({ social_accounts }: Props) {
+export default function Profile({ social_accounts, two_factor_url }: Props) {
   const { csrf_token, user, urls } = useDjango()
   return (
     <DjangoPage title="Profile">
@@ -51,6 +54,9 @@ export default function Profile({ social_accounts }: Props) {
             >
               <button type="submit">Connect Google</button>
             </PostForm>
+            <Link className="button" href={two_factor_url}>
+              Two-factor authentication
+            </Link>
             <PostForm action={urls.logout} csrfToken={csrf_token}>
               <button type="submit">Sign out</button>
             </PostForm>

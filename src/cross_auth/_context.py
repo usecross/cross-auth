@@ -8,6 +8,7 @@ from ._clients import OAuthClient
 from ._config import Config
 from ._email import normalize_email as _default_normalize_email
 from ._login import issue_bearer_session, run_login, run_now
+from ._mfa import MFA, PasswordVerifier, RequiresMFA, UserPredicate
 from ._oauth_server import OAuthServer
 from ._session import (
     AuthenticatedSession,
@@ -25,6 +26,7 @@ from ._session import (
 )
 from ._storage import (
     AccountsStorage,
+    MFAStorage,
     SecondaryStorage,
     SessionRecord,
     SessionStorage,
@@ -60,6 +62,12 @@ class Context:
         normalize_email: Callable[[str], str] | None = None,
         oauth_server: OAuthServer | None = None,
         user_can_authenticate: UserCanAuthenticate | None = None,
+        mfa_storage: MFAStorage | None = None,
+        requires_mfa: RequiresMFA | None = None,
+        provider_ids: frozenset[str] = frozenset(),
+        mfa_password_verifier: PasswordVerifier | None = None,
+        mfa_has_password: UserPredicate | None = None,
+        mfa_email_verified: UserPredicate | None = None,
     ):
         self.secondary_storage = secondary_storage
         self.accounts_storage = accounts_storage
@@ -90,6 +98,31 @@ class Context:
         )
         self.default_next_url = default_next_url
         self.hooks = hooks if hooks is not None else HookRegistry()
+
+        mfa_config = self.config.get("mfa")
+        if (mfa_config is None) != (mfa_storage is None):
+            raise ValueError(
+                "Two-factor authentication needs both config['mfa'] and an "
+                "mfa_storage"
+            )
+        if requires_mfa is not None and mfa_config is None:
+            raise ValueError("requires_mfa needs config['mfa'] and an mfa_storage")
+        # None when two-factor authentication is off.
+        self.mfa: MFA | None = None
+        if mfa_config is not None:
+            assert mfa_storage is not None
+            self.mfa = MFA(
+                config=mfa_config,
+                storage=mfa_storage,
+                secondary_storage=secondary_storage,
+                accounts_storage=accounts_storage,
+                hooks=self.hooks,
+                provider_ids=provider_ids,
+                requires_mfa=requires_mfa,
+                verify_password=mfa_password_verifier,
+                has_password=mfa_has_password,
+                email_verified=mfa_email_verified,
+            )
 
         if self.cookie_auth_enabled and session_storage is None:
             raise ValueError(
@@ -262,6 +295,7 @@ class Context:
                     max_age=None,
                     metadata=None,
                     login_method=request.login_method,
+                    mfa_method=request.mfa_method,
                 ),
                 hooks=self.hooks,
                 issue=lambda event: (
@@ -272,6 +306,7 @@ class Context:
                 # cannot see any transaction behind it.
                 on_commit=run_now,
                 check_user=self.check_user_id_can_authenticate,
+                mfa=self.mfa,
             )
             return IssuedToken(*issued, on_commit=run_now)
 
@@ -293,6 +328,8 @@ class Context:
                 **request_metadata(request.http_request, self.session_config),
             },
             login_method=request.login_method,
+            mfa=self.mfa,
+            mfa_method=request.mfa_method,
         )
         return IssuedToken(
             session_token, expires_in, on_commit=session_storage.on_commit

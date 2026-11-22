@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from datetime import timezone as dt_timezone
@@ -40,7 +40,7 @@ from cross_auth.storage._cursor import decode_cursor, encode_cursor
 
 from ._session_management import end_sessions
 from .conf import get_settings
-from .models import ExpiringValue, Session, SocialAccount
+from .models import ExpiringValue, MFAFactor, RecoveryCode, Session, SocialAccount
 
 logger = logging.getLogger(__name__)
 
@@ -577,6 +577,10 @@ class DjangoSessionRecord:
         return self.native.login_method
 
     @property
+    def mfa_method(self) -> str | None:
+        return self.native.mfa_method
+
+    @property
     def status(self) -> SessionStatus:
         return session_status(self)
 
@@ -690,6 +694,7 @@ class DjangoSessionStorage:
         ip: str | None = None,
         last_active_at: datetime | None = None,
         login_method: str | None = None,
+        mfa_method: str | None = None,
     ) -> DjangoSessionRecord:
         store = Session.get_session_store_class()()
         session = Session(
@@ -708,6 +713,7 @@ class DjangoSessionStorage:
             user_agent=user_agent,
             ip=ip,
             login_method=login_method,
+            mfa_method=mfa_method,
         )
         session.save(force_insert=True, using=self.alias)
 
@@ -907,3 +913,130 @@ class DjangoSessionStorage:
         """
         deleted, _ = self._tokens().filter(expire_date__lt=timezone.now()).delete()
         return deleted
+
+
+class DjangoMFAStorage:
+    """Implements ``cross_auth.MFAStorage`` on ``MFAFactor`` and ``RecoveryCode``.
+
+    It only stores rows: every 2FA rule is core's. The checks that must not
+    let two requests both pass (a TOTP step, a recovery code, the failure
+    count) are single conditional ``UPDATE`` statements.
+    """
+
+    def __init__(self) -> None:
+        self.alias = router.db_for_write(MFAFactor)
+        if router.db_for_write(RecoveryCode) != self.alias:
+            raise ImproperlyConfigured(
+                "Cross Auth's MFAFactor and RecoveryCode must share a write database"
+            )
+        self._user_model = get_user_model()
+
+    def _factors(self, user_id: object) -> QuerySet[MFAFactor]:
+        user_id = _coerce_pk(self._user_model, user_id)
+        factors = MFAFactor.objects.using(self.alias)
+        return (
+            factors.none() if user_id is _NO_MATCH else factors.filter(user_id=user_id)
+        )
+
+    def _codes(self, user_id: object) -> QuerySet[RecoveryCode]:
+        user_id = _coerce_pk(self._user_model, user_id)
+        codes = RecoveryCode.objects.using(self.alias)
+        return codes.none() if user_id is _NO_MATCH else codes.filter(user_id=user_id)
+
+    def list_factors(self, user_id: Any) -> list[MFAFactor]:
+        return list(self._factors(user_id).order_by("created_at", "id"))
+
+    def create_factor(
+        self,
+        *,
+        user_id: Any,
+        type: str,
+        name: str | None,
+        data: Mapping[str, Any],
+        created_at: datetime,
+        last_used_step: int | None = None,
+    ) -> MFAFactor:
+        with transaction.atomic(using=self.alias):
+            # A new factor starts with the user's current lockout state.
+            existing = self._factors(user_id).first()
+            factor = MFAFactor(
+                user_id=user_id,
+                type=type,
+                name=name,
+                data=dict(data),
+                created_at=created_at,
+                last_used_step=last_used_step,
+                failed_attempts=existing.failed_attempts if existing else 0,
+                locked_until=existing.locked_until if existing else None,
+            )
+            factor.save(using=self.alias, force_insert=True)
+        return factor
+
+    def delete_factor(self, *, user_id: Any, factor_id: Any) -> bool:
+        factor_id = _coerce_pk(MFAFactor, factor_id)
+        if factor_id is _NO_MATCH:
+            return False
+        deleted, _ = self._factors(user_id).filter(pk=factor_id).delete()
+        return deleted > 0
+
+    def claim_totp_step(self, factor_id: Any, *, step: int, used_at: datetime) -> bool:
+        factor_id = _coerce_pk(MFAFactor, factor_id)
+        if factor_id is _NO_MATCH:
+            return False
+        return (
+            MFAFactor.objects.using(self.alias)
+            .filter(
+                Q(last_used_step__isnull=True) | Q(last_used_step__lt=step),
+                pk=factor_id,
+            )
+            .update(last_used_step=step, last_used_at=used_at)
+            > 0
+        )
+
+    def record_failure(self, user_id: Any) -> int:
+        factors = self._factors(user_id)
+        with transaction.atomic(using=self.alias):
+            factors.update(failed_attempts=F("failed_attempts") + 1)
+            count = factors.values_list("failed_attempts", flat=True).first()
+        return count or 0
+
+    def lock(self, user_id: Any, *, until: datetime) -> None:
+        self._factors(user_id).update(failed_attempts=0, locked_until=until)
+
+    def reset_failures(self, user_id: Any) -> None:
+        self._factors(user_id).update(failed_attempts=0, locked_until=None)
+
+    def count_recovery_codes(self, user_id: Any) -> int:
+        return self._codes(user_id).filter(used_at__isnull=True).count()
+
+    def replace_recovery_codes(
+        self, user_id: Any, code_hashes: Sequence[str], *, created_at: datetime
+    ) -> None:
+        with transaction.atomic(using=self.alias):
+            self._codes(user_id).delete()
+            RecoveryCode.objects.using(self.alias).bulk_create(
+                RecoveryCode(
+                    user_id=user_id, code_hash=code_hash, created_at=created_at
+                )
+                for code_hash in code_hashes
+            )
+
+    def use_recovery_code(
+        self, user_id: Any, code_hash: str, *, used_at: datetime
+    ) -> bool:
+        # One code at a time: two requests with the same code both match the
+        # row, but only the first UPDATE still finds it unused.
+        code = (
+            self._codes(user_id)
+            .filter(code_hash=code_hash, used_at__isnull=True)
+            .values_list("pk", flat=True)
+            .first()
+        )
+        if code is None:
+            return False
+        return (
+            RecoveryCode.objects.using(self.alias)
+            .filter(pk=code, used_at__isnull=True)
+            .update(used_at=used_at)
+            > 0
+        )

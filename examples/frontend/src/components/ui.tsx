@@ -16,7 +16,11 @@ export function Hero({
       <div className="eyebrow">{eyebrow}</div>
       <h1>{title}</h1>
       {children && <p className="lead">{children}</p>}
-      {notice && <div className="notice">{notice}</div>}
+      {notice && (
+        <div className="notice" role="alert">
+          {notice}
+        </div>
+      )}
     </div>
   )
 }

@@ -14,7 +14,9 @@ from fastapi import Depends, FastAPI, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import UniqueConstraint
+import qrcode
+import qrcode.image.svg
+from sqlalchemy import JSON, Column, UniqueConstraint
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Field, Relationship, Session, SQLModel, create_engine
 
@@ -30,12 +32,13 @@ from cross_auth import (
 )
 from cross_auth import User as UserProtocol
 from cross_auth._session import get_current_user as get_session_user
-from cross_auth.exceptions import CrossAuthException
+from cross_auth.exceptions import CrossAuthException, MFARequired
 from cross_auth.fastapi import CrossAuth, SessionCookieMiddleware
 from cross_auth.hooks import (
     AfterAuthenticateEvent,
     AfterLoginEvent,
     AfterLogoutEvent,
+    AfterMFAVerifyEvent,
     AfterOAuthCallbackEvent,
     AfterTokenAuthorizationCodeEvent,
     AfterUserCreateEvent,
@@ -48,6 +51,9 @@ from cross_auth.social_providers.google import GoogleProvider
 from cross_auth.social_providers.oauth import OAuth2Provider
 from cross_auth.storage.sqlmodel import (
     SQLModelAccountsStorage,
+    SQLModelMFAFactor,
+    SQLModelMFAStorage,
+    SQLModelRecoveryCode,
     SQLModelSession,
     SQLModelUser,
     SQLModelSocialAccount,
@@ -80,6 +86,9 @@ DATABASE_URL = os.environ.get("EXAMPLE_DATABASE_URL")
 GOOGLE_EMULATOR_URL = os.environ.get("GOOGLE_EMULATOR_URL")
 SPA_DEMO_URL = "http://localhost:5173"
 SPA_CLIENT_ID = "spa-example"
+# Encrypts authenticator secrets. Set your own key outside the demo.
+MFA_SECRET_KEY = os.environ.get("EXAMPLE_MFA_KEY", "example-mfa-key-do-not-use")
+MFA_CHALLENGE_COOKIE = "mfa_challenge"
 MAX_HOOK_EVENTS = 20
 # Small page size so the demo's handful of sessions paginate visibly.
 SESSIONS_PAGE_SIZE = 5
@@ -182,6 +191,18 @@ class User(SQLModelUser, table=True):
 class SessionRecord(SQLModelSession, table=True):
     id: int | None = Field(default=None, primary_key=True)
     user_id: str = Field(index=True)
+
+
+# Two-factor authentication: confirmed authenticators and hashed recovery codes.
+class MFAFactor(SQLModelMFAFactor, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    data: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class RecoveryCode(SQLModelRecoveryCode, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
 
 
 # In-memory SQLite. StaticPool keeps a single shared connection (a fresh
@@ -385,6 +406,9 @@ secondary_storage = MemorySecondaryStorage()
 # storage = RedisStorage.from_url(os.environ["REDIS_URL"])
 accounts_storage = AccountsStore(session_factory=open_db_session)
 session_storage = SQLModelSessionStorage(SessionRecord, session_factory=open_db_session)
+mfa_storage = SQLModelMFAStorage(
+    MFAFactor, RecoveryCode, session_factory=open_db_session
+)
 
 
 def seed_demo_user() -> None:
@@ -441,6 +465,7 @@ auth = CrossAuth(
     session_storage=session_storage,
     get_user_from_request=resolve_auth_user,
     user_can_authenticate=user_can_authenticate,
+    mfa_storage=mfa_storage,
     default_next_url="/profile",
     # Explicit here; needed when redirect URIs must not be derived from the
     # incoming request (e.g. behind a proxy).
@@ -458,6 +483,13 @@ auth = CrossAuth(
         "account_linking": {"enabled": True, "allow_different_emails": True},
         "require_verified_email": True,
         "session": SESSION_CONFIG,
+        "mfa": {
+            "issuer": "Cross-Auth FastAPI example",
+            # Provider sign-ins that need a code are sent here.
+            "verify_url": "/login/2fa",
+            "secret_keys": [MFA_SECRET_KEY],
+            "challenge_cookie": MFA_CHALLENGE_COOKIE,
+        },
     },
 )
 
@@ -517,6 +549,17 @@ def audit_login(event: AfterLoginEvent) -> None:
             "X-Cross-Auth-Hook": "login",
         }
     record_hook_event("after:login", user_id=event.user_id, credential=event.credential)
+
+
+@auth.after("mfa.verify")
+def audit_mfa_verify(event: AfterMFAVerifyEvent) -> None:
+    record_hook_event(
+        "after:mfa.verify",
+        user_id=event.user_id,
+        purpose=event.purpose,
+        method=event.method,
+        result="success" if event.success else (event.reason or "failed"),
+    )
 
 
 @auth.after("logout")
@@ -615,13 +658,277 @@ def login(
         return RedirectResponse(url="/?error=invalid_credentials", status_code=303)
 
     response = RedirectResponse(url="/profile", status_code=303)
-    auth.login(
-        str(user.id),
-        response=response,
-        metadata={"user_agent": request.headers.get("User-Agent")},
-        login_method="password",
-    )
+    try:
+        auth.login(
+            str(user.id),
+            response=response,
+            metadata={"user_agent": request.headers.get("User-Agent")},
+            login_method="password",
+        )
+    except MFARequired as required:
+        # The password matched; no session exists until the code does too.
+        # The challenge travels in an HttpOnly cookie that /auth/mfa/verify reads.
+        assert required.challenge is not None
+        pending = RedirectResponse(url="/login/2fa", status_code=303)
+        pending.set_cookie(
+            MFA_CHALLENGE_COOKIE,
+            required.challenge,
+            max_age=300,
+            path="/",
+            httponly=True,
+            samesite="lax",
+        )
+        return pending
     return response
+
+
+MFA_ERRORS = {
+    "invalid_code": "That code is not correct. Try again.",
+    "invalid_challenge": "This sign-in has expired.",
+    "mfa_locked": "Too many wrong codes. Wait a few minutes, then sign in again.",
+    "invalid_password": "That password is not correct.",
+    "email_not_verified": "Verify your email address before turning on two-factor authentication.",
+    "enrollment_not_found": "That took too long. Start again.",
+}
+
+# The two-factor pages in ../frontend/src/pages/two-factor are shared with the
+# Django example; each backend passes its own URLs and picks its layout.
+SITE = "fastapi"
+
+
+@app.get("/login/2fa")
+def login_two_factor(request: Request, inertia: InertiaDep, error: str | None = None):
+    # Posts to the router's POST /auth/mfa/verify, which finishes the sign-in
+    # and sends wrong codes back here with ?error=.
+    expired = MFA_CHALLENGE_COOKIE not in request.cookies or error in (
+        "invalid_challenge",
+        "mfa_locked",
+    )
+    return inertia.render(
+        "two-factor/Verify",
+        {
+            "site": SITE,
+            "error": MFA_ERRORS.get(error or "", error),
+            "expired": expired,
+            "methods": [] if expired else ["totp", "recovery_code"],
+            "next": "",
+            "urls": {"verify": "/auth/mfa/verify", "sign_in": "/"},
+        },
+    )
+
+
+def _qr_svg(uri: str) -> str:
+    # Rendered here, never by a QR service: the URI contains the secret.
+    image = qrcode.make(uri, image_factory=qrcode.image.svg.SvgPathImage)
+    return image.to_string(encoding="unicode")
+
+
+def _two_factor_page(
+    request: Request,
+    inertia: InertiaDep,
+    *,
+    error: str | None = None,
+    status_code: int = 200,
+):
+    mfa = auth.get_mfa_status(request)
+    return inertia.render(
+        "two-factor/Settings",
+        {
+            "site": SITE,
+            "error": MFA_ERRORS.get(error or "", error),
+            "mfa": {
+                "enabled": mfa.enabled,
+                "recovery_codes_remaining": mfa.recovery_codes_remaining,
+                "factors": [
+                    {
+                        "id": factor.id,
+                        "name": factor.name or "Authenticator app",
+                        "added": f"{factor.created_at.day} {factor.created_at:%b %Y}",
+                        "remove_url": f"/settings/2fa/{factor.id}/remove",
+                    }
+                    for factor in mfa.factors
+                ],
+            },
+            "urls": {
+                "start": "/settings/2fa/start",
+                "recovery_codes": "/settings/2fa/recovery-codes",
+                "back": "/profile",
+            },
+        },
+        status_code=status_code,
+    )
+
+
+def _mfa_refused(request: Request, inertia: InertiaDep, error: CrossAuthException):
+    # Changing 2FA needs a recent sign-in; send the user to confirm it is them.
+    if error.error == "reauthentication_required":
+        return RedirectResponse(url="/settings/confirm-identity", status_code=303)
+    return _two_factor_page(
+        request, inertia, error=error.error, status_code=error.status_code
+    )
+
+
+def _enroll_page(
+    inertia: InertiaDep,
+    *,
+    enrollment_id: str,
+    secret: str,
+    otpauth_uri: str,
+    error: str | None = None,
+):
+    return inertia.render(
+        "two-factor/Enroll",
+        {
+            "site": SITE,
+            "enrollment_id": enrollment_id,
+            "secret": secret,
+            "otpauth_uri": otpauth_uri,
+            "qr_svg": _qr_svg(otpauth_uri),
+            "error": error,
+            "urls": {"confirm": "/settings/2fa/confirm", "cancel": "/settings/2fa"},
+        },
+        status_code=400 if error else 200,
+    )
+
+
+def _codes_page(inertia: InertiaDep, codes: list[str]):
+    return inertia.render(
+        "two-factor/RecoveryCodes",
+        {"site": SITE, "codes": codes, "urls": {"done": "/settings/2fa"}},
+    )
+
+
+@app.get("/settings/2fa")
+def two_factor_settings(
+    request: Request,
+    inertia: InertiaDep,
+    user: Annotated[UserProtocol | None, Depends(auth.get_current_user)],
+):
+    if user is None:
+        return RedirectResponse(url="/", status_code=303)
+    return _two_factor_page(request, inertia)
+
+
+@app.post("/settings/2fa/start")
+def two_factor_start(
+    request: Request,
+    inertia: InertiaDep,
+    user: Annotated[UserProtocol, Depends(auth.require_current_user)],
+):
+    try:
+        enrollment = auth.start_totp_enrollment(request, name="Authenticator app")
+    except CrossAuthException as error:
+        return _mfa_refused(request, inertia, error)
+    return _enroll_page(
+        inertia,
+        enrollment_id=enrollment.enrollment_id,
+        secret=enrollment.secret,
+        otpauth_uri=enrollment.otpauth_uri,
+    )
+
+
+@app.post("/settings/2fa/confirm")
+def two_factor_confirm(
+    request: Request,
+    inertia: InertiaDep,
+    user: Annotated[UserProtocol, Depends(auth.require_current_user)],
+    enrollment_id: Annotated[str, Form()],
+    code: Annotated[str, Form()],
+    secret: Annotated[str, Form()],
+    otpauth_uri: Annotated[str, Form()],
+):
+    try:
+        confirmed = auth.confirm_totp_enrollment(
+            request, enrollment_id=enrollment_id, code=code
+        )
+    except CrossAuthException as error:
+        if error.error != "invalid_code":
+            return _mfa_refused(request, inertia, error)
+        # The enrollment waits ten minutes: show the same secret again.
+        return _enroll_page(
+            inertia,
+            enrollment_id=enrollment_id,
+            secret=secret,
+            otpauth_uri=otpauth_uri,
+            error=MFA_ERRORS["invalid_code"],
+        )
+    if confirmed.recovery_codes is None:
+        return RedirectResponse(url="/settings/2fa", status_code=303)
+    return _codes_page(inertia, confirmed.recovery_codes)
+
+
+@app.post("/settings/2fa/recovery-codes")
+def two_factor_recovery_codes(
+    request: Request,
+    inertia: InertiaDep,
+    user: Annotated[UserProtocol, Depends(auth.require_current_user)],
+):
+    try:
+        codes = auth.regenerate_recovery_codes(request)
+    except CrossAuthException as error:
+        return _mfa_refused(request, inertia, error)
+    return _codes_page(inertia, codes)
+
+
+@app.post("/settings/2fa/{factor_id}/remove")
+def two_factor_remove(
+    request: Request,
+    inertia: InertiaDep,
+    factor_id: str,
+    user: Annotated[UserProtocol, Depends(auth.require_current_user)],
+):
+    try:
+        auth.remove_mfa_factor(request, factor_id)
+    except CrossAuthException as error:
+        return _mfa_refused(request, inertia, error)
+    return RedirectResponse(url="/settings/2fa", status_code=303)
+
+
+def _confirm_identity_page(
+    inertia: InertiaDep, user: UserProtocol, *, error: str | None = None
+):
+    return inertia.render(
+        "two-factor/ConfirmIdentity",
+        {
+            "site": SITE,
+            "error": error,
+            "has_password": user.hashed_password is not None,
+            "urls": {
+                "submit": "/settings/confirm-identity",
+                "cancel": "/settings/2fa",
+            },
+        },
+        status_code=400 if error else 200,
+    )
+
+
+@app.get("/settings/confirm-identity")
+def confirm_identity_page(
+    inertia: InertiaDep,
+    user: Annotated[UserProtocol | None, Depends(auth.get_current_user)],
+):
+    if user is None:
+        return RedirectResponse(url="/", status_code=303)
+    return _confirm_identity_page(inertia, user)
+
+
+@app.post("/settings/confirm-identity")
+def confirm_identity(
+    request: Request,
+    inertia: InertiaDep,
+    user: Annotated[UserProtocol, Depends(auth.require_current_user)],
+    password: Annotated[str, Form()] = "",
+    code: Annotated[str, Form()] = "",
+):
+    try:
+        auth.reauthenticate(request, password=password or None, code=code or None)
+    except CrossAuthException as error:
+        return _confirm_identity_page(
+            inertia,
+            user,
+            error=MFA_ERRORS.get(error.error, error.error_description),
+        )
+    return RedirectResponse(url="/settings/2fa", status_code=303)
 
 
 @app.post("/logout")

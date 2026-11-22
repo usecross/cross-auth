@@ -1,0 +1,500 @@
+"""Two-factor authentication through the FastAPI router and ``CrossAuth``.
+
+Every way of signing in must issue nothing until the second factor passes:
+cookie and bearer logins, the password grant, and both OAuth callback flows.
+Factors live in SQLModel tables, so this also covers ``SQLModelMFAStorage``.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from datetime import datetime, timedelta, timezone
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+import pytest
+import respx
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
+from sqlalchemy import JSON, Column
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Field, Session, SQLModel, create_engine, select
+
+from cross_auth import _totp
+from cross_auth.exceptions import CrossAuthException, MFARequired
+from cross_auth.fastapi import CrossAuth
+from cross_auth.storage.sqlmodel import (
+    SQLModelMFAFactor,
+    SQLModelMFAStorage,
+    SQLModelRecoveryCode,
+)
+from tests.conftest import TEST_PASSWORD, MemoryAccountsStorage, MemorySessionStorage
+
+from ..conftest import legacy_password_grant
+from .conftest import (
+    LEGACY_APP_OAUTH_SERVER,
+    FakeProvider,
+    mock_token_and_userinfo,
+    start_provider_auth,
+)
+
+_CODE_CHALLENGE = "n4bQgYhMfWWaL-qgxVrQFaO_TxsrC4Is0V1sFbDwCgg"
+_REDIRECT_URI = "http://client.example/cb"
+
+
+class MFATestFactor(SQLModelMFAFactor, table=True):
+    __tablename__ = "mfa_test_factor"
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True)
+    data: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class MFATestRecoveryCode(SQLModelRecoveryCode, table=True):
+    __tablename__ = "mfa_test_recovery_code"
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True)
+
+
+@pytest.fixture
+def engine() -> Iterator[Any]:
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            SQLModel.metadata.tables["mfa_test_factor"],
+            SQLModel.metadata.tables["mfa_test_recovery_code"],
+        ],
+    )
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture
+def auth(
+    engine: Any,
+    secondary_storage: Any,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    fake_provider: FakeProvider,
+) -> CrossAuth:
+    return make_auth(
+        engine, secondary_storage, accounts_storage, session_storage, fake_provider
+    )
+
+
+def make_auth(
+    engine: Any,
+    secondary_storage: Any,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    fake_provider: FakeProvider,
+    **mfa: Any,
+) -> CrossAuth:
+    return CrossAuth(
+        providers=[fake_provider],
+        storage=secondary_storage,
+        accounts_storage=accounts_storage,
+        session_storage=session_storage,
+        config={
+            "session": {"cookies": {"auth": True}},
+            "mfa": {
+                "issuer": "Acme",
+                "secret_keys": ["test-key"],
+                "verify_url": "/login/2fa",
+                **mfa,
+            },
+        },
+        mfa_storage=SQLModelMFAStorage(
+            MFATestFactor,
+            MFATestRecoveryCode,
+            session_factory=lambda: Session(engine),
+        ),
+        oauth_server=LEGACY_APP_OAUTH_SERVER,
+    )
+
+
+def app_for(auth: CrossAuth) -> TestClient:
+    app = FastAPI()
+    app.include_router(auth.router)
+
+    @app.post("/login")
+    def login(request: Request, response: Response) -> Any:
+        user = auth.authenticate("test@example.com", TEST_PASSWORD)
+        assert user is not None
+        try:
+            auth.login(user.id, response=response, login_method="password")
+        except MFARequired as required:
+            return JSONResponse(
+                {"challenge": required.challenge, "methods": required.methods},
+                status_code=401,
+            )
+        return {"ok": True}
+
+    @app.post("/login/2fa")
+    def complete(request: Request, response: Response, body: dict[str, str]) -> Any:
+        try:
+            auth.complete_mfa_login(
+                request, body["challenge"], response=response, code=body.get("code")
+            )
+        except CrossAuthException as error:
+            return JSONResponse({"error": error.error}, status_code=error.status_code)
+        return {"ok": True}
+
+    return TestClient(app, base_url="https://testserver", follow_redirects=False)
+
+
+def code_now(secret: str, offset_steps: int = 0) -> str:
+    step = _totp.time_step(datetime.now(tz=timezone.utc)) + offset_steps
+    return _totp.code_at(secret, step)
+
+
+def enroll(client: TestClient) -> tuple[str, list[str]]:
+    """Turn on 2FA for the signed-in user; return the secret and the codes."""
+    started = client.post("/mfa/totp/enroll", json={"name": "Phone"})
+    assert started.status_code == 200, started.text
+    secret = started.json()["secret"]
+    confirmed = client.post(
+        "/mfa/totp/confirm",
+        json={
+            "enrollment_id": started.json()["enrollment_id"],
+            "code": code_now(secret),
+        },
+    )
+    assert confirmed.status_code == 201, confirmed.text
+    return secret, confirmed.json()["recovery_codes"]
+
+
+@pytest.fixture
+def enrolled(auth: CrossAuth) -> tuple[str, list[str]]:
+    with app_for(auth) as client:
+        assert client.post("/login").status_code == 200
+        return enroll(client)
+
+
+def test_totp_matches_rfc_6238() -> None:
+    # RFC 6238 appendix B, SHA1, truncated to the 6 digits apps show.
+    secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"  # "12345678901234567890"
+    for timestamp, expected in [
+        (59, "287082"),
+        (1111111109, "081804"),
+        (1234567890, "005924"),
+        (20000000000, "353130"),
+    ]:
+        assert _totp.code_at(secret, timestamp // 30) == expected
+
+
+def test_enrolling_gives_recovery_codes_and_revokes_other_sessions(
+    auth: CrossAuth, session_storage: MemorySessionStorage, engine: Any
+) -> None:
+    with app_for(auth) as other, app_for(auth) as client:
+        assert other.post("/login").status_code == 200
+        assert client.post("/login").status_code == 200
+
+        secret, codes = enroll(client)
+
+        assert len(codes) == 10 and len(set(codes)) == 10
+        with Session(engine) as db:
+            hashes = db.exec(select(MFATestRecoveryCode.code_hash)).all()
+            [factor] = db.exec(select(MFATestFactor)).all()
+        assert not set(codes) & set(hashes)
+        # The secret is stored encrypted.
+        assert secret not in str(factor.data)
+        assert other.get("/mfa").status_code == 401
+        status = client.get("/mfa").json()
+        assert status["enabled"] is True
+        assert status["recovery_codes_remaining"] == 10
+
+
+def test_cookie_login_waits_for_the_code(
+    auth: CrossAuth,
+    enrolled: tuple[str, list[str]],
+    session_storage: MemorySessionStorage,
+) -> None:
+    secret, _ = enrolled
+    with app_for(auth) as client:
+        before = len(session_storage.records)
+        paused = client.post("/login")
+        assert paused.status_code == 401
+        assert paused.json()["methods"] == ["totp", "recovery_code"]
+        assert len(session_storage.records) == before
+        challenge = paused.json()["challenge"]
+
+        wrong = client.post(
+            "/login/2fa", json={"challenge": challenge, "code": "000000"}
+        )
+        assert wrong.status_code == 400
+        assert wrong.json()["error"] == "invalid_code"
+
+        # This step's code was spent on enrolling; the next one is accepted.
+        done = client.post(
+            "/login/2fa", json={"challenge": challenge, "code": code_now(secret, 1)}
+        )
+        assert done.status_code == 200
+        record = max(session_storage.records.values(), key=lambda r: r.created_at)
+        assert record.mfa_method == "totp"
+        assert client.get("/mfa").status_code == 200
+        # A challenge works once.
+        again = client.post(
+            "/login/2fa", json={"challenge": challenge, "code": code_now(secret, -1)}
+        )
+        assert again.status_code == 400
+        assert again.json()["error"] == "invalid_challenge"
+
+
+def test_bearer_login_waits_and_a_code_works_once(
+    auth: CrossAuth, enrolled: tuple[str, list[str]]
+) -> None:
+    secret, _ = enrolled
+    # The enrollment used this step's code already.
+    with pytest.raises(MFARequired) as first:
+        auth.issue_session_token("test")
+    assert first.value.challenge is not None
+    with pytest.raises(CrossAuthException) as replayed:
+        auth.verify_mfa(first.value.challenge, code=code_now(secret))
+    assert replayed.value.error == "invalid_code"
+
+    token, record = auth.verify_mfa(first.value.challenge, code=code_now(secret, 1))
+    assert token and record.mfa_method == "totp"
+
+    with pytest.raises(MFARequired) as second:
+        auth.issue_session_token("test")
+    assert second.value.challenge is not None
+    with pytest.raises(CrossAuthException):
+        auth.verify_mfa(second.value.challenge, code=code_now(secret, 1))
+
+
+def test_recovery_codes_work_once(
+    auth: CrossAuth, enrolled: tuple[str, list[str]]
+) -> None:
+    _, codes = enrolled
+    with pytest.raises(MFARequired) as first:
+        auth.issue_session_token("test")
+    assert first.value.challenge is not None
+    _, record = auth.verify_mfa(first.value.challenge, recovery_code=codes[0].upper())
+    assert record.mfa_method == "recovery_code"
+    assert auth.get_mfa_status_for("test").recovery_codes_remaining == 9
+
+    with pytest.raises(MFARequired) as second:
+        auth.issue_session_token("test")
+    assert second.value.challenge is not None
+    with pytest.raises(CrossAuthException) as used:
+        auth.verify_mfa(second.value.challenge, recovery_code=codes[0])
+    assert used.value.error == "invalid_code"
+
+
+def test_a_challenge_ends_after_five_wrong_codes_and_the_account_locks_after_ten(
+    auth: CrossAuth, enrolled: tuple[str, list[str]]
+) -> None:
+    secret, _ = enrolled
+    for _ in range(2):
+        with pytest.raises(MFARequired) as paused:
+            auth.issue_session_token("test")
+        assert paused.value.challenge is not None
+        errors = []
+        for _ in range(6):
+            with pytest.raises(CrossAuthException) as wrong:
+                auth.verify_mfa(paused.value.challenge, code="000000")
+            errors.append(wrong.value.error)
+        # The sixth try finds the challenge gone, and does not count.
+        assert errors[-1] == "invalid_challenge"
+
+    with pytest.raises(MFARequired) as paused:
+        auth.issue_session_token("test")
+    assert paused.value.challenge is not None
+    with pytest.raises(CrossAuthException) as locked:
+        auth.verify_mfa(paused.value.challenge, code=code_now(secret, 1))
+    assert (locked.value.error, locked.value.status_code) == ("mfa_locked", 429)
+
+
+def test_password_grant_needs_the_mfa_grant(
+    auth: CrossAuth, enrolled: tuple[str, list[str]]
+) -> None:
+    secret, _ = enrolled
+    with app_for(auth) as client:
+        with legacy_password_grant():
+            paused = client.post(
+                "/token",
+                data={
+                    "grant_type": "password",
+                    "client_id": "app-client",
+                    "username": "test@example.com",
+                    "password": TEST_PASSWORD,
+                },
+            )
+        assert paused.status_code == 403
+        body = paused.json()
+        assert body["error"] == "mfa_required"
+        assert "access_token" not in body
+
+        done = client.post(
+            "/token",
+            data={
+                "grant_type": "urn:cross-auth:grant-type:mfa",
+                "client_id": "app-client",
+                "mfa_token": body["mfa_token"],
+                "otp": code_now(secret, 1),
+            },
+        )
+        assert done.status_code == 200, done.text
+        assert done.json()["access_token"]
+
+
+def _link_identity(accounts_storage: MemoryAccountsStorage) -> None:
+    accounts_storage.create_social_account(
+        user_id="test",
+        provider="fake",
+        provider_user_id="fake-user-1",
+        access_token=None,
+        refresh_token=None,
+        access_token_expires_at=None,
+        refresh_token_expires_at=None,
+        scope=None,
+        user_info={},
+        provider_email="test@example.com",
+        provider_email_verified=True,
+        is_login_method=True,
+    )
+
+
+@respx.mock
+def test_provider_sign_in_goes_through_the_verify_page(
+    auth: CrossAuth,
+    enrolled: tuple[str, list[str]],
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+) -> None:
+    secret, _ = enrolled
+    _link_identity(accounts_storage)
+    with app_for(auth) as client:
+        mock_token_and_userinfo(email="test@example.com")
+        _, state = start_provider_auth(client, "/fake/login")
+        before = len(session_storage.records)
+        callback = client.get("/fake/callback", params={"code": "c", "state": state})
+
+        assert callback.status_code == 302
+        assert callback.headers["location"] == "/login/2fa"
+        assert "mfa_challenge" in client.cookies
+        assert len(session_storage.records) == before
+
+        verified = client.post("/mfa/verify", data={"code": code_now(secret, 1)})
+        assert verified.status_code == 303
+        assert verified.headers["location"] == "/"
+        record = max(session_storage.records.values(), key=lambda r: r.created_at)
+        assert (record.login_method, record.mfa_method) == ("fake", "totp")
+
+
+@respx.mock
+def test_apps_can_skip_2fa_for_provider_sign_ins(
+    engine: Any,
+    secondary_storage: Any,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    fake_provider: FakeProvider,
+    enrolled: tuple[str, list[str]],
+) -> None:
+    _link_identity(accounts_storage)
+    relaxed = make_auth(
+        engine,
+        secondary_storage,
+        accounts_storage,
+        session_storage,
+        fake_provider,
+        require_for_providers=False,
+    )
+    with app_for(relaxed) as client:
+        mock_token_and_userinfo(email="test@example.com")
+        _, state = start_provider_auth(client, "/fake/login")
+        callback = client.get("/fake/callback", params={"code": "c", "state": state})
+        assert callback.status_code == 302
+        assert callback.headers["location"] == "/"
+        # Passwords are still challenged.
+        assert client.post("/login").status_code == 401
+
+
+@respx.mock
+def test_client_sign_in_gets_its_code_only_after_2fa(
+    auth: CrossAuth,
+    enrolled: tuple[str, list[str]],
+    accounts_storage: MemoryAccountsStorage,
+) -> None:
+    secret, _ = enrolled
+    _link_identity(accounts_storage)
+    with app_for(auth) as client:
+        mock_token_and_userinfo(email="test@example.com")
+        _, state = start_provider_auth(
+            client,
+            "/fake/authorize",
+            params={
+                "client_id": "app-client",
+                "redirect_uri": _REDIRECT_URI,
+                "response_type": "code",
+                "code_challenge": _CODE_CHALLENGE,
+                "code_challenge_method": "S256",
+                "state": "client-state",
+            },
+        )
+        callback = client.get("/fake/callback", params={"code": "c", "state": state})
+        assert callback.headers["location"] == "/login/2fa"
+
+        verified = client.post("/mfa/verify", json={"code": code_now(secret, 1)})
+        assert verified.status_code == 200, verified.text
+        redirect = urlparse(verified.json()["redirect_to"])
+        params = parse_qs(redirect.query)
+        assert params["state"] == ["client-state"]
+
+        token = client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": "app-client",
+                "code": params["code"][0],
+                "redirect_uri": _REDIRECT_URI,
+                "code_verifier": "test",
+            },
+        )
+        assert token.status_code == 200, token.text
+
+
+def test_2fa_changes_need_a_recent_sign_in(
+    auth: CrossAuth,
+    enrolled: tuple[str, list[str]],
+    session_storage: MemorySessionStorage,
+) -> None:
+    secret, _ = enrolled
+    with app_for(auth) as client:
+        challenge = client.post("/login").json()["challenge"]
+        client.post(
+            "/login/2fa", json={"challenge": challenge, "code": code_now(secret, 1)}
+        )
+        for record in session_storage.records.values():
+            record.created_at -= timedelta(minutes=10)
+        factor_id = client.get("/mfa").json()["factors"][0]["id"]
+
+        refused = client.post(f"/mfa/factors/{factor_id}/remove", json={})
+        assert refused.status_code == 403
+        assert refused.json() == {
+            "error": "reauthentication_required",
+            "error_description": "Confirm it is you before changing two-factor authentication",
+            "methods": ["password", "totp", "recovery_code", "sign_in_again"],
+        }
+        assert client.post("/mfa/recovery-codes", json={}).status_code == 403
+
+        assert (
+            client.post("/reauthenticate", json={"password": "nope"}).status_code == 400
+        )
+        assert (
+            client.post("/reauthenticate", json={"password": TEST_PASSWORD}).status_code
+            == 200
+        )
+
+        removed = client.post(f"/mfa/factors/{factor_id}/remove", json={})
+        assert removed.json() == {
+            "enabled": False,
+            "factors": [],
+            "recovery_codes_remaining": 0,
+        }
+        # 2FA is off: the next login needs no code.
+        assert client.post("/login").status_code == 200

@@ -1,3 +1,4 @@
+import json
 import warnings
 from typing import Annotated, Any, Literal
 
@@ -22,7 +23,7 @@ from ._context import Context
 from ._password import _verify_password
 from ._route import Route
 from ._tokens import IssuedToken, TokenIssueRequest
-from .exceptions import CrossAuthException
+from .exceptions import CrossAuthException, MFARequired
 from .hooks import (
     AfterTokenAuthorizationCodeEvent,
     AfterTokenPasswordEvent,
@@ -70,6 +71,10 @@ TokenRequest = Annotated[
     Discriminator("grant_type"),
 ]
 TokenRequestAdapter: TypeAdapter[TokenRequest] = TypeAdapter(TokenRequest)
+
+# Finishes a password grant that answered mfa_required, with its mfa_token
+# and an otp or recovery_code.
+MFA_GRANT_TYPE = "urn:cross-auth:grant-type:mfa"
 
 PASSWORD_GRANT_DEPRECATION = (
     "The OAuth password grant is deprecated (RFC 9700 section 2.4) and will be "
@@ -178,6 +183,9 @@ class Issuer:
     ) -> Response:
         input_data = dict(request.post_data)
 
+        if input_data.get("grant_type") == MFA_GRANT_TYPE:
+            return self._mfa_grant(input_data, context, request)
+
         if input_data.get("grant_type") == "password":
             # Refused before validation, so no legacy field is required and no
             # account is looked up.
@@ -285,6 +293,7 @@ class Issuer:
                     scope=request.scope,
                     http_request=http_request,
                     login_method=authorization_data.login_method,
+                    mfa_method=authorization_data.mfa_method,
                 )
             )
         except CrossAuthException as e:
@@ -343,6 +352,32 @@ class Issuer:
                     login_method="password",
                 )
             )
+        except MFARequired as required:
+            assert context.mfa is not None
+            started = context.mfa.start_challenge(
+                required,
+                kind="token",
+                data={
+                    "client_id": request.client_id,
+                    "scope": request.scope,
+                    "username": request.username,
+                },
+            )
+            return Response(
+                status_code=403,
+                body=json.dumps(
+                    {
+                        "error": "mfa_required",
+                        "error_description": required.error_description,
+                        "mfa_token": started.challenge,
+                        "methods": started.methods,
+                    }
+                ),
+                headers={
+                    "Content-Type": "application/json",
+                    "Cache-Control": "no-store",
+                },
+            )
         except CrossAuthException as e:
             return self._error_response(e.error, e.error_description)
 
@@ -358,6 +393,44 @@ class Issuer:
         issued.on_commit(lambda: context.hooks.run_after("token.password", after_event))
 
         return _token_success(token_data)
+
+    def _mfa_grant(
+        self, data: dict[str, Any], context: Context, http_request: HTTPRequest
+    ) -> Response:
+        from ._mfa_flow import finish_challenge
+
+        mfa_token = data.get("mfa_token")
+        if context.mfa is None or not isinstance(mfa_token, str) or not mfa_token:
+            return self._error_response("invalid_grant", "mfa_token is required")
+        challenge = context.mfa.load_challenge(mfa_token)
+        if challenge is None or challenge.kind != "token":
+            return self._error_response("invalid_grant", "Unknown or expired mfa_token")
+        if challenge.data.get("client_id") != data.get("client_id"):
+            return self._error_response("invalid_grant", "Client ID does not match")
+        otp = data.get("otp") or None
+        recovery_code = data.get("recovery_code") or None
+        try:
+            finished = finish_challenge(
+                http_request,
+                context,
+                mfa_token,
+                code=otp if isinstance(otp, str) else None,
+                recovery_code=recovery_code if isinstance(recovery_code, str) else None,
+            )
+        except CrossAuthException as e:
+            if e.status_code == 429:
+                return Response(
+                    status_code=429,
+                    body=TokenErrorResponse(
+                        error=e.error, error_description=e.error_description
+                    ).model_dump_json(exclude_none=True),
+                    headers={"Content-Type": "application/json"},
+                )
+            return self._error_response(
+                "invalid_grant" if e.error == "invalid_code" else e.error,
+                e.error_description,
+            )
+        return finished.response
 
     def routes(self, *, password_grant: bool) -> list[Route]:
         # The route reads its own form, so FastAPI adds no components for these

@@ -49,3 +49,19 @@ export function DjangoPage({
     </Layout>
   )
 }
+
+export type Site = "fastapi" | "django"
+
+// For the pages both backends render, such as the two-factor ones.
+export function SitePage({
+  site,
+  title,
+  children,
+}: {
+  site: Site
+  title?: string
+  children: ReactNode
+}) {
+  const Page = site === "django" ? DjangoPage : FastAPIPage
+  return <Page title={title}>{children}</Page>
+}

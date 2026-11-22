@@ -162,6 +162,12 @@ class SessionRecord(Protocol):
         ...
 
     @property
+    def mfa_method(self) -> str | None:
+        """The second factor the sign-in passed: ``"totp"``, ``"recovery_code"``
+        or ``None`` when it needed none."""
+        ...
+
+    @property
     def status(self) -> SessionStatus: ...
 
 
@@ -216,6 +222,7 @@ class SessionStorage(Protocol):
         ip: str | None = None,
         last_active_at: AwareDatetime | None = None,
         login_method: str | None = None,
+        mfa_method: str | None = None,
     ) -> SessionRecord: ...
 
     def get(
@@ -486,4 +493,111 @@ class AccountsStorage(Protocol):
         savepoint) and drops it if that transaction rolls back. Let callback
         exceptions propagate; they cannot undo the committed write.
         """
+        ...
+
+
+class MFAFactor(Protocol):
+    """A second factor a user has confirmed, such as an authenticator app."""
+
+    @property
+    def id(self) -> Any: ...
+
+    @property
+    def user_id(self) -> Any: ...
+
+    @property
+    def type(self) -> str:
+        """``"totp"``; later also ``"webauthn"``."""
+        ...
+
+    @property
+    def name(self) -> str | None: ...
+
+    @property
+    def data(self) -> Mapping[str, Any]:
+        """The type's own fields. TOTP keeps its encrypted ``secret`` here."""
+        ...
+
+    @property
+    def last_used_step(self) -> int | None:
+        """The last TOTP time step accepted, so a code is never used twice."""
+        ...
+
+    @property
+    def created_at(self) -> AwareDatetime: ...
+
+    @property
+    def last_used_at(self) -> AwareDatetime | None: ...
+
+    @property
+    def failed_attempts(self) -> int: ...
+
+    @property
+    def locked_until(self) -> AwareDatetime | None: ...
+
+
+class MFAStorage(Protocol):
+    """Stores second factors and recovery codes. It holds no 2FA rules.
+
+    Cross Auth's ``_mfa`` module decides everything; a storage only reads and
+    writes rows. Each method commits before it returns.
+    """
+
+    def list_factors(self, user_id: Any) -> Sequence[MFAFactor]: ...
+
+    def create_factor(
+        self,
+        *,
+        user_id: Any,
+        type: str,
+        name: str | None,
+        data: Mapping[str, Any],
+        created_at: AwareDatetime,
+        last_used_step: int | None = None,
+    ) -> MFAFactor: ...
+
+    def delete_factor(self, *, user_id: Any, factor_id: Any) -> bool:
+        """Delete the user's factor; ``False`` if no such factor is theirs."""
+        ...
+
+    def claim_totp_step(
+        self, factor_id: Any, *, step: int, used_at: AwareDatetime
+    ) -> bool:
+        """Atomically record ``step`` as used, if it is later than the stored one.
+
+        Set ``last_used_step`` and ``last_used_at`` only when ``last_used_step``
+        is null or less than ``step``. Return whether the row changed, so two
+        requests with the same code cannot both succeed.
+        """
+        ...
+
+    def record_failure(self, user_id: Any) -> int:
+        """Atomically add one to the user's failed attempts and return the count.
+
+        The count is kept on every factor row of the user.
+        """
+        ...
+
+    def lock(self, user_id: Any, *, until: AwareDatetime) -> None:
+        """Set ``locked_until`` on the user's factors and reset the count."""
+        ...
+
+    def reset_failures(self, user_id: Any) -> None:
+        """Reset the failed attempts and clear ``locked_until``."""
+        ...
+
+    def count_recovery_codes(self, user_id: Any) -> int:
+        """How many of the user's recovery codes are unused."""
+        ...
+
+    def replace_recovery_codes(
+        self, user_id: Any, code_hashes: Sequence[str], *, created_at: AwareDatetime
+    ) -> None:
+        """Delete the user's recovery codes and store these hashes instead."""
+        ...
+
+    def use_recovery_code(
+        self, user_id: Any, code_hash: str, *, used_at: AwareDatetime
+    ) -> bool:
+        """Atomically mark an unused code as used; return whether one was."""
         ...

@@ -1339,14 +1339,167 @@ and has to sign in and connect the provider instead.
   [`PROVIDER_TOKENS`](#provider-tokens). Without it, only the provider account
   ID, its email, and whether the provider verified it are kept.
 
-## Multi-factor authentication
+## Two-factor authentication
 
-Cross Auth's Google sign-in calls `django.contrib.auth.login()` directly. If
-your project requires a second factor at sign-in, through `django-otp`,
-`django-two-factor-auth`, `django-allauth`'s MFA or your own middleware, Google
-sign-in would skip it. Do not enable Cross Auth in such projects yet. Django's
-`check` command warns (`cross_auth.W001`) when it finds well-known MFA apps; it
-cannot detect every setup.
+Cross Auth can ask users for a code from an authenticator app at every sign-in:
+Google sign-in, Django's own password login, the admin, and any other `login()`
+call. Recovery codes cover a lost phone. The rules are the same as on FastAPI
+(see [Two-Factor Authentication](/docs/two-factor)).
+
+### Turn it on
+
+```python
+# settings.py
+CROSS_AUTH = {
+    # ...
+    "MFA": {
+        "issuer": "Acme",  # the name authenticator apps show
+        # Optional:
+        # "require_for_providers": False,  # don't challenge Google sign-ins
+        # "requires_mfa": "core.mfa.requires_mfa",  # your own rule
+        # "encrypt": "core.crypto.encrypt", "decrypt": "core.crypto.decrypt",
+    },
+}
+SESSION_ENGINE = "cross_auth.django.sessions"  # required with MFA
+MIDDLEWARE = [
+    # ...
+    "cross_auth.django.sessions.SessionMiddleware",
+    # ...
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "cross_auth.django.mfa.MFAMiddleware",
+    # ...
+]
+```
+
+Run `migrate` (migration `0005_mfa` adds `MFAFactor` and `RecoveryCode`). TOTP
+secrets are encrypted with keys derived from `SECRET_KEY`; rotating it through
+`SECRET_KEY_FALLBACKS` keeps them readable. Switching `SESSION_ENGINE` from `db`
+or `cached_db` signs every user out once. `check` reports a missing or misplaced
+middleware (`cross_auth.E006`) and the wrong session engine (`cross_auth.E008`).
+
+`requires_mfa` receives the native user and the provider ID of a Cross Auth
+sign-in, or `None` for Django's own logins. To require 2FA for staff:
+
+```python
+# core/mfa.py
+from cross_auth.django.models import MFAFactor
+
+
+def requires_mfa(user, login_method):
+    return user.is_staff or MFAFactor.objects.filter(user=user).exists()
+```
+
+A user it requires 2FA for who has no factor cannot sign in until they enroll.
+
+### How sign-in works
+
+- **Google sign-in** does not log in a user who needs a code. The callback
+  redirects to the verify page: `cross_auth:mfa_verify` (`auth/mfa/verify`), a
+  plain page Cross Auth ships, or your own (see below).
+- **Django's own logins** (`LoginView`, the admin, `PasswordResetConfirmView`,
+  any `login()` or `alogin()`): a `user_logged_in` receiver takes the user back
+  out of the session before it is saved, and `MFAMiddleware` replaces the view's
+  response with a redirect to the verify page, keeping the view's redirect
+  target as `next`. Requests that are not page navigations get
+  `401 {"error": "mfa_required", "methods": [...], "verify_url": ...}`.
+- The verify page restores the login once the code checks out, records the
+  method in the session's `mfa_method`, updates `last_login` and sends
+  `mfa_verified`.
+
+So for a user with 2FA, `user_logged_in` means the password passed;
+`mfa_verified` means a full sign-in. Code that runs in a login view after
+`login()` still runs before the second factor.
+
+### Your own verify page
+
+Point `verify_url` at your page, by URL name or path, and every sign-in that
+waits for a code goes there instead of Cross Auth's page:
+
+```python
+CROSS_AUTH = {
+    # ...
+    "MFA": {"issuer": "Acme", "verify_url": "two_factor_verify"},
+}
+```
+
+Your view reads the waiting sign-in with `get_pending_mfa()` and renders a form
+for each method. The forms post `code` or `recovery_code`, and `next`, to
+`cross_auth:mfa_verify`, which finishes the sign-in. A wrong code comes back to
+your page with `?error=` (such as `invalid_code` or `mfa_locked`) and `next`.
+
+```python
+from cross_auth.django.mfa import get_pending_mfa
+
+
+def two_factor_verify(request):
+    pending = get_pending_mfa(request)  # None: expired, sign in again
+    return render(
+        request,
+        "two_factor_verify.html",
+        {
+            "methods": pending.methods if pending else [],  # "totp", "recovery_code"
+            "error": request.GET.get("error"),
+            "next": request.GET.get("next", ""),
+        },
+    )
+```
+
+The view needs no login: the user is not signed in yet. Under
+`LoginRequiredMiddleware`, mark it with `login_not_required`.
+
+### Settings pages
+
+Cross Auth ships the JSON views and Python functions; you build the page. The
+views are the FastAPI router's routes under the same prefix: `auth/mfa`,
+`auth/mfa/totp/enroll`, `auth/mfa/totp/confirm`, `auth/mfa/recovery-codes`,
+`auth/mfa/factors/<id>/remove` and `auth/reauthenticate`. They keep Django's
+CSRF protection. The same operations as functions, for server-rendered pages:
+
+```python
+from cross_auth.django.mfa import (
+    confirm_totp_enrollment,
+    get_mfa_status,
+    reauthenticate,
+    reauthentication_required,
+    regenerate_recovery_codes,
+    remove_mfa_factor,
+    start_totp_enrollment,
+)
+
+
+@login_required
+@reauthentication_required("/settings/confirm-identity/")
+def start_2fa(request):
+    enrollment = start_totp_enrollment(request, name="Authenticator app")
+    # Render enrollment.otpauth_uri as a QR code; show enrollment.secret too.
+    ...
+```
+
+Changes need a sign-in or `reauthenticate()` in the last five minutes; otherwise
+they raise `ReauthenticationRequired`. Passwords are checked with Django's
+`check_password()`. Enrolling needs a connected provider account that verified
+the user's email (`"allow_unverified_email": True` turns that off). Built-in
+HTML settings pages are planned
+([#126](https://github.com/usecross/cross-auth/issues/126)).
+
+`@mfa_required` works like `login_required`, and also needs the session's
+sign-in to have passed 2FA.
+
+### Signals and tests
+
+`mfa_verified`, `mfa_verification_failed`, `mfa_factor_added`,
+`mfa_factor_removed`, `recovery_codes_regenerated` and `recovery_code_used` in
+`cross_auth.django.signals`.
+
+`client.login()` and `client.force_login()` leave a user with a factor
+anonymous. Use `cross_auth.django.test.login_with_mfa(client, user)`.
+
+### Other MFA apps
+
+Cross Auth does not read the devices of `django-otp`, `django-two-factor-auth`
+or `django-allauth`'s MFA. With one of them installed, `check` warns
+(`cross_auth.W001`): use Cross Auth's `MFA`, or the other app without Cross Auth
+sign-in.
 
 ## Deploying to production
 

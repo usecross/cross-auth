@@ -29,6 +29,8 @@ class SQLModelSession(SQLModel):
     user_agent: str | None = None
     ip: str | None = None
     login_method: str | None = None
+    # The second factor the sign-in passed: "totp", "recovery_code" or None.
+    mfa_method: str | None = None
 
     @property
     def status(self) -> SessionStatus:
@@ -95,3 +97,37 @@ class SQLModelSocialAccount(SQLModel):
     provider_email: str | None = None
     provider_email_verified: bool | None = None
     is_login_method: bool = True
+
+
+class SQLModelMFAFactor(SQLModel):
+    """A confirmed second factor; subclasses declare ``id`` and ``user_id``.
+
+    ``data`` holds the type's own fields as JSON (for TOTP, the encrypted
+    secret), so later factor types need no new columns. Declare it with a
+    JSON column, as ``sa_column=Column(JSON)``.
+    """
+
+    if TYPE_CHECKING:
+        id: Any
+        user_id: Any
+        data: dict[str, Any]
+
+    type: str
+    name: str | None = None
+    last_used_step: int | None = None
+    created_at: datetime
+    last_used_at: datetime | None = None
+    failed_attempts: int = 0
+    locked_until: datetime | None = None
+
+
+class SQLModelRecoveryCode(SQLModel):
+    """One hashed recovery code; subclasses declare ``id`` and ``user_id``."""
+
+    if TYPE_CHECKING:
+        id: Any
+        user_id: Any
+
+    code_hash: str = Field(index=True)
+    created_at: datetime
+    used_at: datetime | None = None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TypedDict
 
+from ._mfa import MFAConfig
 from ._session import SessionConfig
 
 
@@ -32,3 +33,7 @@ class Config(TypedDict, total=False):
     # Session settings, including cookies.auth to enable browser
     # /{provider}/login routes. Cookie sign-in requires session_storage.
     session: SessionConfig
+
+    # Two-factor authentication (TOTP and recovery codes). Needs an
+    # mfa_storage too.
+    mfa: MFAConfig

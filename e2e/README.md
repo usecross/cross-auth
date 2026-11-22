@@ -55,6 +55,7 @@ frameworks/
   support/browser.ts              shared browser actions and profile/session checks
   support/fixtures.ts             scenario-owned app/provider, network guard, identities
   support/google.ts               emulator seed, test identities, account picker
+  support/totp.ts                 authenticator-app codes for the 2FA scenario
   support/plan.ts                 ports derived from resolved Playwright config
   support/process.ts              server start, readiness and cleanup
   django/app.ts                   Django startup/state + declarative routes/labels
@@ -132,6 +133,13 @@ Shared, run for each framework:
   `before("oauth.callback")` hook) answers 403 to a new identity, leaving no
   session, user or identity.
 - An unverified Google email cannot sign up and leaves nothing behind.
+- Two-factor authentication, through the example's own settings pages: a Google
+  user turns on an authenticator app (the page shows a QR code and the key; the
+  test computes RFC 6238 codes from the key in `support/totp.ts`), signs out,
+  and signs in again only after the verify step: a wrong code and the code that
+  confirmed enrollment are refused, the next code works. Then a recovery code
+  signs in once, regenerating replaces every old code, and removing the
+  authenticator lets Google sign in alone again.
 
 Assertions use the app's own pages and the rows in its database (`facts` returns
 the users with an email and the Google identities that belong to them or report
