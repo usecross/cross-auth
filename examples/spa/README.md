@@ -44,6 +44,7 @@ they test the contract between this SPA and the FastAPI backend together.
 Run them with:
 
 ```bash
+(cd examples/frontend && bun install)
 cd e2e
 bun install
 bunx playwright install chromium

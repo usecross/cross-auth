@@ -48,6 +48,10 @@ class LoginView(auth_views.LoginView):
             {
                 "next": context["next"],
                 "username": form["username"].value() or "",
-                "form_errors": [str(error) for error in form.non_field_errors()],
+                # Field errors too: a whitespace-only username passes the
+                # browser's required check but fails Django's.
+                "form_errors": [
+                    str(error) for errors in form.errors.values() for error in errors
+                ],
             },
         )

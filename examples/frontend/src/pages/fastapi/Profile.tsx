@@ -67,6 +67,7 @@ export default function Profile({
   const [disconnectStatus, setDisconnectStatus] = useState<string | null>(null)
   const [disconnecting, setDisconnecting] = useState<number | null>(null)
 
+  // Both buttons wait on one attempt: they share the stored PKCE verifier.
   async function linkAccount(provider: string) {
     try {
       setLinking(provider)
@@ -209,7 +210,7 @@ export default function Profile({
             </a>
             <button
               type="button"
-              disabled={linking === "github"}
+              disabled={linking !== null}
               onClick={() => void linkAccount("github")}
             >
               Link GitHub account
@@ -225,7 +226,7 @@ export default function Profile({
               <>
                 <button
                   type="button"
-                  disabled={linking === "google"}
+                  disabled={linking !== null}
                   onClick={() => void linkAccount("google")}
                 >
                   Link Google account
