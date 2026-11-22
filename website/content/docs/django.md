@@ -24,8 +24,11 @@ user model, passwords, permissions, `request.user`, middleware, sessions,
 `login()` and `logout()`. There is no FastAPI, SQLModel, Redis, or second login
 cookie involved.
 
-The finished project is in
+A runnable version of this project is in
 [`examples/django`](https://github.com/usecross/cross-auth/tree/main/examples/django).
+Its settings, URLs, signals and Cross Auth wiring follow this guide; its pages
+are React components rendered with Inertia, shared with the FastAPI example,
+instead of the templates below.
 
 > **Pilot scope:** this integration is new. It supports Google, Django 5.2 LTS
 > (5.2.8 or later), Django 6.0 and 6.1, Python 3.11 to 3.15, database-backed

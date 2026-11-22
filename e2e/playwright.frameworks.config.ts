@@ -7,6 +7,7 @@ import { type FrameworkName, frameworks } from "./frameworks/frameworks.js"
 // its own playwright.config.js.
 export default defineConfig<object, { framework: FrameworkName }>({
   testDir: "./frameworks",
+  globalSetup: "./global-setup.ts",
   outputDir: "./test-results/frameworks",
   workers: process.env.CI ? 2 : 4,
   fullyParallel: true,

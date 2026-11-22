@@ -1,5 +1,6 @@
 """Run examples/django through manage.py and runserver, without Google."""
 
+import json
 import os
 import shutil
 import socket
@@ -26,6 +27,13 @@ def _free_port() -> int:
 def project(tmp_path_factory: pytest.TempPathFactory) -> Path:
     path = tmp_path_factory.mktemp("example") / "django"
     shutil.copytree(EXAMPLE, path, ignore=shutil.ignore_patterns("db.sqlite3", ".env"))
+    # The pages come from the shared ../frontend build. These tests read the
+    # server-rendered page data, so a manifest naming the entry is enough.
+    manifest = path.parent / "frontend" / "dist" / ".vite" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"src/app.tsx": {"file": "assets/app.js", "isEntry": True}})
+    )
     return path
 
 
@@ -39,6 +47,8 @@ def env() -> dict[str, str]:
         },
         "GOOGLE_CLIENT_ID": "fake-client-id.apps.googleusercontent.com",
         "GOOGLE_CLIENT_SECRET": "fake-client-secret",
+        # runserver with DEBUG would start the Vite dev server.
+        "INERTIA_DEV": "0",
     }
 
 
@@ -101,7 +111,7 @@ def test_google_sign_in_starts_with_the_registered_redirect_uri(server: str) -> 
     with httpx.Client(base_url=server) as browser:
         home = browser.get("/")
         assert home.status_code == 200
-        assert 'action="/auth/google/login/"' in home.text
+        assert '"google_login": "\\/auth\\/google\\/login\\/"' in home.text
 
         refused = browser.post("/auth/google/login/")
         assert refused.status_code == 403

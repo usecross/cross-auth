@@ -2,6 +2,7 @@ import { defineConfig } from "@playwright/test"
 
 export default defineConfig({
   testDir: "./tests",
+  globalSetup: "./global-setup.ts",
   fullyParallel: true,
   workers: process.env.CI ? 2 : 4,
   forbidOnly: Boolean(process.env.CI),

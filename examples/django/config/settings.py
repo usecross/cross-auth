@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "cross_inertia.django",
     "cross_auth.django",
     "core.apps.CoreConfig",
 ]
@@ -38,6 +39,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "cross_inertia.django.InertiaMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -81,6 +83,22 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+
+# Inertia: the pages are React components in ../frontend, shared with the
+# FastAPI example. `bun run build` there writes dist/, served as
+# static/build/. With DEBUG, runserver also starts the Vite dev server.
+FRONTEND_DIR = BASE_DIR.parent / "frontend"
+STATICFILES_DIRS = [("build", FRONTEND_DIR / "dist")]
+
+CROSS_INERTIA = {
+    "LAYOUT": "core/app.html",
+    "VITE_ENTRY": "src/app.tsx",
+    "VITE_PORT": 5174,
+    "VITE_BASE": "/static/build/",
+    "VITE_COMMAND": ["bun", "--cwd", str(FRONTEND_DIR), "run", "dev"],
+    "MANIFEST_PATH": FRONTEND_DIR / "dist" / ".vite" / "manifest.json",
+    "SHARE": "core.inertia.share",
+}
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

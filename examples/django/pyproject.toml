@@ -3,7 +3,10 @@ name = "cross-auth-django-example"
 version = "0.1.0"
 description = "Native Django example for cross-auth: Google sign-in with Django sessions"
 requires-python = ">=3.11"
-dependencies = ["cross-auth[django]"]
+dependencies = [
+    "cross-auth[django]",
+    "cross-inertia>=0.22.3",
+]
 
 [tool.uv.sources]
 cross-auth = { workspace = true }
