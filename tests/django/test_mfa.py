@@ -15,7 +15,6 @@ import pytest
 from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.contrib.auth.base_user import AbstractBaseUser
-from django.core.checks import run_checks
 from django.dispatch import Signal
 from django.test import AsyncClient, Client, override_settings
 from django.utils import timezone as django_timezone
@@ -23,6 +22,7 @@ from django.utils import timezone as django_timezone
 from cross_auth import _totp
 from cross_auth._mfa import _Cipher, hash_recovery_code
 from cross_auth.django import signals
+from cross_auth.django.checks import check_mfa_setup, check_settings
 from cross_auth.django.models import MFAFactor, RecoveryCode, Session
 from cross_auth.django.storage import DjangoMFAStorage
 from cross_auth.django.test import login_with_mfa
@@ -516,16 +516,16 @@ def test_checks_require_the_middleware_and_session_engine() -> None:
         MIDDLEWARE=[m for m in MFA_MIDDLEWARE if "mfa" not in m],
         SESSION_ENGINE="django.contrib.sessions.backends.db",
     ):
-        ids = {message.id for message in run_checks()}
+        ids = {message.id for message in check_mfa_setup()}
     assert {"cross_auth.E006", "cross_auth.E008"} <= ids
     assert not {"cross_auth.E006", "cross_auth.E008"} & {
-        message.id for message in run_checks()
+        message.id for message in check_mfa_setup()
     }
 
 
 def test_bad_mfa_settings_are_reported() -> None:
     with _mfa_settings(max_attempts=0, encrypt="tests.django.token_crypto.encrypt"):
-        messages = [m for m in run_checks() if m.id == "cross_auth.E001"]
+        messages = [m for m in check_settings() if m.id == "cross_auth.E001"]
     assert "both 'encrypt' and 'decrypt'" in messages[0].msg
 
 
