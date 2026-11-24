@@ -13,10 +13,13 @@ import bcrypt
 from fastapi import Depends, FastAPI, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import UniqueConstraint
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Field, Relationship, Session, SQLModel, create_engine
+
+from cross_inertia import configure_inertia
+from cross_inertia.fastapi import InertiaDep
 
 from cross_auth import (
     OAuthClient,
@@ -52,7 +55,19 @@ from cross_auth.storage.sqlmodel import (
 )
 
 APP_DIR = Path(__file__).parent
-templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
+# The pages are React components in ../frontend, shared with the Django
+# example and rendered through cross-inertia. `bun run build` there writes
+# dist/, served below at /static/build/; with `bun run dev` running instead,
+# pages load from the Vite dev server.
+FRONTEND_DIR = APP_DIR.parent / "frontend"
+configure_inertia(
+    template_dir=str(APP_DIR / "templates"),
+    vite_entry="src/app.tsx",
+    vite_port=5174,
+    vite_base="/static/build/",
+    manifest_path=str(FRONTEND_DIR / "dist" / ".vite" / "manifest.json"),
+    asset_url_prefix="/static/build",
+)
 
 SESSION_COOKIE_NAME = "cross_auth_example_session"
 DEMO_EMAIL = "demo@example.com"
@@ -555,17 +570,21 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 app.include_router(auth.router, prefix="/auth")
+app.mount(
+    "/static/build",
+    StaticFiles(directory=FRONTEND_DIR / "dist", check_dir=False),
+    name="frontend",
+)
 
 
 @app.get("/")
 def home(
-    request: Request,
+    inertia: InertiaDep,
     user: Annotated[UserProtocol | None, Depends(auth.get_current_user)],
     error: str | None = None,
 ):
-    return templates.TemplateResponse(
-        request,
-        "home.html",
+    return inertia.render(
+        "fastapi/Home",
         {
             "demo_email": DEMO_EMAIL,
             "demo_password": DEMO_PASSWORD,
@@ -576,7 +595,7 @@ def home(
             "hook_events": hook_events[:5],
             "spa_client_id": SPA_CLIENT_ID,
             "spa_demo_url": SPA_DEMO_URL,
-            "user": user,
+            "user": None if user is None else {"id": user.id, "email": user.email},
         },
     )
 
@@ -614,19 +633,18 @@ def logout(request: Request) -> RedirectResponse:
 
 @app.get("/profile")
 def profile(
-    request: Request,
+    inertia: InertiaDep,
     user: Annotated[UserProtocol | None, Depends(auth.get_current_user)],
 ):
     if user is None:
         return RedirectResponse(url="/", status_code=303)
 
-    return templates.TemplateResponse(
-        request,
-        "profile.html",
+    return inertia.render(
+        "fastapi/Profile",
         {
             "google_enabled": GOOGLE_EMULATOR_URL is not None,
             "hook_events": hook_events[:5],
-            "user": user,
+            "user": serialize_user(cast(User, user)),
             "spa_client_id": SPA_CLIENT_ID,
         },
     )
@@ -635,6 +653,7 @@ def profile(
 @app.get("/sessions")
 def sessions_page(
     request: Request,
+    inertia: InertiaDep,
     user: Annotated[UserProtocol | None, Depends(auth.get_current_user)],
     status: SessionStatus | None = None,
     cursor: str | None = None,
@@ -666,14 +685,12 @@ def sessions_page(
             params["status"] = status
         next_query = urlencode(params)
 
-    return templates.TemplateResponse(
-        request,
-        "sessions.html",
+    return inertia.render(
+        "fastapi/Sessions",
         {
             "current_status": status,
-            "hook_events": hook_events[:5],
             "sessions": sessions,
-            "user": user,
+            "user": {"email": user.email},
             "next_query": next_query,
         },
     )
@@ -714,21 +731,13 @@ def revoke_all_sessions_form(
 
 
 @app.get("/hooks")
-def hooks_page(request: Request):
-    return templates.TemplateResponse(
-        request,
-        "hooks.html",
-        {"hook_events": hook_events},
-    )
+def hooks_page(inertia: InertiaDep):
+    return inertia.render("fastapi/Hooks", {"hook_events": hook_events})
 
 
 @app.get("/link-callback")
-def link_callback(request: Request):
-    return templates.TemplateResponse(
-        request,
-        "link_callback.html",
-        {"next_url": "/profile"},
-    )
+def link_callback(inertia: InertiaDep):
+    return inertia.render("fastapi/LinkCallback", {"next_url": "/profile"})
 
 
 @app.get("/api/me")

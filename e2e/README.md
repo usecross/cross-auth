@@ -13,6 +13,7 @@ two suites with separate configs:
 ## Setup
 
 ```bash
+(cd examples/frontend && bun install)
 cd e2e
 bun install
 bunx playwright install chromium
@@ -70,6 +71,9 @@ frameworks/
 - `support/fixtures.ts` starts a scenario-owned Google emulator from
   [emulate](https://emulate.dev) (pinned in `package.json`) on a free loopback
   port, passing `GOOGLE_EMULATOR_URL` to the owned application process.
+- Global setup (`global-setup.ts`, shared by both suites) builds the examples'
+  shared React frontend in `examples/frontend` once, so both backends serve its
+  production bundle. Run `bun install` there first.
 - Each scenario starts the real example app (`examples/django` with
   `manage.py runserver`, `examples/fastapi` with uvicorn) on its worker's port,
   with a fresh SQLite database in a temporary directory. Ports start at `8180`,
@@ -98,7 +102,8 @@ Test-only configuration stays out of the examples' defaults:
   Its `manage.py e2e_state seed-password-user EMAIL PASSWORD` and
   `manage.py e2e_state facts EMAIL` commands seed users and read account facts.
   Django handles setup, argument parsing and output; the command is unavailable
-  with the example's normal settings. Views, templates, signals, middleware and
+  with the example's normal settings. `INERTIA_DEV=0` keeps `runserver` from
+  starting the Vite dev server. Views, templates, signals, middleware and
   Django's own sessions and password login are unchanged, and
   `ALLOWED_EMAIL_DOMAIN=e2e.test` turns on the example's domain policy.
 - FastAPI: `examples/fastapi/main.py` reads `EXAMPLE_BASE_URL`,

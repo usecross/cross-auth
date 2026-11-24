@@ -29,6 +29,8 @@ export const django: Framework = {
         DJANGO_SETTINGS_MODULE: "e2e_settings",
         PYTHONPATH: `${import.meta.dirname}:${exampleDir}`,
         PYTHONUNBUFFERED: "1",
+        // runserver with DEBUG would start Vite; serve the built frontend.
+        INERTIA_DEV: "0",
         E2E_DATABASE: join(dataDir, "db.sqlite3"),
         GOOGLE_EMULATOR_URL: emulatorUrl(),
         GOOGLE_CLIENT_ID,

@@ -43,6 +43,14 @@ jobs:
       - name: Sync FastAPI example dependencies
         run: uv sync --frozen --package cross-auth-fastapi-example
 
+      - name: Install example frontend dependencies
+        working-directory: examples/frontend
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck example frontend
+        working-directory: examples/frontend
+        run: bun run typecheck
+
       - name: Install SPA dependencies
         working-directory: examples/spa
         run: bun install --frozen-lockfile
@@ -94,6 +102,14 @@ jobs:
 
       - name: Sync workspace dependencies
         run: uv sync --frozen --all-packages
+
+      - name: Install example frontend dependencies
+        working-directory: examples/frontend
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck example frontend
+        working-directory: examples/frontend
+        run: bun run typecheck
 
       - name: Install E2E dependencies
         working-directory: e2e

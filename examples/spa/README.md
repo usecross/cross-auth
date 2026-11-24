@@ -16,9 +16,11 @@ backend as if Cross-Auth were a standalone authentication server.
 
 ## Run It
 
-From the repo root, first start the backend demo:
+From the repo root, first build the backend's own pages (shared React components
+in `examples/frontend`), then start the backend demo:
 
 ```bash
+(cd examples/frontend && bun install && bun run build)
 cd examples/fastapi
 uv sync --package cross-auth-fastapi-example
 uv run --package cross-auth-fastapi-example fastapi dev main.py
@@ -42,6 +44,7 @@ they test the contract between this SPA and the FastAPI backend together.
 Run them with:
 
 ```bash
+(cd examples/frontend && bun install)
 cd e2e
 bun install
 bunx playwright install chromium
