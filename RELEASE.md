@@ -19,9 +19,10 @@ enter a code: password logins, the password grant, OAuth callbacks and
 - With 2FA on, `login()`, `issue_session_token()` and `sign_in_with_id_token()`
   raise `MFARequired` for a user who needs a code.
 - SQLModel: `SQLModelMFAFactor`, `SQLModelRecoveryCode` and
-  `SQLModelMFAStorage`; `SQLModelSession` gains `mfa_method`. Before you deploy,
-  add the nullable `mfa_method` column to every existing session table, even
-  with MFA off: session reads select it.
+  `SQLModelMFAStorage`, whose factor table's `user_id` must be a foreign key to
+  your user table; `SQLModelSession` gains `mfa_method`. Before you deploy, add
+  the nullable `mfa_method` column to every existing session table, even with
+  MFA off: session reads select it.
 - Django: migration `0005_mfa` (run `migrate`), `cross_auth.django.mfa` with
   `MFAMiddleware`, the verify page (or your own, with `MFA["verify_url"]` and
   `get_pending_mfa`) and the JSON views, new signals, checks `E006` and `E008`,

@@ -218,6 +218,9 @@ engine = (
     if DATABASE_URL is None
     else create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 )
+# create_all makes missing tables but adds no columns to existing ones. The
+# demo has no migrations: point EXAMPLE_DATABASE_URL at a new database after
+# upgrading Cross Auth, such as this release's sessions.mfa_method column.
 SQLModel.metadata.create_all(engine)
 
 # StaticPool shares one SQLite connection, which SQLite can't use from two

@@ -48,27 +48,36 @@ _CODE_CHALLENGE = "n4bQgYhMfWWaL-qgxVrQFaO_TxsrC4Is0V1sFbDwCgg"
 _REDIRECT_URI = "http://client.example/cb"
 
 
+class MFATestUser(SQLModel, table=True):
+    """The row SQLModelMFAStorage locks; the users live in memory."""
+
+    __tablename__ = "mfa_test_user"
+    id: str = Field(primary_key=True)
+
+
 class MFATestFactor(SQLModelMFAFactor, table=True):
     __tablename__ = "mfa_test_factor"
     id: int | None = Field(default=None, primary_key=True)
-    user_id: str = Field(index=True)
+    user_id: str = Field(foreign_key="mfa_test_user.id", index=True)
     data: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
 
 
 class MFATestRecoveryCode(SQLModelRecoveryCode, table=True):
     __tablename__ = "mfa_test_recovery_code"
     id: int | None = Field(default=None, primary_key=True)
-    user_id: str = Field(index=True)
+    user_id: str = Field(foreign_key="mfa_test_user.id", index=True)
 
 
 @pytest.fixture(autouse=True)
 def _start_of_a_totp_step() -> Iterator[None]:
-    """Start each test one second into a TOTP step.
+    """Freeze each test one second into a TOTP step.
 
     The step a test enrolls in then lasts the whole test, so "this step's
     code" stays the code a replay check expects.
     """
-    with time_machine.travel(datetime(2026, 1, 1, 12, 0, 1, tzinfo=timezone.utc)):
+    with time_machine.travel(
+        datetime(2026, 1, 1, 12, 0, 1, tzinfo=timezone.utc), tick=False
+    ):
         yield
 
 
@@ -80,10 +89,14 @@ def engine() -> Iterator[Any]:
     SQLModel.metadata.create_all(
         engine,
         tables=[
+            SQLModel.metadata.tables["mfa_test_user"],
             SQLModel.metadata.tables["mfa_test_factor"],
             SQLModel.metadata.tables["mfa_test_recovery_code"],
         ],
     )
+    with Session(engine) as db:
+        db.add(MFATestUser(id="test"))
+        db.commit()
     yield engine
     engine.dispose()
 
@@ -160,6 +173,11 @@ def app_for(auth: CrossAuth) -> TestClient:
         return {"ok": True}
 
     return TestClient(app, base_url="https://testserver", follow_redirects=False)
+
+
+def newest(session_storage: MemorySessionStorage) -> Any:
+    # The clock is frozen, so the last session stored is the newest.
+    return list(session_storage.records.values())[-1]
 
 
 def code_now(secret: str, offset_steps: int = 0) -> str:
@@ -249,7 +267,7 @@ def test_cookie_login_waits_for_the_code(
             "/login/2fa", json={"challenge": challenge, "code": code_now(secret, 1)}
         )
         assert done.status_code == 200
-        record = max(session_storage.records.values(), key=lambda r: r.created_at)
+        record = newest(session_storage)
         assert record.mfa_method == "totp"
         assert client.get("/mfa").status_code == 200
         # A challenge works once.
@@ -404,7 +422,7 @@ def test_provider_sign_in_goes_through_the_verify_page(
         verified = client.post("/mfa/verify", data={"code": code_now(secret, 1)})
         assert verified.status_code == 303
         assert verified.headers["location"] == "/"
-        record = max(session_storage.records.values(), key=lambda r: r.created_at)
+        record = newest(session_storage)
         assert (record.login_method, record.mfa_method) == ("fake", "totp")
 
 

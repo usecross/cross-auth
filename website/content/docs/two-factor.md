@@ -64,8 +64,10 @@ auth = CrossAuth(
 )
 ```
 
-Any storage implementing the `MFAStorage` protocol works; the SQLModel one is
-built in.
+The factor table's `user_id` must be a foreign key to your user table:
+`SQLModelMFAStorage` locks that user row so that two changes to one user's
+factors and recovery codes run one after the other. Any storage implementing the
+`MFAStorage` protocol works; the SQLModel one is built in.
 
 | Key                        | Default         | Meaning                                                                                                      |
 | -------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------ |

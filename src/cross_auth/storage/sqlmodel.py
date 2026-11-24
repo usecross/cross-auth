@@ -1427,7 +1427,8 @@ class SQLModelMFAStorage(
 
     Subclass ``SQLModelMFAFactor`` and ``SQLModelRecoveryCode`` for your
     tables, giving each an ``id`` and a ``user_id``, and the factor a JSON
-    ``data`` column::
+    ``data`` column. The factor's ``user_id`` must be a foreign key to your
+    user table::
 
         class MFAFactor(SQLModelMFAFactor, table=True):
             id: int | None = Field(default=None, primary_key=True)
@@ -1441,7 +1442,8 @@ class SQLModelMFAStorage(
     Every operation commits before it returns. Adding and deleting factors
     and replacing recovery codes first lock the user row that the factor
     table's ``user_id`` foreign key points to, so they run one at a time per
-    user.
+    user. That row exists before any factor does, so the user's first factor
+    is serialized too.
     """
 
     FactorModel: type[MFAFactorModelT]
@@ -1463,6 +1465,12 @@ class SQLModelMFAStorage(
         _validate_model(
             recovery_code_model, SQLModelRecoveryCode, columns=("id", "user_id")
         )
+        if not _column(factor_model, "user_id").foreign_keys:
+            raise TypeError(
+                f"{factor_model.__name__}.user_id must be a foreign key to the "
+                "user table: SQLModelMFAStorage locks that row so a user's "
+                "factor and recovery-code changes run one at a time"
+            )
 
     def _models(self) -> tuple[type[SQLModel], ...]:
         return (self.FactorModel, self.RecoveryCodeModel)
@@ -1473,20 +1481,9 @@ class SQLModelMFAStorage(
         A no-op update, as the first statement: PostgreSQL keeps the row lock
         until commit, and SQLite takes its write lock before anything is read.
         It updates the row the factor table's ``user_id`` foreign key points
-        to, keeping onupdate columns as they are. Without that foreign key it
-        updates the user's factor rows, which locks only once one exists.
+        to, keeping onupdate columns as they are.
         """
-        model = self.FactorModel
-        user_column = _column(model, "user_id")
-        target = next(iter(user_column.foreign_keys), None)
-        if target is None:
-            session.exec(
-                update(model)
-                .where(col(model.user_id) == user_id)
-                .values(failed_attempts=col(model.failed_attempts))
-            )
-            return
-        key = target.column
+        key = next(iter(_column(self.FactorModel, "user_id").foreign_keys)).column
         session.connection().execute(
             update(key.table)
             .where(key == user_id)
