@@ -76,6 +76,31 @@ TokenRequestAdapter: TypeAdapter[TokenRequest] = TypeAdapter(TokenRequest)
 # and an otp or recovery_code.
 MFA_GRANT_TYPE = "urn:cross-auth:grant-type:mfa"
 
+
+# Documents the MFA grant in the schema; /token reads it from the form itself.
+class MFAGrantRequest(BaseModel):
+    """Finishes a password grant that answered 403 mfa_required."""
+
+    grant_type: Literal["urn:cross-auth:grant-type:mfa"] = Field(
+        description="The Cross Auth MFA grant type"
+    )
+    client_id: str = Field(description="The client of the password grant")
+    mfa_token: str = Field(description="The mfa_token the password grant returned")
+    otp: str | None = Field(
+        None, description="A code from the authenticator app; or recovery_code"
+    )
+    recovery_code: str | None = Field(
+        None, description="A recovery code; or otp", repr=False
+    )
+
+
+class MFARequiredResponse(BaseModel):
+    error: Literal["mfa_required"]
+    error_description: str | None = None
+    mfa_token: str = Field(description="Send it back with the MFA grant", repr=False)
+    methods: list[str] = Field(description="Proofs the MFA grant accepts")
+
+
 PASSWORD_GRANT_DEPRECATION = (
     "The OAuth password grant is deprecated (RFC 9700 section 2.4) and will be "
     "removed in Cross Auth 1.0. Use the authorization code grant with PKCE for "
@@ -405,6 +430,12 @@ class Issuer:
         challenge = context.mfa.load_challenge(mfa_token)
         if challenge is None or challenge.kind != "token":
             return self._error_response("invalid_grant", "Unknown or expired mfa_token")
+        # A password grant's continuation: refused once the grant is turned off.
+        oauth_server = context.oauth_server
+        if oauth_server is None or not oauth_server.password_grant:
+            return self._error_response(
+                "unsupported_grant_type", "Grant type 'password' is not supported"
+            )
         if challenge.data.get("client_id") != data.get("client_id"):
             return self._error_response("invalid_grant", "Client ID does not match")
         otp = data.get("otp") or None
@@ -440,12 +471,35 @@ class Issuer:
             "AuthorizationCodeGrantRequest": code_grant
         }
         request_schema = code_grant
+        # The password grant, and with it the MFA grant that finishes it.
+        challenge_responses: dict[str, Any] = {}
         if password_grant:
             password_schema = PasswordGrantRequest.model_json_schema()
+            mfa_schema = MFAGrantRequest.model_json_schema()
             grant_schemas["PasswordGrantRequest"] = password_schema
+            grant_schemas["MFAGrantRequest"] = mfa_schema
             request_schema = {
-                "oneOf": [code_grant, password_schema],
+                "oneOf": [code_grant, password_schema, mfa_schema],
                 "title": "Request",
+            }
+            challenge_responses = {
+                "403": {
+                    "description": "The user needs a second factor: send the "
+                    "MFA grant with mfa_token",
+                    "content": {
+                        "application/json": {
+                            "schema": MFARequiredResponse.model_json_schema()
+                        }
+                    },
+                },
+                "429": {
+                    "description": "Too many wrong codes; try again later",
+                    "content": {
+                        "application/json": {
+                            "schema": TokenErrorResponse.model_json_schema()
+                        }
+                    },
+                },
             }
 
         return [
@@ -485,6 +539,7 @@ class Issuer:
                                 }
                             },
                         },
+                        **challenge_responses,
                     },
                 },
                 # Published for applications that merge them into their schema.

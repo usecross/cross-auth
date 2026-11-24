@@ -36,6 +36,11 @@ enter a code: password logins, the password grant, OAuth callbacks and
   longer carries the password; it now also runs for password grants finished
   through 2FA.
 - Custom `MFAStorage` implementations: `create_factor` takes
-  `recovery_code_hashes` and returns `(factor, first)`, `delete_factor` removes
-  the recovery codes with the last factor, and `replace_recovery_codes` returns
-  `False` without a factor. Each runs under a per-user lock.
+  `recovery_code_hashes` and returns `(factor, first)`, `delete_factor` returns
+  how many factors are left (`None` if none was deleted) and removes the
+  recovery codes with the last one, and `replace_recovery_codes` returns `False`
+  without a factor. Each runs under a per-user lock. The new `on_commit`
+  delivers the 2FA after hooks once the change is committed.
+- With the password grant on, the `/token` schema documents the MFA grant and
+  its 403 and 429 answers. The MFA grant is refused once `password_grant` is
+  off.

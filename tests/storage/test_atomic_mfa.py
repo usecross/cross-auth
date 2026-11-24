@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from threading import Barrier
 
 import pytest
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, create_engine, select
 
 from cross_auth.storage.sqlmodel import SQLModelMFAStorage
 
@@ -65,3 +65,49 @@ def test_the_factor_table_must_reference_the_user_table(signup_engine):
             StoredRecoveryCode,
             session_factory=lambda: Session(signup_engine),
         )
+
+
+def test_each_model_may_bind_its_own_engine_if_both_share_one(signup_engine):
+    accounts = AccountsStore(session_factory=lambda: Session(signup_engine))
+    user = accounts.create_user(**user_data(f"{uuid.uuid4().hex}@example.com"))
+    store = SQLModelMFAStorage(
+        StoredMFAFactor,
+        StoredRecoveryCode,
+        # No default bind: the user-row lock resolves the factor model's.
+        session_factory=lambda: Session(
+            binds={StoredMFAFactor: signup_engine, StoredRecoveryCode: signup_engine}
+        ),
+    )
+
+    _, first = store.create_factor(
+        user_id=user.id,
+        type="totp",
+        name="Phone",
+        data={},
+        created_at=datetime.now(timezone.utc),
+        recovery_code_hashes=["one"],
+    )
+
+    assert first
+    assert store.count_recovery_codes(user.id) == 1
+
+
+def test_factors_and_recovery_codes_must_share_a_database(signup_engine):
+    other = create_engine("sqlite://")
+    store = SQLModelMFAStorage(
+        StoredMFAFactor,
+        StoredRecoveryCode,
+        session_factory=lambda: Session(
+            binds={StoredMFAFactor: signup_engine, StoredRecoveryCode: other}
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="one database"):
+        store.create_factor(
+            user_id=1,
+            type="totp",
+            name="Phone",
+            data={},
+            created_at=datetime.now(timezone.utc),
+        )
+    other.dispose()

@@ -38,6 +38,7 @@ from tests.conftest import TEST_PASSWORD, MemoryAccountsStorage, MemorySessionSt
 
 from ..conftest import legacy_password_grant
 from .conftest import (
+    APP_OAUTH_SERVER,
     LEGACY_APP_OAUTH_SERVER,
     FakeProvider,
     mock_token_and_userinfo,
@@ -120,6 +121,7 @@ def make_auth(
     accounts_storage: MemoryAccountsStorage,
     session_storage: MemorySessionStorage,
     fake_provider: FakeProvider,
+    oauth_server: Any = LEGACY_APP_OAUTH_SERVER,
     **mfa: Any,
 ) -> CrossAuth:
     return CrossAuth(
@@ -141,7 +143,7 @@ def make_auth(
             MFATestRecoveryCode,
             session_factory=lambda: Session(engine),
         ),
-        oauth_server=LEGACY_APP_OAUTH_SERVER,
+        oauth_server=oauth_server,
     )
 
 
@@ -619,7 +621,7 @@ def test_regenerating_codes_needs_a_factor_and_removal_takes_them(
         MFATestFactor, MFATestRecoveryCode, session_factory=lambda: Session(engine)
     )
     [factor] = store.list_factors("test")
-    assert store.delete_factor(user_id="test", factor_id=factor.id)
+    assert store.delete_factor(user_id="test", factor_id=factor.id) == 0
     assert store.count_recovery_codes("test") == 0
     assert not store.replace_recovery_codes(
         "test", ["hash"], created_at=datetime.now(tz=timezone.utc)
@@ -703,3 +705,62 @@ def test_enrolling_keeps_the_codes_when_sign_out_elsewhere_is_refused(
         _, codes = enroll(client)
 
     assert len(codes) == 10
+
+
+def test_the_mfa_grant_ends_with_the_password_grant(
+    engine: Any,
+    secondary_storage: Any,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    fake_provider: FakeProvider,
+    enrolled: tuple[str, list[str]],
+) -> None:
+    secret, _ = enrolled
+    stores = (engine, secondary_storage, accounts_storage, session_storage)
+    with app_for(make_auth(*stores, fake_provider)) as client:
+        with legacy_password_grant():
+            paused = client.post(
+                "/token",
+                data={
+                    "grant_type": "password",
+                    "client_id": "app-client",
+                    "username": "test@example.com",
+                    "password": TEST_PASSWORD,
+                },
+            )
+    mfa_token = paused.json()["mfa_token"]
+
+    # The application turns the password grant off before the user answers.
+    off = make_auth(*stores, fake_provider, oauth_server=APP_OAUTH_SERVER)
+    with app_for(off) as client:
+        refused = client.post(
+            "/token",
+            data={
+                "grant_type": "urn:cross-auth:grant-type:mfa",
+                "client_id": "app-client",
+                "mfa_token": mfa_token,
+                "otp": code_now(secret, 1),
+            },
+        )
+    assert refused.status_code == 400
+    assert refused.json()["error"] == "unsupported_grant_type"
+
+
+def test_a_wrong_code_just_before_expiry_leaves_the_last_retry(
+    auth: CrossAuth, enrolled: tuple[str, list[str]]
+) -> None:
+    secret, _ = enrolled
+    with pytest.raises(MFARequired) as paused:
+        auth.issue_session_token("test")
+    challenge = paused.value.challenge
+    assert challenge is not None
+
+    # 0.8 s before the challenge's 300 s run out.
+    with time_machine.travel(
+        datetime.now(tz=timezone.utc) + timedelta(seconds=299.2), tick=False
+    ):
+        with pytest.raises(CrossAuthException) as wrong:
+            auth.verify_mfa(challenge, code="000000")
+        assert wrong.value.error == "invalid_code"
+        _, record = auth.verify_mfa(challenge, code=code_now(secret))
+    assert record.mfa_method == "totp"

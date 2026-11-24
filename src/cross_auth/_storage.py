@@ -567,10 +567,11 @@ class MFAStorage(Protocol):
         """
         ...
 
-    def delete_factor(self, *, user_id: Any, factor_id: Any) -> bool:
-        """Delete the user's factor; ``False`` if no such factor is theirs.
+    def delete_factor(self, *, user_id: Any, factor_id: Any) -> int | None:
+        """Delete the user's factor; return how many factors they have left.
 
-        Deleting the last factor deletes the user's recovery codes with it.
+        ``None`` if no such factor is theirs. Deleting the last factor deletes
+        the user's recovery codes with it.
         """
         ...
 
@@ -617,4 +618,12 @@ class MFAStorage(Protocol):
         self, user_id: Any, code_hash: str, *, used_at: AwareDatetime
     ) -> bool:
         """Atomically mark an unused code as used; return whether one was."""
+        ...
+
+    def on_commit(self, callback: CommitCallback) -> None:
+        """Run callback once the writes this storage just returned are committed.
+
+        Core delivers the after hooks of factor and recovery-code changes this
+        way. A storage whose operations commit before returning calls it now.
+        """
         ...

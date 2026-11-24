@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import secrets
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -521,7 +522,8 @@ class MFA:
             left = challenge.attempts_left
             if isinstance(error, CrossAuthException) and error.error == "invalid_code":
                 left -= 1
-            remaining = int((challenge.expires_at - _now()).total_seconds())
+            # Rounded up: a challenge with 0.8 s left still takes a retry.
+            remaining = math.ceil((challenge.expires_at - _now()).total_seconds())
             if left > 0 and remaining > 0:
                 self.secondary_storage.set(
                     key,
@@ -793,11 +795,11 @@ class MFA:
             last_used_step=step,
             recovery_code_hashes=[hash_recovery_code(c) for c in codes],
         )
-        self.hooks.run_after(
-            "mfa.factor.create",
-            AfterMFAFactorCreateEvent(
-                user_id=str(user.id), factor=factor, enabled_mfa=first
-            ),
+        created = AfterMFAFactorCreateEvent(
+            user_id=str(user.id), factor=factor, enabled_mfa=first
+        )
+        self.storage.on_commit(
+            lambda: self.hooks.run_after("mfa.factor.create", created)
         )
         return TotpConfirmation(
             factor=MFAFactorInfo.of(factor), recovery_codes=codes if first else None
@@ -816,11 +818,11 @@ class MFA:
             raise CrossAuthException(
                 "mfa_not_enabled", "Two-factor authentication is not turned on"
             )
-        self.hooks.run_after(
-            "mfa.recovery_codes.regenerate",
-            AfterMFARecoveryCodesRegenerateEvent(
-                user_id=str(user.id), count=len(codes)
-            ),
+        regenerated = AfterMFARecoveryCodesRegenerateEvent(
+            user_id=str(user.id), count=len(codes)
+        )
+        self.storage.on_commit(
+            lambda: self.hooks.run_after("mfa.recovery_codes.regenerate", regenerated)
         )
         return codes
 
@@ -846,20 +848,21 @@ class MFA:
                 user=UserSnapshot.of(user), factor_id=factor.id, type=factor.type
             ),
         )
-        if not self.storage.delete_factor(user_id=user.id, factor_id=factor.id):
+        # Counted in the deletion's transaction, which also removed the
+        # recovery codes with the last factor.
+        left = self.storage.delete_factor(user_id=user.id, factor_id=factor.id)
+        if left is None:
             raise CrossAuthException(
                 "factor_not_found", "No such factor", status_code=404
             )
-        # delete_factor removed the recovery codes with the last factor.
-        enabled = bool(self.storage.list_factors(user.id))
-        self.hooks.run_after(
-            "mfa.factor.delete",
-            AfterMFAFactorDeleteEvent(
-                user_id=str(user.id),
-                factor_id=factor.id,
-                type=factor.type,
-                mfa_enabled=enabled,
-            ),
+        deleted = AfterMFAFactorDeleteEvent(
+            user_id=str(user.id),
+            factor_id=factor.id,
+            type=factor.type,
+            mfa_enabled=left > 0,
+        )
+        self.storage.on_commit(
+            lambda: self.hooks.run_after("mfa.factor.delete", deleted)
         )
         return self.status(user.id)
 

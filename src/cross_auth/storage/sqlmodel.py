@@ -1483,8 +1483,19 @@ class SQLModelMFAStorage(
         It updates the row the factor table's ``user_id`` foreign key points
         to, keeping onupdate columns as they are.
         """
+        # One transaction for both tables, on the factor table's bind: a
+        # session may bind each model without a default bind.
+        factor_bind = session.get_bind(mapper=inspect(self.FactorModel))
+        if session.get_bind(mapper=inspect(self.RecoveryCodeModel)) is not factor_bind:
+            raise RuntimeError(
+                f"{type(self).__name__} needs {self.FactorModel.__name__} and "
+                f"{self.RecoveryCodeModel.__name__} in one database, so a "
+                "factor and its recovery codes commit together"
+            )
         key = next(iter(_column(self.FactorModel, "user_id").foreign_keys)).column
-        session.connection().execute(
+        session.connection(
+            bind_arguments={"mapper": inspect(self.FactorModel)}
+        ).execute(
             update(key.table)
             .where(key == user_id)
             .values(
@@ -1548,12 +1559,12 @@ class SQLModelMFAStorage(
             session.commit()
         return _prepare_factor(record), existing is None
 
-    def delete_factor(self, *, user_id: object, factor_id: object) -> bool:
+    def delete_factor(self, *, user_id: object, factor_id: object) -> int | None:
         model = self.FactorModel
         user_id = _coerce_id(model, "user_id", user_id)
         factor_id = _coerce_id(model, "id", factor_id)
         if user_id is _NO_MATCH or factor_id is _NO_MATCH:
-            return False
+            return None
         with self._open_session() as session:
             self._lock_user(session, user_id)
             row = session.exec(
@@ -1562,13 +1573,18 @@ class SQLModelMFAStorage(
                 )
             ).first()
             if row is None:
-                return False
+                return None
             session.delete(row)
             session.flush()
-            if not self._has_factor(session, user_id):
+            left = len(
+                session.exec(
+                    select(col(model.id)).where(col(model.user_id) == user_id)
+                ).all()
+            )
+            if not left:
                 self._store_codes(session, user_id, [], datetime.now(timezone.utc))
             session.commit()
-        return True
+        return left
 
     def _has_factor(self, session: Session, user_id: object) -> bool:
         model = self.FactorModel

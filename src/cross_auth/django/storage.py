@@ -992,16 +992,24 @@ class DjangoMFAStorage:
                 self._store_codes(user_id, recovery_code_hashes, created_at)
         return factor, existing is None
 
-    def delete_factor(self, *, user_id: Any, factor_id: Any) -> bool:
+    def delete_factor(self, *, user_id: Any, factor_id: Any) -> int | None:
         factor_id = _coerce_pk(MFAFactor, factor_id)
         if factor_id is _NO_MATCH:
-            return False
+            return None
         with transaction.atomic(using=self.alias):
             self._lock_user(user_id)
             deleted, _ = self._factors(user_id).filter(pk=factor_id).delete()
-            if deleted and not self._factors(user_id).exists():
+            if not deleted:
+                return None
+            left = self._factors(user_id).count()
+            if not left:
                 self._codes(user_id).delete()
-        return deleted > 0
+        return left
+
+    def on_commit(self, callback: CommitCallback) -> None:
+        # Inside ATOMIC_REQUESTS or the app's atomic(), after hooks wait for
+        # the outermost commit, so a rollback sends no signal.
+        transaction.on_commit(callback, using=self.alias, robust=False)
 
     def claim_totp_step(self, factor_id: Any, *, step: int, used_at: datetime) -> bool:
         factor_id = _coerce_pk(MFAFactor, factor_id)
