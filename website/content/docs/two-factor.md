@@ -116,14 +116,16 @@ enrollment = auth.start_totp_enrollment(request, name="iPhone")
 confirmed = auth.confirm_totp_enrollment(
     request, enrollment_id=enrollment.enrollment_id, code="492039"
 )
-confirmed.recovery_codes  # 10 codes, shown once; None if the user had some
+confirmed.recovery_codes  # 10 codes with the first factor, shown once; else None
 auth.regenerate_recovery_codes(request)
 auth.remove_mfa_factor(request, factor_id)  # the last one turns 2FA off
 ```
 
 Confirming the first factor revokes the user's other sessions by default
-(`revoke_other_sessions=False` keeps them). Enrolling needs a verified email
-(`email_not_verified`).
+(`revoke_other_sessions=False` keeps them). If a `session.revoke` hook refuses
+or the revocation fails, the confirmation still returns its recovery codes and
+the failure is logged. Enrolling needs a verified email (`email_not_verified`),
+and a factor name has at most 255 characters.
 
 The router mounts the same operations as JSON routes:
 

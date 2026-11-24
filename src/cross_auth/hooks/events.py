@@ -9,10 +9,7 @@ if TYPE_CHECKING:
 
     from .._authorization import AuthRequest, InitiateLinkRequest, LinkCodeData
     from .._authorization_code import AuthorizationCodeGrantData
-    from .._issuer import (
-        AuthorizationCodeGrantRequest,
-        PasswordGrantRequest,
-    )
+    from .._issuer import AuthorizationCodeGrantRequest
     from .._session import SessionMetadata
     from .._storage import MFAFactor, SessionRecord
     from .._storage import SocialAccount, User
@@ -424,10 +421,10 @@ class BeforeTokenPasswordEvent:
 
 @dataclass(frozen=True, slots=True)
 class AfterTokenPasswordEvent:
-    request: PasswordGrantRequest = field(repr=False)
     client_id: str
     username: str
     user: User
+    scope: str | None
     token_response: TokenResponse
 
 

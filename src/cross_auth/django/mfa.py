@@ -57,6 +57,7 @@ from django.contrib.auth.base_user import AbstractBaseUser
 from django.contrib.auth.decorators import login_not_required
 from django.contrib.auth.models import AnonymousUser, update_last_login
 from django.contrib.auth.views import redirect_to_login
+from django.db import transaction
 from django.http import (
     Http404,
     HttpRequest,
@@ -197,14 +198,14 @@ def _guard(
     saves the session means the database never holds a logged-in session
     for them; the challenge keeps what the verify page needs to restore it.
     """
-    if (
-        get_settings().mfa is None
-        or request is None
-        or user is None
-        or mfa_checked.get()
-    ):
+    if request is None or user is None:
         return
     session = request.session
+    # Every login starts without a second factor: only a completed challenge,
+    # or Cross Auth's own login just after this, sets the marker again.
+    session.pop(MFA_METHOD_SESSION_KEY, None)
+    if get_settings().mfa is None or mfa_checked.get():
+        return
     mfa = _mfa(_mfa_context(request))
     try:
         mfa.check_sign_in(str(user.pk), None)
@@ -782,3 +783,8 @@ def verify(request: HttpRequest) -> HttpResponse:
     if request.method == "GET":
         return _verify_get(request)
     return _verify_post(request)
+
+
+# Django reads ATOMIC_REQUESTS opt-outs off the URL's view, not the inner ones.
+for _alias in settings.DATABASES:
+    verify = transaction.non_atomic_requests(using=_alias)(verify)

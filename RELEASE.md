@@ -19,7 +19,9 @@ enter a code: password logins, the password grant, OAuth callbacks and
 - With 2FA on, `login()`, `issue_session_token()` and `sign_in_with_id_token()`
   raise `MFARequired` for a user who needs a code.
 - SQLModel: `SQLModelMFAFactor`, `SQLModelRecoveryCode` and
-  `SQLModelMFAStorage`; `SQLModelSession` gains `mfa_method`. Add the column.
+  `SQLModelMFAStorage`; `SQLModelSession` gains `mfa_method`. Before you deploy,
+  add the nullable `mfa_method` column to every existing session table, even
+  with MFA off: session reads select it.
 - Django: migration `0005_mfa` (run `migrate`), `cross_auth.django.mfa` with
   `MFAMiddleware`, the verify page (or your own, with `MFA["verify_url"]` and
   `get_pending_mfa`) and the JSON views, new signals, checks `E006` and `E008`,
@@ -29,3 +31,10 @@ enter a code: password logins, the password grant, OAuth callbacks and
 - `BrowserLogin.login`, `SessionStorage.create`, `BeforeLoginEvent` and
   `AfterLoginEvent` gain `mfa_method`. Custom session storages need the new
   argument only when 2FA is on.
+- `AfterTokenPasswordEvent` replaces `request` with `scope`, so the event no
+  longer carries the password; it now also runs for password grants finished
+  through 2FA.
+- Custom `MFAStorage` implementations: `create_factor` takes
+  `recovery_code_hashes` and returns `(factor, first)`, `delete_factor` removes
+  the recovery codes with the last factor, and `replace_recovery_codes` returns
+  `False` without a factor. Each runs under a per-user lock.

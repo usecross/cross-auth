@@ -49,7 +49,8 @@ def matching_step(
     not say which step matched.
     """
     code = code.replace(" ", "")
-    if len(code) != DIGITS or not code.isdigit():
+    # isdigit alone accepts non-ASCII digits, which compare_digest rejects.
+    if len(code) != DIGITS or not code.isascii() or not code.isdigit():
         return None
     current = time_step(now)
     found = None

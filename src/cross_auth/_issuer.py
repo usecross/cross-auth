@@ -384,10 +384,10 @@ class Issuer:
         token_data = _bearer_token(issued)
 
         after_event = AfterTokenPasswordEvent(
-            request=request,
             client_id=request.client_id,
             username=request.username,
             user=user,
+            scope=request.scope,
             token_response=token_data,
         )
         issued.on_commit(lambda: context.hooks.run_after("token.password", after_event))

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -25,6 +26,7 @@ from ._authorization_code import (
     AuthorizationCodeGrantData,
 )
 from ._context import Context
+from ._issuer import _bearer_token
 from ._login import (
     BrowserLogin,
     issue_bearer_session,
@@ -44,7 +46,10 @@ from ._session import SessionMetadata, request_metadata
 from ._storage import SessionRecord, User
 from ._tokens import TokenIssueRequest
 from .exceptions import CrossAuthException
+from .hooks import AfterTokenPasswordEvent
 from .utils._response import Response
+
+logger = logging.getLogger(__name__)
 
 _REAUTH_KEY = "mfa:reauth:{digest}"
 
@@ -203,7 +208,12 @@ def confirm_totp_enrollment(
         code=code,
     )
     if revoke_other_sessions and confirmation.enabled_mfa:
-        sessions.revoke_others(request, context, current)
+        # The factor and its recovery codes are stored by now: a refused or
+        # failed revocation must not keep the codes from the user.
+        try:
+            sessions.revoke_others(request, context, current)
+        except Exception:
+            logger.exception("Could not sign out other sessions after enabling 2FA")
     return confirmation
 
 
@@ -372,6 +382,9 @@ def _complete(
         )
 
     if challenge.kind == "token":
+        user = context.accounts_storage.find_user_by_id(challenge.user_id)
+        if user is None:
+            raise _invalid_challenge()
         issued = context.issue_token_result(
             TokenIssueRequest(
                 user_id=challenge.user_id,
@@ -384,6 +397,16 @@ def _complete(
                 mfa_method=method,
             )
         )
+        token_data = _bearer_token(issued)
+        # The token.password after hook a sign-in without 2FA would have run.
+        after_event = AfterTokenPasswordEvent(
+            client_id=data["client_id"],
+            username=data.get("username") or "",
+            user=user,
+            scope=data.get("scope"),
+            token_response=token_data,
+        )
+        issued.on_commit(lambda: context.hooks.run_after("token.password", after_event))
         body = {
             "access_token": issued.token,
             "token_type": "Bearer",
@@ -455,11 +478,13 @@ def _complete(
         return Finished(logged_in, user=user)
 
     assert context.session_storage is not None
+    # The navigation is the login's response, so a login hook's changes to it
+    # reach the browser, as with a sign-in without 2FA.
     response = cast(
         Response,
         login_with_session(
             challenge.user_id,
-            response=Response(status_code=200),
+            response=_navigate(request, next_url, []),
             hooks=context.hooks,
             session_storage=context.session_storage,
             session_config=context.session_config,
@@ -471,7 +496,8 @@ def _complete(
             mfa_method=method,
         ),
     )
-    return Finished(_navigate(request, next_url, [*(response.cookies or []), *clear]))
+    response.cookies = [*(response.cookies or []), *clear]
+    return Finished(response)
 
 
 def _invalid_challenge() -> CrossAuthException:

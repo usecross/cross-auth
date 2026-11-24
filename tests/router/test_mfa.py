@@ -8,12 +8,14 @@ Factors live in SQLModel tables, so this also covers ``SQLModelMFAStorage``.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 import respx
+import time_machine
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -21,9 +23,12 @@ from sqlalchemy import JSON, Column
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
+from cross_web import Response as CrossWebResponse
+
 from cross_auth import _totp
 from cross_auth.exceptions import CrossAuthException, MFARequired
 from cross_auth.fastapi import CrossAuth
+from cross_auth.hooks import BeforeLoginEvent
 from cross_auth.storage.sqlmodel import (
     SQLModelMFAFactor,
     SQLModelMFAStorage,
@@ -54,6 +59,17 @@ class MFATestRecoveryCode(SQLModelRecoveryCode, table=True):
     __tablename__ = "mfa_test_recovery_code"
     id: int | None = Field(default=None, primary_key=True)
     user_id: str = Field(index=True)
+
+
+@pytest.fixture(autouse=True)
+def _start_of_a_totp_step() -> Iterator[None]:
+    """Start each test one second into a TOTP step.
+
+    The step a test enrolls in then lasts the whole test, so "this step's
+    code" stays the code a replay check expects.
+    """
+    with time_machine.travel(datetime(2026, 1, 1, 12, 0, 1, tzinfo=timezone.utc)):
+        yield
 
 
 @pytest.fixture
@@ -313,6 +329,8 @@ def test_password_grant_needs_the_mfa_grant(
     auth: CrossAuth, enrolled: tuple[str, list[str]]
 ) -> None:
     secret, _ = enrolled
+    issued: list[Any] = []
+    auth.after("token.password")(issued.append)
     with app_for(auth) as client:
         with legacy_password_grant():
             paused = client.post(
@@ -340,6 +358,10 @@ def test_password_grant_needs_the_mfa_grant(
         )
         assert done.status_code == 200, done.text
         assert done.json()["access_token"]
+    # The hook a password grant without 2FA runs, without the password.
+    [event] = issued
+    assert (event.client_id, event.username) == ("app-client", "test@example.com")
+    assert event.token_response.access_token == done.json()["access_token"]
 
 
 def _link_identity(accounts_storage: MemoryAccountsStorage) -> None:
@@ -498,3 +520,168 @@ def test_2fa_changes_need_a_recent_sign_in(
         }
         # 2FA is off: the next login needs no code.
         assert client.post("/login").status_code == 200
+
+
+def test_a_challenge_is_held_while_its_code_is_checked(
+    auth: CrossAuth, enrolled: tuple[str, list[str]]
+) -> None:
+    """A second request on the same challenge cannot spend another code."""
+    _, codes = enrolled
+    with pytest.raises(MFARequired) as paused:
+        auth.issue_session_token("test")
+    challenge = paused.value.challenge
+    assert challenge is not None
+    raced: list[str] = []
+
+    @auth.after("mfa.verify")
+    def race(event: Any) -> None:
+        if raced or not event.success:
+            return
+        try:
+            auth.verify_mfa(challenge, recovery_code=codes[1])
+            raced.append("passed")
+        except CrossAuthException as error:
+            raced.append(error.error)
+
+    _, record = auth.verify_mfa(challenge, recovery_code=codes[0])
+
+    assert record.mfa_method == "recovery_code"
+    assert raced == ["invalid_challenge"]
+    # Only the winner's code is spent.
+    assert auth.get_mfa_status_for("test").recovery_codes_remaining == 9
+
+
+def test_codes_with_other_digits_are_wrong_codes(
+    auth: CrossAuth, enrolled: tuple[str, list[str]]
+) -> None:
+    with pytest.raises(MFARequired) as paused:
+        auth.issue_session_token("test")
+    assert paused.value.challenge is not None
+    with pytest.raises(CrossAuthException) as wrong:
+        # Arabic-Indic digits pass str.isdigit().
+        auth.verify_mfa(paused.value.challenge, code="١٢٣٤٥٦")
+    assert wrong.value.error == "invalid_code"
+
+
+def test_enrolling_refuses_a_name_the_factor_table_cannot_hold(
+    auth: CrossAuth,
+) -> None:
+    with app_for(auth) as client:
+        assert client.post("/login").status_code == 200
+        refused = client.post("/mfa/totp/enroll", json={"name": "x" * 256})
+        assert refused.status_code == 400
+        assert refused.json()["error"] == "invalid_request"
+        assert client.post("/mfa/totp/enroll", json={"name": "x" * 255}).is_success
+
+
+def test_secret_keys_must_be_a_list(
+    engine: Any,
+    secondary_storage: Any,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    fake_provider: FakeProvider,
+) -> None:
+    with pytest.raises(ValueError, match="list of keys"):
+        make_auth(
+            engine,
+            secondary_storage,
+            accounts_storage,
+            session_storage,
+            fake_provider,
+            secret_keys="test-key",
+        )
+
+
+def test_regenerating_codes_needs_a_factor_and_removal_takes_them(
+    auth: CrossAuth, enrolled: tuple[str, list[str]], engine: Any
+) -> None:
+    with app_for(auth) as client:
+        assert client.post("/login").status_code == 401
+    store = SQLModelMFAStorage(
+        MFATestFactor, MFATestRecoveryCode, session_factory=lambda: Session(engine)
+    )
+    [factor] = store.list_factors("test")
+    assert store.delete_factor(user_id="test", factor_id=factor.id)
+    assert store.count_recovery_codes("test") == 0
+    assert not store.replace_recovery_codes(
+        "test", ["hash"], created_at=datetime.now(tz=timezone.utc)
+    )
+    assert store.count_recovery_codes("test") == 0
+
+
+def test_only_the_first_factor_brings_recovery_codes(
+    auth: CrossAuth, enrolled: tuple[str, list[str]], engine: Any
+) -> None:
+    secret, _ = enrolled
+    # As if every code were used: a second factor still brings none.
+    with Session(engine) as db:
+        for row in db.exec(select(MFATestRecoveryCode)).all():
+            db.delete(row)
+        db.commit()
+    created: list[Any] = []
+    auth.after("mfa.factor.create")(created.append)
+    with app_for(auth) as client:
+        challenge = client.post("/login").json()["challenge"]
+        client.post(
+            "/login/2fa", json={"challenge": challenge, "code": code_now(secret, 1)}
+        )
+        started = client.post("/mfa/totp/enroll", json={"name": "Tablet"}).json()
+        confirmed = client.post(
+            "/mfa/totp/confirm",
+            json={
+                "enrollment_id": started["enrollment_id"],
+                "code": code_now(started["secret"]),
+            },
+        )
+    assert confirmed.status_code == 201, confirmed.text
+    assert confirmed.json()["recovery_codes"] is None
+    assert [event.enabled_mfa for event in created] == [False]
+    assert auth.get_mfa_status_for("test").recovery_codes_remaining == 0
+
+
+@respx.mock
+def test_login_hooks_shape_the_verify_pages_response(
+    auth: CrossAuth,
+    enrolled: tuple[str, list[str]],
+    accounts_storage: MemoryAccountsStorage,
+) -> None:
+    secret, _ = enrolled
+    _link_identity(accounts_storage)
+
+    @auth.before("login")
+    def welcome(event: BeforeLoginEvent) -> BeforeLoginEvent:
+        return replace(
+            event,
+            response=CrossWebResponse(
+                status_code=303, headers={"Location": "/welcome", "X-Hook": "1"}
+            ),
+        )
+
+    with app_for(auth) as client:
+        mock_token_and_userinfo(email="test@example.com")
+        _, state = start_provider_auth(client, "/fake/login")
+        client.get("/fake/callback", params={"code": "c", "state": state})
+
+        verified = client.post("/mfa/verify", data={"code": code_now(secret, 1)})
+
+    assert verified.status_code == 303
+    assert verified.headers["location"] == "/welcome"
+    assert verified.headers["x-hook"] == "1"
+    # The session cookie and the cleared challenge are still set.
+    assert "mfa_challenge" not in client.cookies
+    assert client.get("/mfa").status_code == 200
+
+
+def test_enrolling_keeps_the_codes_when_sign_out_elsewhere_is_refused(
+    auth: CrossAuth,
+) -> None:
+    @auth.before("session.revoke")
+    def refuse(event: Any) -> None:
+        raise CrossAuthException("access_denied", "Not now")
+
+    with app_for(auth) as other, app_for(auth) as client:
+        assert other.post("/login").status_code == 200
+        assert client.post("/login").status_code == 200
+        _, codes = enroll(client)
+
+    assert len(codes) == 10

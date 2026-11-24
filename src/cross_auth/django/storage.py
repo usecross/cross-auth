@@ -920,7 +920,9 @@ class DjangoMFAStorage:
 
     It only stores rows: every 2FA rule is core's. The checks that must not
     let two requests both pass (a TOTP step, a recovery code, the failure
-    count) are single conditional ``UPDATE`` statements.
+    count) are single conditional ``UPDATE`` statements. Adding and deleting
+    factors and replacing recovery codes first lock the user row, as
+    ``DjangoStorage.disconnect_social_account`` does.
     """
 
     def __init__(self) -> None:
@@ -943,6 +945,20 @@ class DjangoMFAStorage:
         codes = RecoveryCode.objects.using(self.alias)
         return codes.none() if user_id is _NO_MATCH else codes.filter(user_id=user_id)
 
+    def _lock_user(self, user_id: object) -> None:
+        """Hold the user row until the surrounding transaction ends.
+
+        A no-op update: PostgreSQL keeps the row lock until commit, and SQLite
+        takes its write lock before anything is read.
+        """
+        user_pk = _coerce_pk(self._user_model, user_id)
+        if user_pk is _NO_MATCH:
+            return
+        pk_name = self._user_model._meta.pk.name
+        self._user_model._default_manager.using(self.alias).filter(pk=user_pk).update(
+            **{pk_name: F(pk_name)}
+        )
+
     def list_factors(self, user_id: Any) -> list[MFAFactor]:
         return list(self._factors(user_id).order_by("created_at", "id"))
 
@@ -955,8 +971,10 @@ class DjangoMFAStorage:
         data: Mapping[str, Any],
         created_at: datetime,
         last_used_step: int | None = None,
-    ) -> MFAFactor:
+        recovery_code_hashes: Sequence[str] = (),
+    ) -> tuple[MFAFactor, bool]:
         with transaction.atomic(using=self.alias):
+            self._lock_user(user_id)
             # A new factor starts with the user's current lockout state.
             existing = self._factors(user_id).first()
             factor = MFAFactor(
@@ -970,13 +988,19 @@ class DjangoMFAStorage:
                 locked_until=existing.locked_until if existing else None,
             )
             factor.save(using=self.alias, force_insert=True)
-        return factor
+            if existing is None:
+                self._store_codes(user_id, recovery_code_hashes, created_at)
+        return factor, existing is None
 
     def delete_factor(self, *, user_id: Any, factor_id: Any) -> bool:
         factor_id = _coerce_pk(MFAFactor, factor_id)
         if factor_id is _NO_MATCH:
             return False
-        deleted, _ = self._factors(user_id).filter(pk=factor_id).delete()
+        with transaction.atomic(using=self.alias):
+            self._lock_user(user_id)
+            deleted, _ = self._factors(user_id).filter(pk=factor_id).delete()
+            if deleted and not self._factors(user_id).exists():
+                self._codes(user_id).delete()
         return deleted > 0
 
     def claim_totp_step(self, factor_id: Any, *, step: int, used_at: datetime) -> bool:
@@ -1011,15 +1035,22 @@ class DjangoMFAStorage:
 
     def replace_recovery_codes(
         self, user_id: Any, code_hashes: Sequence[str], *, created_at: datetime
-    ) -> None:
+    ) -> bool:
         with transaction.atomic(using=self.alias):
-            self._codes(user_id).delete()
-            RecoveryCode.objects.using(self.alias).bulk_create(
-                RecoveryCode(
-                    user_id=user_id, code_hash=code_hash, created_at=created_at
-                )
-                for code_hash in code_hashes
-            )
+            self._lock_user(user_id)
+            if not self._factors(user_id).exists():
+                return False
+            self._store_codes(user_id, code_hashes, created_at)
+        return True
+
+    def _store_codes(
+        self, user_id: Any, code_hashes: Sequence[str], created_at: datetime
+    ) -> None:
+        self._codes(user_id).delete()
+        RecoveryCode.objects.using(self.alias).bulk_create(
+            RecoveryCode(user_id=user_id, code_hash=code_hash, created_at=created_at)
+            for code_hash in code_hashes
+        )
 
     def use_recovery_code(
         self, user_id: Any, code_hash: str, *, used_at: datetime

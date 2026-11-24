@@ -541,6 +541,10 @@ class MFAStorage(Protocol):
 
     Cross Auth's ``_mfa`` module decides everything; a storage only reads and
     writes rows. Each method commits before it returns.
+
+    ``create_factor``, ``delete_factor``, and ``replace_recovery_codes`` each
+    run in one transaction that first locks something per user, such as the
+    user row, so that two of them for the same user run one after the other.
     """
 
     def list_factors(self, user_id: Any) -> Sequence[MFAFactor]: ...
@@ -554,10 +558,20 @@ class MFAStorage(Protocol):
         data: Mapping[str, Any],
         created_at: AwareDatetime,
         last_used_step: int | None = None,
-    ) -> MFAFactor: ...
+        recovery_code_hashes: Sequence[str] = (),
+    ) -> tuple[MFAFactor, bool]:
+        """Add a factor; return it and whether it is the user's first.
+
+        For the first factor, also replace the user's recovery codes with
+        ``recovery_code_hashes``, in the same transaction.
+        """
+        ...
 
     def delete_factor(self, *, user_id: Any, factor_id: Any) -> bool:
-        """Delete the user's factor; ``False`` if no such factor is theirs."""
+        """Delete the user's factor; ``False`` if no such factor is theirs.
+
+        Deleting the last factor deletes the user's recovery codes with it.
+        """
         ...
 
     def claim_totp_step(
@@ -592,8 +606,11 @@ class MFAStorage(Protocol):
 
     def replace_recovery_codes(
         self, user_id: Any, code_hashes: Sequence[str], *, created_at: AwareDatetime
-    ) -> None:
-        """Delete the user's recovery codes and store these hashes instead."""
+    ) -> bool:
+        """Delete the user's recovery codes and store these hashes instead.
+
+        Change nothing and return ``False`` when the user has no factor.
+        """
         ...
 
     def use_recovery_code(

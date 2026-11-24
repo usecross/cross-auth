@@ -94,6 +94,7 @@ UserPredicate = Callable[[User], bool]
 
 ENROLLMENT_TTL = 600
 RECOVERY_CODE_COUNT = 10
+FACTOR_NAME_MAX_LENGTH = 255
 # No 0/o, 1/l/i: codes are often typed from paper.
 _RECOVERY_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
 _RECOVERY_LENGTH = 10
@@ -144,7 +145,13 @@ class _Cipher:
     def __init__(self, config: MFAConfig) -> None:
         encrypt = config.get("encrypt")
         decrypt = config.get("decrypt")
-        keys = list(config.get("secret_keys") or [])
+        raw_keys = config.get("secret_keys") or []
+        # list("key") would split one key into characters.
+        if isinstance(raw_keys, str):
+            raise ValueError(
+                "config['mfa']['secret_keys'] must be a list of keys, not a string"
+            )
+        keys = list(raw_keys)
         if (encrypt is None) != (decrypt is None):
             raise ValueError("config['mfa'] needs both encrypt and decrypt, or neither")
         if encrypt is not None and keys:
@@ -478,14 +485,9 @@ class MFA:
         )
 
     def load_challenge(self, token: str) -> Challenge | None:
-        raw = self.secondary_storage.get(_CHALLENGE_KEY.format(digest=_digest(token)))
-        if raw is None:
-            return None
-        try:
-            challenge = Challenge.model_validate_json(raw)
-        except ValidationError:
-            return None
-        return None if challenge.expires_at < _now() else challenge
+        return _parse_challenge(
+            self.secondary_storage.get(_CHALLENGE_KEY.format(digest=_digest(token)))
+        )
 
     def verify_challenge(
         self,
@@ -501,7 +503,9 @@ class MFA:
         """
         _require_one_code(code, recovery_code)
         key = _CHALLENGE_KEY.format(digest=_digest(token))
-        challenge = self.load_challenge(token)
+        # Take the challenge before checking, so only one request at a time can
+        # spend a code on it, and two wrong codes cannot both read one count.
+        challenge = _parse_challenge(self.secondary_storage.pop(key))
         if challenge is None:
             raise _invalid_challenge()
         try:
@@ -511,24 +515,22 @@ class MFA:
                 recovery_code=recovery_code,
                 purpose="sign_in",
             )
-        except CrossAuthException as error:
-            if error.error == "invalid_code":
-                left = challenge.attempts_left - 1
-                if left <= 0:
-                    self.secondary_storage.delete(key)
-                else:
-                    remaining = int((challenge.expires_at - _now()).total_seconds())
-                    self.secondary_storage.set(
-                        key,
-                        challenge.model_copy(
-                            update={"attempts_left": left}
-                        ).model_dump_json(),
-                        ttl=max(remaining, 1),
-                    )
+        except Exception as error:
+            # Put it back, one attempt shorter for a wrong code, with the
+            # expiry it had.
+            left = challenge.attempts_left
+            if isinstance(error, CrossAuthException) and error.error == "invalid_code":
+                left -= 1
+            remaining = int((challenge.expires_at - _now()).total_seconds())
+            if left > 0 and remaining > 0:
+                self.secondary_storage.set(
+                    key,
+                    challenge.model_copy(
+                        update={"attempts_left": left}
+                    ).model_dump_json(),
+                    ttl=remaining,
+                )
             raise
-        # Only the first of two concurrent verifications gets the challenge.
-        if self.secondary_storage.pop(key) is None:
-            raise _invalid_challenge()
         return challenge, method
 
     def check_code(
@@ -578,7 +580,8 @@ class MFA:
                     break
         else:
             assert recovery_code is not None
-            passed = self.storage.use_recovery_code(
+            # Recovery codes stand in for a factor, so they need one.
+            passed = bool(factors) and self.storage.use_recovery_code(
                 user_id, hash_recovery_code(recovery_code), used_at=now
             )
             if passed:
@@ -697,6 +700,13 @@ class MFA:
         name: str | None = None,
     ) -> TotpEnrollment:
         self.require_recent_authentication(user, authenticated_at)
+        # Checked now, before the enrollment is stored: the factor's name
+        # column holds 255 characters, and a failed write would spend it.
+        if name is not None and len(name) > FACTOR_NAME_MAX_LENGTH:
+            raise CrossAuthException(
+                "invalid_request",
+                f"name must be at most {FACTOR_NAME_MAX_LENGTH} characters",
+            )
         if not self.config["allow_unverified_email"] and not self.email_verified(user):
             raise CrossAuthException(
                 "email_not_verified",
@@ -771,42 +781,41 @@ class MFA:
                 user=UserSnapshot.of(user), type="totp", name=enrollment.name
             ),
         )
-        now = _now()
-        factor = self.storage.create_factor(
+        codes = generate_recovery_codes()
+        # The storage keeps the codes only when this is the user's first
+        # factor, in the same transaction, so they are issued exactly once.
+        factor, first = self.storage.create_factor(
             user_id=user.id,
             type="totp",
             name=enrollment.name,
             data={"secret": enrollment.secret},
-            created_at=now,
+            created_at=_now(),
             last_used_step=step,
+            recovery_code_hashes=[hash_recovery_code(c) for c in codes],
         )
-        codes = None
-        if self.storage.count_recovery_codes(user.id) == 0:
-            codes = generate_recovery_codes()
-            self.storage.replace_recovery_codes(
-                user.id, [hash_recovery_code(c) for c in codes], created_at=now
-            )
-        enabled_mfa = len(self.storage.list_factors(user.id)) == 1
         self.hooks.run_after(
             "mfa.factor.create",
             AfterMFAFactorCreateEvent(
-                user_id=str(user.id), factor=factor, enabled_mfa=enabled_mfa
+                user_id=str(user.id), factor=factor, enabled_mfa=first
             ),
         )
-        return TotpConfirmation(factor=MFAFactorInfo.of(factor), recovery_codes=codes)
+        return TotpConfirmation(
+            factor=MFAFactorInfo.of(factor), recovery_codes=codes if first else None
+        )
 
     def regenerate_recovery_codes(
         self, user: User, *, authenticated_at: datetime | None
     ) -> list[str]:
         self.require_recent_authentication(user, authenticated_at)
-        if not self.storage.list_factors(user.id):
+        codes = generate_recovery_codes()
+        # The storage checks for a factor in the replacement's transaction, so
+        # removing the last factor at the same time cannot leave codes behind.
+        if not self.storage.replace_recovery_codes(
+            user.id, [hash_recovery_code(c) for c in codes], created_at=_now()
+        ):
             raise CrossAuthException(
                 "mfa_not_enabled", "Two-factor authentication is not turned on"
             )
-        codes = generate_recovery_codes()
-        self.storage.replace_recovery_codes(
-            user.id, [hash_recovery_code(c) for c in codes], created_at=_now()
-        )
         self.hooks.run_after(
             "mfa.recovery_codes.regenerate",
             AfterMFARecoveryCodesRegenerateEvent(
@@ -841,9 +850,8 @@ class MFA:
             raise CrossAuthException(
                 "factor_not_found", "No such factor", status_code=404
             )
+        # delete_factor removed the recovery codes with the last factor.
         enabled = bool(self.storage.list_factors(user.id))
-        if not enabled:
-            self.storage.replace_recovery_codes(user.id, [], created_at=_now())
         self.hooks.run_after(
             "mfa.factor.delete",
             AfterMFAFactorDeleteEvent(
@@ -854,6 +862,16 @@ class MFA:
             ),
         )
         return self.status(user.id)
+
+
+def _parse_challenge(raw: str | None) -> Challenge | None:
+    if raw is None:
+        return None
+    try:
+        challenge = Challenge.model_validate_json(raw)
+    except ValidationError:
+        return None
+    return None if challenge.expires_at < _now() else challenge
 
 
 def _require_one_code(code: str | None, recovery_code: str | None) -> None:

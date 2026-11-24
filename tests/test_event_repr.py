@@ -113,7 +113,6 @@ def _social_account_update() -> BeforeSocialAccountUpdateEvent:
         ),
         _social_account_update(),
         AfterTokenPasswordEvent(
-            request=_password_grant(),
             client_id="client",
             username="alice@example.com",
             user=User(
@@ -123,6 +122,7 @@ def _social_account_update() -> BeforeSocialAccountUpdateEvent:
                 hashed_password=None,
                 social_accounts=[],
             ),
+            scope=None,
             token_response=_token_response(),
         ),
         _password_grant(),

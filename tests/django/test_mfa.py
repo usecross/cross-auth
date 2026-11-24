@@ -103,9 +103,7 @@ def add_totp(user: AbstractBaseUser, *, codes: list[str] | None = None) -> None:
         name="Phone",
         data={"secret": cipher.encrypt(SECRET)},
         created_at=now,
-    )
-    store.replace_recovery_codes(
-        user.pk, [hash_recovery_code(c) for c in codes or []], created_at=now
+        recovery_code_hashes=[hash_recovery_code(c) for c in codes or []],
     )
 
 
@@ -541,3 +539,40 @@ def test_an_async_login_waits_for_the_code() -> None:
     assert response.status_code == 303
     assert response["Location"] == "/auth/mfa/verify?next=%2Fprivate%2F"
     assert [s.user_id for s in stored_sessions()] == [None]
+
+
+def test_a_new_login_drops_the_last_sessions_second_factor(client: Client) -> None:
+    """A login that passed no second factor never inherits an earlier one's."""
+    first = make_user()
+    add_totp(first)
+    make_user("other@example.com")
+    password_login(client)
+    csrf_post(client, "/auth/mfa/verify", {"code": code(), "next": "/private/"})
+    assert client.get("/verified/").status_code == 200
+
+    # The first user's next login waits for a code and takes them out of the
+    # session; the second user, who has no factor, then logs in straight away.
+    assert password_login(client)["Location"].startswith("/auth/mfa/verify")
+    assert password_login(client, email="other@example.com")["Location"] == (
+        "/private/"
+    )
+
+    assert whoami(client)["authenticated"] is True
+    assert client.get("/verified/").status_code != 200
+
+
+def test_verify_works_with_atomic_requests(
+    client: Client, google: FakeGoogle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from django.db import connections
+
+    user = make_user("person@gmail.com")
+    connect(user)
+    add_totp(user)
+    assert sign_in(client, google, Account(email="person@gmail.com")).status_code
+    monkeypatch.setitem(connections["default"].settings_dict, "ATOMIC_REQUESTS", True)
+
+    verified = csrf_post(client, "/auth/mfa/verify", {"code": code()})
+
+    assert verified.status_code == 302
+    assert whoami(client)["user_id"] == str(user.pk)
