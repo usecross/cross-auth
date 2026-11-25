@@ -90,6 +90,12 @@ _DEFAULTS: dict[str, Any] = {
 # Decides whether this sign-in needs 2FA. Returning True for a user without a
 # factor refuses the sign-in until they enroll.
 RequiresMFA = Callable[[User, str | None], bool]
+
+# The login_method of a device a user approves from a browser where they are
+# signed in, such as a CLI in the device authorization flow (RFC 8628). The
+# default rule does not challenge it: the approving session passed any second
+# factor already, and a device has nowhere to enter a code.
+DEVICE_LOGIN_METHOD = "device"
 PasswordVerifier = Callable[[User, str], bool]
 UserPredicate = Callable[[User], bool]
 
@@ -428,7 +434,9 @@ class MFA:
         """Raise ``MFARequired`` (without a challenge) if this sign-in needs 2FA.
 
         A user the accounts storage does not return is left to the caller's
-        ``user_can_authenticate`` check.
+        ``user_can_authenticate`` check. Without ``requires_mfa``, a user with
+        a factor is challenged unless this is a device login, or a provider
+        sign-in with ``require_for_providers`` off.
         """
         user = self.accounts_storage.find_user_by_id(user_id)
         if user is None:
@@ -437,9 +445,13 @@ class MFA:
         if self.requires_mfa is not None:
             required = self.requires_mfa(user, login_method)
         else:
-            required = bool(factors) and (
-                self.config["require_for_providers"]
-                or login_method not in self.provider_ids
+            required = (
+                bool(factors)
+                and login_method != DEVICE_LOGIN_METHOD
+                and (
+                    self.config["require_for_providers"]
+                    or login_method not in self.provider_ids
+                )
             )
         if not required:
             return

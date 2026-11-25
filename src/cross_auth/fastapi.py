@@ -1062,7 +1062,9 @@ class CrossAuth:
         cookies). No cookie is set; the ``login`` hooks run around the
         creation with ``credential="bearer"``, and the raw token is never
         exposed to them. ``login_method`` records how the user signed in, e.g.
-        ``"password"`` after ``authenticate()``. A user
+        ``"password"`` after ``authenticate()``, or ``"device"`` for a device
+        the user approved from a browser where they are signed in, which the
+        default 2FA rule does not challenge. A user
         ``user_can_authenticate`` refuses, or one it cannot find, raises
         ``CrossAuthException`` before the ``login`` hooks and creates nothing.
 

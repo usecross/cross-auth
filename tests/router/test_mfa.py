@@ -124,6 +124,7 @@ def make_auth(
     session_storage: MemorySessionStorage,
     fake_provider: FakeProvider,
     oauth_server: Any = LEGACY_APP_OAUTH_SERVER,
+    requires_mfa: Callable[[Any, str | None], bool] | None = None,
     **mfa: Any,
 ) -> CrossAuth:
     return CrossAuth(
@@ -146,6 +147,7 @@ def make_auth(
             session_factory=lambda: Session(engine),
         ),
         oauth_server=oauth_server,
+        requires_mfa=requires_mfa,
     )
 
 
@@ -1072,3 +1074,42 @@ def test_a_client_cannot_claim_the_second_factor(
     assert claimed.status_code == 403
     assert claimed.json()["error"] == "mfa_required"
     assert issued == []
+
+
+# Device logins -------------------------------------------------------------
+
+
+def test_device_logins_are_not_challenged(
+    auth: CrossAuth, enrolled: tuple[str, list[str]]
+) -> None:
+    """A device, such as a CLI, is approved from a browser where the user is
+    signed in, past any second factor, and has nowhere to enter a code."""
+    token, record = auth.issue_session_token("test", login_method="device")
+
+    assert token
+    assert (record.login_method, record.mfa_method) == ("device", None)
+    # Every other sign-in still waits for its code.
+    _paused(auth)
+    with pytest.raises(MFARequired):
+        auth.issue_session_token("test", login_method="password")
+
+
+def test_a_rule_of_your_own_decides_for_device_logins_too(
+    engine: Any,
+    secondary_storage: Any,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    fake_provider: FakeProvider,
+    enrolled: tuple[str, list[str]],
+) -> None:
+    strict = make_auth(
+        engine,
+        secondary_storage,
+        accounts_storage,
+        session_storage,
+        fake_provider,
+        requires_mfa=lambda user, login_method: True,
+    )
+
+    with pytest.raises(MFARequired):
+        strict.issue_session_token("test", login_method="device")

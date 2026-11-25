@@ -9,7 +9,9 @@ codes, for FastAPI, SQLModel storage and Django. It is off until you configure
 When a user has an authenticator, no sign-in issues a credential until they
 enter a code: password logins, the password grant, OAuth callbacks and
 `sign_in_with_id_token`. Provider sign-ins are challenged too unless you set
-`require_for_providers` to `False`; `requires_mfa` replaces the rule.
+`require_for_providers` to `False`; `requires_mfa` replaces the rule. The
+default rule does not challenge device logins (`login_method="device"`), which a
+user approves from a browser where they are already signed in.
 
 - `CrossAuth` gains `start_totp_enrollment`, `confirm_totp_enrollment`,
   `regenerate_recovery_codes`, `remove_mfa_factor`, `reauthenticate`,

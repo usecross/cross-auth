@@ -87,9 +87,13 @@ factors and recovery codes run one after the other. Any storage implementing the
 
 ### Which sign-ins are challenged
 
-By default, every sign-in of a user who has a factor. With
-`require_for_providers=False`, provider sign-ins are not, and passwords still
-are. For any other rule pass `requires_mfa`, which then decides alone:
+By default, every sign-in of a user who has a factor, except device logins:
+`issue_session_token(..., login_method="device")`, for a device such as a CLI
+that the user approves from a browser where they are signed in. The approving
+session passed any second factor already, and the device has nowhere to enter a
+code. With `require_for_providers=False`, provider sign-ins are not challenged
+either, and passwords still are. For any other rule pass `requires_mfa`, which
+then decides alone, for device logins too:
 
 ```python
 def requires_mfa(user, login_method: str | None) -> bool:
@@ -186,9 +190,10 @@ challenge's attempts.
 
 ### Bearer tokens
 
-`issue_session_token()` and `sign_in_with_id_token()` raise `MFARequired` too.
-Finish with `auth.verify_mfa(challenge, code=...)`, which returns the token and
-its session record.
+`issue_session_token()` and `sign_in_with_id_token()` raise `MFARequired` too,
+except for a device login (`login_method="device"`). Finish with
+`auth.verify_mfa(challenge, code=...)`, which returns the token and its session
+record.
 
 ### OAuth callbacks
 
