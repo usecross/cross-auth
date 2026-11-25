@@ -326,11 +326,28 @@ def issue_token(request: TokenIssueRequest) -> tuple[str, int]:
     return token, 900
 ```
 
-Don't call `auth.issue_session_token()` from a `token_issuer`: the `login` hooks
-already ran around the issuer, and `issue_session_token()` runs them a second
-time for the same grant. To issue Cross-Auth sessions from `/token`, leave
-`token_issuer` unset. The built-in issuer creates the session and records its
-`login_method` itself.
+To issue Cross-Auth sessions from `/token`, leave `token_issuer` unset: the
+built-in issuer creates the session and records its `login_method` and
+`mfa_method` itself. An issuer that calls `auth.issue_session_token()` runs the
+`login` hooks a second time for the same grant, since they already ran around
+the issuer, and must pass on what the sign-in passed:
+
+```python
+def issue_token(request: TokenIssueRequest) -> tuple[str, int]:
+    token, record = auth.issue_session_token(
+        request.user_id,
+        login_method=request.login_method,
+        mfa_method=request.mfa_method,
+    )
+    return token, 3600
+```
+
+With [two-factor authentication](/docs/two-factor), `request.mfa_method` is the
+second factor the sign-in already passed (`"totp"` or `"recovery_code"`), or
+`None`. Cross-Auth sets it only once it has checked the code, never from the
+token request. Without it, `issue_session_token()` asks a user with 2FA for a
+code again and `/token` answers `mfa_required`. Never pass a value the client
+sent.
 
 ### Password Grant (deprecated)
 

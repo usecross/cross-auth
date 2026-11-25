@@ -37,6 +37,10 @@ enter a code: password logins, the password grant, OAuth callbacks and
 - `BrowserLogin.login`, `SessionStorage.create`, `BeforeLoginEvent` and
   `AfterLoginEvent` gain `mfa_method`. Custom session storages need the new
   argument only when 2FA is on.
+- `TokenIssueRequest` gains `mfa_method`, the second factor the sign-in passed,
+  and `issue_session_token()` takes it: a `token_issuer` that issues sessions
+  with `issue_session_token()` passes `mfa_method=request.mfa_method`, so a
+  sign-in that entered its code is not asked again.
 - `AfterTokenPasswordEvent` replaces `request` with `scope`, so the event no
   longer carries the password; it now also runs for password grants finished
   through 2FA.

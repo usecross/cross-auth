@@ -196,7 +196,10 @@ A provider sign-in that needs a code sets the HttpOnly challenge cookie and
 redirects to `verify_url`. Your page posts the code to `POST /mfa/verify`, which
 sets the session cookie and redirects to the sign-in's `next` URL. For an OAuth
 client's sign-in, the authorization code is created only after the code checks
-out, so `/token` is unchanged.
+out, so `/token` is unchanged. A `token_issuer` gets the method the sign-in
+passed in `request.mfa_method`; one that calls `issue_session_token()` passes it
+on as `mfa_method=`, or the user is asked for a code again (see
+[Custom token issuers](/docs/oauth#custom-token-issuers)).
 
 ### The password grant
 

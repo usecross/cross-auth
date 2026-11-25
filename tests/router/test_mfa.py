@@ -26,7 +26,7 @@ from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 from cross_web import Response as CrossWebResponse
 
-from cross_auth import _totp
+from cross_auth import TokenIssueRequest, _totp
 from cross_auth.exceptions import CrossAuthException, MFARequired
 from cross_auth.fastapi import CrossAuth
 from cross_auth.hooks import BeforeLoginEvent
@@ -917,3 +917,158 @@ def test_revoking_one_session_leaves_sign_ins_waiting_for_a_code(
 
     _, finished = auth.verify_mfa(waiting, code=code_now(secret, 1))
     assert finished.mfa_method == "totp"
+
+
+# Custom token issuers -------------------------------------------------------
+
+
+def make_session_issuer(
+    engine: Any,
+    secondary_storage: Any,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    fake_provider: FakeProvider,
+) -> tuple[CrossAuth, list[TokenIssueRequest]]:
+    """An app whose token_issuer issues Cross Auth sessions itself."""
+    issued: list[TokenIssueRequest] = []
+
+    def issue_token(request: TokenIssueRequest) -> tuple[str, int]:
+        issued.append(request)
+        token, _ = auth.issue_session_token(
+            request.user_id,
+            login_method=request.login_method,
+            mfa_method=request.mfa_method,
+        )
+        return token, 3600
+
+    auth = make_auth(
+        engine,
+        secondary_storage,
+        accounts_storage,
+        session_storage,
+        fake_provider,
+        oauth_server=replace(LEGACY_APP_OAUTH_SERVER, token_issuer=issue_token),
+    )
+    return auth, issued
+
+
+@respx.mock
+def test_a_token_issuer_issues_sessions_for_a_client_sign_in_that_passed_2fa(
+    engine: Any,
+    secondary_storage: Any,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    fake_provider: FakeProvider,
+    enrolled: tuple[str, list[str]],
+) -> None:
+    """The callback asked for the code already; /token must not ask again."""
+    secret, _ = enrolled
+    _link_identity(accounts_storage)
+    auth, issued = make_session_issuer(
+        engine, secondary_storage, accounts_storage, session_storage, fake_provider
+    )
+    challenged: list[Any] = []
+    auth.after("mfa.challenge")(challenged.append)
+    with app_for(auth) as client:
+        mock_token_and_userinfo(email="test@example.com")
+        _, state = start_provider_auth(
+            client,
+            "/fake/authorize",
+            params={
+                "client_id": "app-client",
+                "redirect_uri": _REDIRECT_URI,
+                "response_type": "code",
+                "code_challenge": _CODE_CHALLENGE,
+                "code_challenge_method": "S256",
+            },
+        )
+        client.get("/fake/callback", params={"code": "c", "state": state})
+        verified = client.post("/mfa/verify", json={"code": code_now(secret, 1)})
+        [code] = parse_qs(urlparse(verified.json()["redirect_to"]).query)["code"]
+
+        token = client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": "app-client",
+                "code": code,
+                "redirect_uri": _REDIRECT_URI,
+                "code_verifier": "test",
+            },
+        )
+
+    assert token.status_code == 200, token.text
+    assert [request.mfa_method for request in issued] == ["totp"]
+    record = newest(session_storage)
+    assert (record.login_method, record.mfa_method) == ("fake", "totp")
+    # Only the callback's challenge.
+    assert len(challenged) == 1
+
+
+def test_a_token_issuer_issues_sessions_after_the_mfa_grant(
+    engine: Any,
+    secondary_storage: Any,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    fake_provider: FakeProvider,
+    enrolled: tuple[str, list[str]],
+) -> None:
+    secret, _ = enrolled
+    auth, issued = make_session_issuer(
+        engine, secondary_storage, accounts_storage, session_storage, fake_provider
+    )
+    with app_for(auth) as client:
+        with legacy_password_grant():
+            paused = client.post(
+                "/token",
+                data={
+                    "grant_type": "password",
+                    "client_id": "app-client",
+                    "username": "test@example.com",
+                    "password": TEST_PASSWORD,
+                },
+            )
+        assert paused.status_code == 403
+        done = client.post(
+            "/token",
+            data={
+                "grant_type": "urn:cross-auth:grant-type:mfa",
+                "client_id": "app-client",
+                "mfa_token": paused.json()["mfa_token"],
+                "otp": code_now(secret, 1),
+            },
+        )
+
+    assert done.status_code == 200, done.text
+    assert [request.mfa_method for request in issued] == ["totp"]
+    record = newest(session_storage)
+    assert (record.login_method, record.mfa_method) == ("password", "totp")
+
+
+def test_a_client_cannot_claim_the_second_factor(
+    engine: Any,
+    secondary_storage: Any,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    fake_provider: FakeProvider,
+    enrolled: tuple[str, list[str]],
+) -> None:
+    """mfa_method comes from Cross Auth's checked challenge, never the form."""
+    auth, issued = make_session_issuer(
+        engine, secondary_storage, accounts_storage, session_storage, fake_provider
+    )
+    with app_for(auth) as client, legacy_password_grant():
+        claimed = client.post(
+            "/token",
+            data={
+                "grant_type": "password",
+                "client_id": "app-client",
+                "username": "test@example.com",
+                "password": TEST_PASSWORD,
+                "mfa_method": "totp",
+            },
+        )
+
+    assert claimed.status_code == 403
+    assert claimed.json()["error"] == "mfa_required"
+    assert issued == []

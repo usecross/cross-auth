@@ -1049,6 +1049,7 @@ class CrossAuth:
         max_age: int | None = None,
         metadata: SessionMetadata | None = None,
         login_method: str | None = None,
+        mfa_method: str | None = None,
     ) -> tuple[str, SessionRecord]:
         """Create a session and return its bearer token with the record.
 
@@ -1064,6 +1065,13 @@ class CrossAuth:
         ``"password"`` after ``authenticate()``. A user
         ``user_can_authenticate`` refuses, or one it cannot find, raises
         ``CrossAuthException`` before the ``login`` hooks and creates nothing.
+
+        ``mfa_method`` is the second factor this sign-in has already passed,
+        for a ``token_issuer`` that issues sessions with this: pass on its
+        ``TokenIssueRequest.mfa_method``, so the session records it and the
+        user is not asked for another code. Cross Auth sets that field only
+        once it has checked the code. Never pass a value the client sent: it
+        would skip the second factor.
         """
         try:
             token, record, _ = issue_bearer_session(
@@ -1076,6 +1084,7 @@ class CrossAuth:
                 metadata=metadata,
                 login_method=login_method,
                 mfa=self._context.mfa,
+                mfa_method=mfa_method,
             )
         except MFARequired as required:
             raise self._bearer_challenge(required, max_age, metadata) from None
