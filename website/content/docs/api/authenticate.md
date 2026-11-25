@@ -32,9 +32,12 @@ user = authenticate(email, password, accounts_storage)
 
 ### Security
 
-This function uses **constant-time password verification**. When a user is not
-found, has no password or has a hash the hasher can't read, it still verifies a
-dummy hash made by the same hasher, to prevent timing attacks that could
-enumerate valid email addresses. A hash the hasher can't read never matches:
-whatever `verify` raises counts as a wrong password. See
+When a user is not found, has no password or has a hash the hasher can't read,
+this function still verifies a dummy hash made by the same hasher, so every
+check costs one verification. That evens out response times for hashes of the
+hasher's current scheme and cost, which makes valid email addresses harder to
+find. It isn't constant-time across schemes or costs: an account whose hash has
+an older scheme or a lower cost verifies in that hash's time until it's
+rehashed. A hash the hasher can't read never matches: whatever `verify` raises
+counts as a wrong password. See
 [Password Hashing](/docs/session-authentication#password-hashing).

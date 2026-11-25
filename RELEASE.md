@@ -22,6 +22,10 @@ auth = CrossAuth(
 )
 ```
 
+With several instances, switch in two deploys: first a hasher that verifies both
+schemes but still writes the old one, then the new scheme first. Otherwise
+instances still on the old hasher can't read the new hashes.
+
 - A hasher has `hash(password) -> str` and `verify(password, hash) -> bool`, the
   new `cross_auth.PasswordHasher` protocol. pwdlib's `PasswordHash` and
   passlib's `CryptContext` fit as they are.
@@ -29,10 +33,18 @@ auth = CrossAuth(
   verifies the first 72 bytes of a password and refuses to hash a longer one
   with `password_too_long`.
 - A stored hash the hasher can't read never matches: whatever `verify` raises
-  counts as a wrong password, and Cross-Auth logs the error's type on the
-  `cross_auth._password` logger. Unknown users, users without a password and
-  users whose hash can't be read each verify a dummy hash, which the hasher
-  makes once, so they take as long as anyone else.
+  counts as a wrong password. Cross-Auth logs the error's type on the
+  `cross_auth._password` logger, as a warning once per hasher and error type and
+  then at debug level.
+- Unknown users, users without a password and users whose hash can't be read
+  each verify a dummy hash, which the hasher makes once from a random
+  64-character ASCII password, so each check costs one verification. That evens
+  out timing for hashes of the hasher's current scheme and cost, not across
+  schemes or costs: an account with an older hash verifies in that hash's time
+  until it's rehashed, and Cross-Auth doesn't rehash on sign-in.
+- `verify` should return `False` only for a wrong password, and raise for a hash
+  it can't read before doing the work, as bcrypt, pwdlib and passlib do. `hash`
+  must accept the dummy password, or every check raises `RuntimeError`.
 - `auth.password_hasher` is the hasher in use. Hash the passwords you store
   yourself, such as at signup, with `auth.password_hasher.hash(password)`.
 - `cross_auth._password.authenticate()` takes `password_hasher=` too.

@@ -452,6 +452,13 @@ from pwdlib.hashers.bcrypt import BcryptHasher
 password_hasher = PasswordHash((Argon2Hasher(), BcryptHasher()))
 ```
 
+When several instances serve your app, switch in two deploys. First deploy,
+everywhere, a hasher that verifies both schemes but still hashes with the old
+one, `PasswordHash((BcryptHasher(), Argon2Hasher()))`. Once no instance runs the
+old hasher, deploy the new scheme first. Otherwise an instance still on the old
+hasher can't read the hashes the new one writes, and those users fail to sign in
+there until it's replaced.
+
 ```python
 from passlib.context import CryptContext
 
@@ -474,16 +481,30 @@ hashed_password = auth.password_hasher.hash(password)
 such as one another library made, never matches: whatever `verify` raises counts
 as a wrong password. `authenticate()` returns `None`, `change_password()` raises
 `400 invalid_password`, and the password grant answers `invalid_grant`.
-Cross-Auth logs a warning on the `cross_auth._password` logger with the error's
-type, never the hash. A user whose hash can't be read can't sign in with a
-password, so list every scheme your users' hashes use.
+Cross-Auth logs it on the `cross_auth._password` logger with the error's type,
+never the hash: a warning the first time each hasher raises each type of error,
+then at debug level, so repeated sign-ins can't flood the log. A user whose hash
+can't be read can't sign in with a password, so list every scheme your users'
+hashes use.
 
-**Timing.** Each check costs one verification, so an attacker can't tell from
-the response time which emails have accounts. An unknown email, a user without a
-password and a hash the hasher can't read each verify a dummy hash, which the
-hasher makes the first time it checks a password. Raise from `verify` for a hash
-you can't read, as bcrypt, pwdlib and passlib do: a hasher that returns `False`
-without doing the work answers faster for those users.
+**Timing.** Each check costs one verification. An unknown email, a user without
+a password and a hash the hasher can't read each verify a dummy hash, which the
+hasher makes the first time it checks a password, from a random 64-character
+ASCII password. `hash` must accept that password: while it refuses it, every
+check raises `RuntimeError`.
+
+The dummy evens out the time of checks against hashes of the hasher's current
+scheme and cost, the ones it writes. It doesn't make checks take the same time
+across schemes or costs. While users move to a new scheme, or after you raise
+the cost, accounts that still have an older hash verify in that hash's time, so
+an attacker can tell them from unknown emails until they're rehashed. Cross-Auth
+doesn't rehash on sign-in yet.
+
+For the dummy to keep the cost at one verification, `verify` returns `False`
+only for a wrong password. For a hash it can't read, it raises, and before doing
+a verification's work, as bcrypt, pwdlib and passlib do. A hasher that returns
+`False` for such a hash answers faster for those users, and one that raises
+after the work answers slower.
 
 **The default** is `BcryptPasswordHasher`, with bcrypt's default cost. bcrypt
 reads only the first 72 bytes of a password. It refuses to hash a longer one,
@@ -494,7 +515,7 @@ refuse to verify a password that long with bcrypt 5, which counts as a wrong
 password.
 
 Cross-Auth doesn't rehash a password on sign-in when the hasher's settings or
-schemes change.
+schemes change, so an older hash stays until the user changes their password.
 
 ### Sliding Sessions
 
@@ -623,10 +644,10 @@ if user is None:
 ```
 
 It verifies with bcrypt by default; pass `password_hasher=` to verify with the
-[password hasher](#password-hashing) you give `CrossAuth`. This function uses
-**constant-time verification** -- it always runs one verification even for
-non-existent users, preventing timing attacks that could enumerate valid email
-addresses.
+[password hasher](#password-hashing) you give `CrossAuth`. It always runs one
+verification, even for an email with no account, so response times don't tell
+which emails have accounts, as long as stored hashes use the hasher's current
+scheme and cost. See [Password Hashing](#password-hashing) for when they don't.
 
 ### Creating Sessions
 

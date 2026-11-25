@@ -119,10 +119,10 @@ from cross_auth import PasswordHasher
 
 ### Methods
 
-| Method                      | Returns | Description                                                                                                   |
-| --------------------------- | ------- | ------------------------------------------------------------------------------------------------------------- |
-| `hash(password, /)`         | `str`   | A hash of `password`, to store in `hashed_password`. Raise to refuse the password.                            |
-| `verify(password, hash, /)` | `bool`  | Whether `password` matches `hash`. Raise for a hash you can't read; Cross-Auth counts it as a wrong password. |
+| Method                      | Returns | Description                                                                                                                                                                    |
+| --------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `hash(password, /)`         | `str`   | A hash of `password`, to store in `hashed_password`. Raise to refuse the password. Accept Cross-Auth's dummy password, a random 64-character ASCII string.                     |
+| `verify(password, hash, /)` | `bool`  | Whether `password` matches `hash`. Return `False` only for a wrong password. For a hash you can't read, raise before doing the work; Cross-Auth counts it as a wrong password. |
 
 ## BcryptPasswordHasher
 

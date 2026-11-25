@@ -7,6 +7,8 @@ first use. A hash the hasher cannot read never matches and never raises.
 
 import hashlib
 import logging
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import cast
 from unittest.mock import Mock
@@ -17,10 +19,10 @@ from pwdlib.hashers.argon2 import Argon2Hasher
 
 from cross_auth import BcryptPasswordHasher, Context, PasswordHasher
 from cross_auth._password import (
-    _MAX_DUMMY_HASHES,
+    _MAX_HASHER_STATES,
     DEFAULT_PASSWORD_HASHER,
     _dummy_hash,
-    _dummy_hashes,
+    _hasher_states,
     _verify_password,
 )
 from cross_auth._storage import AccountsStorage, SecondaryStorage, User
@@ -147,17 +149,71 @@ def test_the_dummy_hash_is_made_before_the_user_is_looked_at():
     assert hasher.hashed == 1
 
 
-def test_a_hasher_that_cannot_hash_fails_for_every_user_alike():
-    class BrokenHasher(RecordingHasher):
+def test_the_dummy_password_passes_a_minimum_length():
+    @dataclass
+    class MinimumLengthHasher(RecordingHasher):
+        """Refuses passwords shorter than 32 characters, as a policy might."""
+
+        dummy_passwords: list[str] = field(default_factory=list)
+
         def hash(self, password: str, /) -> str:
-            raise RuntimeError("misconfigured")
+            if len(password) < 32:
+                raise ValueError("The password is too short")
+            self.dummy_passwords.append(password)
+            return super().hash(password)
 
-    hasher = BrokenHasher()
+    hasher = MinimumLengthHasher()
+    password = "a long enough password, for this policy"
+    user = _user(_digest(password))
 
-    with pytest.raises(RuntimeError):
+    assert _verify_password(user, password, hasher) is True
+    assert _verify_password(None, password, hasher) is False
+    [dummy_password] = hasher.dummy_passwords
+    # Inside the 72 bytes bcrypt reads.
+    assert len(dummy_password) == 64
+    assert dummy_password.isascii()
+
+
+def test_a_hasher_that_refuses_the_dummy_password_fails_for_every_user_alike():
+    class RefusingHasher(RecordingHasher):
+        def hash(self, password: str, /) -> str:
+            raise ValueError("The password is too short")
+
+    hasher = RefusingHasher()
+
+    # Unknown and known users get the same error, so it tells no one which
+    # accounts exist.
+    for user in (None, _user(_digest(TEST_PASSWORD))):
+        with pytest.raises(RuntimeError, match="must accept it") as exc:
+            _verify_password(user, TEST_PASSWORD, hasher)
+        assert isinstance(exc.value.__cause__, ValueError)
+    assert hasher.verified == []
+    assert id(hasher) not in _hasher_states
+
+
+def test_concurrent_first_checks_hash_the_dummy_once():
+    count = 8
+    barrier = threading.Barrier(count)
+
+    class SlowHasher(RecordingHasher):
+        def hash(self, password: str, /) -> str:
+            time.sleep(0.05)
+            return super().hash(password)
+
+    hasher = SlowHasher()
+
+    def check() -> None:
+        barrier.wait()
         _verify_password(None, TEST_PASSWORD, hasher)
-    with pytest.raises(RuntimeError):
-        _verify_password(_user(_digest(TEST_PASSWORD)), TEST_PASSWORD, hasher)
+
+    threads = [threading.Thread(target=check) for _ in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert hasher.hashed == 1
+    assert len(hasher.verified) == count
 
 
 def test_an_unreadable_hash_logs_only_the_error_type(
@@ -171,10 +227,36 @@ def test_an_unreadable_hash_logs_only_the_error_type(
     assert valid is False
     assert [record.getMessage() for record in caplog.records] == [
         "The password hasher could not verify a password hash (ValueError), "
-        "so it does not match"
+        "so it does not match. Later ones like it log at debug level."
     ]
     assert FOREIGN_HASH not in caplog.text
     assert TEST_PASSWORD not in caplog.text
+
+
+def test_an_unreadable_hash_warns_once_per_hasher_and_error_type(
+    caplog: pytest.LogCaptureFixture,
+):
+    class TwoErrorsHasher(RecordingHasher):
+        def verify(self, password: str, hash: str, /) -> bool:
+            if hash == "unsupported":
+                raise TypeError("Unsupported hash")
+            return super().verify(password, hash)
+
+    hasher = TwoErrorsHasher()
+
+    with caplog.at_level(logging.DEBUG, logger="cross_auth._password"):
+        for stored in (FOREIGN_HASH, FOREIGN_HASH, "unsupported", "unsupported"):
+            _verify_password(_user(stored), TEST_PASSWORD, hasher)
+        # Another hasher warns on its own.
+        _verify_password(_user(FOREIGN_HASH), TEST_PASSWORD, RecordingHasher())
+
+    assert [(record.levelname, record.args) for record in caplog.records] == [
+        ("WARNING", ("ValueError",)),
+        ("DEBUG", ("ValueError",)),
+        ("WARNING", ("TypeError",)),
+        ("DEBUG", ("TypeError",)),
+        ("WARNING", ("ValueError",)),
+    ]
 
 
 def test_pwdlib_does_not_match_a_hash_it_cannot_identify():
@@ -186,23 +268,23 @@ def test_pwdlib_does_not_match_a_hash_it_cannot_identify():
 
 
 def test_an_error_verifying_the_dummy_hash_is_not_raised():
-    class RefusingHasher(RecordingHasher):
+    class RaisingHasher(RecordingHasher):
         def verify(self, password: str, hash: str, /) -> bool:
             super().verify(password, hash)
             raise ValueError("The password is too long")
 
-    hasher = RefusingHasher()
+    hasher = RaisingHasher()
 
     assert _verify_password(None, "p" * 80, hasher) is False
     assert _verify_password(_user(_digest("p" * 80)), "p" * 80, hasher) is False
 
 
-def test_dummy_hashes_are_kept_for_a_few_hashers_only():
-    hashers = [RecordingHasher() for _ in range(_MAX_DUMMY_HASHES + 2)]
+def test_hasher_states_are_kept_for_a_few_hashers_only():
+    hashers = [RecordingHasher() for _ in range(_MAX_HASHER_STATES + 2)]
 
     for hasher in hashers:
         _verify_password(None, TEST_PASSWORD, hasher)
 
-    assert len(_dummy_hashes) == _MAX_DUMMY_HASHES
-    assert id(hashers[-1]) in _dummy_hashes
-    assert id(hashers[0]) not in _dummy_hashes
+    assert len(_hasher_states) == _MAX_HASHER_STATES
+    assert id(hashers[-1]) in _hasher_states
+    assert id(hashers[0]) not in _hasher_states

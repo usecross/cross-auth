@@ -4,6 +4,7 @@ import contextlib
 import logging
 import secrets
 import threading
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 import bcrypt
@@ -30,15 +31,22 @@ class PasswordHasher(Protocol):
         Raise to refuse the password; nothing is stored. A
         ``CrossAuthException`` reaches the caller as it is, as
         ``password_too_long`` does from the default bcrypt hasher.
+
+        Accept Cross-Auth's dummy password, a random 64-character ASCII string
+        it hashes once to verify for unknown users: while ``hash`` refuses it,
+        every password check raises ``RuntimeError``.
         """
         ...
 
     def verify(self, password: str, hash: str, /) -> bool:
         """Return whether ``password`` matches the stored ``hash``.
 
-        Raise for a hash you cannot read, as bcrypt, pwdlib and passlib do.
-        Cross-Auth counts it as no match, and spends one verification of a
-        dummy hash so that the attempt takes as long as any other.
+        Return ``False`` only for a wrong password. For a hash you cannot read,
+        raise, and before doing a verification's work, as bcrypt, pwdlib and
+        passlib do: Cross-Auth counts it as no match and verifies its dummy
+        hash instead, so the check still costs one verification. A hasher that
+        returns ``False`` for such a hash answers faster for those users, and
+        one that raises after the work answers slower.
         """
         ...
 
@@ -88,35 +96,70 @@ def hash_password(password: str) -> str:
     return DEFAULT_PASSWORD_HASHER.hash(password)
 
 
-# The dummy hash of each hasher, made the first time it checks a password and
-# kept for the process. Keyed by id(), which works for unhashable hashers too;
-# each entry keeps its hasher alive, so no other object can take its id.
-# Applications use a hasher or two; past _MAX_DUMMY_HASHES the oldest entry is
+@dataclass
+class _HasherState:
+    """What Cross-Auth keeps about a hasher it has checked passwords with."""
+
+    # Kept alive here, so no other object can take its id.
+    hasher: PasswordHasher
+    dummy_hash: str
+    # The verify errors already logged as a warning; later ones log at debug.
+    warned: set[str] = field(default_factory=set)
+
+
+# The state of each hasher, made the first time it checks a password and kept
+# for the process. Keyed by id(), which works for unhashable hashers too.
+# Applications use a hasher or two; past _MAX_HASHER_STATES the oldest entry is
 # dropped, so making hashers on the fly cannot grow it.
-_MAX_DUMMY_HASHES = 8
-_dummy_hashes: dict[int, tuple[PasswordHasher, str]] = {}
-_dummy_hashes_lock = threading.Lock()
+_MAX_HASHER_STATES = 8
+_hasher_states: dict[int, _HasherState] = {}
+_hasher_states_lock = threading.Lock()
+
+
+def _dummy_password() -> str:
+    """Return a random password for a dummy hash.
+
+    64 ASCII characters: long enough for common minimum lengths, and within
+    the 72 bytes bcrypt reads.
+    """
+    return secrets.token_urlsafe(48)
+
+
+def _hasher_state(password_hasher: PasswordHasher) -> _HasherState:
+    """Return the state of ``password_hasher``, hashing its dummy on first use."""
+    state = _hasher_states.get(id(password_hasher))
+    if state is not None:
+        return state
+    # Under the lock, so concurrent first checks hash the dummy only once.
+    with _hasher_states_lock:
+        state = _hasher_states.get(id(password_hasher))
+        if state is not None:
+            return state
+        try:
+            dummy_hash = password_hasher.hash(_dummy_password())
+        except Exception as error:
+            # Raised for every check, whoever it is for, so the failure tells
+            # no one which accounts exist.
+            raise RuntimeError(
+                "The password hasher refused Cross-Auth's dummy password, a "
+                "random 64-character ASCII string; the configured hasher must "
+                "accept it to check passwords"
+            ) from error
+        if len(_hasher_states) >= _MAX_HASHER_STATES:
+            del _hasher_states[next(iter(_hasher_states))]
+        state = _HasherState(password_hasher, dummy_hash)
+        _hasher_states[id(password_hasher)] = state
+    return state
 
 
 def _dummy_hash(password_hasher: PasswordHasher) -> str:
     """Return a hash of a random password, made once by ``password_hasher``.
 
-    Failed checks verify it to take as long as a real check, which a hash made
-    by the same hasher with its current settings does.
+    Failed checks verify it to cost what a real check costs. That holds for
+    stored hashes of the hasher's current scheme and settings: a hash from
+    another scheme, or from a lower cost, verifies in its own time.
     """
-    entry = _dummy_hashes.get(id(password_hasher))
-    if entry is not None:
-        return entry[1]
-    dummy_hash = password_hasher.hash(secrets.token_urlsafe(16))
-    with _dummy_hashes_lock:
-        # Another thread may have made one meanwhile; keep the first.
-        entry = _dummy_hashes.get(id(password_hasher))
-        if entry is not None:
-            return entry[1]
-        if len(_dummy_hashes) >= _MAX_DUMMY_HASHES:
-            del _dummy_hashes[next(iter(_dummy_hashes))]
-        _dummy_hashes[id(password_hasher)] = (password_hasher, dummy_hash)
-    return dummy_hash
+    return _hasher_state(password_hasher).dummy_hash
 
 
 def _check_password(
@@ -126,24 +169,42 @@ def _check_password(
 
     A hash the hasher cannot read, such as one another library produced, never
     matches: whatever ``verify`` raises counts as no match. It still costs one
-    verification of the dummy hash, so that unknown users, users without a
-    password and users with an unreadable hash take the same time.
+    verification of the dummy hash, as unknown users and users without a
+    password do.
     """
     try:
         return password_hasher.verify(password, password_hash)
     except Exception as error:
-        # Only the error's type: its message could quote the hash. Without
-        # this, a misconfigured hasher would fail every sign-in in silence.
-        logger.warning(
-            "The password hasher could not verify a password hash (%s), "
-            "so it does not match",
-            type(error).__name__,
-        )
-    dummy_hash = _dummy_hash(password_hasher)
+        _log_unreadable_hash(password_hasher, type(error).__name__)
+    state = _hasher_state(password_hasher)
     # Verified for its time alone, so an error here changes nothing.
     with contextlib.suppress(Exception):
-        password_hasher.verify(password, dummy_hash)
+        password_hasher.verify(password, state.dummy_hash)
     return False
+
+
+def _log_unreadable_hash(password_hasher: PasswordHasher, error: str) -> None:
+    """Log that ``verify`` raised ``error``, a warning once per hasher.
+
+    Only the error's type: its message could quote the hash. Without this, a
+    misconfigured hasher would fail every sign-in in silence. Anyone can retry
+    a sign-in for an account whose hash cannot be read, so each hasher warns
+    once per error type and process, and logs later ones at debug level.
+    """
+    warned = _hasher_state(password_hasher).warned
+    if error in warned:
+        logger.debug(
+            "The password hasher could not verify a password hash (%s), "
+            "so it does not match",
+            error,
+        )
+        return
+    warned.add(error)
+    logger.warning(
+        "The password hasher could not verify a password hash (%s), so it "
+        "does not match. Later ones like it log at debug level.",
+        error,
+    )
 
 
 def _verify_password(
@@ -153,7 +214,7 @@ def _verify_password(
 
     Returns credential validity. The dummy hash is made before the user is
     looked at, so the first check pays for it whoever signs in, and a hasher
-    that cannot hash fails for every user alike.
+    that refuses the dummy password fails for every user alike.
     """
     dummy_hash = _dummy_hash(password_hasher)
     password_hash = user.hashed_password if user is not None else None
