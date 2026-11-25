@@ -18,6 +18,11 @@ enter a code: password logins, the password grant, OAuth callbacks and
   `/mfa/factors/{id}/remove`, `/mfa/verify` and `/reauthenticate`.
 - With 2FA on, `login()`, `issue_session_token()` and `sign_in_with_id_token()`
   raise `MFARequired` for a user who needs a code.
+- Revoking a user's sessions also ends their sign-ins that are waiting for a
+  code, which then answer `invalid_challenge`: `change_password()`,
+  `revoke_all_sessions()`, `revoke_other_sessions()`,
+  `POST /sessions/revoke-others`, `POST /logout` with `{"scope": "all"}`, and
+  Django's `revoke_other_sessions()`. Revoking one session does not.
 - SQLModel: `SQLModelMFAFactor`, `SQLModelRecoveryCode` and
   `SQLModelMFAStorage`, whose factor table's `user_id` must be a foreign key to
   your user table; `SQLModelSession` gains `mfa_method`. Before you deploy, add

@@ -166,6 +166,17 @@ def _mfa(context: Context) -> MFA:
     return context.mfa
 
 
+def _revoke_challenges(request: HttpRequest, user_id: str) -> None:
+    """End the user's logins that are waiting for their second factor.
+
+    ``revoke_other_sessions`` calls it, as core's revocations do: such a
+    login holds no session to revoke yet. Without 2FA there are none.
+    """
+    if get_settings().mfa is None:
+        return
+    _mfa(_mfa_context(request)).revoke_challenges(user_id)
+
+
 # The login guard -------------------------------------------------------------
 
 

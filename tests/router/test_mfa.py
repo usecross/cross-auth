@@ -7,12 +7,13 @@ Factors live in SQLModel tables, so this also covers ``SQLModelMFAStorage``.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import bcrypt
 import pytest
 import respx
 import time_machine
@@ -35,6 +36,7 @@ from cross_auth.storage.sqlmodel import (
     SQLModelRecoveryCode,
 )
 from tests.conftest import TEST_PASSWORD, MemoryAccountsStorage, MemorySessionStorage
+from tests.conftest import User as MemoryUser
 
 from ..conftest import legacy_password_grant
 from .conftest import (
@@ -174,7 +176,27 @@ def app_for(auth: CrossAuth) -> TestClient:
             return JSONResponse({"error": error.error}, status_code=error.status_code)
         return {"ok": True}
 
+    @app.post("/change-password")
+    def change_password(request: Request) -> Any:
+        auth.change_password(
+            request, current_password=TEST_PASSWORD, new_password="a new password"
+        )
+        return {"ok": True}
+
     return TestClient(app, base_url="https://testserver", follow_redirects=False)
+
+
+class PasswordAccountsStorage(MemoryAccountsStorage):
+    """The memory accounts storage, able to store new passwords."""
+
+    def set_password(self, user_id: Any, password: str) -> MemoryUser | None:
+        user = self.find_user_by_id(user_id)
+        if user is None:
+            return None
+        # Low cost, as for the test password: nothing checks this hash.
+        salt = bcrypt.gensalt(rounds=4)
+        user.hashed_password = bcrypt.hashpw(password.encode(), salt).decode()
+        return user
 
 
 def newest(session_storage: MemorySessionStorage) -> Any:
@@ -764,3 +786,134 @@ def test_a_wrong_code_just_before_expiry_leaves_the_last_retry(
         assert wrong.value.error == "invalid_code"
         _, record = auth.verify_mfa(challenge, code=code_now(secret))
     assert record.mfa_method == "totp"
+
+
+# Revoking a user's sessions --------------------------------------------------
+#
+# Each of these is a way a user locks out someone who knows their password.
+# They get the owner's client and the owner's session, which "others" keeps.
+
+
+def _change_password(auth: CrossAuth, owner: TestClient, kept: Any) -> None:
+    assert owner.post("/change-password").status_code == 200
+
+
+def _revoke_all_sessions(auth: CrossAuth, owner: TestClient, kept: Any) -> None:
+    auth.revoke_all_sessions(user_id="test")
+
+
+def _revoke_other_sessions(auth: CrossAuth, owner: TestClient, kept: Any) -> None:
+    auth.revoke_other_sessions(user_id="test", keep_session_id=kept.id)
+
+
+def _sessions_route(auth: CrossAuth, owner: TestClient, kept: Any) -> None:
+    assert owner.post("/sessions/revoke-others").status_code == 200
+
+
+def _logout_everywhere(auth: CrossAuth, owner: TestClient, kept: Any) -> None:
+    assert owner.post("/logout", json={"scope": "all"}).status_code == 204
+
+
+@pytest.mark.parametrize(
+    "revoke",
+    [
+        _change_password,
+        _revoke_all_sessions,
+        _revoke_other_sessions,
+        _sessions_route,
+        _logout_everywhere,
+    ],
+)
+def test_revoking_the_users_sessions_ends_sign_ins_waiting_for_a_code(
+    revoke: Callable[[CrossAuth, TestClient, Any], None],
+    engine: Any,
+    secondary_storage: Any,
+    test_password_hash: str,
+    session_storage: MemorySessionStorage,
+    fake_provider: FakeProvider,
+) -> None:
+    """A sign-in that passed the password before the user locked others out
+    holds no session yet, only its challenge: it must not finish either."""
+    accounts = PasswordAccountsStorage(test_password_hash)
+    auth = make_auth(
+        engine, secondary_storage, accounts, session_storage, fake_provider
+    )
+    verified: list[Any] = []
+    with app_for(auth) as owner, app_for(auth) as intruder:
+        assert owner.post("/login").status_code == 200
+        kept = newest(session_storage)
+        secret, _ = enroll(owner)
+        waiting = intruder.post("/login")
+        assert waiting.status_code == 401
+        auth.after("mfa.verify")(verified.append)
+
+        # The intruder holds no session, so this may revoke none at all.
+        revoke(auth, owner, kept)
+
+        late = intruder.post(
+            "/login/2fa",
+            json={
+                "challenge": waiting.json()["challenge"],
+                "code": code_now(secret, 1),
+            },
+        )
+    assert late.status_code == 400
+    assert late.json()["error"] == "invalid_challenge"
+    # Refused before the code was checked: it spent nothing and counted nothing.
+    assert verified == []
+
+
+def _paused(auth: CrossAuth) -> str:
+    """Start a bearer sign-in for the test user; return its challenge."""
+    with pytest.raises(MFARequired) as paused:
+        auth.issue_session_token("test")
+    assert paused.value.challenge is not None
+    return paused.value.challenge
+
+
+def test_a_sign_in_started_after_the_revocation_finishes(
+    auth: CrossAuth, enrolled: tuple[str, list[str]]
+) -> None:
+    secret, _ = enrolled
+    before = _paused(auth)
+
+    auth.revoke_all_sessions(user_id="test")
+
+    with pytest.raises(CrossAuthException) as revoked:
+        auth.verify_mfa(before, code=code_now(secret, 1))
+    assert revoked.value.error == "invalid_challenge"
+    # With the code the revoked sign-in did not spend.
+    _, record = auth.verify_mfa(_paused(auth), code=code_now(secret, 1))
+    assert record.mfa_method == "totp"
+
+
+def test_a_sign_in_started_after_the_revocation_outlives_its_marker(
+    auth: CrossAuth, enrolled: tuple[str, list[str]], secondary_storage: Any
+) -> None:
+    """The revocation's marker expires with the challenges it revoked; one
+    started after it must still finish once the marker is gone."""
+    secret, _ = enrolled
+    auth.revoke_all_sessions(user_id="test")
+    after = _paused(auth)
+
+    # Expired by hand: the memory storage's TTLs follow a clock that
+    # time_machine does not move.
+    [marker] = [key for key in secondary_storage.data if key.startswith("mfa:revoked:")]
+    secondary_storage.delete(marker)
+
+    _, record = auth.verify_mfa(after, code=code_now(secret, 1))
+    assert record.mfa_method == "totp"
+
+
+def test_revoking_one_session_leaves_sign_ins_waiting_for_a_code(
+    auth: CrossAuth, enrolled: tuple[str, list[str]]
+) -> None:
+    """Signing out one device is about that device, not a lockout."""
+    secret, codes = enrolled
+    _, record = auth.verify_mfa(_paused(auth), recovery_code=codes[0])
+    waiting = _paused(auth)
+
+    assert auth.revoke_session(record.id, user_id="test")
+
+    _, finished = auth.verify_mfa(waiting, code=code_now(secret, 1))
+    assert finished.mfa_method == "totp"

@@ -205,6 +205,23 @@ out, so `/token` is unchanged.
 `grant_type=urn:cross-auth:grant-type:mfa`, `client_id`, `mfa_token` and `otp`
 (or `recovery_code`).
 
+### Revoking sessions ends waiting sign-ins
+
+A sign-in waiting for its code has passed the password (or provider) but holds
+no session yet. Revoking the user's sessions ends it too, so the step a user
+takes to lock out someone who knows their password also stops a sign-in that
+person has already started:
+
+- `change_password()`, unless `revoke_other_sessions=False`
+- `revoke_all_sessions()` and `revoke_other_sessions()`
+- `POST /sessions/revoke-others` and `POST /logout` with `{"scope": "all"}`
+
+It does so also when the user has no other session, so call
+`revoke_all_sessions()` after a password reset. The waiting sign-in then gets
+`invalid_challenge`, as an expired one does, and must start again; its code is
+not checked. Revoking one session (`revoke_session()`,
+`DELETE /sessions/{session_id}`) leaves waiting sign-ins alone.
+
 ## Hooks
 
 - `mfa.challenge` (after): a sign-in started waiting for a code.

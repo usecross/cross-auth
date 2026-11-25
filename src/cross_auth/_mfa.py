@@ -102,6 +102,9 @@ _RECOVERY_LENGTH = 10
 
 _CHALLENGE_KEY = "mfa:challenge:{digest}"
 _ENROLLMENT_KEY = "mfa:enrollment:{digest}"
+# A marker that changes each time the user's sessions are revoked; challenges
+# started under an older one are void.
+_REVOKED_KEY = "mfa:revoked:{digest}"
 
 # What a challenge finishes: a cookie or bearer session, a password grant's
 # token, an OAuth client's authorization code, an OAuth callback's browser
@@ -290,6 +293,8 @@ class Challenge(BaseModel):
     data: dict[str, Any]
     attempts_left: int
     expires_at: AwareDatetime
+    # The user's revocation marker when the challenge started, if any.
+    revoked_marker: str | None = None
 
 
 class _Enrollment(BaseModel):
@@ -464,6 +469,7 @@ class MFA:
             data=data,
             attempts_left=self.config["max_attempts"],
             expires_at=_now() + timedelta(seconds=ttl),
+            revoked_marker=self._revoked_marker(required.user_id),
         )
         self.secondary_storage.set(
             _CHALLENGE_KEY.format(digest=_digest(token)),
@@ -486,9 +492,45 @@ class MFA:
         )
 
     def load_challenge(self, token: str) -> Challenge | None:
-        return _parse_challenge(
+        challenge = _parse_challenge(
             self.secondary_storage.get(_CHALLENGE_KEY.format(digest=_digest(token)))
         )
+        if challenge is None or self._revoked(challenge):
+            return None
+        return challenge
+
+    def revoke_challenges(self, user_id: Any) -> None:
+        """End every sign-in of the user that is waiting for its second factor.
+
+        Called wherever the user's sessions are revoked, also when none was
+        active: a waiting sign-in passed the password or provider before then
+        and holds no session, so revoking sessions alone would let it finish
+        after the step the user took to lock someone out. It then answers
+        ``invalid_challenge``, as an expired one does.
+
+        Challenges are not listed per user, so each records the user's marker
+        when it starts, and this replaces the marker. A random one rather
+        than a counter: secondary storage has no atomic increment, and a
+        counter that expired would start again at values older challenges
+        hold. The marker only has to outlive the challenges started before
+        it, so it expires with them, with a minute to spare for clocks.
+        """
+        self.secondary_storage.set(
+            _REVOKED_KEY.format(digest=_digest(str(user_id))),
+            secrets.token_urlsafe(16),
+            ttl=self.challenge_ttl + 60,
+        )
+
+    def _revoked_marker(self, user_id: Any) -> str | None:
+        return self.secondary_storage.get(
+            _REVOKED_KEY.format(digest=_digest(str(user_id)))
+        )
+
+    def _revoked(self, challenge: Challenge) -> bool:
+        # No marker means no revocation since any live challenge started: the
+        # last one has expired, and with it every challenge older than it.
+        marker = self._revoked_marker(challenge.user_id)
+        return marker is not None and marker != challenge.revoked_marker
 
     def verify_challenge(
         self,
@@ -507,7 +549,9 @@ class MFA:
         # Take the challenge before checking, so only one request at a time can
         # spend a code on it, and two wrong codes cannot both read one count.
         challenge = _parse_challenge(self.secondary_storage.pop(key))
-        if challenge is None:
+        # A revoked challenge stays taken, and is refused before its code is
+        # checked, so it spends no code and counts no failure.
+        if challenge is None or self._revoked(challenge):
             raise _invalid_challenge()
         try:
             method = self.check_code(

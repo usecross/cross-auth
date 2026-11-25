@@ -290,12 +290,15 @@ def logout_session(
     session_storage: SessionStorage,
     session_config: SessionConfig | None,
     scope: LogoutScope = "current",
+    mfa: MFA | None = None,
 ) -> Response:
     """Revoke the request's session and clear the session cookie on ``response``.
 
     The session token comes from the session cookie, then from an
     ``Authorization: Bearer`` header. ``scope="all"`` revokes every session of that session's user. A
     missing, unknown, expired or already revoked token revokes nothing.
+    With ``mfa``, ``scope="all"`` also ends the user's sign-ins that are
+    waiting for their second factor, as ``revoke_user_sessions`` does.
     Returns the hook response; adapters decide how to send it and how to
     surface hook exceptions.
     """
@@ -325,6 +328,8 @@ def logout_session(
         )
         revoked_at = datetime.now(tz=timezone.utc)
         if event.scope == "all":
+            if mfa is not None:
+                mfa.revoke_challenges(revoked_record.user_id)
             revoked_count = session_storage.revoke_all_for_user(
                 revoked_record.user_id, revoked_at=revoked_at
             )
@@ -382,11 +387,17 @@ def revoke_user_sessions(
     session_storage: SessionStorage,
     keep_session_id: Any | None = None,
     request: HTTPRequest | None = None,
+    mfa: MFA | None = None,
 ) -> int:
     """Revoke the user's active sessions around the ``session.revoke`` hooks.
 
     ``keep_session_id`` is left alone (scope ``"others"``); without it every
     session is revoked (scope ``"all"``). Returns how many were revoked.
+
+    With ``mfa``, the user's sign-ins that are waiting for their second
+    factor end too, once the before hooks allow it, also when no session was
+    active: revoking sessions is how a user locks out someone who knows their
+    password, and that person's sign-in may be waiting for its code.
     """
     return _revoke_sessions(
         BeforeSessionRevokeEvent(
@@ -398,6 +409,7 @@ def revoke_user_sessions(
         ),
         hooks=hooks,
         session_storage=session_storage,
+        mfa=mfa,
     )
 
 
@@ -406,11 +418,14 @@ def _revoke_sessions(
     *,
     hooks: HookRegistry,
     session_storage: SessionStorage,
+    mfa: MFA | None = None,
 ) -> int:
     # Fix the target first: a hook may refuse the revocation, but changing
     # the live record must not make it revoke another session.
     session_id = None if event.session_record is None else event.session_record.id
     hooks.run_before("session.revoke", event)
+    if mfa is not None:
+        mfa.revoke_challenges(event.user_id)
 
     revoked_at = datetime.now(tz=timezone.utc)
     if session_id is not None:

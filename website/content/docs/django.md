@@ -1405,6 +1405,9 @@ A user it requires 2FA for who has no factor cannot sign in until they enroll.
 - The verify page restores the login once the code checks out, records the
   method in the session's `mfa_method`, updates `last_login` and sends
   `mfa_verified`.
+- A password login waiting for its code ends when the user's password changes,
+  and every waiting sign-in ends when `revoke_other_sessions()` signs the user
+  out elsewhere: the verify page then says the sign-in has expired.
 
 So for a user with 2FA, `user_logged_in` means the password passed;
 `mfa_verified` means a full sign-in. Code that runs in a login view after

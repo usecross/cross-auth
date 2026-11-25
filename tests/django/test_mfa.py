@@ -308,6 +308,24 @@ def test_a_password_change_ends_the_waiting_login(client: Client) -> None:
     assert whoami(client)["authenticated"] is False
 
 
+def test_signing_out_other_sessions_ends_a_login_waiting_for_its_code(
+    client: Client,
+) -> None:
+    """The intruder knows the password and has no session yet, only the
+    challenge: signing out everywhere else must stop it too."""
+    user = make_user()
+    add_totp(user)
+    login_with_mfa(client, user)
+    intruder = Client(enforce_csrf_checks=True)
+    assert password_login(intruder).status_code == 303
+
+    assert csrf_post(client, "/sessions/").json() == {"revoked": 0}
+
+    response = csrf_post(intruder, "/auth/mfa/verify", {"code": code()})
+    assert response.status_code == 400
+    assert whoami(intruder)["authenticated"] is False
+
+
 def test_wrong_codes_lock_the_account(client: Client) -> None:
     user = make_user()
     add_totp(user)

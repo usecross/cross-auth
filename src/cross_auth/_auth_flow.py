@@ -149,6 +149,7 @@ def logout(request: HTTPRequest, context: Context) -> Response:
             session_storage=context.session_storage,
             session_config=context.session_config,
             scope=logout_request.scope,
+            mfa=context.mfa,
         )
     except CrossAuthException as e:
         return Response.error(

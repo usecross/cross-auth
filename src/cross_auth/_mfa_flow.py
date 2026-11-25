@@ -103,6 +103,7 @@ class CrossAuthSessions:
             hooks=context.hooks,
             session_storage=context.session_storage,
             request=request,
+            mfa=context.mfa,
         )
 
 

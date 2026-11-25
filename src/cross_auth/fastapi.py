@@ -396,23 +396,30 @@ class CrossAuth:
         """Revoke the user's active sessions except ``keep_session_id``.
 
         Runs the ``session.revoke`` hooks and returns how many were revoked.
+        With two-factor authentication, the user's sign-ins that are waiting
+        for their code end too, also when no session was active.
         """
         return revoke_user_sessions(
             user_id,
             keep_session_id=keep_session_id,
             hooks=self._context.hooks,
             session_storage=self._require_session_storage(),
+            mfa=self._context.mfa,
         )
 
     def revoke_all_sessions(self, *, user_id: Any) -> int:
         """Revoke all the user's active sessions.
 
         Runs the ``session.revoke`` hooks and returns how many were revoked.
+        With two-factor authentication, the user's sign-ins that are waiting
+        for their code end too, also when no session was active: call it after
+        a password reset.
         """
         return revoke_user_sessions(
             user_id,
             hooks=self._context.hooks,
             session_storage=self._require_session_storage(),
+            mfa=self._context.mfa,
         )
 
     def change_password(
@@ -437,7 +444,9 @@ class CrossAuth:
 
         Then, with ``revoke_other_sessions``, the user's other sessions are
         revoked through the ``session.revoke`` hooks, with scope ``"others"``,
-        and the request's session stays signed in. A hook that refuses raises
+        and the request's session stays signed in. With two-factor
+        authentication, the user's sign-ins that are waiting for their code
+        end too: they passed the old password. A hook that refuses raises
         once the password has changed. Revoking needs an accounts storage whose
         writes commit before it returns, as the SQLModel one's do; with one
         that joined an application transaction, this raises ``RuntimeError``
@@ -484,6 +493,7 @@ class CrossAuth:
                 hooks=self._context.hooks,
                 session_storage=session_storage,
                 request=make_http_request(AsyncHTTPRequest.from_fastapi(request)),
+                mfa=self._context.mfa,
             )
         return updated
 
@@ -1129,5 +1139,6 @@ class CrossAuth:
             session_storage=self._require_session_storage(),
             session_config=self._context.session_config,
             scope=scope,
+            mfa=self._context.mfa,
         )
         self._apply_hook_response(hook_response, response)
