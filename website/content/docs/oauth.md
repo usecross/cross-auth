@@ -21,7 +21,10 @@ for your own registered clients. It adds these routes:
 - `POST /token`, which exchanges that code (with the client's PKCE verifier) for
   a bearer token;
 - `POST /{provider}/link` and `POST /{provider}/finalize-link`, the PKCE account
-  linking flow for clients that authenticate with a bearer token.
+  linking flow for clients that authenticate with a bearer token;
+- with `device=DeviceGrant(...)`, `POST /device/code` and the approval routes of
+  the [device authorization grant](#device-authorization-grant), for CLIs and
+  other input-constrained clients.
 
 The OAuth server is not how Cross-Auth talks to Google or GitHub. Signing in
 with a provider in the browser, the provider callback, its PKCE, `state` and
@@ -79,9 +82,9 @@ auth = CrossAuth(
 )
 ```
 
-- `get_client` controls client registration for authorization-code and linking
-  flows; see [Register clients](#register-clients). Without it, those flows
-  reject every client. The legacy password grant does not use this lookup.
+- `get_client` controls client registration for authorization-code, device and
+  linking flows; see [Register clients](#register-clients). Without it, those
+  flows reject every client. The legacy password grant does not use this lookup.
 - `token_issuer` mints the token `/token` returns; see
   [Custom token issuers](#custom-token-issuers). Without it, `/token` issues an
   opaque session token from `session_storage`.
@@ -288,6 +291,179 @@ is issued. Redeeming a code at `/token` checks the user again, so a user
 suspended in between gets no token. `/token` answers a refusal as a 400 OAuth
 error with `access_denied` or your error's `error` and `error_description`.
 
+### Device Authorization Grant
+
+The device authorization grant
+([RFC 8628](https://www.rfc-editor.org/rfc/rfc8628)) signs a user in on a CLI or
+another input-constrained client through the browser. The device shows a short
+code, the user enters it on a page of your application where they are signed in
+and approves the request, and the device polls `/token` until it gets its token.
+It is off until you pass `device`:
+
+```python
+from cross_auth import DeviceGrant, OAuthClient, OAuthServer
+
+clients = {
+    "example-cli": OAuthClient(
+        client_id="example-cli",
+        client_name="Example CLI",
+        redirect_uris=(),
+    ),
+}
+
+oauth_server = OAuthServer(
+    get_client=clients.get,
+    device=DeviceGrant(verification_uri="https://example.com/device"),
+)
+```
+
+- `verification_uri` is your approval page. Cross-Auth does not serve it.
+- `expires_in` is how long a request waits for the user, 900 seconds by default,
+  and `interval` how long the device waits between polls, 5 seconds by default.
+- Any client `get_client` returns can use the grant. A CLI needs no redirect
+  URIs. Its `client_name` is shown on the approval page and stored on the
+  sessions the grant issues.
+
+Paths are relative to where you include `auth.router`:
+
+| Route                                                             | Called by          | Does                                                                    |
+| ----------------------------------------------------------------- | ------------------ | ----------------------------------------------------------------------- |
+| `POST /device/code`                                               | The device         | Starts a request and answers with both codes                            |
+| `POST /token` with `urn:ietf:params:oauth:grant-type:device_code` | The device         | Answers until the user decides, then issues the token once              |
+| `GET /device?user_code=...`                                       | The signed-in user | Returns the pending request for the approval page                       |
+| `POST /device/approve`                                            | The signed-in user | Approves the request in the JSON body `{"user_code": ...}`; answers 204 |
+| `POST /device/deny`                                               | The signed-in user | Denies it; answers 204                                                  |
+
+The device posts a form with its `client_id` and, optionally, a `scope`:
+
+```http
+POST /auth/device/code
+Content-Type: application/x-www-form-urlencoded
+
+client_id=example-cli&scope=deploy
+```
+
+```json
+{
+  "device_code": "Hc0Qd...",
+  "user_code": "BCDF-GHJK",
+  "verification_uri": "https://example.com/device",
+  "verification_uri_complete": "https://example.com/device?user_code=BCDF-GHJK",
+  "expires_in": 900,
+  "interval": 5
+}
+```
+
+It shows the user code and the verification URI (or opens
+`verification_uri_complete`), then polls every `interval` seconds:
+
+```http
+POST /auth/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=urn:ietf:params:oauth:grant-type:device_code&client_id=example-cli&device_code=Hc0Qd...
+```
+
+Until it gets the token, `/token` answers with a 400 OAuth error, as for the
+other grants:
+
+| `error`                 | Means                                                                                        |
+| ----------------------- | -------------------------------------------------------------------------------------------- |
+| `authorization_pending` | The user hasn't decided yet; poll again                                                      |
+| `slow_down`             | The poll came sooner than the interval; the interval grows by 5 seconds for every later poll |
+| `access_denied`         | The user denied the request, or `user_can_authenticate` refuses them now                     |
+| `expired_token`         | The request expired or has ended, or the code is unknown; start again                        |
+| `invalid_grant`         | The device code was issued to another client                                                 |
+| `invalid_client`        | `get_client` doesn't return the client                                                       |
+
+User codes are eight consonants, `XXXX-XXXX`. Cross-Auth ignores case and
+everything but letters and digits in what the user types, so `bcdf ghjk` finds
+`BCDF-GHJK`.
+
+#### The approval page
+
+The page belongs to your application: a SPA calls the routes above with the
+user's session, and a server-rendered page calls the same operations as methods.
+Show the user what asked, so they can tell whether it is their device: the
+client's name, when and from which address and user agent the request was made,
+and anything your `device.code` hook attached. Approve only when the user
+confirms, never when the page loads, even from `verification_uri_complete`:
+someone else may have sent them the link.
+
+```python
+from typing import Annotated
+
+from fastapi import Depends, Form, HTTPException, Request
+
+from cross_auth import User
+
+
+@app.get("/device")
+def device_page(
+    request: Request,
+    user: Annotated[User, Depends(auth.require_current_user)],
+    user_code: str = "",
+):
+    pending = auth.get_device_authorization(user_code) if user_code else None
+    return templates.TemplateResponse(
+        request, "device.html", {"user_code": user_code, "pending": pending}
+    )
+
+
+@app.post("/device", dependencies=[Depends(require_browser_origin)])
+def decide(
+    user: Annotated[User, Depends(auth.require_current_user)],
+    user_code: Annotated[str, Form()],
+    approve: Annotated[bool, Form()],
+):
+    if approve:
+        decided = auth.approve_device_authorization(user_code, user_id=user.id)
+    else:
+        decided = auth.deny_device_authorization(user_code, user_id=user.id)
+    if not decided:
+        raise HTTPException(400, "The code is unknown, expired or already used")
+    return {"approved": approve}
+```
+
+`get_device_authorization` returns a `DeviceAuthorization` with `client_id`,
+`client_name`, `scope`, `ip`, `user_agent`, `metadata`, `created_at` and
+`expires_at`, or `None` for an unknown or expired code, one already approved or
+denied, and one whose client `get_client` no longer returns. `ip` and
+`user_agent` are the device's, and `ip` is `None` with
+`config["session"]["store_ip"]` off. The approve and deny methods return `False`
+in the same cases and change nothing; the routes answer `invalid_user_code`. The
+lookup route answers the same JSON as the method.
+
+The routes resolve the user from the request's session, as the
+[session routes](/docs/session-authentication#list-and-revoke-sessions) do, so
+they exist only with `session_storage`. Without it, `/device/code` and the grant
+still work; approve through the methods and issue tokens with a `token_issuer`.
+
+#### What the grant guarantees
+
+- **The session is created at the poll.** Approving only records the decision.
+  The first poll after it creates the session through the
+  [`login` hooks](/docs/hooks#login), with `credential="bearer"` and
+  `login_method="device"`, so a `token_issuer` receives
+  `grant_type="device_code"`. The session stores the client's id and name and
+  the device's user agent and address, as other bearer logins do. A request the
+  device stops polling for leaves no session.
+- **Each step happens once.** Of concurrent approvals and denials, only one
+  decides; a deny after an approval, or an approval after a deny, is refused. Of
+  concurrent polls, only one gets the token, and later polls get
+  `expired_token`.
+- **`user_can_authenticate` is asked twice**, when the user approves and again
+  when the poll creates the session, since the user may be suspended in between.
+  A refusal at approval leaves the request pending, so the user can sign in with
+  another account and approve; one at the poll ends it with `access_denied`.
+- **No code is stored in plaintext.** The state lives in `SecondaryStorage`
+  under SHA-256 hashes of the codes, and every key expires with the request. The
+  grant needs no table.
+
+User codes are short so that people can type them, which also makes them
+guessable with enough tries: rate-limit the lookup and approval routes. See
+[Security Integration](/docs/security).
+
 ### Custom token issuers
 
 `OAuthServer(token_issuer=...)` replaces the session token with your own
@@ -310,11 +486,12 @@ The `login` hooks run around the call; Cross-Auth creates no session for it.
 for a refused user.
 
 `request.login_method` says how the user signed in: the provider id (such as
-`"github"`) for the authorization code grant, and `"password"` for the password
-grant, as approved by the `login` before hooks, which may replace it. The
-provider travels inside the authorization code, so it is `None` for a code
-issued by a version of Cross-Auth that did not record it. An issuer can carry it
-in the credential it mints, for example as a claim:
+`"github"`) for the authorization code grant, `"password"` for the password
+grant, and `"device"` for the device code grant, as approved by the `login`
+before hooks, which may replace it. The provider travels inside the
+authorization code, so it is `None` for a code issued by a version of Cross-Auth
+that did not record it. An issuer can carry it in the credential it mints, for
+example as a claim:
 
 ```python
 def issue_token(request: TokenIssueRequest) -> tuple[str, int]:

@@ -22,6 +22,12 @@ from fastapi import Response as FastAPIResponse
 
 from ._accounts import require_committed_accounts
 from ._config import Config
+from ._device import (
+    DeviceAuthorization,
+    approve_device_authorization,
+    deny_device_authorization,
+    get_device_authorization,
+)
 from ._fastapi_session import SessionCookieMiddleware as SessionCookieMiddleware
 from ._fastapi_session import queue_rolled_cookie, set_cookie
 from ._login import (
@@ -62,6 +68,8 @@ from ._tokens import TokenKind
 from .exceptions import CrossAuthException
 from .hooks import (
     AfterAuthenticateEvent,
+    AfterDeviceApproveEvent,
+    AfterDeviceCodeEvent,
     AfterLoginEvent,
     AfterLogoutEvent,
     AfterOAuthAuthorizeEvent,
@@ -74,9 +82,12 @@ from .hooks import (
     AfterSocialAccountCreateEvent,
     AfterSocialAccountUpdateEvent,
     AfterTokenAuthorizationCodeEvent,
+    AfterTokenDeviceCodeEvent,
     AfterTokenPasswordEvent,
     AfterUserCreateEvent,
     BeforeAuthenticateEvent,
+    BeforeDeviceApproveEvent,
+    BeforeDeviceCodeEvent,
     BeforeLoginEvent,
     BeforeLogoutEvent,
     BeforeOAuthAuthorizeEvent,
@@ -89,6 +100,7 @@ from .hooks import (
     BeforeSocialAccountCreateEvent,
     BeforeSocialAccountUpdateEvent,
     BeforeTokenAuthorizationCodeEvent,
+    BeforeTokenDeviceCodeEvent,
     BeforeTokenPasswordEvent,
     BeforeUserCreateEvent,
     HookRegistry,
@@ -463,6 +475,43 @@ class CrossAuth:
             )
         return updated
 
+    def get_device_authorization(self, user_code: str) -> DeviceAuthorization | None:
+        """Return the pending device authorization request ``user_code`` belongs to.
+
+        For your approval page: the client, when and from where the device
+        asked, and what a ``device.code`` before hook attached. Case and
+        separators in ``user_code`` are ignored. Returns ``None`` for an
+        unknown or expired code, one already approved or denied, and one
+        whose client ``get_client`` no longer returns. Raises
+        ``RuntimeError`` without ``OAuthServer(device=...)``.
+        """
+        return get_device_authorization(self._context, user_code)
+
+    def approve_device_authorization(self, user_code: str, *, user_id: Any) -> bool:
+        """Approve the request ``user_code`` belongs to, for ``user_id``.
+
+        Call it for the signed-in user once they confirm on your approval page,
+        never when the page loads. Returns ``False``, and changes nothing,
+        when no pending request has that code; of concurrent approvals and
+        denials only one returns ``True``. A user ``user_can_authenticate``
+        refuses, or a ``device.approve`` before hook that raises, raises
+        ``CrossAuthException`` and leaves the request pending; the hooks get
+        ``request=None``. No session exists yet: the device's next poll of
+        ``/token`` creates it, through the ``login`` hooks and with
+        ``login_method="device"``.
+        """
+        return approve_device_authorization(
+            self._context, user_code, user_id=str(user_id)
+        )
+
+    def deny_device_authorization(self, user_code: str, *, user_id: Any) -> bool:
+        """Deny the request ``user_code`` belongs to; the device gets ``access_denied``.
+
+        Returns ``False``, and changes nothing, when no pending request has
+        that code, as for ``approve_device_authorization``.
+        """
+        return deny_device_authorization(self._context, user_code, user_id=str(user_id))
+
     def sign_in_with_id_token(
         self,
         provider: str,
@@ -673,6 +722,16 @@ class CrossAuth:
 
     @overload
     def before(
+        self, event: Literal["device.code"]
+    ) -> _HookDecorator[BeforeDeviceCodeEvent, BeforeDeviceCodeEvent | None]: ...
+
+    @overload
+    def before(
+        self, event: Literal["device.approve"]
+    ) -> _HookDecorator[BeforeDeviceApproveEvent, None]: ...
+
+    @overload
+    def before(
         self, event: Literal["token.password"]
     ) -> _HookDecorator[BeforeTokenPasswordEvent, None]: ...
 
@@ -680,6 +739,11 @@ class CrossAuth:
     def before(
         self, event: Literal["token.authorization_code"]
     ) -> _HookDecorator[BeforeTokenAuthorizationCodeEvent, None]: ...
+
+    @overload
+    def before(
+        self, event: Literal["token.device_code"]
+    ) -> _HookDecorator[BeforeTokenDeviceCodeEvent, None]: ...
 
     def before(
         self, event: HookEventName
@@ -767,6 +831,16 @@ class CrossAuth:
 
     @overload
     def after(
+        self, event: Literal["device.code"]
+    ) -> _HookDecorator[AfterDeviceCodeEvent, None]: ...
+
+    @overload
+    def after(
+        self, event: Literal["device.approve"]
+    ) -> _HookDecorator[AfterDeviceApproveEvent, None]: ...
+
+    @overload
+    def after(
         self, event: Literal["token.password"]
     ) -> _HookDecorator[AfterTokenPasswordEvent, None]: ...
 
@@ -774,6 +848,11 @@ class CrossAuth:
     def after(
         self, event: Literal["token.authorization_code"]
     ) -> _HookDecorator[AfterTokenAuthorizationCodeEvent, None]: ...
+
+    @overload
+    def after(
+        self, event: Literal["token.device_code"]
+    ) -> _HookDecorator[AfterTokenDeviceCodeEvent, None]: ...
 
     def after(
         self, event: HookEventName

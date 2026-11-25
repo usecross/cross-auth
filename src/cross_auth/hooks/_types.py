@@ -17,8 +17,11 @@ HookEventName: TypeAlias = Literal[
     "oauth.link",
     "oauth.finalize_link",
     "oauth.disconnect",
+    "device.code",
+    "device.approve",
     "token.password",
     "token.authorization_code",
+    "token.device_code",
 ]
 
 _ALL_EVENT_NAMES: frozenset[str] = frozenset(get_args(HookEventName))
@@ -34,6 +37,7 @@ _RETURNABLE_BEFORE_EVENT_NAMES: frozenset[str] = frozenset(
         "oauth.callback",
         "oauth.id_token",
         "oauth.finalize_link",
+        "device.code",
     }
 )
 

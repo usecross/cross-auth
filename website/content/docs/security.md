@@ -11,8 +11,8 @@ section: Guides
 Cross-Auth does not install general CSRF protection or rate limiting. Apply both
 at your application's HTTP boundary, including routes you write around
 `authenticate()`, `sign_in_with_id_token()`, `resolve_id_token_user()`,
-`login()`, `logout()`, `change_password()`, and session revocation.
-`SessionCookieMiddleware` only delivers refreshed session cookies.
+`login()`, `logout()`, `change_password()`, session revocation, and device
+approval. `SessionCookieMiddleware` only delivers refreshed session cookies.
 
 Browser OAuth callbacks have their own protection: expiring, single-use state,
 an initiating-browser binding cookie, provider binding, PKCE where supported,
@@ -33,6 +33,9 @@ Route paths below are relative to where you include `auth.router`:
 | `POST /token`                                                                  | Rate-limit credential verification and token issuance. This endpoint returns a bearer token; it does not authenticate through the browser's session cookie or set that cookie.                |
 | `POST /logout`                                                                 | Require CSRF protection when the session cookie authenticates the request. A request that only sends `Authorization: Bearer` carries no ambient credential.                                   |
 | `DELETE /sessions/{id}`, `POST /sessions/revoke-others`                        | Require CSRF protection when the session cookie authenticates the request, as for `/logout`. `GET /sessions` revokes nothing; like any authenticated request it can extend a sliding session. |
+| `POST /device/code`                                                            | Rate-limit it: each call stores a request. Like `/token`, the device calls it without cookies, so exempt it from browser CSRF checks.                                                         |
+| `GET /device`                                                                  | Rate-limit lookups per user and per IP: user codes are short enough to type, so unlimited guesses would find other people's pending requests.                                                 |
+| `POST /device/approve`, `POST /device/deny`                                    | Require CSRF protection: an approval hands a session for the user to another device. Rate-limit them like the lookup.                                                                         |
 | Your password/native login, logout, password-change, session-revocation routes | Apply CSRF checks to browser endpoints, including login before a user has a session. Use POST or DELETE for mutations. Apply rate limits before calling Cross-Auth.                           |
 
 ## Protect browser requests in FastAPI
@@ -80,7 +83,7 @@ connect_starts = {f"{provider.id}_connect" for provider in providers}
 def protect_auth_browser_requests(request: Request) -> None:
     operation = request.scope["route"].operation_id
 
-    if operation in callback_posts or operation == "token":
+    if operation in callback_posts or operation in {"token", "device_authorization"}:
         return
 
     if request.method in {"GET", "HEAD", "OPTIONS"}:
@@ -223,6 +226,21 @@ other changes that should sign devices out, such as a new email address or a
 reset second factor: call
 `auth.revoke_other_sessions(user_id=..., keep_session_id=...)` or
 `auth.revoke_all_sessions(user_id=...)`.
+
+## Approve devices
+
+The [device authorization grant](/docs/oauth#device-authorization-grant) lets a
+signed-in user hand a session to a device that only shows a code. Someone can
+start a request on their own machine and send the code, or
+`verification_uri_complete`, to a user to approve, so the approval page should
+make the user confirm, and show what asked: the client's name, when and from
+which address and user agent. Never approve when the page loads.
+
+The user code has about 34 bits and is stored only as its SHA-256 hash, which
+keeps it out of the storage in plaintext but would not stop someone who reads
+the storage from finding a pending code. The device code, which is what gets a
+token, is random enough that its hash reveals nothing. Rate-limit the lookup and
+the approval as the table above says.
 
 ## Refuse suspended and deleted users
 

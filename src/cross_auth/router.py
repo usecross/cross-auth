@@ -19,6 +19,7 @@ from ._auth_flow import (
 )
 from ._config import Config
 from ._context import AccountsStorage, Context, SecondaryStorage, User
+from ._device import device_routes
 from ._issuer import Issuer
 from ._oauth_server import OAuthServer
 from ._route import Route
@@ -252,7 +253,16 @@ class AuthRouter(APIRouter):
             provider_routes.extend(session_routes())
         if self.issuer is not None and oauth_server is not None:
             provider_routes.extend(
-                self.issuer.routes(password_grant=oauth_server.password_grant)
+                self.issuer.routes(
+                    password_grant=oauth_server.password_grant,
+                    device_grant=oauth_server.device is not None,
+                )
+            )
+        if oauth_server is not None and oauth_server.device is not None:
+            # Approving needs the signed-in user's session; without session
+            # storage, approve through CrossAuth's methods instead.
+            provider_routes.extend(
+                device_routes(approval=setup.context.session_storage is not None)
             )
 
         for route in provider_routes:

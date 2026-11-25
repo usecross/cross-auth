@@ -50,8 +50,8 @@ class SessionInfo(BaseModel):
     user_agent: str | None
     ip: str | None
     login_method: str | None = Field(
-        description='How the user signed in: a provider id, "password", or '
-        "what the application recorded"
+        description='How the user signed in: a provider id, "password", '
+        '"device", or what the application recorded'
     )
     created_at: datetime
     last_active_at: datetime | None = Field(
