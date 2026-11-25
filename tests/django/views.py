@@ -11,7 +11,11 @@ from cross_auth.django.sessions import (
     revoke_other_sessions,
     revoke_session,
 )
-from cross_auth.django.mfa import get_pending_mfa, mfa_required
+from cross_auth.django.mfa import (
+    get_pending_mfa,
+    mfa_required,
+    reauthentication_required,
+)
 from cross_auth.django.tokens import authenticate_bearer
 
 
@@ -83,6 +87,12 @@ def api_login(request: HttpRequest) -> HttpResponse:
 @mfa_required
 def two_factor_only(request: HttpRequest) -> HttpResponse:
     return HttpResponse("verified")
+
+
+@reauthentication_required("/confirm-identity/")
+def recently_authenticated(request: HttpRequest) -> HttpResponse:
+    """A settings page that needs a recent sign-in or reauthentication."""
+    return HttpResponse("recent")
 
 
 def own_verify_page(request: HttpRequest) -> HttpResponse:

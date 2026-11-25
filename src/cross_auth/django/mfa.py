@@ -387,13 +387,16 @@ class DjangoMFASessions:
                 token_hash__isnull=True,
                 revoked_at__isnull=True,
             )
-            .only("public_id", "created_at")
+            .only("public_id", "created_at", "login_method")
             .first()
         )
         if row is None:
             return None
         return MFASession(
-            user=user, session_id=str(row.public_id), signed_in_at=row.created_at
+            user=user,
+            session_id=str(row.public_id),
+            signed_in_at=row.created_at,
+            login_method=row.login_method,
         )
 
     def revoke_others(
@@ -558,7 +561,7 @@ def reauthentication_required(
     "Recently" is ``CROSS_AUTH["MFA"]["reauthentication_max_age"]`` (five
     minutes by default) since the sign-in or the last ``reauthenticate``:
     the same rule that enrolling, regenerating codes and removing factors
-    enforce. ``url`` is your confirm-identity page; it gets the current path
+    enforce. A device login's sign-in does not count. ``url`` is your confirm-identity page; it gets the current path
     as ``next``. Users who are not signed in go to the login page.
     """
 
@@ -569,9 +572,10 @@ def reauthentication_required(
             return redirect_to_login(request.get_full_path())
         mfa = _mfa(context)
         max_age = timedelta(seconds=mfa.config["reauthentication_max_age"])
+        authenticated = flow.authenticated_at(context, current)
         if (
-            datetime.now(tz=timezone.utc) - flow.authenticated_at(context, current)
-            <= max_age
+            authenticated is not None
+            and datetime.now(tz=timezone.utc) - authenticated <= max_age
         ):
             return None
         return redirect_to_login(request.get_full_path(), url, redirect_field_name)

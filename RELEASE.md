@@ -11,7 +11,9 @@ enter a code: password logins, the password grant, OAuth callbacks and
 `sign_in_with_id_token`. Provider sign-ins are challenged too unless you set
 `require_for_providers` to `False`; `requires_mfa` replaces the rule. The
 default rule does not challenge device logins (`login_method="device"`), which a
-user approves from a browser where they are already signed in.
+user approves from a browser where they are already signed in. Their sessions
+never count as a recent sign-in: they must `reauthenticate` before they enroll,
+regenerate recovery codes or remove a factor.
 
 - `CrossAuth` gains `start_totp_enrollment`, `confirm_totp_enrollment`,
   `regenerate_recovery_codes`, `remove_mfa_factor`, `reauthenticate`,

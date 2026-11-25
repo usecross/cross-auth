@@ -879,6 +879,7 @@ class CrossAuth:
             session_id=str(current.record.id),
             signed_in_at=current.record.created_at,
             record=current.record,
+            login_method=current.record.login_method,
         )
 
     def get_mfa_status(self, request: FastAPIRequest) -> MFAStatus:
@@ -901,7 +902,8 @@ class CrossAuth:
 
         Changes to 2FA are then allowed until the returned time
         (``reauthentication_max_age`` after now). A fresh sign-in allows them
-        too, so a user who has just signed in need not call this.
+        too, so a user who has just signed in need not call this, except in a
+        device login's session, whose sign-in proved nothing.
         """
         return _reauthenticate(
             self._context,

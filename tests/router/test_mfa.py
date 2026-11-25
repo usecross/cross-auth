@@ -178,6 +178,13 @@ def app_for(auth: CrossAuth) -> TestClient:
             return JSONResponse({"error": error.error}, status_code=error.status_code)
         return {"ok": True}
 
+    @app.post("/settings/recovery-codes")
+    def regenerate(request: Request) -> Any:
+        try:
+            return {"recovery_codes": auth.regenerate_recovery_codes(request)}
+        except CrossAuthException as error:
+            return JSONResponse({"error": error.error}, status_code=error.status_code)
+
     @app.post("/change-password")
     def change_password(request: Request) -> Any:
         auth.change_password(
@@ -1113,3 +1120,74 @@ def test_a_rule_of_your_own_decides_for_device_logins_too(
 
     with pytest.raises(MFARequired):
         strict.issue_session_token("test", login_method="device")
+
+
+# Recent authentication in a device login's session ---------------------------
+#
+# Each changes 2FA settings, which needs a recent sign-in or reauthentication.
+
+
+def _start_enrollment(client: TestClient) -> Any:
+    return client.post("/mfa/totp/enroll", json={"name": "Tablet"})
+
+
+def _regenerate_codes(client: TestClient) -> Any:
+    return client.post("/mfa/recovery-codes", json={})
+
+
+def _regenerate_codes_from_the_app(client: TestClient) -> Any:
+    # CrossAuth.regenerate_recovery_codes, which resolves the session itself.
+    return client.post("/settings/recovery-codes")
+
+
+def _remove_factor(client: TestClient) -> Any:
+    factor_id = client.get("/mfa").json()["factors"][0]["id"]
+    return client.post(f"/mfa/factors/{factor_id}/remove", json={})
+
+
+CHANGES_TO_2FA = [
+    _start_enrollment,
+    _regenerate_codes,
+    _regenerate_codes_from_the_app,
+    _remove_factor,
+]
+
+
+@pytest.mark.parametrize("change", CHANGES_TO_2FA)
+def test_a_device_logins_session_must_reauthenticate_before_changing_2fa(
+    change: Callable[[TestClient], Any],
+    auth: CrossAuth,
+    enrolled: tuple[str, list[str]],
+) -> None:
+    """The device was approved from another session, perhaps a stolen one:
+    signing in proved nothing in this one, so only reauthenticating counts."""
+    secret, _ = enrolled
+    token, _ = auth.issue_session_token("test", login_method="device")
+    with app_for(auth) as client:
+        client.headers["Authorization"] = f"Bearer {token}"
+
+        refused = change(client)
+        assert refused.status_code == 403
+        assert refused.json()["error"] == "reauthentication_required"
+
+        confirmed = client.post("/reauthenticate", json={"code": code_now(secret, 1)})
+        assert confirmed.status_code == 200, confirmed.text
+        allowed = change(client)
+    assert allowed.status_code == 200, allowed.text
+
+
+@pytest.mark.parametrize("change", CHANGES_TO_2FA)
+def test_a_fresh_password_sign_in_may_change_2fa(
+    change: Callable[[TestClient], Any],
+    auth: CrossAuth,
+    enrolled: tuple[str, list[str]],
+) -> None:
+    _, codes = enrolled
+    with pytest.raises(MFARequired) as paused:
+        auth.issue_session_token("test", login_method="password")
+    assert paused.value.challenge is not None
+    token, _ = auth.verify_mfa(paused.value.challenge, recovery_code=codes[0])
+    with app_for(auth) as client:
+        client.headers["Authorization"] = f"Bearer {token}"
+        allowed = change(client)
+    assert allowed.status_code == 200, allowed.text

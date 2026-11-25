@@ -483,6 +483,42 @@ def test_2fa_changes_need_a_recent_sign_in(client: Client) -> None:
     }
 
 
+def test_a_device_logins_session_must_reauthenticate_before_changing_2fa(
+    client: Client,
+) -> None:
+    """The device was approved from another session: signing in proved
+    nothing in this one, so only reauthenticating in it counts."""
+    user = make_user()
+    add_totp(user)
+    login_with_mfa(client, user)
+    client.get("/")
+    headers = {"X-CSRFToken": client.cookies["csrftoken"].value}
+    # A fresh sign-in counts as recent.
+    assert client.get("/recent/").status_code == 200
+
+    Session.objects.update(login_method="device")
+
+    refused = client.post(
+        "/auth/mfa/recovery-codes", content_type="application/json", headers=headers
+    )
+    assert refused.status_code == 403
+    assert refused.json()["error"] == "reauthentication_required"
+    assert client.get("/recent/")["Location"] == "/confirm-identity/?next=/recent/"
+
+    confirmed = client.post(
+        "/auth/reauthenticate",
+        {"password": PASSWORD},
+        content_type="application/json",
+        headers=headers,
+    )
+    assert confirmed.status_code == 200, confirmed.content
+    assert client.get("/recent/").status_code == 200
+    allowed = client.post(
+        "/auth/mfa/recovery-codes", content_type="application/json", headers=headers
+    )
+    assert allowed.status_code == 200, allowed.content
+
+
 def test_force_login_leaves_a_user_with_2fa_anonymous() -> None:
     user = make_user()
     add_totp(user)

@@ -91,9 +91,12 @@ By default, every sign-in of a user who has a factor, except device logins:
 `issue_session_token(..., login_method="device")`, for a device such as a CLI
 that the user approves from a browser where they are signed in. The approving
 session passed any second factor already, and the device has nowhere to enter a
-code. With `require_for_providers=False`, provider sign-ins are not challenged
-either, and passwords still are. For any other rule pass `requires_mfa`, which
-then decides alone, for device logins too:
+code. Since the user proved who they are in that other session, the device's own
+session never counts as a recent sign-in (see
+[Turning 2FA on and off](#turning-2fa-on-and-off)): it changes 2FA settings only
+after it calls `reauthenticate`. With `require_for_providers=False`, provider
+sign-ins are not challenged either, and passwords still are. For any other rule
+pass `requires_mfa`, which then decides alone, for device logins too:
 
 ```python
 def requires_mfa(user, login_method: str | None) -> bool:
@@ -112,7 +115,9 @@ Returning `True` for a user without a factor refuses the sign-in with
 All of these act on the request's signed-in user. Enrolling, regenerating codes
 and removing a factor need a recent sign-in (`reauthentication_max_age`);
 otherwise they raise `reauthentication_required` (403) with the `methods` the
-user can confirm their identity with.
+user can confirm their identity with. A device login's session is never a recent
+sign-in, since it was approved from another session: it must `reauthenticate`
+first, with a password or a code.
 
 ```python
 auth.get_mfa_status(request)  # MFAStatus(enabled, factors, recovery_codes_remaining)

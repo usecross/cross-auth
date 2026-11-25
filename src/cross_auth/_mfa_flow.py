@@ -34,6 +34,7 @@ from ._login import (
     revoke_user_sessions,
 )
 from ._mfa import (
+    DEVICE_LOGIN_METHOD,
     MFA,
     Challenge,
     ChallengeKind,
@@ -65,6 +66,9 @@ class MFASession:
     signed_in_at: datetime
     # Cross Auth's session record, when the session is one.
     record: SessionRecord | None = None
+    # How the session signed in: a device login's creation is no proof of
+    # identity (see authenticated_at).
+    login_method: str | None = None
 
 
 class MFASessions(Protocol):
@@ -91,6 +95,7 @@ class CrossAuthSessions:
             session_id=str(resolved.record.id),
             signed_in_at=resolved.record.created_at,
             record=resolved.record,
+            login_method=resolved.record.login_method,
         )
 
     def revoke_others(
@@ -124,19 +129,27 @@ def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
-def authenticated_at(context: Context, current: MFASession) -> datetime:
-    """When the user last proved who they are in this session."""
-    signed_in = _aware(current.signed_in_at)
+def authenticated_at(context: Context, current: MFASession) -> datetime | None:
+    """When the user last proved who they are in this session, or ``None``.
+
+    A sign-in counts, and so does ``reauthenticate``. A device login's sign-in
+    does not: the user approved the device from another session and proved
+    nothing in this one, so a stolen browser session could otherwise approve
+    a device and change 2FA settings from it at once. Such a session counts
+    only from a ``reauthenticate`` in it.
+    """
+    times: list[datetime] = []
+    if current.login_method != DEVICE_LOGIN_METHOD:
+        times.append(_aware(current.signed_in_at))
     raw = context.secondary_storage.get(
         _REAUTH_KEY.format(digest=_digest(current.session_id))
     )
-    if raw is None:
-        return signed_in
-    try:
-        reauthenticated = datetime.fromisoformat(raw)
-    except ValueError:
-        return signed_in
-    return max(signed_in, _aware(reauthenticated))
+    if raw is not None:
+        try:
+            times.append(_aware(datetime.fromisoformat(raw)))
+        except ValueError:
+            pass
+    return max(times, default=None)
 
 
 def _unauthorized() -> CrossAuthException:
