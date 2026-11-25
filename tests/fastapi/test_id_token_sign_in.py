@@ -695,6 +695,70 @@ def test_sign_in_refuses_a_user_user_can_authenticate_refuses(
     assert session_storage.records == {}
 
 
+# Not the generic refusal's 403, so the test shows whose error it gets.
+SUSPENDED = CrossAuthException("account_suspended", "Account suspended", 423)
+
+
+@pytest.mark.parametrize("how", ["raised", "returned"])
+@pytest.mark.parametrize("found_by", ["social account", "email"])
+def test_sign_in_refuses_with_the_rules_own_error(
+    secondary_storage: SecondaryStorage, accounts_storage, how, found_by
+):
+    provider = StubOIDCProvider(
+        {"sub": "native-1", "email": "test@example.com", "email_verified": True}
+    )
+    if found_by == "social account":
+        accounts_storage.create_social_account(
+            user_id="test",
+            provider="stub",
+            provider_user_id="native-1",
+            access_token="stored-access",
+            refresh_token=None,
+            access_token_expires_at=None,
+            refresh_token_expires_at=None,
+            scope=None,
+            user_info={},
+            provider_email="test@example.com",
+            provider_email_verified=True,
+            is_login_method=True,
+        )
+    session_storage = MemorySessionStorage()
+
+    def user_can_authenticate(user) -> bool | CrossAuthException:
+        if how == "raised":
+            raise SUSPENDED
+        return SUSPENDED
+
+    auth = _make_auth(
+        secondary_storage,
+        accounts_storage,
+        provider,
+        session_storage=session_storage,
+        # Auto-linking finds the user by email.
+        config={"account_linking": {"enabled": True}},
+        user_can_authenticate=user_can_authenticate,
+    )
+    logins: list[BeforeLoginEvent] = []
+    auth.before("login")(logins.append)
+    resolved: list[AfterOAuthIdTokenEvent] = []
+    auth.after("oauth.id_token")(resolved.append)
+    accounts_before = list(accounts_storage.data["test"].social_accounts)
+
+    with pytest.raises(CrossAuthException) as resolve:
+        auth.resolve_id_token_user("stub", VALID_TOKEN)
+    with pytest.raises(CrossAuthException) as sign_in:
+        auth.sign_in_with_id_token("stub", VALID_TOKEN)
+
+    assert resolve.value is SUSPENDED
+    assert sign_in.value is SUSPENDED
+    # Auto-linking attached no identity, and no after hook ran.
+    assert accounts_storage.data["test"].social_accounts == accounts_before
+    assert list(accounts_storage.data) == ["test"]
+    assert resolved == []
+    assert logins == []
+    assert session_storage.records == {}
+
+
 def test_an_invalid_id_token_is_refused_before_user_can_authenticate(
     secondary_storage: SecondaryStorage,
     accounts_storage,

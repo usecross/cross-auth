@@ -245,9 +245,9 @@ class CrossAuth:
         builders, GraphQL resolvers, template helpers). With sliding sessions
         (``update_age``) the stored record refreshes on read; install
         ``SessionCookieMiddleware`` so the rolled cookie also reaches the
-        browser. A user ``user_can_authenticate`` refuses resolves to ``None``
-        and their session is not refreshed; a ``CrossAuthException`` it raises
-        propagates.
+        browser. A user ``user_can_authenticate`` refuses, with False or a
+        returned ``CrossAuthException``, resolves to ``None`` and their session
+        is not refreshed; a ``CrossAuthException`` it raises propagates.
         """
         if self._context.get_user_from_request != self._default_get_user_from_request:
             # Preserve the custom-resolver contract: sliding sessions refresh,
@@ -310,8 +310,9 @@ class CrossAuth:
 
         Returns ``None`` when the token is unknown, revoked or expired, when
         the accounts storage does not return its user, or when
-        ``user_can_authenticate`` returns False for it; a ``CrossAuthException``
-        it raises propagates. Unlike ``get_current_user``, this never calls
+        ``user_can_authenticate`` returns False or a ``CrossAuthException`` for
+        it; a ``CrossAuthException`` it raises propagates. Unlike
+        ``get_current_user``, this never calls
         ``get_user_from_request``, so a custom resolver can use it for session
         tokens.
 
@@ -525,7 +526,9 @@ class CrossAuth:
         login attempt and prevent reuse; this comparison does not consume it.
         Runs the ``oauth.id_token`` hooks, then the ``login`` hooks. A user
         ``user_can_authenticate`` refuses raises ``CrossAuthException`` once
-        the token is verified, before the ``login`` hooks and the session.
+        the token is verified, before the ``login`` hooks and the session:
+        ``access_denied``, or the ``CrossAuthException`` the rule returns or
+        raises.
         """
         session_storage = self._require_session_storage()
         require_committed_accounts(self._context)
@@ -565,6 +568,8 @@ class CrossAuth:
         verified, a user ``user_can_authenticate`` refuses raises
         ``CrossAuthException``, as for ``sign_in_with_id_token``.
         """
+        # This checks user_can_authenticate, before auto-linking attaches an
+        # identity and before the oauth.id_token after hooks.
         resolved_user, _ = _resolve_id_token_user(
             context=self._context,
             providers=self._setup.providers_by_id,
@@ -573,16 +578,15 @@ class CrossAuth:
             user_info=user_info,
             nonce=nonce,
         )
-        self._context.check_user_can_authenticate(resolved_user.user)
         return resolved_user.user, resolved_user.created
 
     def authenticate(self, email: str, password: str) -> User | None:
         """Return the user ``email`` and ``password`` belong to, or ``None``.
 
         Once the password matches, a user ``user_can_authenticate`` refuses
-        raises ``CrossAuthException`` (``access_denied``, or the rule's own
-        error) and the ``authenticate`` after hooks do not run. A wrong
-        password returns ``None`` without asking the rule.
+        raises ``CrossAuthException`` (``access_denied``, or the one the rule
+        returns or raises) and the ``authenticate`` after hooks do not run. A
+        wrong password returns ``None`` without asking the rule.
         """
         event = self._context.hooks.run_before(
             "authenticate",
@@ -846,7 +850,8 @@ class CrossAuth:
         exposed to them. ``login_method`` records how the user signed in, e.g.
         ``"password"`` after ``authenticate()``. A user
         ``user_can_authenticate`` refuses, or one it cannot find, raises
-        ``CrossAuthException`` before the ``login`` hooks and creates nothing.
+        ``CrossAuthException`` before the ``login`` hooks and creates nothing:
+        ``access_denied``, or the one the rule returns or raises.
         """
         token, record, _ = issue_bearer_session(
             user_id,
@@ -873,7 +878,7 @@ class CrossAuth:
         Runs the ``login`` hooks with ``credential="cookie"``. A user
         ``user_can_authenticate`` refuses, or one it cannot find, raises
         ``CrossAuthException`` before the hooks and leaves ``response`` as it
-        was.
+        was, as for ``issue_session_token``.
         """
         session_storage = self._require_session_storage()
         hook_response = login_with_session(

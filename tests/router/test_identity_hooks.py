@@ -1007,7 +1007,10 @@ def test_read_only_email_policies_and_extra_fields_keep_working(
         assert suspended.status_code == 403
         assert suspended.json()["error"] == "access_denied"
 
+        # A hook error raised while the user is resolved keeps its status,
+        # as an oauth.callback hook's does.
         denied = sign_in("bob@other.org", "bob-id")
+        assert denied.status_code == 403
         assert denied.json()["error"] == "signup_not_allowed"
 
     user = accounts_storage.data["alice-id"]

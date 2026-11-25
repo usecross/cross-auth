@@ -805,6 +805,9 @@ def _complete_sign_in(
     identity_guard.check("oauth.callback", callback_event)
     user_info = callback_event.user_info
 
+    # This also checks user_can_authenticate, before an authorization code or
+    # a session is issued, so a refusal comes back on the flow's error path
+    # with its own status.
     try:
         resolved_user, resolved_social_account = resolve_user_for_sign_in(
             provider=provider,
@@ -813,15 +816,6 @@ def _complete_sign_in(
             user_info=cast(dict[str, Any], user_info),
             token_response=token_response,
         )
-    except CrossAuthException as e:
-        return _flow_error(
-            auth_request, error=e.error, error_description=e.error_description
-        )
-
-    # Before an authorization code or a session is issued, so a refusal comes
-    # back on the flow's error path.
-    try:
-        context.check_user_can_authenticate(resolved_user.user)
     except CrossAuthException as e:
         return _flow_error(
             auth_request,
@@ -1001,7 +995,7 @@ def _complete_session(
         hooks=context.hooks,
         session_storage=session_storage,
         session_config=context.session_config,
-        # _complete_sign_in has just checked this user.
+        # resolve_user_for_sign_in has just checked this user.
         check_user=None,
         metadata=request_metadata(request, context.session_config),
         login_method=auth_request.provider_id,

@@ -237,7 +237,17 @@ Cross-Auth asks only after it has verified who is signing in: after the password
 matches, the ID token is verified, or the provider has confirmed the identity. A
 wrong password or a forged token gets the same answer as before, so the refusal
 does not tell anyone without the credentials that an account exists or is
-suspended. Your own sign-in routes should keep that order.
+suspended. That holds for an error you return from `user_can_authenticate` to
+explain the refusal, such as "This account is suspended": only someone who
+proved the credentials sees it. A provider identity found by email is asked
+about only when auto-linking would link it to the account. Your own sign-in
+routes should keep that order.
+
+Keep suspended and soft-deleted users visible to the accounts storage and refuse
+them there, rather than hiding them with a storage filter: a hidden user's email
+looks unused, so signing up with it creates a second account with the same
+email. See
+[Soft-Deleted Users](/docs/session-authentication#soft-deleted-users).
 
 A custom `get_user_from_request` decides itself which users it returns:
 `authenticate_session_token` applies `user_can_authenticate`, but check users of

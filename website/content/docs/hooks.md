@@ -211,7 +211,9 @@ To refuse suspended or deleted users, pass
 [`user_can_authenticate`](/docs/session-authentication#refuse-suspended-or-deleted-users)
 to `CrossAuth` instead of writing a `login` hook: it runs before these hooks at
 every login, and also on every use of a session, which a `login` hook does not
-see. The `login` hooks never run for a user it refuses.
+see. The `login` hooks never run for a user it refuses. To tell the user why,
+return a `CrossAuthException` from it rather than looking the user up again in a
+hook.
 
 `AfterLoginEvent` carries `user_id`, `credential`, `login_method`, `response`
 (cookie logins only), and `session_record`, which is `None` when a
