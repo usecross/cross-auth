@@ -6,11 +6,14 @@ from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from cross_web import HTTPRequest, Response
+    from pydantic import JsonValue
 
     from .._authorization import AuthRequest, InitiateLinkRequest, LinkCodeData
     from .._authorization_code import AuthorizationCodeGrantData
+    from .._device import DeviceAuthorization
     from .._issuer import (
         AuthorizationCodeGrantRequest,
+        DeviceCodeGrantRequest,
         PasswordGrantRequest,
     )
     from .._session import SessionMetadata
@@ -115,10 +118,10 @@ class BeforeLoginEvent:
     the HTTP response of a browser login and ``None`` for bearer logins.
 
     ``login_method`` says how the user signed in: a provider's id, ``"password"``
-    for the password grant, or what the application passed. It is set on every
-    login, and a hook may replace it. The approved value is stored on the
-    session, passed to a ``token_issuer`` as ``TokenIssueRequest.login_method``,
-    or stored in the Django session.
+    for the password grant, ``"device"`` for the device code grant, or what the
+    application passed. It is set on every login, and a hook may replace it.
+    The approved value is stored on the session, passed to a ``token_issuer``
+    as ``TokenIssueRequest.login_method``, or stored in the Django session.
     """
 
     user_id: str
@@ -411,6 +414,59 @@ class AfterOAuthDisconnectEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class BeforeDeviceCodeEvent:
+    """A device authorization request about to be stored.
+
+    ``client_id`` is a registered client and ``scope`` what it asked for;
+    ``request`` is the device's own request, so a hook can read a header or
+    form field it sent. A hook may refuse the request by raising, or return
+    the event with another ``metadata``: JSON values the approval page reads
+    back from the lookup, such as which tool started the flow. The other
+    fields are read-only.
+    """
+
+    client_id: str
+    scope: str | None
+    request: HTTPRequest
+    metadata: dict[str, JsonValue] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class AfterDeviceCodeEvent:
+    """A device authorization request that was stored and sent to the device."""
+
+    request: HTTPRequest
+    device_authorization: DeviceAuthorization
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeDeviceApproveEvent:
+    """A signed-in user about to approve a device authorization request.
+
+    A hook may refuse the approval by raising; the request then stays pending.
+    ``request`` is the approving browser's request, or ``None`` when the
+    application calls ``CrossAuth.approve_device_authorization``.
+    """
+
+    user_id: str
+    device_authorization: DeviceAuthorization
+    request: HTTPRequest | None
+
+
+@dataclass(frozen=True, slots=True)
+class AfterDeviceApproveEvent:
+    """A device authorization request the user approved.
+
+    The device gets its token at its next poll, if it polls before the request
+    expires.
+    """
+
+    user_id: str
+    device_authorization: DeviceAuthorization
+    request: HTTPRequest | None
+
+
+@dataclass(frozen=True, slots=True)
 class BeforeTokenPasswordEvent:
     client_id: str
     username: str
@@ -442,8 +498,25 @@ class AfterTokenAuthorizationCodeEvent:
     token_response: TokenResponse
 
 
+@dataclass(frozen=True, slots=True)
+class BeforeTokenDeviceCodeEvent:
+    client_id: str
+    user_id: str
+    scope: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class AfterTokenDeviceCodeEvent:
+    request: DeviceCodeGrantRequest
+    user_id: str
+    device_authorization: DeviceAuthorization
+    token_response: TokenResponse
+
+
 __all__ = [
     "AfterAuthenticateEvent",
+    "AfterDeviceApproveEvent",
+    "AfterDeviceCodeEvent",
     "AfterLoginEvent",
     "AfterLogoutEvent",
     "AfterOAuthAuthorizeEvent",
@@ -456,9 +529,12 @@ __all__ = [
     "AfterSocialAccountCreateEvent",
     "AfterSocialAccountUpdateEvent",
     "AfterTokenAuthorizationCodeEvent",
+    "AfterTokenDeviceCodeEvent",
     "AfterTokenPasswordEvent",
     "AfterUserCreateEvent",
     "BeforeAuthenticateEvent",
+    "BeforeDeviceApproveEvent",
+    "BeforeDeviceCodeEvent",
     "BeforeLoginEvent",
     "BeforeLogoutEvent",
     "BeforeOAuthAuthorizeEvent",
@@ -471,6 +547,7 @@ __all__ = [
     "BeforeSocialAccountCreateEvent",
     "BeforeSocialAccountUpdateEvent",
     "BeforeTokenAuthorizationCodeEvent",
+    "BeforeTokenDeviceCodeEvent",
     "BeforeTokenPasswordEvent",
     "BeforeUserCreateEvent",
     "LoginCredential",

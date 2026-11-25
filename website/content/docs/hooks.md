@@ -70,9 +70,9 @@ queue, or observability code.
   them raises `dataclasses.FrozenInstanceError`. Returning an event that changes
   an established identity raises `ValueError` before anything is resolved or
   saved, and policy-only before hooks (`session.revoke`, `oauth.link`,
-  `oauth.disconnect`, `token.password`, `token.authorization_code`) raise
-  `TypeError` for any returned event. `after` hooks still receive the stored
-  objects.
+  `oauth.disconnect`, `device.approve`, `token.password`,
+  `token.authorization_code`, `token.device_code`) raise `TypeError` for any
+  returned event. `after` hooks still receive the stored objects.
 - These rules cover the data Cross-Auth passes to hooks. Hooks are trusted
   application code: Cross-Auth does not sandbox or undo a hook that changes
   global state, writes to storage directly, or calls an external service, even
@@ -92,8 +92,9 @@ queue, or observability code.
   writes join your application's transaction runs them after the outermost
   transaction commits and drops them on rollback. Hooks after a custom
   `token_issuer` run when the issuer returns. `authenticate` writes nothing, and
-  `oauth.authorize` and `oauth.link` follow secondary-storage writes that have
-  already completed, so their hooks run immediately.
+  `oauth.authorize`, `oauth.link`, `device.code` and `device.approve` follow
+  secondary-storage writes that have already completed, so their hooks run
+  immediately.
 - Accounts, sessions, secondary storage, and a custom `token_issuer` commit
   separately; a login is not one transaction across them. `user.create` and
   `social_account.create` run as one callback after signup, so a failing
@@ -101,9 +102,9 @@ queue, or observability code.
   the hooks after it but does not undo the commit, and nothing retries it. Hooks
   run in the request process: a crash after commit loses them, so use an outbox
   written in the same transaction when delivery must be reliable.
-- Secondary storage (OAuth state, authorization codes, link codes) completes
-  each operation before returning. Rolling back accounts or sessions does not
-  restore a code that was already consumed.
+- Secondary storage (OAuth state, authorization codes, link codes, device
+  authorization requests) completes each operation before returning. Rolling
+  back accounts or sessions does not restore a code that was already consumed.
 - The browser sign-in flow raises `RuntimeError` instead of issuing a session or
   authorization code while account changes are uncommitted (an accounts storage
   that deferred `on_commit` callbacks). Do not run it inside an application
@@ -141,6 +142,9 @@ Use this as a quick guide when deciding where custom logic belongs.
 | `oauth.disconnect`         | Control provider-account disconnection for an authenticated user        | Block disconnects for policy reasons, enforce plan or tenant rules                                          | Revoke provider tokens, clear provider caches, audit disconnected accounts               |
 | `token.password`           | Control OAuth password grant issuance for API clients                   | Disable password grant for some clients, enforce API client policy, reject risky usernames                  | Audit token issuance, increment metrics, notify legacy-client usage                      |
 | `token.authorization_code` | Control authorization-code token exchange for OAuth clients             | Check user entitlement or requested scope, add final policy checks before issuing tokens                    | Audit code exchanges, record user/client pairs, emit token issuance telemetry            |
+| `device.code`              | Shape a device authorization request before the user sees it            | Attach which tool or version asked for the approval page, refuse a client or scope                          | Count device sign-in starts per client                                                   |
+| `device.approve`           | Control who may approve a device                                        | Require a work account or a recent sign-in before approving                                                 | Audit approvals, notify the user that a device was approved                              |
+| `token.device_code`        | Control the token a device receives once its request is approved        | Check the requested scope or the user's entitlement before issuing the token                                | Audit device sign-ins, emit token issuance telemetry                                     |
 
 ## Session Hooks
 
@@ -660,6 +664,77 @@ async def cleanup_provider_state(event: AfterOAuthDisconnectEvent) -> None:
     )
 ```
 
+## Device Hooks
+
+These run in the
+[device authorization grant](/docs/oauth#device-authorization-grant). The
+grant's token exchange has its own [`token.device_code`](#tokendevice_code)
+hook.
+
+### `device.code`
+
+Runs when a device asks `POST /device/code` for its codes, once Cross-Auth has
+found its client. The before event has the `client_id`, the requested `scope`
+and the device's `request`, so a hook can read a header or form field the device
+sent. Return the event with another `metadata` to attach JSON values to the
+request: `get_device_authorization` and the lookup route return them, so your
+approval page can show, for example, which tool asked. Only `metadata` is
+replaceable; a hook that raises `CrossAuthException` refuses the request with
+that OAuth error. The after event has the stored request as a
+`DeviceAuthorization`.
+
+```python
+from cross_auth.hooks import AfterDeviceCodeEvent, BeforeDeviceCodeEvent
+
+
+@auth.before("device.code")
+def name_the_tool(event: BeforeDeviceCodeEvent) -> BeforeDeviceCodeEvent:
+    tool = event.request.headers.get("x-tool", "unknown")
+    return replace(event, metadata={"tool": tool})
+
+
+@auth.after("device.code")
+def count_device_sign_ins(event: AfterDeviceCodeEvent) -> None:
+    metrics.increment(
+        "device.code",
+        tags={"client_id": event.device_authorization.client_id},
+    )
+```
+
+### `device.approve`
+
+Runs when the signed-in user approves a request, after `user_can_authenticate`
+allowed them. The events have the approving `user_id`, the request as a
+`DeviceAuthorization`, and the approving browser's `request`, which is `None`
+when your code calls `approve_device_authorization`. A before hook that raises
+refuses the approval and leaves the request pending. The after hook runs once
+the approval is stored; the session is created later, when the device polls,
+through the `login` hooks. This before hook is policy-only and must return
+`None`.
+
+```python
+from cross_auth.hooks import AfterDeviceApproveEvent, BeforeDeviceApproveEvent
+
+
+@auth.before("device.approve")
+def require_work_account(event: BeforeDeviceApproveEvent) -> None:
+    if not profiles.is_work_account(event.user_id):
+        raise CrossAuthException(
+            "access_denied", "Approve devices from a work account", 403
+        )
+
+
+@auth.after("device.approve")
+def notify_device_approved(event: AfterDeviceApproveEvent) -> None:
+    emails.send_device_approved(
+        event.user_id,
+        client=event.device_authorization.client_name,
+        address=event.device_authorization.ip,
+    )
+```
+
+Denials run no hooks.
+
 ## Token Hooks
 
 ### `token.password`
@@ -741,5 +816,36 @@ async def audit_auth_code_grant(
         "authorization_code_token_issued",
         client_id=event.authorization_data.client_id,
         user_id=event.authorization_data.user_id,
+    )
+```
+
+### `token.device_code`
+
+Runs when a device's poll finds its request approved, before Cross-Auth issues
+the token. The poll has already consumed the approval: a before hook that raises
+ends the request with its OAuth error, and later polls get `expired_token`. The
+`login` hooks then run around the new session, with `login_method="device"`, and
+`user_can_authenticate` is asked again. The after event has the approving
+`user_id`, the request as a `DeviceAuthorization`, and the `token_response`.
+This before hook is policy-only and must return `None`.
+
+```python
+from cross_auth.hooks import AfterTokenDeviceCodeEvent, BeforeTokenDeviceCodeEvent
+
+
+@auth.before("token.device_code")
+def enforce_device_scope(event: BeforeTokenDeviceCodeEvent) -> None:
+    if "admin" in (event.scope or "").split():
+        raise CrossAuthException(
+            "invalid_scope", "Devices cannot get admin access", 400
+        )
+
+
+@auth.after("token.device_code")
+def audit_device_sign_in(event: AfterTokenDeviceCodeEvent) -> None:
+    audit_log.record(
+        "device_token_issued",
+        client_id=event.device_authorization.client_id,
+        user_id=event.user_id,
     )
 ```

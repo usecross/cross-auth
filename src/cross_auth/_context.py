@@ -249,8 +249,14 @@ class Context:
         issued = self.issue_token_result(request)
         return issued.token, issued.expires_in
 
-    def issue_token_result(self, request: TokenIssueRequest) -> IssuedToken:
-        """Issue a bearer credential together with its actual commit scheduler."""
+    def issue_token_result(
+        self, request: TokenIssueRequest, *, client_name: str | None = None
+    ) -> IssuedToken:
+        """Issue a bearer credential together with its actual commit scheduler.
+
+        ``client_name`` is the client's display name, which a new session
+        stores with its client id.
+        """
         token_issuer = (
             None if self.oauth_server is None else self.oauth_server.token_issuer
         )
@@ -282,16 +288,19 @@ class Context:
                 "The token endpoint requires token_issuer or session_storage",
             )
 
+        metadata: SessionMetadata = {
+            "client_id": request.client_id,
+            **request_metadata(request.http_request, self.session_config),
+        }
+        if client_name is not None:
+            metadata["client_name"] = client_name
         session_token, _, expires_in = issue_bearer_session(
             request.user_id,
             hooks=self.hooks,
             session_storage=session_storage,
             session_config=self.session_config,
             check_user=self.check_user_id_can_authenticate,
-            metadata={
-                "client_id": request.client_id,
-                **request_metadata(request.http_request, self.session_config),
-            },
+            metadata=metadata,
             login_method=request.login_method,
         )
         return IssuedToken(

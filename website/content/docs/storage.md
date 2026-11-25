@@ -494,10 +494,12 @@ class SecondaryStorage(Protocol):
 
 **Implementations must honor `ttl`** (seconds until expiry). The callback checks
 its stored authorization-request expiry too, but storage TTL is still needed to
-remove abandoned state and expire other temporary records. `RedisStorage`
-enforces it natively via Redis `EX`; a hand-rolled in-memory store must track
-and check expiry itself. The example app's `MemorySecondaryStorage`
-(`examples/fastapi/main.py`) shows the pattern.
+remove abandoned state and expire other temporary records. **`pop` must be
+atomic**: authorization codes, link codes, and the device grant's approvals and
+tokens are single use because only one `pop` of a key returns its value.
+`RedisStorage` enforces it natively via Redis `EX`; a hand-rolled in-memory
+store must track and check expiry itself. The example app's
+`MemorySecondaryStorage` (`examples/fastapi/main.py`) shows the pattern.
 
 ### Connection ownership and migration
 

@@ -671,9 +671,9 @@ session-management APIs. Cross-Auth does not issue JWT access tokens by default.
 
 ### Login method
 
-A session's `login_method` records how the user signed in: `"password"`, or a
-social provider's id such as `"github"` or `"google"`. Use it to show "Signed in
-with GitHub" next to each session in a session list.
+A session's `login_method` records how the user signed in: `"password"`,
+`"device"`, or a social provider's id such as `"github"` or `"google"`. Use it
+to show "Signed in with GitHub" next to each session in a session list.
 
 Cross-Auth sets it on the sessions it creates:
 
@@ -682,6 +682,7 @@ Cross-Auth sets it on the sessions it creates:
 | Browser sign-in through `/{provider}/login` | The provider id                 |
 | `/token` authorization code grant           | The provider the code came from |
 | `/token` password grant (deprecated)        | `"password"`                    |
+| `/token` device code grant                  | `"device"`                      |
 | `auth.sign_in_with_id_token(provider, ...)` | `provider`                      |
 
 For sessions your code creates, pass `login_method`. The value is free-form, so

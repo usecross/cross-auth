@@ -6,7 +6,7 @@ from typing import Literal
 
 from cross_web import HTTPRequest
 
-TokenGrantType = Literal["authorization_code", "password"]
+TokenGrantType = Literal["authorization_code", "password", "device_code"]
 
 # What Context.identify_token can tell a token to be.
 TokenKind = Literal["session"]
@@ -20,8 +20,9 @@ class TokenIssueRequest:
     scope: str | None
     http_request: HTTPRequest
     username: str | None = None
-    # How the user authenticated: "password" or the social provider's id.
-    # None for authorization codes stored by a version that did not record it.
+    # How the user authenticated: "password", "device" for the device grant,
+    # or the social provider's id. None for authorization codes stored by a
+    # version that did not record it.
     login_method: str | None = None
 
 

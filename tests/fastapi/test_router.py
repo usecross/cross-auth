@@ -426,7 +426,7 @@ def test_router(test_app: FastAPI):
                             "login_method": {
                                 "anyOf": [{"type": "string"}, {"type": "null"}],
                                 "title": "Login Method",
-                                "description": 'How the user signed in: a provider id, "password", or what the application recorded',
+                                "description": 'How the user signed in: a provider id, "password", "device", or what the application recorded',
                             },
                             "created_at": {
                                 "type": "string",

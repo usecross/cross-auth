@@ -19,14 +19,17 @@ from ._authorization_code import (
     AuthorizationCodeGrantData,
 )
 from ._context import Context
+from ._device import DEVICE_CODE_GRANT_TYPE, redeem_device_code
 from ._password import _verify_password
 from ._route import Route
 from ._tokens import IssuedToken, TokenIssueRequest
 from .exceptions import CrossAuthException
 from .hooks import (
     AfterTokenAuthorizationCodeEvent,
+    AfterTokenDeviceCodeEvent,
     AfterTokenPasswordEvent,
     BeforeTokenAuthorizationCodeEvent,
+    BeforeTokenDeviceCodeEvent,
     BeforeTokenPasswordEvent,
     UserSnapshot,
 )
@@ -65,8 +68,21 @@ class PasswordGrantRequest(BaseModel):
     scope: str | None = Field(None, description="Space-delimited list of scopes")
 
 
+class DeviceCodeGrantRequest(BaseModel):
+    """A device's poll for its token (RFC 8628 section 3.4)."""
+
+    grant_type: Literal["urn:ietf:params:oauth:grant-type:device_code"] = Field(
+        description="The OAuth 2.0 grant type"
+    )
+    client_id: str = Field(description="The client identifier")
+    device_code: str = Field(
+        description="The device code from the device authorization response",
+        repr=False,
+    )
+
+
 TokenRequest = Annotated[
-    AuthorizationCodeGrantRequest | PasswordGrantRequest,
+    AuthorizationCodeGrantRequest | PasswordGrantRequest | DeviceCodeGrantRequest,
     Discriminator("grant_type"),
 ]
 TokenRequestAdapter: TypeAdapter[TokenRequest] = TypeAdapter(TokenRequest)
@@ -187,6 +203,15 @@ class Issuer:
                     "unsupported_grant_type", "Grant type 'password' is not supported"
                 )
             warnings.warn(PASSWORD_GRANT_DEPRECATION, DeprecationWarning, stacklevel=2)
+        elif input_data.get("grant_type") == DEVICE_CODE_GRANT_TYPE:
+            # Refused before validation too, so without the device grant the
+            # endpoint answers exactly as it did before it existed.
+            oauth_server = context.oauth_server
+            if oauth_server is None or oauth_server.device is None:
+                return self._error_response(
+                    "unsupported_grant_type",
+                    f"Grant type '{DEVICE_CODE_GRANT_TYPE}' is not supported",
+                )
 
         try:
             token_request = TokenRequestAdapter.validate_python(input_data)
@@ -199,6 +224,8 @@ class Issuer:
             return self._authorization_code_grant(token_request, context, request)
         elif isinstance(token_request, PasswordGrantRequest):
             return self._password_grant(token_request, context, request)
+        elif isinstance(token_request, DeviceCodeGrantRequest):
+            return self._device_code_grant(token_request, context, request)
 
     def _authorization_code_grant(
         self,
@@ -359,19 +386,85 @@ class Issuer:
 
         return _token_success(token_data)
 
-    def routes(self, *, password_grant: bool) -> list[Route]:
+    def _device_code_grant(
+        self,
+        request: DeviceCodeGrantRequest,
+        context: Context,
+        http_request: HTTPRequest,
+    ) -> Response:
+        try:
+            user_id, authorization = redeem_device_code(
+                context, client_id=request.client_id, device_code=request.device_code
+            )
+        except CrossAuthException as e:
+            return self._error_response(e.error, e.error_description)
+
+        # The poll has consumed the approval: from here a refusal ends the
+        # request, as a refused code exchange does.
+        try:
+            context.hooks.run_before(
+                "token.device_code",
+                BeforeTokenDeviceCodeEvent(
+                    client_id=request.client_id,
+                    user_id=user_id,
+                    scope=authorization.scope,
+                ),
+            )
+        except CrossAuthException as e:
+            return self._error_response(e.error, e.error_description)
+
+        try:
+            # The login hooks and user_can_authenticate run again here, at
+            # the poll: the user may have been refused since approving.
+            issued = context.issue_token_result(
+                TokenIssueRequest(
+                    user_id=user_id,
+                    client_id=request.client_id,
+                    grant_type="device_code",
+                    scope=authorization.scope,
+                    http_request=http_request,
+                    login_method="device",
+                ),
+                client_name=authorization.client_name,
+            )
+        except CrossAuthException as e:
+            return self._error_response(e.error, e.error_description)
+
+        token_data = _bearer_token(issued)
+
+        after_event = AfterTokenDeviceCodeEvent(
+            request=request,
+            user_id=user_id,
+            device_authorization=authorization,
+            token_response=token_data,
+        )
+        issued.on_commit(
+            lambda: context.hooks.run_after("token.device_code", after_event)
+        )
+
+        return _token_success(token_data)
+
+    def routes(
+        self, *, password_grant: bool, device_grant: bool = False
+    ) -> list[Route]:
         # The route reads its own form, so FastAPI adds no components for these
         # models: inline them so the schema resolves without extra_schemas.
         code_grant = AuthorizationCodeGrantRequest.model_json_schema()
         grant_schemas: dict[str, dict[str, Any]] = {
             "AuthorizationCodeGrantRequest": code_grant
         }
-        request_schema = code_grant
         if password_grant:
-            password_schema = PasswordGrantRequest.model_json_schema()
-            grant_schemas["PasswordGrantRequest"] = password_schema
+            grant_schemas["PasswordGrantRequest"] = (
+                PasswordGrantRequest.model_json_schema()
+            )
+        if device_grant:
+            grant_schemas["DeviceCodeGrantRequest"] = (
+                DeviceCodeGrantRequest.model_json_schema()
+            )
+        request_schema = code_grant
+        if len(grant_schemas) > 1:
             request_schema = {
-                "oneOf": [code_grant, password_schema],
+                "oneOf": list(grant_schemas.values()),
                 "title": "Request",
             }
 

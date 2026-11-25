@@ -749,6 +749,21 @@ class TestToken:
         assert error_of(response)["error"] == "unsupported_grant_type"
         assert Session.objects.count() == 0
 
+    def test_the_device_grant_is_not_offered(self) -> None:
+        # The Django integration has no device authorization views yet, so
+        # its token view refuses the grant before reading the rest of the form.
+        response = post_token(
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "client_id": "spa",
+            }
+        )
+
+        assert response.status_code == 400
+        assert error_of(response)["error"] == "unsupported_grant_type"
+        assert ExpiringValue.objects.count() == 0
+        assert Session.objects.count() == 0
+
     def test_a_user_deactivated_before_the_exchange_gets_no_token(
         self, google: FakeGoogle
     ) -> None:

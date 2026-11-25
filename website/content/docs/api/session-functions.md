@@ -93,6 +93,32 @@ Session methods require `session_storage` to be configured. `auth.router` serves
 the caller's own sessions over HTTP with the same storage; see
 [List and Revoke Sessions](/docs/session-authentication#list-and-revoke-sessions).
 
+### `get_device_authorization(user_code)`
+
+Returns the pending device authorization request `user_code` belongs to, as a
+`DeviceAuthorization` (`client_id`, `client_name`, `scope`, `ip`, `user_agent`,
+`metadata`, `created_at`, `expires_at`), or `None` for an unknown or expired
+code, one already approved or denied, and one whose client `get_client` no
+longer returns. Case and separators in `user_code` are ignored.
+
+### `approve_device_authorization(user_code, user_id=...)`
+
+Approves the request for `user_id` and returns `True`, or returns `False` and
+changes nothing in the cases `get_device_authorization` returns `None`. Of
+concurrent approvals and denials only one returns `True`. Raises
+`CrossAuthException` for a user `user_can_authenticate` refuses, or from a
+[`device.approve`](/docs/hooks#deviceapprove) before hook, and the request stays
+pending. The session is created when the device next polls `/token`.
+
+### `deny_device_authorization(user_code, user_id=...)`
+
+Denies the request, so the device's next poll gets `access_denied`. Returns as
+`approve_device_authorization` does.
+
+The device methods need `OAuthServer(device=DeviceGrant(...))` and raise
+`RuntimeError` without it; see
+[Device Authorization Grant](/docs/oauth#device-authorization-grant).
+
 ---
 
 ## Low-Level Functions

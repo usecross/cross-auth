@@ -1,7 +1,8 @@
 from cross_auth._clients import ClientResolver, OAuthClient
 from cross_auth._context import Context
+from cross_auth._device import DeviceAuthorization
 from cross_auth._email import normalize_email
-from cross_auth._oauth_server import OAuthServer
+from cross_auth._oauth_server import DeviceGrant, OAuthServer
 from cross_auth._session import (
     AuthenticatedSession,
     SessionConfig,
@@ -27,6 +28,8 @@ from cross_auth._storage import (
 from cross_auth._tokens import TokenIssueRequest, TokenIssuer, TokenKind
 from cross_auth.hooks import (
     AfterAuthenticateEvent,
+    AfterDeviceApproveEvent,
+    AfterDeviceCodeEvent,
     AfterLoginEvent,
     AfterLogoutEvent,
     AfterOAuthAuthorizeEvent,
@@ -39,9 +42,12 @@ from cross_auth.hooks import (
     AfterSocialAccountCreateEvent,
     AfterSocialAccountUpdateEvent,
     AfterTokenAuthorizationCodeEvent,
+    AfterTokenDeviceCodeEvent,
     AfterTokenPasswordEvent,
     AfterUserCreateEvent,
     BeforeAuthenticateEvent,
+    BeforeDeviceApproveEvent,
+    BeforeDeviceCodeEvent,
     BeforeLoginEvent,
     BeforeLogoutEvent,
     BeforeOAuthAuthorizeEvent,
@@ -54,6 +60,7 @@ from cross_auth.hooks import (
     BeforeSocialAccountCreateEvent,
     BeforeSocialAccountUpdateEvent,
     BeforeTokenAuthorizationCodeEvent,
+    BeforeTokenDeviceCodeEvent,
     BeforeTokenPasswordEvent,
     BeforeUserCreateEvent,
 )
@@ -76,9 +83,13 @@ __all__ = [
     "CallbackData",
     "Context",
     "ClientResolver",
+    "DeviceAuthorization",
+    "DeviceGrant",
     "OAuthClient",
     "OAuthServer",
     "AfterAuthenticateEvent",
+    "AfterDeviceApproveEvent",
+    "AfterDeviceCodeEvent",
     "AfterLoginEvent",
     "AfterLogoutEvent",
     "AfterOAuthAuthorizeEvent",
@@ -91,9 +102,12 @@ __all__ = [
     "AfterSocialAccountCreateEvent",
     "AfterSocialAccountUpdateEvent",
     "AfterTokenAuthorizationCodeEvent",
+    "AfterTokenDeviceCodeEvent",
     "AfterTokenPasswordEvent",
     "AfterUserCreateEvent",
     "BeforeAuthenticateEvent",
+    "BeforeDeviceApproveEvent",
+    "BeforeDeviceCodeEvent",
     "BeforeLoginEvent",
     "BeforeLogoutEvent",
     "BeforeOAuthAuthorizeEvent",
@@ -106,6 +120,7 @@ __all__ = [
     "BeforeSocialAccountCreateEvent",
     "BeforeSocialAccountUpdateEvent",
     "BeforeTokenAuthorizationCodeEvent",
+    "BeforeTokenDeviceCodeEvent",
     "BeforeTokenPasswordEvent",
     "BeforeUserCreateEvent",
     "OAuth2Exception",

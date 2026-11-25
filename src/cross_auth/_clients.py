@@ -75,6 +75,10 @@ class OAuthClient(BaseModel):
     Private-use native schemes must follow reverse-domain notation and have
     no authority. Claimed HTTPS redirects must be verified by the application
     platform; registering a URL here does not establish domain ownership.
+
+    ``client_name`` is the name to show users, as RFC 7591 names it. The device
+    grant shows it on the approval page and stores it on the sessions it
+    issues. A client that only uses the device grant needs no redirect URIs.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -82,6 +86,7 @@ class OAuthClient(BaseModel):
     client_id: str = Field(min_length=1)
     redirect_uris: tuple[str, ...]
     application_type: Literal["web", "native"] = "web"
+    client_name: str | None = None
 
     @model_validator(mode="after")
     def validate_redirects(self) -> Self:

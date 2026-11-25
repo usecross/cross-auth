@@ -158,7 +158,7 @@ class SessionRecord(Protocol):
 
     @property
     def login_method(self) -> str | None:
-        """How the user signed in: ``"password"`` or a social provider's id."""
+        """How the user signed in: ``"password"``, ``"device"`` or a provider's id."""
         ...
 
     @property

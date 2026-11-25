@@ -1087,9 +1087,11 @@ that have a `flow` argument get `"authorize"` as its value; `before_login` and
 ### Not in the Django integration yet
 
 The [FastAPI integration's OAuth server](/docs/oauth) can also connect another
-provider from a signed-in client, list and revoke sessions over JSON, and mint
-tokens with your own issuer. The Django integration does not have these yet. The
-deprecated password grant is not offered.
+provider from a signed-in client, list and revoke sessions over JSON, mint
+tokens with your own issuer, and sign in CLIs with the
+[device authorization grant](/docs/oauth#device-authorization-grant). The Django
+integration does not have these yet: its token view answers the device grant
+with `unsupported_grant_type`. The deprecated password grant is not offered.
 
 ## Provider tokens
 
