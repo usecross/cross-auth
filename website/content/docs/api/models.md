@@ -103,3 +103,34 @@ from cross_auth import SessionCookieConfig
 | `samesite` | `"lax" \| "strict" \| "none"` | `"lax"`        | SameSite cookie attribute.                                                            |
 | `path`     | `str`                         | `"/"`          | URL path the cookie is valid for.                                                     |
 | `domain`   | `str \| None`                 | `None`         | Domain the cookie is valid for.                                                       |
+
+---
+
+## PasswordHasher
+
+Protocol for the object that hashes and verifies passwords, passed to
+`CrossAuth(password_hasher=...)`. pwdlib's `PasswordHash` and passlib's
+`CryptContext` implement it. See
+[Password Hashing](/docs/session-authentication#password-hashing).
+
+```python
+from cross_auth import PasswordHasher
+```
+
+### Methods
+
+| Method                      | Returns | Description                                                                                                   |
+| --------------------------- | ------- | ------------------------------------------------------------------------------------------------------------- |
+| `hash(password, /)`         | `str`   | A hash of `password`, to store in `hashed_password`. Raise to refuse the password.                            |
+| `verify(password, hash, /)` | `bool`  | Whether `password` matches `hash`. Raise for a hash you can't read; Cross-Auth counts it as a wrong password. |
+
+## BcryptPasswordHasher
+
+The default `PasswordHasher`, with bcrypt's default cost. `hash` refuses a
+password over 72 bytes with `CrossAuthException("password_too_long")`; `verify`
+compares the first 72 bytes and raises `ValueError` for a hash bcrypt can't
+read.
+
+```python
+from cross_auth import BcryptPasswordHasher
+```

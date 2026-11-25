@@ -5,6 +5,8 @@ from typing import Any, Literal, TypedDict
 from pydantic import AwareDatetime
 from typing_extensions import Protocol, runtime_checkable
 
+from ._password import PasswordHasher
+
 DisconnectResult = Literal["disconnected", "not_found", "last_login_method"]
 
 SessionStatus = Literal["active", "expired", "revoked"]
@@ -92,14 +94,17 @@ class PasswordStorage(Protocol):
     implement it.
     """
 
-    def set_password(self, user_id: Any, password: str) -> User | None:
+    def set_password(
+        self, user_id: Any, password: str, *, password_hasher: PasswordHasher
+    ) -> User | None:
         """Store ``password`` as the user's password and return the updated user.
 
-        Hash it the way your password check reads it: Cross-Auth's
-        ``authenticate`` reads a bcrypt hash from ``hashed_password``, as
-        ``cross_auth._password.hash_password`` makes. Return ``None`` without
-        writing if the user is not found. Commit before returning, or join the
-        application transaction ``on_commit`` follows.
+        Store ``password_hasher.hash(password)`` in ``hashed_password``:
+        Cross-Auth passes the hasher it verifies passwords with, so the stored
+        hash is one its checks read. Let what ``hash`` raises propagate before
+        writing anything. Return ``None`` without writing if the user is not
+        found. Commit before returning, or join the application transaction
+        ``on_commit`` follows.
         """
         ...
 

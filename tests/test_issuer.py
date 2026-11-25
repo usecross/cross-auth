@@ -9,7 +9,7 @@ from inline_snapshot import snapshot
 from cross_auth import OAuthServer
 from cross_auth._context import Context
 from cross_auth._issuer import AuthorizationCodeGrantData, Issuer
-from cross_auth._password import DUMMY_PASSWORD_HASH
+from cross_auth._password import PasswordHasher, _dummy_hash
 from cross_auth._storage import SecondaryStorage
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.hooks import BeforeTokenPasswordEvent, UserSnapshot
@@ -705,7 +705,10 @@ def test_password_grant_verifies_password_hash_for_unknown_users(
 
     verification_calls: list[tuple[str, str]] = []
 
-    def record_password_verification(password: str, password_hash: str) -> bool:
+    def record_password_verification(
+        password: str, password_hash: str, password_hasher: PasswordHasher
+    ) -> bool:
+        assert password_hasher is context.password_hasher
         verification_calls.append((password, password_hash))
         return False
 
@@ -734,7 +737,7 @@ def test_password_grant_verifies_password_hash_for_unknown_users(
     assert unknown_response.status_code == 400
     assert verification_calls == [
         ("wrong_password", existing_user.hashed_password),
-        ("wrong_password", DUMMY_PASSWORD_HASH),
+        ("wrong_password", _dummy_hash(context.password_hasher)),
     ]
 
 

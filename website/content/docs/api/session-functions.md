@@ -13,9 +13,17 @@ examples.
 
 ### `authenticate(email, password)`
 
-Verifies email/password credentials. Returns the `User` or `None`. Once the
-password matches, raises `CrossAuthException` for a user `user_can_authenticate`
-refuses.
+Verifies email/password credentials with `password_hasher`. Returns the `User`
+or `None`. Once the password matches, raises `CrossAuthException` for a user
+`user_can_authenticate` refuses.
+
+### `password_hasher`
+
+The [password hasher](/docs/session-authentication#password-hashing) passed to
+`CrossAuth`, or the default `BcryptPasswordHasher`. `authenticate`,
+`change_password` and the password grant verify passwords with it, and
+`change_password` hashes the new one with it. Hash the passwords you store
+yourself with its `hash` method.
 
 ### `login(user_id, response=...)`
 
@@ -76,13 +84,14 @@ sessions.
 
 Changes the password of the user the request's session signs in, once
 `current_password` matches (`None` only for a user without a password), and
-returns the updated user. The accounts storage hashes and stores the new
-password. Then it revokes the user's other sessions, keeping the request's own,
-unless `revoke_other_sessions` is `False`. Raises `CrossAuthException`:
-`unauthorized` (401) without a session, `invalid_password` (400) for a wrong
-current password, and `password_too_long` (400) from the SQLModel storage for a
-password over bcrypt's 72 bytes. The accounts storage needs a `set_password`
-method, as the SQLModel one has; without one it raises `TypeError`. See
+returns the updated user. The accounts storage hashes the new password with
+`password_hasher` and stores it. Then it revokes the user's other sessions,
+keeping the request's own, unless `revoke_other_sessions` is `False`. Raises
+`CrossAuthException`: `unauthorized` (401) without a session, `invalid_password`
+(400) for a wrong current password, and `password_too_long` (400) from the
+default bcrypt hasher for a password over 72 bytes. The accounts storage needs a
+`set_password` method, as the SQLModel one has; without one it raises
+`TypeError`. See
 [Change a Password](/docs/session-authentication#change-a-password).
 
 The three revoke methods run the

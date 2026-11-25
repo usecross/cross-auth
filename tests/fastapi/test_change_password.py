@@ -16,8 +16,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
-from cross_auth import CommitCallback, SecondaryStorage, User
-from cross_auth._password import hash_password
+from cross_auth import CommitCallback, PasswordHasher, SecondaryStorage, User
 from cross_auth._session import create_session
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.fastapi import CrossAuth, SessionCookieMiddleware
@@ -39,11 +38,13 @@ class PasswordChange(BaseModel):
 class PasswordAccountsStorage(MemoryAccountsStorage):
     """The memory accounts storage, able to store new passwords."""
 
-    def set_password(self, user_id: Any, password: str) -> MemoryUser | None:
+    def set_password(
+        self, user_id: Any, password: str, *, password_hasher: PasswordHasher
+    ) -> MemoryUser | None:
         user = self.find_user_by_id(user_id)
         if user is None:
             return None
-        user.hashed_password = hash_password(password)
+        user.hashed_password = password_hasher.hash(password)
         return user
 
 

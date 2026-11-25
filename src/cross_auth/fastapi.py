@@ -34,7 +34,7 @@ from ._login import (
 )
 from ._native import resolve_id_token_user as _resolve_id_token_user
 from ._oauth_server import OAuthServer
-from ._password import _verify_password, authenticate
+from ._password import PasswordHasher, _verify_password, authenticate
 from ._request import make_http_request
 from ._session import (
     AuthenticatedSession,
@@ -177,6 +177,7 @@ class CrossAuth:
         default_next_url: str = "/",
         normalize_email: Callable[[str], str] | None = None,
         oauth_server: OAuthServer | None = None,
+        password_hasher: PasswordHasher | None = None,
         user_can_authenticate: UserCanAuthenticate | None = None,
     ):
         if trusted_origins is not None:
@@ -201,6 +202,7 @@ class CrossAuth:
             hooks=HookRegistry(),
             normalize_email=normalize_email,
             oauth_server=oauth_server,
+            password_hasher=password_hasher,
             user_can_authenticate=user_can_authenticate,
         )
         self._context = self._setup.context
@@ -209,6 +211,15 @@ class CrossAuth:
     @property
     def router(self) -> AuthRouter:
         return self._router
+
+    @property
+    def password_hasher(self) -> PasswordHasher:
+        """The hasher that verifies and hashes every password, bcrypt by default.
+
+        Hash the passwords you store yourself, such as at signup, with its
+        ``hash`` method, so that ``authenticate`` can verify them.
+        """
+        return self._context.password_hasher
 
     def _require_session_storage(self) -> SessionStorage:
         session_storage = self._context.session_storage
@@ -407,8 +418,9 @@ class CrossAuth:
         without one this raises ``unauthorized`` (401). ``current_password`` must match the user's password, and is
         ``None`` only for a user without one, who sets a first password.
         Otherwise this raises ``invalid_password`` (400) and changes nothing.
-        The accounts storage hashes and stores ``new_password``; the SQLModel
-        one refuses a password longer than bcrypt's 72 bytes with
+        The accounts storage hashes ``new_password`` with ``password_hasher``
+        and stores it. What the hasher raises propagates and changes nothing:
+        the default bcrypt hasher refuses a password over 72 bytes with
         ``password_too_long`` (400).
 
         Then, with ``revoke_other_sessions``, the user's other sessions are
@@ -444,13 +456,17 @@ class CrossAuth:
             # Only a user without a password may set one without proving it.
             correct = user.hashed_password is None
         else:
-            correct = _verify_password(user, current_password)
+            correct = _verify_password(
+                user, current_password, self._context.password_hasher
+            )
         if not correct:
             raise CrossAuthException(
                 "invalid_password", "The current password is not correct"
             )
 
-        updated = accounts_storage.set_password(user.id, new_password)
+        updated = accounts_storage.set_password(
+            user.id, new_password, password_hasher=self._context.password_hasher
+        )
         if updated is None:
             raise CrossAuthException("unauthorized", "Not logged in", status_code=401)
         if revoke_other_sessions:
@@ -579,6 +595,7 @@ class CrossAuth:
             self._context.normalize_email(event.email),
             event.password,
             self._context.accounts_storage,
+            password_hasher=self._context.password_hasher,
         )
         # Only once the password matched, so a wrong password cannot tell
         # whether the account may sign in.

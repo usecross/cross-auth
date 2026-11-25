@@ -376,12 +376,12 @@ one `user_can_authenticate` refuses, with `401 unauthorized`. Then:
    raises `400 invalid_password` and changes nothing. It is `None` only for a
    user without a password, such as one who signed up with a provider and sets a
    first password.
-2. The accounts storage hashes and stores `new_password` with its
+2. The accounts storage hashes `new_password` with the
+   [password hasher](#password-hashing) and stores it, in its
    [`set_password` method](/docs/storage#accountsstorage); an accounts storage
-   without one raises `TypeError`. The SQLModel storage stores a bcrypt hash and
-   refuses a password longer than bcrypt's 72 bytes with
-   `400 password_too_long`. Check your own rules, such as a minimum length,
-   before you call `change_password`.
+   without one raises `TypeError`. The default bcrypt hasher refuses a password
+   longer than bcrypt's 72 bytes with `400 password_too_long`. Check your own
+   rules, such as a minimum length, before you call `change_password`.
 3. The user's other sessions are revoked through the
    [`session.revoke` hooks](/docs/hooks#sessionrevoke), with `scope="others"`.
    The session that made the change stays signed in, and its token does not
@@ -409,6 +409,92 @@ should:
 ```python
 auth.revoke_all_sessions(user_id=user.id)
 ```
+
+### Password Hashing
+
+`auth.authenticate()`, `auth.change_password()` and the OAuth password grant
+verify passwords with one password hasher, and `change_password()` hashes the
+new password with it too. The default hashes with bcrypt. Pass `password_hasher`
+to use another:
+
+```python
+from pwdlib import PasswordHash
+
+auth = CrossAuth(
+    providers=[],
+    storage=secondary_storage,
+    accounts_storage=accounts_storage,
+    session_storage=session_storage,
+    password_hasher=PasswordHash.recommended(),
+)
+```
+
+A hasher is any object with the two methods of the `cross_auth.PasswordHasher`
+protocol. Cross-Auth passes their arguments by position, so the parameters can
+have any name:
+
+```python
+class PasswordHasher(Protocol):
+    def hash(self, password: str, /) -> str: ...
+
+    def verify(self, password: str, hash: str, /) -> bool: ...
+```
+
+pwdlib's `PasswordHash` and passlib's `CryptContext` have both methods, so they
+work as they are. List more than one scheme to move users to a new one: new
+hashes use the first, and the hashes your users already have keep verifying.
+
+```python
+from pwdlib import PasswordHash
+from pwdlib.hashers.argon2 import Argon2Hasher
+from pwdlib.hashers.bcrypt import BcryptHasher
+
+password_hasher = PasswordHash((Argon2Hasher(), BcryptHasher()))
+```
+
+```python
+from passlib.context import CryptContext
+
+password_hasher = CryptContext(schemes=["argon2", "bcrypt"])
+```
+
+passlib has no type hints, so type checkers don't check a `CryptContext` against
+the protocol. argon2-cffi's own `PasswordHasher` doesn't fit: its `verify` takes
+the hash first and raises for a wrong password. Use argon2 through pwdlib or
+passlib.
+
+Hash the passwords you store yourself, such as at signup, with the same hasher,
+so that `authenticate()` can verify them:
+
+```python
+hashed_password = auth.password_hasher.hash(password)
+```
+
+**Hashes the hasher can't read.** A stored hash the hasher doesn't recognize,
+such as one another library made, never matches: whatever `verify` raises counts
+as a wrong password. `authenticate()` returns `None`, `change_password()` raises
+`400 invalid_password`, and the password grant answers `invalid_grant`.
+Cross-Auth logs a warning on the `cross_auth._password` logger with the error's
+type, never the hash. A user whose hash can't be read can't sign in with a
+password, so list every scheme your users' hashes use.
+
+**Timing.** Each check costs one verification, so an attacker can't tell from
+the response time which emails have accounts. An unknown email, a user without a
+password and a hash the hasher can't read each verify a dummy hash, which the
+hasher makes the first time it checks a password. Raise from `verify` for a hash
+you can't read, as bcrypt, pwdlib and passlib do: a hasher that returns `False`
+without doing the work answers faster for those users.
+
+**The default** is `BcryptPasswordHasher`, with bcrypt's default cost. bcrypt
+reads only the first 72 bytes of a password. It refuses to hash a longer one,
+raising `CrossAuthException("password_too_long")`, rather than cut it short. It
+verifies the first 72 bytes, so users whose hash another library made from a
+longer password, as passlib did, keep signing in. pwdlib's and passlib's bcrypt
+refuse to verify a password that long with bcrypt 5, which counts as a wrong
+password.
+
+Cross-Auth doesn't rehash a password on sign-in when the hasher's settings or
+schemes change.
 
 ### Sliding Sessions
 
@@ -536,20 +622,11 @@ if user is None:
     ...
 ```
 
-This function uses **constant-time verification** -- it always runs bcrypt even
-for non-existent users, preventing timing attacks that could enumerate valid
-email addresses.
-
-Cross-Auth verifies passwords. [`change_password`](#change-a-password) hashes a
-new password through the accounts storage; elsewhere, such as at signup, your
-application hashes them. Store a bcrypt hash (the `$2b$` format produced by
-`cross_auth._password.hash_password`, the `bcrypt` package or passlib) in
-`hashed_password`. bcrypt uses only the first 72 bytes of a password, so any
-password that shares those bytes verifies against the hash. Decide how to handle
-longer passwords when hashing: reject them, as `bcrypt.hashpw` does from bcrypt
-5, or hash them with SHA-256 first and bcrypt the digest. Verification compares
-the first 72 bytes either way, so users whose hash was made from a longer
-password keep signing in.
+It verifies with bcrypt by default; pass `password_hasher=` to verify with the
+[password hasher](#password-hashing) you give `CrossAuth`. This function uses
+**constant-time verification** -- it always runs one verification even for
+non-existent users, preventing timing attacks that could enumerate valid email
+addresses.
 
 ### Creating Sessions
 
