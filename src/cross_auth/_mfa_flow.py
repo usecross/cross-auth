@@ -353,18 +353,23 @@ def finish_challenge(
     code: str | None = None,
     recovery_code: str | None = None,
     login: BrowserLogin | None = None,
+    response: Response | None = None,
 ) -> Finished:
     """Check the code and complete the sign-in the challenge was waiting for.
 
     ``kinds`` are the challenges this caller finishes; any other answers
     ``invalid_challenge`` before its code is checked (see
-    ``MFA.verify_challenge``).
+    ``MFA.verify_challenge``). ``response`` is what a Cross Auth cookie login
+    starts from, as for ``login()``, in place of a redirect to its next URL;
+    the login hooks may change it.
     """
     mfa = require_mfa(context)
     challenge, method = mfa.verify_challenge(
         token, kinds=kinds, code=code, recovery_code=recovery_code
     )
-    finished = _complete(request, context, challenge, method, login=login)
+    finished = _complete(
+        request, context, challenge, method, login=login, response=response
+    )
     return replace(finished, challenge=challenge, mfa_method=method)
 
 
@@ -397,6 +402,7 @@ def _complete(
     method: str,
     *,
     login: BrowserLogin | None,
+    response: Response | None = None,
 ) -> Finished:
     mfa = require_mfa(context)
     data = challenge.data
@@ -554,13 +560,15 @@ def _complete(
         return Finished(logged_in, user=user)
 
     assert context.session_storage is not None
-    # The navigation is the login's response, so a login hook's changes to it
-    # reach the browser, as with a sign-in without 2FA.
+    # The navigation, or the caller's response, is the login's response, so a
+    # login hook's changes to it reach the browser, as without 2FA.
     response = cast(
         Response,
         login_with_session(
             challenge.user_id,
-            response=_navigate(request, next_url, []),
+            response=response
+            if response is not None
+            else _navigate(request, next_url, []),
             hooks=context.hooks,
             session_storage=context.session_storage,
             session_config=context.session_config,
@@ -601,14 +609,18 @@ def read_fields(request: HTTPRequest) -> dict[str, Any]:
             raise CrossAuthException("invalid_request", "The body must be an object")
         return value
     form = dict(request.post_data)
-    if not form and "x-www-form-urlencoded" in content_type:
-        body = request.body
-        text = body.decode("utf-8") if isinstance(body, bytes) else body
-        form = dict(parse_qsl(text))
-    return {
-        key: value.decode("utf-8") if isinstance(value, bytes) else value
-        for key, value in form.items()
-    }
+    try:
+        if not form and "x-www-form-urlencoded" in content_type:
+            body = request.body
+            text = body.decode("utf-8") if isinstance(body, bytes) else body
+            form = dict(parse_qsl(text))
+        return {
+            key: value.decode("utf-8") if isinstance(value, bytes) else value
+            for key, value in form.items()
+        }
+    except UnicodeDecodeError as error:
+        # A malformed body, as for JSON: the client's error, not a crash.
+        raise CrossAuthException("invalid_request", "The form is not UTF-8") from error
 
 
 def _optional_str(fields: dict[str, Any], name: str) -> str | None:

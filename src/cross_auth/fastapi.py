@@ -116,6 +116,7 @@ from .hooks import (
 )
 from .hooks._types import HookEventName
 from .router import _TRUSTED_ORIGINS_DEPRECATION, AuthRouter
+from .utils._response import Response as FlowResponse
 from .social_providers.oauth import OAuth2Provider
 
 _P = ParamSpec("_P")
@@ -1013,9 +1014,10 @@ class CrossAuth:
             kinds=("cookie", "browser"),
             code=code,
             recovery_code=recovery_code,
+            # As login() does, so the login hooks' changes reach the client.
+            response=self._make_hook_response(response),
         )
-        for cookie in finished.response.cookies or []:
-            set_cookie(response, cookie)
+        self._apply_hook_response(finished.response, response)
 
     def verify_mfa(
         self,
@@ -1043,8 +1045,9 @@ class CrossAuth:
         assert finished.token is not None and finished.record is not None
         return finished.token, finished.record
 
-    def _make_hook_response(self, response: FastAPIResponse) -> CrossWebResponse:
-        return CrossWebResponse(
+    def _make_hook_response(self, response: FastAPIResponse) -> FlowResponse:
+        # Cross Auth's own response class, which the 2FA flow returns too.
+        return FlowResponse(
             status_code=response.status_code,
             headers={
                 name: value

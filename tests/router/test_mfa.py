@@ -1609,3 +1609,68 @@ def test_a_revocation_outlives_challenges_from_workers_with_longer_ttls(
     [marker] = [key for key in secondary_storage.data if key.startswith("mfa:revoked:")]
     _, expires_at = secondary_storage.data[marker]
     assert expires_at - time.monotonic() > 3600
+
+
+# Malformed input -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("body", [b"code=\xff\xfe", b"\xff\xfe"])
+def test_a_form_that_is_not_utf_8_is_a_bad_request(
+    body: bytes, auth: CrossAuth
+) -> None:
+    with app_for(auth) as client:
+        answer = client.post(
+            "/mfa/verify",
+            content=body,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+        )
+
+    assert answer.status_code == 400
+    assert answer.json()["error"] == "invalid_request"
+
+
+def test_a_cut_short_secret_does_not_stop_the_users_other_factors(
+    auth: CrossAuth, enrolled: tuple[str, list[str]], engine: Any
+) -> None:
+    """A damaged factor, checked first, is skipped like one an old key sealed."""
+    secret, _ = enrolled
+    with Session(engine) as db:
+        db.add(
+            MFATestFactor(
+                user_id="test",
+                type="totp",
+                name="Damaged",
+                data={"secret": "v1."},
+                created_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        db.commit()
+
+    _, record = auth.verify_mfa(_paused(auth), code=code_now(secret, 1))
+
+    assert record.mfa_method == "totp"
+
+
+def test_complete_mfa_login_keeps_the_login_hooks_changes(
+    auth: CrossAuth, enrolled: tuple[str, list[str]]
+) -> None:
+    """As login() does, the response the hooks approve is the one sent."""
+    secret, _ = enrolled
+
+    @auth.before("login")
+    def mark(event: BeforeLoginEvent) -> BeforeLoginEvent:
+        return replace(
+            event, response=CrossWebResponse(status_code=202, headers={"X-Hook": "1"})
+        )
+
+    with app_for(auth) as client:
+        challenge = client.post("/login").json()["challenge"]
+        done = client.post(
+            "/login/2fa", json={"challenge": challenge, "code": code_now(secret, 1)}
+        )
+
+        assert (done.status_code, done.headers.get("x-hook")) == (202, "1")
+        assert client.get("/mfa").status_code == 200

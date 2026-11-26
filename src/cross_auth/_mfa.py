@@ -162,6 +162,10 @@ def generate_recovery_codes() -> list[str]:
     return codes
 
 
+_NONCE_BYTES = 12
+_TAG_BYTES = 16
+
+
 class _Cipher:
     """Encrypts TOTP secrets with the application's keys."""
 
@@ -200,7 +204,7 @@ class _Cipher:
     def encrypt(self, plaintext: str) -> str:
         if self._encrypt is not None:
             return self._encrypt(plaintext)
-        nonce = secrets.token_bytes(12)
+        nonce = secrets.token_bytes(_NONCE_BYTES)
         sealed = self._keys[0].encrypt(nonce, plaintext.encode("utf-8"), None)
         return self._PREFIX + base64.urlsafe_b64encode(nonce + sealed).decode()
 
@@ -213,7 +217,12 @@ class _Cipher:
             raw = base64.urlsafe_b64decode(text[len(self._PREFIX) :])
         except ValueError:
             return None
-        nonce, sealed = raw[:12], raw[12:]
+        # A nonce and a tag at least: AES-GCM raises ValueError on a cut-short
+        # value rather than failing to authenticate it, which would stop the
+        # check before the user's other factors.
+        if len(raw) < _NONCE_BYTES + _TAG_BYTES:
+            return None
+        nonce, sealed = raw[:_NONCE_BYTES], raw[_NONCE_BYTES:]
         for key in self._keys:
             try:
                 return key.decrypt(nonce, sealed, None).decode("utf-8")
