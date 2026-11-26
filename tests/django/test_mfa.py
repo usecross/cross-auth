@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from asgiref.sync import async_to_sync
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.dispatch import Signal
 from django.test import AsyncClient, Client, override_settings
@@ -324,6 +325,34 @@ def test_signing_out_other_sessions_ends_a_login_waiting_for_its_code(
     response = csrf_post(intruder, "/auth/mfa/verify", {"code": code()})
     assert response.status_code == 400
     assert whoami(intruder)["authenticated"] is False
+
+
+def test_a_login_refused_while_waiting_for_its_code_gets_the_refusal(
+    client: Client,
+) -> None:
+    """The account is deactivated after its password passed. The rule Cross
+    Auth asks returns its refusal, which the verify view answers with."""
+    user = make_user()
+    add_totp(user)
+    password_login(client)
+    get_user_model().objects.filter(pk=user.pk).update(is_active=False)
+
+    response = client.post(
+        "/auth/mfa/verify",
+        {"code": code()},
+        headers={
+            "Accept": "application/json",
+            "X-CSRFToken": client.cookies["csrftoken"].value,
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": "access_denied",
+        "error_description": "This account is inactive.",
+    }
+    assert whoami(client)["authenticated"] is False
+    assert all(session.user_id is None for session in stored_sessions())
 
 
 def test_wrong_codes_lock_the_account(client: Client) -> None:

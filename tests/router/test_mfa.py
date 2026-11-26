@@ -124,6 +124,7 @@ def make_auth(
     fake_provider: FakeProvider,
     oauth_server: Any = LEGACY_APP_OAUTH_SERVER,
     requires_mfa: Callable[[Any, str | None], bool] | None = None,
+    user_can_authenticate: Callable[[Any], bool | CrossAuthException] | None = None,
     **mfa: Any,
 ) -> CrossAuth:
     return CrossAuth(
@@ -147,6 +148,7 @@ def make_auth(
         ),
         oauth_server=oauth_server,
         requires_mfa=requires_mfa,
+        user_can_authenticate=user_can_authenticate,
     )
 
 
@@ -1190,3 +1192,131 @@ def test_a_fresh_password_sign_in_may_change_2fa(
         client.headers["Authorization"] = f"Bearer {token}"
         allowed = change(client)
     assert allowed.status_code == 200, allowed.text
+
+
+# The rest of Cross Auth's rules ----------------------------------------------
+
+SUSPENDED = CrossAuthException(
+    "account_suspended", "This account is suspended", status_code=403
+)
+
+
+class Suspendable:
+    """A user_can_authenticate rule that returns its own refusal once on."""
+
+    def __init__(self) -> None:
+        self.suspended = False
+
+    def __call__(self, user: Any) -> bool | CrossAuthException:
+        return SUSPENDED if self.suspended else True
+
+
+# Each starts a sign-in, refuses the user while it waits for its code, then
+# sends the code; it returns the answer's error and status.
+Finish = Callable[[CrossAuth, TestClient, str, Callable[[], None]], tuple[str, int]]
+
+
+def _verify_mfa(
+    auth: CrossAuth, client: TestClient, secret: str, refuse: Callable[[], None]
+) -> tuple[str, int]:
+    challenge = _paused(auth)
+    refuse()
+    with pytest.raises(CrossAuthException) as refused:
+        auth.verify_mfa(challenge, code=code_now(secret, 1))
+    return refused.value.error, refused.value.status_code
+
+
+def _complete_mfa_login(
+    auth: CrossAuth, client: TestClient, secret: str, refuse: Callable[[], None]
+) -> tuple[str, int]:
+    challenge = client.post("/login").json()["challenge"]
+    refuse()
+    answer = client.post(
+        "/login/2fa", json={"challenge": challenge, "code": code_now(secret, 1)}
+    )
+    return answer.json()["error"], answer.status_code
+
+
+def _mfa_grant(
+    auth: CrossAuth, client: TestClient, secret: str, refuse: Callable[[], None]
+) -> tuple[str, int]:
+    with legacy_password_grant():
+        paused = client.post(
+            "/token",
+            data={
+                "grant_type": "password",
+                "client_id": "app-client",
+                "username": "test@example.com",
+                "password": TEST_PASSWORD,
+            },
+        )
+    refuse()
+    answer = client.post(
+        "/token",
+        data={
+            "grant_type": "urn:cross-auth:grant-type:mfa",
+            "client_id": "app-client",
+            "mfa_token": paused.json()["mfa_token"],
+            "otp": code_now(secret, 1),
+        },
+    )
+    return answer.json()["error"], answer.status_code
+
+
+def _verify_page(
+    auth: CrossAuth, client: TestClient, secret: str, refuse: Callable[[], None]
+) -> tuple[str, int]:
+    mock_token_and_userinfo(email="test@example.com")
+    _, state = start_provider_auth(client, "/fake/login")
+    client.get("/fake/callback", params={"code": "c", "state": state})
+    refuse()
+    answer = client.post("/mfa/verify", json={"code": code_now(secret, 1)})
+    return answer.json()["error"], answer.status_code
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("finish", "status"),
+    [
+        (_verify_mfa, 403),
+        (_complete_mfa_login, 403),
+        # An OAuth error, as /token answers every refusal.
+        (_mfa_grant, 400),
+        (_verify_page, 403),
+    ],
+)
+def test_a_user_refused_while_waiting_for_the_code_gets_the_rules_refusal(
+    finish: Finish,
+    status: int,
+    engine: Any,
+    secondary_storage: Any,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    fake_provider: FakeProvider,
+    enrolled: tuple[str, list[str]],
+) -> None:
+    """user_can_authenticate is asked again once the code checks out, and a
+    refusal it returns, not only one it raises, keeps the user out."""
+    secret, _ = enrolled
+    _link_identity(accounts_storage)
+    rule = Suspendable()
+    auth = make_auth(
+        engine,
+        secondary_storage,
+        accounts_storage,
+        session_storage,
+        fake_provider,
+        user_can_authenticate=rule,
+    )
+    with app_for(auth) as client:
+        before = len(session_storage.records)
+
+        def refuse() -> None:
+            nonlocal before
+            before = len(session_storage.records)
+            rule.suspended = True
+
+        refused = finish(auth, client, secret, refuse)
+
+    assert refused == ("account_suspended", status)
+    assert len(session_storage.records) == before

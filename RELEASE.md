@@ -22,6 +22,9 @@ regenerate recovery codes or remove a factor.
   `/mfa/factors/{id}/remove`, `/mfa/verify` and `/reauthenticate`.
 - With 2FA on, `login()`, `issue_session_token()` and `sign_in_with_id_token()`
   raise `MFARequired` for a user who needs a code.
+- Once the code checks out, every sign-in asks `user_can_authenticate` again, so
+  a user refused while their sign-in waited is refused then, with the refusal
+  the rule returns or raises.
 - Revoking a user's sessions also ends their sign-ins that are waiting for a
   code, which then answer `invalid_challenge`: `change_password()`,
   `revoke_all_sessions()`, `revoke_other_sessions()`,

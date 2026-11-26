@@ -470,6 +470,9 @@ def _complete(
         user = context.accounts_storage.find_user_by_id(challenge.user_id)
         if user is None:
             raise _invalid_challenge()
+        # Asked again, as every other kind does: the user may have been
+        # refused since the challenge started.
+        context.check_user_can_authenticate(user)
         return Finished(Response(status_code=204, cookies=clear), user=user)
 
     # "browser" (an OAuth callback) and "cookie" (the application's login()).
