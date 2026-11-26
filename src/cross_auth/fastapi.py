@@ -538,6 +538,13 @@ class CrossAuth:
         for ``issue_session_token``. Returns the token, the session record, the
         user and whether it was just created.
 
+        With two-factor authentication, a user who needs a code raises
+        ``MFARequired`` once the provider identity is verified and the account
+        resolved, and no session is created. That is not a failed provider
+        sign-in: pass its ``challenge`` and the user's code to ``verify_mfa``,
+        which returns the token and the session record, not an
+        ``IdTokenSignIn``.
+
         Like the browser callback, it refuses (``RuntimeError``) before
         verifying anything when there is no ``session_storage`` or while the
         accounts storage defers its commits, as one that joined an application

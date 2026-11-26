@@ -15,8 +15,11 @@ until you configure it.
 
 When a user has an authenticator, every sign-in issues nothing until they enter
 a code: your password logins, the `/token` password grant, OAuth callbacks
-(session and token flows) and `sign_in_with_id_token`. Between the two steps
-there is no session, only a short-lived _challenge_ in your secondary storage.
+(session and token flows) and `sign_in_with_id_token`. By default, device logins
+are the exception (see
+[Which sign-ins are challenged](#which-sign-ins-are-challenged)). Between the
+two steps there is no session, only a short-lived _challenge_ in your secondary
+storage.
 
 For Django, see
 [Two-factor authentication on Django](/docs/django#two-factor-authentication).
@@ -27,7 +30,7 @@ For Django, see
 import os
 
 from sqlalchemy import JSON, Column
-from sqlmodel import Field
+from sqlmodel import Field, Session
 
 from cross_auth.fastapi import CrossAuth
 from cross_auth.storage.sqlmodel import (
@@ -202,8 +205,10 @@ challenge's attempts.
 
 ### Bearer tokens
 
-`issue_session_token()` and `sign_in_with_id_token()` raise `MFARequired` too,
-except for a device login (`login_method="device"`). Finish with
+`issue_session_token()` and `sign_in_with_id_token()` raise `MFARequired` too.
+The default rule does not challenge a device login
+(`issue_session_token(..., login_method="device")`), but a `requires_mfa` of
+your own may, so handle `MFARequired` there as well. Finish with
 `auth.verify_mfa(challenge, code=...)`, which returns the token and its session
 record.
 

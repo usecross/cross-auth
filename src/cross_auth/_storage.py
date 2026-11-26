@@ -545,7 +545,10 @@ class MFAStorage(Protocol):
     """Stores second factors and recovery codes. It holds no 2FA rules.
 
     Cross Auth's ``_mfa`` module decides everything; a storage only reads and
-    writes rows. Each method commits before it returns.
+    writes rows. Each method commits before it returns, or joins the
+    application's transaction, as Django's storage does inside ``atomic()``:
+    then a successful return is not durable until that transaction commits,
+    and a rollback undoes it, a new factor and its recovery codes included.
 
     ``create_factor``, ``delete_factor``, ``replace_recovery_codes``,
     ``record_failure``, ``lock`` and ``reset_failures`` each run in one
@@ -633,5 +636,9 @@ class MFAStorage(Protocol):
 
         Core delivers the after hooks of factor and recovery-code changes this
         way. A storage whose operations commit before returning calls it now.
+        One that joins an application transaction calls it after the outermost
+        transaction commits (not after an inner savepoint) and drops it if
+        that transaction rolls back, so no after hook reports a change that
+        did not last.
         """
         ...
