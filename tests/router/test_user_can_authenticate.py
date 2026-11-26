@@ -3,7 +3,8 @@
 The browser callback checks the user it resolved before it issues a session
 or an authorization code, so the refusal comes back on the flow's error path.
 Linking that makes a provider identity a way to sign in checks the user too,
-and so does auto-linking, before it attaches the identity. Every check runs
+and so does auto-linking, before it attaches the identity and again once the
+identity's after hooks have run. Every check runs
 only once the provider identity is verified. A ``CrossAuthException`` the rule
 returns is answered as one it raises, with its own status where the response
 has one of Cross-Auth's choosing.
@@ -21,7 +22,7 @@ from cross_auth import User
 from cross_auth._session import create_session
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.fastapi import CrossAuth
-from cross_auth.hooks import AfterOAuthCallbackEvent
+from cross_auth.hooks import AfterOAuthCallbackEvent, AfterSocialAccountCreateEvent
 from tests.conftest import SocialAccount
 
 from .conftest import (
@@ -271,7 +272,32 @@ def test_auto_linking_attaches_the_identity_for_an_allowed_user(
     assert response.status_code == 302
     [account] = accounts_storage.data["test"].social_accounts
     assert account.provider_user_id == "new-1"
-    assert rule.checked == ["test"]
+    # Before the identity is attached, and again once its hooks have run.
+    assert rule.checked == ["test", "test"]
+
+
+@respx.mock
+def test_auto_linking_checks_again_once_the_identity_is_attached(
+    build_auth, session_storage, accounts_storage, rule
+):
+    # An after hook of the new identity refuses the user, so the sign-in stops
+    # there, as it does for a new user.
+    auth = _auto_linking_auth(build_auth, rule)
+
+    @auth.after("social_account.create")
+    def refuse_the_user(event: AfterSocialAccountCreateEvent) -> None:
+        rule.refused.add("test")
+
+    mock_token_and_userinfo(email="test@example.com", provider_user_id="new-1")
+
+    with _client(auth) as client:
+        _, state = start_provider_auth(client, "/fake/login")
+        response = _callback(client, state)
+
+    assert response.status_code == 403
+    assert response.json()["error"] == "access_denied"
+    assert rule.checked == ["test", "test"]
+    assert session_storage.records == {}
 
 
 @respx.mock

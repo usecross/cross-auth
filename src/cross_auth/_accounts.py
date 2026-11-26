@@ -534,8 +534,8 @@ def resolve_or_create_user(
 
     Raises ``CrossAuthException`` for a user ``user_can_authenticate`` refuses,
     with its own error when it returns or raises one. An existing user found
-    by email is checked before auto-linking gives them a new way to sign in;
-    a new user is checked once created.
+    by email is checked before auto-linking gives them a new way to sign in,
+    and again once it has; a new user is checked once created.
     """
     if social_account:
         # Native verification refreshes identity without replacing web credentials.
@@ -645,6 +645,9 @@ def resolve_or_create_user(
         provider_email_verified=validated.email_verified,
         is_login_method=True,
     )
+    # Again once linked: the identity's after hooks have run by now, as a new
+    # user's have when it is checked above, and one may have refused the user.
+    context.check_user_can_authenticate(user)
 
     return (
         ResolvedUser(user=user, created=False),
