@@ -735,8 +735,7 @@ class SQLModelAccountsStorage(
     Use CrossAuth's typed ``user.create``, ``social_account.create``, and
     ``social_account.update`` hooks for lifecycle policy, side effects, and
     mapping provider-specific values onto extra columns. Override the query
-    extension methods for behaviour such as
-    excluding soft-deleted users or tenant scoping.
+    extension methods for behaviour such as tenant scoping.
     ``filter_social_account_query`` is applied to reads
     and writes alike. Go through ``list_social_accounts`` for account reads;
     relationship loading remains application-configured. Model attributes and
@@ -1396,7 +1395,13 @@ class SQLModelAccountsStorage(
     def filter_user_query(
         self, statement: SelectOfScalar[UserModelT]
     ) -> SelectOfScalar[UserModelT]:
-        """Customize user lookups, e.g. exclude soft-deleted users."""
+        """Customize user lookups, e.g. scope them to a tenant.
+
+        Not for soft-deleted or suspended users: sign-in must find them to
+        refuse them. A hidden user's social account points at a user that is
+        not found, and their email looks free for a second sign-up. Return a
+        ``CrossAuthException`` from ``user_can_authenticate`` instead.
+        """
         return statement
 
     def filter_social_account_query(

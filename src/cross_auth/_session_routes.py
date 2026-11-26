@@ -97,7 +97,9 @@ def _session_endpoint(
     @wraps(handler)
     def endpoint(request: HTTPRequest, context: Context) -> Response:
         # Like other session uses, a user user_can_authenticate refuses
-        # cannot list or revoke sessions; /logout still ends their own.
+        # cannot list or revoke sessions; /logout still ends their own. A
+        # refusal it returns answers 401 like an unknown session, and only
+        # one it raises answers with its own error.
         try:
             current = context.resolve_current_session(request)
         except CrossAuthException as e:

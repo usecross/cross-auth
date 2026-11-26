@@ -11,11 +11,31 @@ The FastAPI `CrossAuth` class provides these public methods for session
 management. See [Session Authentication](/docs/session-authentication) for usage
 examples.
 
+### `CrossAuth(..., user_can_authenticate=...)`
+
+`Callable[[User], bool | CrossAuthException]`, called with the user at every
+login, once their credentials are verified, and on every use of a session. What
+it answers decides what happens:
+
+| Answer                         | At a login                    | On a use of a session |
+| ------------------------------ | ----------------------------- | --------------------- |
+| `True`                         | Signs in.                     | Uses the session.     |
+| `False`                        | Raises `access_denied` (403). | Counts as no session. |
+| Returns a `CrossAuthException` | Raises it.                    | Counts as no session. |
+| Raises a `CrossAuthException`  | Raises it.                    | Raises it.            |
+
+Cross-Auth's routes answer a raised error with its `error`, `error_description`
+and `status_code`, except that `/token` answers 400 and browser sign-in for an
+OAuth client redirects to the client. Any other exception it returns raises
+`TypeError`. See
+[Refuse Suspended or Deleted Users](/docs/session-authentication#refuse-suspended-or-deleted-users).
+
 ### `authenticate(email, password)`
 
 Verifies email/password credentials with `password_hasher`. Returns the `User`
 or `None`. Once the password matches, raises `CrossAuthException` for a user
-`user_can_authenticate` refuses.
+`user_can_authenticate` refuses: `access_denied`, or the one it returns or
+raises.
 
 ### `password_hasher`
 
@@ -29,7 +49,8 @@ yourself with its `hash` method.
 
 Creates a session and sets the session cookie directly on the provided FastAPI
 `Response`. Raises `CrossAuthException` for a user `user_can_authenticate`
-refuses, before the `login` hooks run.
+refuses, before the `login` hooks run: `access_denied`, or the one it returns or
+raises.
 
 ### `logout(request, response=...)`
 
@@ -48,7 +69,8 @@ Registers a typed hook that runs after a Cross-Auth lifecycle event succeeds.
 
 A bound method usable as a FastAPI dependency. Resolves the current user from
 the session cookie or `Authorization: Bearer ...` header. Returns `User | None`;
-`None` also for a user `user_can_authenticate` refuses.
+`None` also for a user `user_can_authenticate` refuses, with `False` or a
+returned `CrossAuthException`; one it raises propagates.
 
 ### `require_current_user(request)`
 

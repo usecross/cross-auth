@@ -457,7 +457,11 @@ def resolve_user_for_sign_in(
     user_info: dict[str, Any],
     token_response: TokenResponse | None,
 ) -> tuple[ResolvedUser, ResolvedSocialAccount]:
-    """Check whether a provider identity may sign in, then resolve its user."""
+    """Check whether a provider identity may sign in, then resolve its user.
+
+    The user is checked against ``user_can_authenticate`` too, as
+    ``resolve_or_create_user`` describes, so a refusal raises here.
+    """
     social_account = context.accounts_storage.find_social_account(
         provider=provider.id,
         provider_user_id=validated.provider_user_id,
@@ -526,7 +530,13 @@ def resolve_or_create_user(
     token_response: TokenResponse | None,
     social_account: SocialAccount | None,
 ) -> tuple[ResolvedUser, ResolvedSocialAccount]:
-    """Find/create a user and social account after login eligibility is checked."""
+    """Find/create a user and social account after login eligibility is checked.
+
+    Raises ``CrossAuthException`` for a user ``user_can_authenticate`` refuses,
+    with its own error when it returns or raises one. An existing user found
+    by email is checked before auto-linking gives them a new way to sign in,
+    and again once it has; a new user is checked once created.
+    """
     if social_account:
         # Native verification refreshes identity without replacing web credentials.
         credentials = ProviderCredentials.of(
@@ -548,6 +558,7 @@ def resolve_or_create_user(
                 "server_error",
                 error_description="User not found for social account",
             )
+        context.check_user_can_authenticate(user)
 
         return (
             ResolvedUser(user=user, created=False),
@@ -614,12 +625,15 @@ def resolve_or_create_user(
             email_verified=validated.email_verified or False,
             identity=prepare_identity,
         )
+        context.check_user_can_authenticate(user)
 
         return (
             ResolvedUser(user=user, created=True),
             ResolvedSocialAccount(account=account, created=True),
         )
 
+    # A user who may not sign in gets no new way to sign in, as when linking.
+    context.check_user_can_authenticate(user)
     created_social_account = _create_social_account(
         context=context,
         user_id=user.id,
@@ -631,6 +645,9 @@ def resolve_or_create_user(
         provider_email_verified=validated.email_verified,
         is_login_method=True,
     )
+    # Again once linked: the identity's after hooks have run by now, as a new
+    # user's have when it is checked above, and one may have refused the user.
+    context.check_user_can_authenticate(user)
 
     return (
         ResolvedUser(user=user, created=False),

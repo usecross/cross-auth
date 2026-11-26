@@ -245,7 +245,7 @@ a user's sessions when you delete the user.
 
 Pass `user_can_authenticate` to refuse a user at every point Cross-Auth lets
 them in: each login, and each use of a session. It takes the user and returns
-whether they may sign in:
+whether they may sign in, or the error that tells them why not:
 
 ```python
 def user_can_authenticate(user: User) -> bool:
@@ -281,26 +281,55 @@ returns `None`, so nobody learns whether an account may sign in without its
 password. In the same way, `auth.resolve_id_token_user()` checks once the token
 is verified, and browser sign-in once the provider has confirmed the identity.
 
-To answer with your own error, raise `CrossAuthException` instead of returning
-`False`. Cross-Auth uses it in place of its own, at login and on each use:
+To tell the user why, return a `CrossAuthException` instead of `False`. A login
+raises it in place of `access_denied`, and a use of a session counts it as
+`False`:
 
 ```python
 from cross_auth.exceptions import CrossAuthException
 
 
-def user_can_authenticate(user: User) -> bool:
+def user_can_authenticate(user: User) -> bool | CrossAuthException:
     if user.deleted_at is not None:
-        return False
+        return CrossAuthException(
+            "account_deleted",
+            "This account was deleted. Contact support to restore it.",
+            status_code=403,
+        )
     if user.suspended_at is not None:
-        raise CrossAuthException("account_suspended", "Account suspended", 403)
+        return CrossAuthException(
+            "account_suspended",
+            "This account is suspended. Contact support.",
+            status_code=403,
+        )
     return True
 ```
 
-Cross-Auth's routes answer with that error and status. `/token` answers it as a
-400 OAuth error, as it does for hook errors, and browser sign-in for an OAuth
-client redirects to the client with it. Your own calls raise it, including
-`get_current_user` and `require_current_user` used as dependencies, so register
-an exception handler:
+Each login answers with it as it answers its other errors:
+
+- Browser sign-in, and connecting or linking a provider with `allow_login`,
+  answer with its `error`, `error_description` and `status_code`.
+- Browser sign-in for an OAuth client redirects to the client's `redirect_uri`
+  with its `error` and `error_description`, as OAuth errors do.
+- `/token` answers it as a 400 OAuth error, as it does for hook errors.
+- `auth.authenticate()`, `auth.login()`, `auth.issue_session_token()`,
+  `auth.sign_in_with_id_token()` and `auth.resolve_id_token_user()` raise it.
+
+On a use of a session nothing is raised: `get_current_user` returns `None`, the
+session routes answer `401 unauthorized`, and so on, as for `False`. A user
+whose account was suspended while signed in finds themselves signed out, and
+their next sign-in tells them why.
+
+You can also raise the `CrossAuthException`. Then it propagates from every
+check, also on each use of a session, so `get_current_user` and
+`require_current_user` used as dependencies raise it too. Return it unless you
+want that.
+
+`user_can_authenticate` must return `True`, `False` or a `CrossAuthException`.
+Any other exception it returns, such as FastAPI's `HTTPException`, raises
+`TypeError` rather than letting the user in.
+
+Register an exception handler for the errors your own calls raise:
 
 ```python
 from fastapi import Request
@@ -341,6 +370,26 @@ API keys, yourself.
 
 Without `user_can_authenticate`, every user may sign in, and logins do not load
 the user to ask.
+
+#### Soft-Deleted Users
+
+Keep soft-deleted users where the accounts storage finds them, and refuse them
+in `user_can_authenticate`. Hiding them from the storage, for example with a
+SQLModel [`filter_user_query`](/docs/storage#adapter-customization), breaks
+sign-in. Their provider identity still points at them, so signing in with it
+answers `server_error`, and their email looks unused, so signing up with it
+creates a second user with the same email.
+
+A user the storage finds is refused with your error wherever they sign in: with
+their password, their provider identity, an ID token, or a new provider identity
+for their email that auto-linking would link to them. That identity is not
+attached. A new identity that cannot be linked automatically gets
+`account_not_linked` without `user_can_authenticate` being asked, since it has
+not shown that it owns the account. And the user's sessions count as no session.
+
+A soft-deleted user keeps their email, so nobody can sign up with it again. If
+your application allows that, change the deleted user's email when you delete
+them.
 
 ### Change a Password
 

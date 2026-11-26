@@ -35,6 +35,7 @@ from cross_auth.django.storage import (
     DjangoSecondaryStorage,
     DjangoUser,
 )
+from cross_auth.exceptions import CrossAuthException
 
 from .fake_google import CALLBACK, Account, FakeGoogle
 from .support import (
@@ -217,6 +218,30 @@ class TestSignIn:
         assert response.status_code == 403
         assert error_of(response) == "access_denied"
         assert whoami(client)["authenticated"] is False
+
+    def test_inactive_user_is_refused_by_a_returned_error(self) -> None:
+        # Core raises it at sign-in, as above; a session use through the
+        # context would count the user as signed out instead of raising.
+        provider = get_settings().providers["google"]
+        request = RequestFactory().get("/auth/google/callback")
+        context = views._context(request, views._Signals(request, provider))
+        user = DjangoAccountsStorage().find_user_by_id(
+            make_user("person@example.com", is_active=False).pk
+        )
+        assert user is not None
+        assert context.user_can_authenticate is not None
+
+        refusal = context.user_can_authenticate(user)
+
+        assert isinstance(refusal, CrossAuthException)
+        assert (refusal.error, refusal.error_description, refusal.status_code) == (
+            "access_denied",
+            "This account is inactive.",
+            403,
+        )
+        with pytest.raises(CrossAuthException) as raised:
+            context.check_user_can_authenticate(user)
+        assert raised.value.error_description == "This account is inactive."
 
     def test_deactivated_user_loses_existing_session(
         self, client: Client, google: FakeGoogle

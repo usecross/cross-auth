@@ -19,6 +19,7 @@ from ._storage import (
     User,
 )
 from ._token_format import generate_token
+from .exceptions import CrossAuthException
 
 _DEFAULT_MAX_AGE = 86400
 _DEFAULT_ACTIVITY_INTERVAL = 300
@@ -29,8 +30,37 @@ _USER_AGENT_MAX_LENGTH = 512
 _CLIENT_MAX_LENGTH = 255
 
 SessionTokenHasher = Callable[[str], str]
-# Whether a user may sign in and keep using their sessions.
-UserCanAuthenticate = Callable[[User], bool]
+# Whether a user may sign in and keep using their sessions: True, False, or
+# the CrossAuthException a sign-in raises in place of the generic refusal.
+UserCanAuthenticate = Callable[[User], bool | CrossAuthException]
+
+
+def sign_in_refused() -> CrossAuthException:
+    """The error for a user ``user_can_authenticate`` returned False for."""
+    return CrossAuthException(
+        "access_denied", error_description="Sign-in is not allowed", status_code=403
+    )
+
+
+def user_refusal(
+    user_can_authenticate: UserCanAuthenticate, user: User
+) -> CrossAuthException | None:
+    """Return why ``user_can_authenticate`` refuses ``user``, or ``None``.
+
+    A ``CrossAuthException`` it returns is the refusal itself, and False is
+    the generic ``access_denied``. An exception it raises propagates.
+    """
+    verdict = user_can_authenticate(user)
+    if isinstance(verdict, CrossAuthException):
+        return verdict
+    if isinstance(verdict, BaseException):
+        # Every exception is truthy, so another kind, such as a web
+        # framework's HTTP error, would otherwise let the user in.
+        raise TypeError(
+            "user_can_authenticate must return True, False or a "
+            f"CrossAuthException, not {type(verdict).__name__}"
+        )
+    return None if verdict else sign_in_refused()
 
 
 class SessionMetadata(TypedDict, total=False):
@@ -269,9 +299,10 @@ def authenticate_session_token(
     """Return the active session ``session_token`` belongs to and its user.
 
     Returns ``None`` when the token is unknown, revoked or expired, when the
-    user is not found, or when ``user_can_authenticate`` returns False; a
-    ``CrossAuthException`` it raises propagates. The user is checked before a
-    sliding refresh, so a refused token does not extend its session.
+    user is not found, or when ``user_can_authenticate`` refuses the user,
+    whether it returns False or a ``CrossAuthException``; one it raises
+    propagates. The user is checked before a sliding refresh, so a refused
+    token does not extend its session.
     """
     resolved = resolve_config(config)
     session = _find_session(session_token, storage, resolved)
@@ -291,11 +322,18 @@ def _session_user(
     accounts_storage: AccountsStorage,
     user_can_authenticate: UserCanAuthenticate | None,
 ) -> User | None:
-    """Return the user of ``session``, or ``None`` if it may not use it."""
+    """Return the user of ``session``, or ``None`` if it may not use it.
+
+    A refusal ``user_can_authenticate`` returns is for sign-in, where it
+    explains itself; a session use only needs to know there is no user.
+    """
     user = accounts_storage.find_user_by_id(session.user_id)
     if user is None:
         return None
-    if user_can_authenticate is not None and not user_can_authenticate(user):
+    if (
+        user_can_authenticate is not None
+        and user_refusal(user_can_authenticate, user) is not None
+    ):
         return None
     return user
 
@@ -466,8 +504,9 @@ def get_current_user(
 ) -> User | None:
     """Return the user of the request's session, or ``None``.
 
-    A session whose user is not found, or refused by ``user_can_authenticate``,
-    counts as no session; a ``CrossAuthException`` it raises propagates.
+    A session whose user is not found, or refused by ``user_can_authenticate``
+    with False or a returned ``CrossAuthException``, counts as no session; a
+    ``CrossAuthException`` it raises propagates.
     """
     resolution = resolve_current_session(
         request,
@@ -506,10 +545,11 @@ def resolve_current_session(
     resolving a session for logout so it is not extended before revocation.
 
     With ``accounts_storage`` it also loads the session's user, before any
-    refresh: if the user is not found, or refused by ``user_can_authenticate``,
-    the request has no session, so a refused request does not extend it. The
-    session found first still decides: a bearer token is not tried instead.
-    A ``CrossAuthException`` the check raises propagates.
+    refresh: if the user is not found, or refused by ``user_can_authenticate``
+    (with False or a returned ``CrossAuthException``), the request has no
+    session, so a refused request does not extend it. The session found first
+    still decides: a bearer token is not tried instead. A
+    ``CrossAuthException`` the check raises propagates.
     """
     resolved = resolve_config(config)
 
