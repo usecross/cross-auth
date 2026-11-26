@@ -2,11 +2,13 @@ from datetime import datetime, timedelta, timezone
 from typing import assert_type
 
 import pytest
+from pwdlib import PasswordHash
+from pwdlib.hashers.argon2 import Argon2Hasher
 from sqlalchemy import inspect
 from sqlalchemy.orm import object_session
 from sqlmodel import Field, Session
 
-from cross_auth._password import authenticate
+from cross_auth._password import DEFAULT_PASSWORD_HASHER, authenticate
 from cross_auth._storage import PasswordStorage
 from cross_auth._storage import User as UserProtocol
 from cross_auth.exceptions import CrossAuthException
@@ -858,7 +860,9 @@ def test_set_password_stores_a_hash_authenticate_verifies(store):
         user_info={}, email="person@example.com", email_verified=True
     )
 
-    updated = store.set_password(user.id, "a new password")
+    updated = store.set_password(
+        user.id, "a new password", password_hasher=DEFAULT_PASSWORD_HASHER
+    )
 
     assert isinstance(store, PasswordStorage)
     assert updated is not None
@@ -867,6 +871,25 @@ def test_set_password_stores_a_hash_authenticate_verifies(store):
     assert updated.updated_at is not None
     assert authenticate("person@example.com", "a new password", store) is not None
     assert authenticate("person@example.com", "wrong password", store) is None
+
+
+def test_set_password_hashes_with_the_hasher_it_is_given(store):
+    hasher = PasswordHash((Argon2Hasher(time_cost=1, memory_cost=1024),))
+    user = store.create_user(
+        user_info={}, email="person@example.com", email_verified=True
+    )
+
+    updated = store.set_password(user.id, "a new password", password_hasher=hasher)
+
+    assert updated is not None
+    assert updated.hashed_password is not None
+    assert updated.hashed_password.startswith("$argon2id$")
+    signed_in = authenticate(
+        "person@example.com", "a new password", store, password_hasher=hasher
+    )
+    assert signed_in is not None
+    # The default bcrypt hasher cannot read the hash, so it does not match.
+    assert authenticate("person@example.com", "a new password", store) is None
 
 
 def test_set_password_does_not_find_unknown_or_hidden_users(engine, store):
@@ -880,9 +903,10 @@ def test_set_password_does_not_find_unknown_or_hidden_users(engine, store):
         row.deleted = True
         session.commit()
 
-    assert store.set_password(123456, "a new password") is None
-    assert store.set_password("not-an-id", "a new password") is None
-    assert hidden.set_password(deleted.id, "a new password") is None
+    hasher = DEFAULT_PASSWORD_HASHER
+    assert store.set_password(123456, "new", password_hasher=hasher) is None
+    assert store.set_password("not-an-id", "new", password_hasher=hasher) is None
+    assert hidden.set_password(deleted.id, "new", password_hasher=hasher) is None
     assert store.find_user_by_id(deleted.id).hashed_password is None
 
 
@@ -892,7 +916,7 @@ def test_set_password_refuses_a_password_bcrypt_would_cut(store):
     )
 
     with pytest.raises(CrossAuthException) as exc:
-        store.set_password(user.id, "é" * 37)
+        store.set_password(user.id, "é" * 37, password_hasher=DEFAULT_PASSWORD_HASHER)
 
     assert exc.value.error == "password_too_long"
     assert store.find_user_by_id(user.id).hashed_password is None

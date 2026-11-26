@@ -327,7 +327,7 @@ class Issuer:
         except CrossAuthException as e:
             return self._error_response(e.error, e.error_description)
 
-        valid = _verify_password(user, request.password)
+        valid = _verify_password(user, request.password, context.password_hasher)
         if not valid or user is None:
             return self._error_response("invalid_grant", "Invalid username or password")
 

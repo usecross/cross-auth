@@ -766,17 +766,22 @@ need not implement it, and `change_password` raises `TypeError` for one without
 it:
 
 ```python
-def set_password(self, user_id: Any, password: str) -> User | None: ...
+def set_password(
+    self, user_id: Any, password: str, *, password_hasher: PasswordHasher
+) -> User | None: ...
 ```
 
 It stores a new password and returns the updated user, or `None` without writing
-anything when the user is not found. It receives the password itself, so hash it
-the way your password check reads it: Cross-Auth's `authenticate` reads a bcrypt
-hash from `hashed_password`, as `cross_auth._password.hash_password` makes. The
+anything when the user is not found. Store `password_hasher.hash(password)` in
+`hashed_password`: `change_password` passes the
+[password hasher](/docs/session-authentication#password-hashing) Cross-Auth
+verifies passwords with, so the checks read the hash. Let what `hash` raises
+propagate before writing, such as the default bcrypt hasher's
+`CrossAuthException("password_too_long")` for a password over 72 bytes. The
 SQLModel adapter has one: it stores that hash and applies `filter_user_query`,
-so a user it hides is not found, and refuses a password longer than bcrypt's 72
-bytes with `CrossAuthException("password_too_long")` before writing. The Django
-adapter has none: Django projects change passwords with Django's own views and
+so a user it hides is not found. Pass `password_hasher=auth.password_hasher`
+when you call it yourself, for example from a password reset. The Django adapter
+has none: Django projects change passwords with Django's own views and
 `update_session_auth_hash`.
 
 Identity lookups should specify `user_id` for a user's connection or

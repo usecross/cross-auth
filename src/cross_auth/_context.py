@@ -9,6 +9,7 @@ from ._config import Config
 from ._email import normalize_email as _default_normalize_email
 from ._login import issue_bearer_session, run_login, run_now
 from ._oauth_server import OAuthServer
+from ._password import DEFAULT_PASSWORD_HASHER, PasswordHasher
 from ._session import (
     AuthenticatedSession,
     ResolvedSession,
@@ -59,6 +60,7 @@ class Context:
         hooks: HookRegistry | None = None,
         normalize_email: Callable[[str], str] | None = None,
         oauth_server: OAuthServer | None = None,
+        password_hasher: PasswordHasher | None = None,
         user_can_authenticate: UserCanAuthenticate | None = None,
     ):
         self.secondary_storage = secondary_storage
@@ -75,6 +77,11 @@ class Context:
         # provider_email stored on social accounts).
         self.normalize_email = (
             normalize_email if normalize_email is not None else _default_normalize_email
+        )
+        # The one hasher for every password core verifies or hashes; it also
+        # hashes what change_password stores, so the checks read those hashes.
+        self.password_hasher: PasswordHasher = (
+            password_hasher if password_hasher is not None else DEFAULT_PASSWORD_HASHER
         )
         self.config: Config = config if config is not None else {}
         unknown = self.config.keys() - Config.__optional_keys__
