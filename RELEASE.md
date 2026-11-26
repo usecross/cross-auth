@@ -22,6 +22,9 @@ regenerate recovery codes or remove a factor.
   `/mfa/factors/{id}/remove`, `/mfa/verify` and `/reauthenticate`.
 - With 2FA on, `login()`, `issue_session_token()` and `sign_in_with_id_token()`
   raise `MFARequired` for a user who needs a code.
+- `challenge_ttl` is at most 3600 seconds, `reauthentication_max_age` at most
+  86400 and `lockout_seconds` at most 30 days; a larger value raises
+  `ValueError`.
 - Once the code checks out, every sign-in asks `user_can_authenticate` again, so
   a user refused while their sign-in waited is refused then, with the refusal
   the rule returns or raises.

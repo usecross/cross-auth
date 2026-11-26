@@ -55,16 +55,17 @@ class MFAConfig(TypedDict, total=False):
     encrypt: Callable[[str], str]
     # Return None when the text cannot be decrypted, e.g. after a key change.
     decrypt: Callable[[str], str | None]
-    # Seconds a sign-in may wait for its second factor. Default 300.
+    # Seconds a sign-in may wait for its second factor. Default 300, at most
+    # 3600.
     challenge_ttl: int
     # Wrong codes one sign-in may try before it must start over. Default 5.
     max_attempts: int
     # Wrong codes, across sign-ins and factors, that lock a user's 2FA, and
-    # for how many seconds. Defaults 10 and 900.
+    # for how many seconds. Defaults 10 and 900; at most 30 days locked.
     lockout_failures: int
     lockout_seconds: int
     # Seconds after signing in or reauthenticating during which the user may
-    # change their 2FA settings. Default 300.
+    # change their 2FA settings. Default 300, at most a day (86400).
     reauthentication_max_age: int
     # TOTP time steps accepted either side of now. Default 1.
     totp_tolerance: int
@@ -75,6 +76,19 @@ class MFAConfig(TypedDict, total=False):
     # Name of the cookie a browser sign-in keeps its challenge in.
     challenge_cookie: str
 
+
+# The longest each duration may be, in seconds. Beyond them, datetime
+# arithmetic can overflow; the challenge bound also sets how long a revocation
+# marker is kept, whatever the revoking worker's own challenge_ttl.
+MAX_CHALLENGE_TTL = 60 * 60
+_MAX_SECONDS: dict[str, int] = {
+    "challenge_ttl": MAX_CHALLENGE_TTL,
+    "reauthentication_max_age": 24 * 60 * 60,
+    "lockout_seconds": 30 * 24 * 60 * 60,
+}
+# Outlives any challenge started before the revocation, with a minute to spare
+# for clocks.
+_REVOKED_MARKER_TTL = MAX_CHALLENGE_TTL + 60
 
 _DEFAULTS: dict[str, Any] = {
     "challenge_ttl": 300,
@@ -348,6 +362,9 @@ def resolve_config(config: MFAConfig) -> dict[str, Any]:
         value = resolved[key]
         if not isinstance(value, int) or isinstance(value, bool) or value < 1:
             raise ValueError(f"config['mfa']['{key}'] must be a positive int")
+        maximum = _MAX_SECONDS.get(key)
+        if maximum is not None and value > maximum:
+            raise ValueError(f"config['mfa']['{key}'] must be at most {maximum}")
     tolerance = resolved["totp_tolerance"]
     if (
         not isinstance(tolerance, int)
@@ -535,12 +552,13 @@ class MFA:
         than a counter: secondary storage has no atomic increment, and a
         counter that expired would start again at values older challenges
         hold. The marker only has to outlive the challenges started before
-        it, so it expires with them, with a minute to spare for clocks.
+        it. Their lifetime is each worker's ``challenge_ttl``, which may differ
+        from this one's, so it lives as long as the longest any may have.
         """
         self.secondary_storage.set(
             _REVOKED_KEY.format(digest=_digest(str(user_id))),
             secrets.token_urlsafe(16),
-            ttl=self.challenge_ttl + 60,
+            ttl=_REVOKED_MARKER_TTL,
         )
 
     def _revoked_marker(self, user_id: Any) -> str | None:

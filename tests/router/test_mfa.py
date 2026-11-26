@@ -7,6 +7,7 @@ Factors live in SQLModel tables, so this also covers ``SQLModelMFAStorage``.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -1556,3 +1557,55 @@ def test_a_client_sign_in_gets_no_code_for_a_redirect_uri_removed_meanwhile(
     assert verified.status_code == 400
     assert verified.json()["error"] == "invalid_redirect_uri"
     assert not [key for key in secondary_storage.data if key.startswith("oauth:code:")]
+
+
+# How long challenges and their revocation markers live -----------------------
+
+
+@pytest.mark.parametrize(
+    ("key", "maximum"),
+    [
+        ("challenge_ttl", 3600),
+        ("reauthentication_max_age", 86400),
+        ("lockout_seconds", 30 * 86400),
+    ],
+)
+def test_durations_have_an_upper_bound(
+    key: str,
+    maximum: int,
+    engine: Any,
+    secondary_storage: Any,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    fake_provider: FakeProvider,
+) -> None:
+    """Refused when configured, not once a user is mid-sign-in: a deadline
+    that far away does not fit in a datetime."""
+    stores = (engine, secondary_storage, accounts_storage, session_storage)
+    longest: dict[str, Any] = {key: maximum}
+    make_auth(*stores, fake_provider, **longest)
+    too_long: dict[str, Any] = {key: maximum + 1}
+    with pytest.raises(ValueError, match=f"{key}'\\] must be at most {maximum}"):
+        make_auth(*stores, fake_provider, **too_long)
+
+
+def test_a_revocation_outlives_challenges_from_workers_with_longer_ttls(
+    engine: Any,
+    secondary_storage: Any,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    fake_provider: FakeProvider,
+    enrolled: tuple[str, list[str]],
+) -> None:
+    """The marker's lifetime does not follow the revoking worker's
+    challenge_ttl, which may be shorter than the one that started it."""
+    stores = (engine, secondary_storage, accounts_storage, session_storage)
+    starting = make_auth(*stores, fake_provider, challenge_ttl=3600)
+    revoking = make_auth(*stores, fake_provider, challenge_ttl=60)
+    _paused(starting)
+
+    revoking.revoke_all_sessions(user_id="test")
+
+    [marker] = [key for key in secondary_storage.data if key.startswith("mfa:revoked:")]
+    _, expires_at = secondary_storage.data[marker]
+    assert expires_at - time.monotonic() > 3600

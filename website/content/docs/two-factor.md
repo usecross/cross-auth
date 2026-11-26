@@ -77,11 +77,11 @@ factors and recovery codes run one after the other. Any storage implementing the
 | `encrypt`, `decrypt`       | —               | Your own functions instead of `secret_keys`, such as a KMS. `decrypt` returns `None` when it cannot decrypt. |
 | `require_for_providers`    | `True`          | Whether provider sign-ins (Google, GitHub, Apple, ...) are challenged too.                                   |
 | `allow_unverified_email`   | `False`         | Allow users whose email is unverified to turn on 2FA.                                                        |
-| `challenge_ttl`            | `300`           | Seconds a sign-in may wait for its code.                                                                     |
+| `challenge_ttl`            | `300`           | Seconds a sign-in may wait for its code, at most `3600`.                                                     |
 | `max_attempts`             | `5`             | Wrong codes one sign-in may try before it must start over.                                                   |
 | `lockout_failures`         | `10`            | Wrong codes, across sign-ins, that lock the user's 2FA...                                                    |
-| `lockout_seconds`          | `900`           | ...for this long.                                                                                            |
-| `reauthentication_max_age` | `300`           | Seconds after a sign-in or `reauthenticate` during which 2FA settings may change.                            |
+| `lockout_seconds`          | `900`           | ...for this long, at most `2592000` (30 days).                                                               |
+| `reauthentication_max_age` | `300`           | Seconds after a sign-in or `reauthenticate` during which 2FA settings may change, at most `86400`.           |
 | `totp_tolerance`           | `1`             | Time steps accepted either side of now.                                                                      |
 | `challenge_cookie`         | `mfa_challenge` | Cookie that carries a browser's challenge. HttpOnly.                                                         |
 
