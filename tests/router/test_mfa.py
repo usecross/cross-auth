@@ -19,6 +19,8 @@ import time_machine
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
+from pwdlib import PasswordHash
+from pwdlib.hashers.argon2 import Argon2Hasher
 from sqlalchemy import JSON, Column
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Field, Session, SQLModel, create_engine, select
@@ -125,6 +127,7 @@ def make_auth(
     oauth_server: Any = LEGACY_APP_OAUTH_SERVER,
     requires_mfa: Callable[[Any, str | None], bool] | None = None,
     user_can_authenticate: Callable[[Any], bool | CrossAuthException] | None = None,
+    password_hasher: PasswordHasher | None = None,
     **mfa: Any,
 ) -> CrossAuth:
     return CrossAuth(
@@ -149,6 +152,7 @@ def make_auth(
         oauth_server=oauth_server,
         requires_mfa=requires_mfa,
         user_can_authenticate=user_can_authenticate,
+        password_hasher=password_hasher,
     )
 
 
@@ -1320,3 +1324,31 @@ def test_a_user_refused_while_waiting_for_the_code_gets_the_rules_refusal(
 
     assert refused == ("account_suspended", status)
     assert len(session_storage.records) == before
+
+
+def test_reauthenticating_checks_the_password_with_the_apps_hasher(
+    engine: Any,
+    secondary_storage: Any,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    fake_provider: FakeProvider,
+) -> None:
+    """The hasher sign-in uses checks it: 2FA needs no verifier of its own."""
+    argon2 = PasswordHash((Argon2Hasher(time_cost=1, memory_cost=1024),))
+    accounts_storage.data["test"].hashed_password = argon2.hash(TEST_PASSWORD)
+    auth = make_auth(
+        engine,
+        secondary_storage,
+        accounts_storage,
+        session_storage,
+        fake_provider,
+        password_hasher=argon2,
+    )
+    with app_for(auth) as client:
+        assert client.post("/login").status_code == 200
+
+        wrong = client.post("/reauthenticate", json={"password": "not the password"})
+        assert wrong.status_code == 400
+        assert wrong.json()["error"] == "invalid_password"
+        right = client.post("/reauthenticate", json={"password": TEST_PASSWORD})
+    assert right.status_code == 200, right.text

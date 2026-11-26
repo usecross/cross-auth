@@ -117,7 +117,9 @@ and removing a factor need a recent sign-in (`reauthentication_max_age`);
 otherwise they raise `reauthentication_required` (403) with the `methods` the
 user can confirm their identity with. A device login's session is never a recent
 sign-in, since it was approved from another session: it must `reauthenticate`
-first, with a password or a code.
+first, with a password or a code. `reauthenticate` checks a password with the
+[`password_hasher`](/docs/session-authentication#password-hashing) that sign-in
+uses, so an application with its own hasher needs nothing more for 2FA.
 
 ```python
 auth.get_mfa_status(request)  # MFAStatus(enabled, factors, recovery_codes_remaining)

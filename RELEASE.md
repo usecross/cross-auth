@@ -25,6 +25,8 @@ regenerate recovery codes or remove a factor.
 - Once the code checks out, every sign-in asks `user_can_authenticate` again, so
   a user refused while their sign-in waited is refused then, with the refusal
   the rule returns or raises.
+- `reauthenticate(password=...)` checks the password with `CrossAuth`'s
+  `password_hasher`, as sign-in does; Django checks it with `check_password()`.
 - Revoking a user's sessions also ends their sign-ins that are waiting for a
   code, which then answer `invalid_challenge`: `change_password()`,
   `revoke_all_sessions()`, `revoke_other_sessions()`,
