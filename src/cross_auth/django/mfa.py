@@ -75,7 +75,14 @@ from django.utils.http import url_has_allowed_host_and_scheme
 
 from cross_auth import _mfa_flow as flow
 from cross_auth._context import Context
-from cross_auth._mfa import MFA, MFAStatus, TotpConfirmation, TotpEnrollment
+from cross_auth._mfa import (
+    MFA,
+    Challenge,
+    ChallengeKind,
+    MFAStatus,
+    TotpConfirmation,
+    TotpEnrollment,
+)
 from cross_auth._mfa_flow import MFASession
 from cross_auth.exceptions import CrossAuthException, MFARequired
 from cross_auth.hooks import AfterLoginEvent, BeforeLoginEvent, HookRegistry
@@ -673,6 +680,32 @@ def _verify_page(
     )
 
 
+# What the verify view finishes: Django's own logins, provider sign-ins and
+# the OAuth server's sign-ins for your clients.
+_VERIFY_VIEW_KINDS: tuple[ChallengeKind, ...] = (
+    "framework",
+    "browser",
+    "authorization_code",
+)
+
+
+def _ensure_unrevoked(request: HttpRequest, mfa: MFA, challenge: Challenge) -> None:
+    """Undo the login just made if the user's sessions were revoked meanwhile.
+
+    Django saves a session once the response is ready, so this saves it
+    first and then asks: every revocation writes the user's marker before it
+    ends their sessions, so either it ends this one or this finds its marker.
+    Without the save, a revocation in between would find no session to end.
+    """
+    request.session.save()
+    if mfa.revoked(challenge):
+        request.session.flush()
+        request.user = AnonymousUser()
+        raise CrossAuthException(
+            "invalid_challenge", "This sign-in has expired; sign in again"
+        )
+
+
 def _restore(request: HttpRequest, finished: flow.Finished) -> AbstractBaseUser:
     """Log in again the user a guarded login held back."""
     assert finished.challenge is not None and finished.user is not None
@@ -697,8 +730,21 @@ def _restore(request: HttpRequest, finished: flow.Finished) -> AbstractBaseUser:
             "invalid_challenge", "This sign-in has expired; sign in again"
         )
     session = request.session
-    session.cycle_key()
-    session[SESSION_KEY] = native._meta.pk.value_to_string(native)
+    user_key = native._meta.pk.value_to_string(native)
+    signed_in_as = session.get(SESSION_KEY)
+    if signed_in_as is not None and (
+        str(signed_in_as) != user_key
+        or not constant_time_compare(
+            session.get(HASH_SESSION_KEY, ""), native.get_session_auth_hash()
+        )
+    ):
+        # Another login took this browser while the code was awaited. As
+        # Django's login() does, start empty rather than give this user the
+        # other one's session data.
+        session.flush()
+    else:
+        session.cycle_key()
+    session[SESSION_KEY] = user_key
     session[BACKEND_SESSION_KEY] = backend_path
     session[HASH_SESSION_KEY] = native.get_session_auth_hash()
     assert finished.mfa_method is not None
@@ -742,6 +788,7 @@ def _verify_post(request: HttpRequest) -> HttpResponse:
             http,
             context,
             token,
+            kinds=_VERIFY_VIEW_KINDS,
             code=code if isinstance(code, str) else None,
             recovery_code=recovery_code if isinstance(recovery_code, str) else None,
             login=DjangoLogin(request, bridge, mfa=mfa),
@@ -763,6 +810,8 @@ def _verify_post(request: HttpRequest) -> HttpResponse:
             if isinstance(finished.user, DjangoUser):
                 user = finished.user.native
             response = _to_django(request, finished.response)
+        if finished.challenge.kind in ("framework", "browser"):
+            _ensure_unrevoked(request, mfa, finished.challenge)
     except CrossAuthException as error:
         if _wants_json(request):
             return _to_json(flow.error_response(error))

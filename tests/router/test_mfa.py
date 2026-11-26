@@ -27,7 +27,13 @@ from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 from cross_web import Response as CrossWebResponse
 
-from cross_auth import PasswordHasher, TokenIssueRequest, _totp
+from cross_auth import (
+    OAuthClient,
+    OAuthServer,
+    PasswordHasher,
+    TokenIssueRequest,
+    _totp,
+)
 from cross_auth.exceptions import CrossAuthException, MFARequired
 from cross_auth.fastapi import CrossAuth
 from cross_auth.hooks import BeforeLoginEvent
@@ -41,6 +47,7 @@ from tests.conftest import User as MemoryUser
 
 from ..conftest import legacy_password_grant
 from .conftest import (
+    APP_CLIENT,
     APP_OAUTH_SERVER,
     LEGACY_APP_OAUTH_SERVER,
     FakeProvider,
@@ -1352,3 +1359,200 @@ def test_reauthenticating_checks_the_password_with_the_apps_hasher(
         assert wrong.json()["error"] == "invalid_password"
         right = client.post("/reauthenticate", json={"password": TEST_PASSWORD})
     assert right.status_code == 200, right.text
+
+
+# Finishing each challenge where it belongs -----------------------------------
+
+
+def _password_grant_challenge(auth: CrossAuth, client: TestClient) -> str:
+    with legacy_password_grant():
+        paused = client.post(
+            "/token",
+            data={
+                "grant_type": "password",
+                "client_id": "app-client",
+                "username": "test@example.com",
+                "password": TEST_PASSWORD,
+            },
+        )
+    return paused.json()["mfa_token"]
+
+
+def _finish_on_token(
+    auth: CrossAuth, client: TestClient, challenge: str, code: str
+) -> int:
+    return client.post(
+        "/token",
+        data={
+            "grant_type": "urn:cross-auth:grant-type:mfa",
+            "client_id": "app-client",
+            "mfa_token": challenge,
+            "otp": code,
+        },
+    ).status_code
+
+
+def _bearer_challenge(auth: CrossAuth, client: TestClient) -> str:
+    return _paused(auth)
+
+
+def _finish_with_verify_mfa(
+    auth: CrossAuth, client: TestClient, challenge: str, code: str
+) -> int:
+    auth.verify_mfa(challenge, code=code)
+    return 200
+
+
+@pytest.mark.parametrize(
+    ("start", "finish"),
+    [
+        (_password_grant_challenge, _finish_on_token),
+        (_bearer_challenge, _finish_with_verify_mfa),
+    ],
+)
+def test_the_verify_route_finishes_only_the_sign_ins_a_browser_waits_on(
+    start: Callable[[CrossAuth, TestClient], str],
+    finish: Callable[[CrossAuth, TestClient, str, str], int],
+    auth: CrossAuth,
+    enrolled: tuple[str, list[str]],
+) -> None:
+    """A password grant's challenge finishes on /token, which checks the grant
+    is still on and the client is the same; a bearer one through verify_mfa."""
+    secret, _ = enrolled
+    verified: list[Any] = []
+    with app_for(auth) as client:
+        challenge = start(auth, client)
+        auth.after("mfa.verify")(verified.append)
+
+        refused = client.post(
+            "/mfa/verify", json={"challenge": challenge, "code": code_now(secret, 1)}
+        )
+        assert refused.status_code == 400
+        assert refused.json()["error"] == "invalid_challenge"
+        # Refused before its code was checked, and left for its own route.
+        assert verified == []
+        assert finish(auth, client, challenge, code_now(secret, 1)) == 200
+
+
+def _client_sign_in(client: TestClient) -> None:
+    """Start an OAuth client's sign-in; the callback waits for the code."""
+    mock_token_and_userinfo(email="test@example.com")
+    _, state = start_provider_auth(
+        client,
+        "/fake/authorize",
+        params={
+            "client_id": "app-client",
+            "redirect_uri": _REDIRECT_URI,
+            "response_type": "code",
+            "code_challenge": _CODE_CHALLENGE,
+            "code_challenge_method": "S256",
+        },
+    )
+    callback = client.get("/fake/callback", params={"code": "c", "state": state})
+    assert callback.headers["location"] == "/login/2fa"
+
+
+def _browser_sign_in(client: TestClient) -> None:
+    mock_token_and_userinfo(email="test@example.com")
+    _, state = start_provider_auth(client, "/fake/login")
+    callback = client.get("/fake/callback", params={"code": "c", "state": state})
+    assert callback.headers["location"] == "/login/2fa"
+
+
+@respx.mock
+@pytest.mark.parametrize("sign_in", [_client_sign_in, _browser_sign_in])
+def test_a_callback_hook_that_revokes_the_users_sessions_ends_the_sign_in(
+    sign_in: Callable[[TestClient], None],
+    auth: CrossAuth,
+    enrolled: tuple[str, list[str]],
+    accounts_storage: MemoryAccountsStorage,
+) -> None:
+    """The challenge keeps the revocation marker read as the provider sign-in
+    passed, before the oauth.callback hooks run."""
+    secret, _ = enrolled
+    _link_identity(accounts_storage)
+
+    @auth.after("oauth.callback")
+    def revoke(event: Any) -> None:
+        auth.revoke_all_sessions(user_id="test")
+
+    with app_for(auth) as client:
+        sign_in(client)
+        late = client.post("/mfa/verify", json={"code": code_now(secret, 1)})
+
+    assert late.status_code == 400
+    assert late.json()["error"] == "invalid_challenge"
+
+
+def _client_verify_page(
+    auth: CrossAuth, client: TestClient, secret: str, refuse: Callable[[], None]
+) -> tuple[str, int]:
+    _client_sign_in(client)
+    refuse()
+    answer = client.post("/mfa/verify", json={"code": code_now(secret, 1)})
+    return answer.json()["error"], answer.status_code
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "finish",
+    [_verify_mfa, _complete_mfa_login, _mfa_grant, _verify_page, _client_verify_page],
+)
+def test_a_revocation_while_the_code_is_checked_leaves_no_credential(
+    finish: Finish,
+    auth: CrossAuth,
+    enrolled: tuple[str, list[str]],
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    secondary_storage: Any,
+) -> None:
+    """The code passes, then the user's sessions are revoked before the sign-in
+    stores its session or code: it must not keep either."""
+    secret, _ = enrolled
+    _link_identity(accounts_storage)
+
+    def revoke_once_the_code_passes() -> None:
+        @auth.after("mfa.verify")
+        def revoke(event: Any) -> None:
+            if event.success:
+                auth.revoke_all_sessions(user_id="test")
+
+    with app_for(auth) as client:
+        refused = finish(auth, client, secret, revoke_once_the_code_passes)
+
+    assert refused == ("invalid_challenge", 400)
+    assert all(record.revoked_at for record in session_storage.records.values())
+    assert not [key for key in secondary_storage.data if key.startswith("oauth:code:")]
+
+
+@respx.mock
+def test_a_client_sign_in_gets_no_code_for_a_redirect_uri_removed_meanwhile(
+    engine: Any,
+    secondary_storage: Any,
+    accounts_storage: MemoryAccountsStorage,
+    session_storage: MemorySessionStorage,
+    fake_provider: FakeProvider,
+    enrolled: tuple[str, list[str]],
+) -> None:
+    secret, _ = enrolled
+    _link_identity(accounts_storage)
+    clients = {"app-client": APP_CLIENT}
+    auth = make_auth(
+        engine,
+        secondary_storage,
+        accounts_storage,
+        session_storage,
+        fake_provider,
+        oauth_server=OAuthServer(get_client=clients.get),
+    )
+    with app_for(auth) as client:
+        _client_sign_in(client)
+        # The client moves to another callback while the user finds their code.
+        clients["app-client"] = OAuthClient(
+            client_id="app-client", redirect_uris=("http://client.example/new",)
+        )
+        verified = client.post("/mfa/verify", json={"code": code_now(secret, 1)})
+
+    assert verified.status_code == 400
+    assert verified.json()["error"] == "invalid_redirect_uri"
+    assert not [key for key in secondary_storage.data if key.startswith("oauth:code:")]

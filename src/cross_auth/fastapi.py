@@ -1010,6 +1010,7 @@ class CrossAuth:
             make_http_request(AsyncHTTPRequest.from_fastapi(request)),
             self._context,
             challenge,
+            kinds=("cookie", "browser"),
             code=code,
             recovery_code=recovery_code,
         )
@@ -1035,6 +1036,7 @@ class CrossAuth:
             HTTPRequest.from_form_data({}),
             self._context,
             challenge,
+            kinds=("bearer",),
             code=code,
             recovery_code=recovery_code,
         )

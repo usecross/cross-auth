@@ -152,6 +152,11 @@ The router mounts the same operations as JSON routes:
 | `POST /mfa/factors/{factor_id}/remove` | —                                                       | the new status                                                 |
 | `POST /mfa/verify`                     | `{"code"}` or `{"recovery_code"}`, optional `challenge` | sign-in finished: 303 to `next`, or `{"redirect_to"}` for JSON |
 
+`POST /mfa/verify` finishes the sign-ins a browser waits on: your `login()`,
+provider sign-ins and OAuth clients' sign-ins. A bearer challenge finishes only
+through `verify_mfa()`, and a password grant's only at `/token`; posted here,
+they answer `invalid_challenge` without their code being checked.
+
 As with the other routes, CSRF protection for cookie sessions is your job.
 
 ## Signing in
@@ -234,7 +239,9 @@ person has already started:
 It does so also when the user has no other session, so call
 `revoke_all_sessions()` after a password reset. The waiting sign-in then gets
 `invalid_challenge`, as an expired one does, and must start again; its code is
-not checked. Revoking one session (`revoke_session()`,
+not checked. A revocation that lands while a code is being checked ends that
+sign-in too: the session or authorization code it just stored is revoked, and it
+gets `invalid_challenge`. Revoking one session (`revoke_session()`,
 `DELETE /sessions/{session_id}`) leaves waiting sign-ins alone.
 
 ## Hooks

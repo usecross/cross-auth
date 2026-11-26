@@ -7,7 +7,7 @@ from cross_web import HTTPRequest
 from ._clients import OAuthClient
 from ._config import Config
 from ._email import normalize_email as _default_normalize_email
-from ._login import issue_bearer_session, run_login, run_now
+from ._login import AfterIssue, issue_bearer_session, run_login, run_now
 from ._mfa import MFA, PasswordVerifier, RequiresMFA, UserPredicate
 from ._oauth_server import OAuthServer
 from ._password import DEFAULT_PASSWORD_HASHER, PasswordHasher
@@ -291,8 +291,13 @@ class Context:
         issued = self.issue_token_result(request)
         return issued.token, issued.expires_in
 
-    def issue_token_result(self, request: TokenIssueRequest) -> IssuedToken:
-        """Issue a bearer credential together with its actual commit scheduler."""
+    def issue_token_result(
+        self, request: TokenIssueRequest, *, after_issue: AfterIssue | None = None
+    ) -> IssuedToken:
+        """Issue a bearer credential together with its actual commit scheduler.
+
+        ``after_issue`` is as for ``run_login``.
+        """
         token_issuer = (
             None if self.oauth_server is None else self.oauth_server.token_issuer
         )
@@ -316,6 +321,7 @@ class Context:
                 on_commit=run_now,
                 check_user=self.check_user_id_can_authenticate,
                 mfa=self.mfa,
+                after_issue=after_issue,
             )
             return IssuedToken(*issued, on_commit=run_now)
 
@@ -339,6 +345,7 @@ class Context:
             login_method=request.login_method,
             mfa=self.mfa,
             mfa_method=request.mfa_method,
+            after_issue=after_issue,
         )
         return IssuedToken(
             session_token, expires_in, on_commit=session_storage.on_commit

@@ -6,7 +6,7 @@ held back by the ``user_logged_in`` guard; provider sign-ins by core.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -24,6 +24,7 @@ from cross_auth import _totp
 from cross_auth._mfa import _Cipher, hash_recovery_code
 from cross_auth.django import signals
 from cross_auth.django.checks import check_mfa_setup, check_settings
+from cross_auth.django.mfa import _revoke_challenges
 from cross_auth.django.models import MFAFactor, RecoveryCode, Session
 from cross_auth.django.storage import DjangoMFAStorage
 from cross_auth.django.test import login_with_mfa
@@ -353,6 +354,65 @@ def test_a_login_refused_while_waiting_for_its_code_gets_the_refusal(
     }
     assert whoami(client)["authenticated"] is False
     assert all(session.user_id is None for session in stored_sessions())
+
+
+def _password_waiting(client: Client, google: FakeGoogle) -> None:
+    assert password_login(client).status_code == 303
+
+
+def _google_waiting(client: Client, google: FakeGoogle) -> None:
+    connect(get_user_model()._default_manager.get())
+    response = sign_in(client, google, Account(email="person@example.com"))
+    assert response["Location"] == "/auth/mfa/verify"
+
+
+@pytest.mark.parametrize("start", [_password_waiting, _google_waiting])
+def test_a_revocation_while_the_code_is_checked_logs_no_one_in(
+    start: Callable[[Client, FakeGoogle], None], client: Client, google: FakeGoogle
+) -> None:
+    """The sessions are revoked once the code passed but before Django saves
+    the session: the verify view saves it and asks again."""
+    user = make_user()
+    add_totp(user, codes=["abcde-fghjk"])
+    start(client, google)
+
+    def revoke(sender: object, request: Any = None, **kwargs: Any) -> None:
+        # What a revocation writes first, before it ends the user's sessions.
+        _revoke_challenges(request, str(user.pk))
+
+    signals.recovery_code_used.connect(revoke, weak=False)
+    try:
+        response = csrf_post(
+            client, "/auth/mfa/verify", {"recovery_code": "abcde-fghjk"}
+        )
+    finally:
+        signals.recovery_code_used.disconnect(revoke)
+
+    assert response.status_code == 400
+    assert whoami(client)["authenticated"] is False
+    assert not Session.objects.filter(user=user, revoked_at__isnull=True).exists()
+
+
+def test_a_login_restored_over_another_users_session_starts_it_empty(
+    client: Client,
+) -> None:
+    """Another user logged in while this one's code was awaited: as Django's
+    login() does, the session is flushed rather than handed over."""
+    user = make_user()
+    add_totp(user)
+    password_login(client)
+    make_user("other@example.com")
+    assert password_login(client, email="other@example.com")["Location"] == (
+        "/private/"
+    )
+    csrf_post(client, "/remember/", {"value": "the other user's"})
+    assert client.session["remembered"] == "the other user's"
+
+    verified = csrf_post(client, "/auth/mfa/verify", {"code": code()})
+
+    assert verified.status_code == 303
+    assert whoami(client)["user_id"] == str(user.pk)
+    assert "remembered" not in client.session
 
 
 def test_wrong_codes_lock_the_account(client: Client) -> None:

@@ -13,7 +13,7 @@ import hashlib
 import json
 import math
 import secrets
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, TypedDict
@@ -467,12 +467,21 @@ class MFA:
             user_id=str(user_id),
             login_method=login_method,
             methods=self._methods(user.id, factors),
+            # Read now, as the first factor passes, not when the challenge is
+            # stored: an after hook in between, or another request, may revoke
+            # the user's sessions, and the challenge must count as revoked.
+            revoked_marker=self._revoked_marker(user_id),
         )
 
     def start_challenge(
         self, required: MFARequired, *, kind: ChallengeKind, data: dict[str, Any]
     ) -> MFARequired:
-        """Store a challenge for ``required`` and return it with its token."""
+        """Store a challenge for ``required`` and return it with its token.
+
+        ``required`` comes from ``check_sign_in``, whose revocation marker the
+        challenge keeps. One built elsewhere has none, so a revocation whose
+        marker is still stored ends it: it fails closed.
+        """
         token = secrets.token_urlsafe(32)
         ttl = self.challenge_ttl
         challenge = Challenge(
@@ -482,7 +491,7 @@ class MFA:
             data=data,
             attempts_left=self.config["max_attempts"],
             expires_at=_now() + timedelta(seconds=ttl),
-            revoked_marker=self._revoked_marker(required.user_id),
+            revoked_marker=required.revoked_marker,
         )
         self.secondary_storage.set(
             _CHALLENGE_KEY.format(digest=_digest(token)),
@@ -508,7 +517,7 @@ class MFA:
         challenge = _parse_challenge(
             self.secondary_storage.get(_CHALLENGE_KEY.format(digest=_digest(token)))
         )
-        if challenge is None or self._revoked(challenge):
+        if challenge is None or self.revoked(challenge):
             return None
         return challenge
 
@@ -539,7 +548,12 @@ class MFA:
             _REVOKED_KEY.format(digest=_digest(str(user_id)))
         )
 
-    def _revoked(self, challenge: Challenge) -> bool:
+    def revoked(self, challenge: Challenge) -> bool:
+        """Whether the user's sessions were revoked since ``challenge`` started.
+
+        Checked again once a sign-in's credential is stored, so a revocation
+        that ran while the code was checked still ends it.
+        """
         # No marker means no revocation since any live challenge started: the
         # last one has expired, and with it every challenge older than it.
         marker = self._revoked_marker(challenge.user_id)
@@ -549,6 +563,7 @@ class MFA:
         self,
         token: str,
         *,
+        kinds: Collection[ChallengeKind],
         code: str | None = None,
         recovery_code: str | None = None,
     ) -> tuple[Challenge, str]:
@@ -556,6 +571,9 @@ class MFA:
 
         Returns the challenge and the method that passed. A wrong code costs
         one of the challenge's attempts; the last one ends the challenge.
+        ``kinds`` are the challenges the caller may finish: another kind is
+        refused as ``invalid_challenge`` before its code is checked, and left
+        as it was, so it still finishes where it belongs.
         """
         _require_one_code(code, recovery_code)
         key = _CHALLENGE_KEY.format(digest=_digest(token))
@@ -564,7 +582,10 @@ class MFA:
         challenge = _parse_challenge(self.secondary_storage.pop(key))
         # A revoked challenge stays taken, and is refused before its code is
         # checked, so it spends no code and counts no failure.
-        if challenge is None or self._revoked(challenge):
+        if challenge is None or self.revoked(challenge):
+            raise _invalid_challenge()
+        if challenge.kind not in kinds:
+            self._put_back(key, challenge)
             raise _invalid_challenge()
         try:
             method = self.check_code(
@@ -574,23 +595,23 @@ class MFA:
                 purpose="sign_in",
             )
         except Exception as error:
-            # Put it back, one attempt shorter for a wrong code, with the
-            # expiry it had.
+            # Put it back, one attempt shorter for a wrong code.
             left = challenge.attempts_left
             if isinstance(error, CrossAuthException) and error.error == "invalid_code":
                 left -= 1
-            # Rounded up: a challenge with 0.8 s left still takes a retry.
-            remaining = math.ceil((challenge.expires_at - _now()).total_seconds())
-            if left > 0 and remaining > 0:
-                self.secondary_storage.set(
-                    key,
-                    challenge.model_copy(
-                        update={"attempts_left": left}
-                    ).model_dump_json(),
-                    ttl=remaining,
+            if left > 0:
+                self._put_back(
+                    key, challenge.model_copy(update={"attempts_left": left})
                 )
             raise
         return challenge, method
+
+    def _put_back(self, key: str, challenge: Challenge) -> None:
+        """Store a taken challenge again, with the expiry it had."""
+        # Rounded up: a challenge with 0.8 s left still takes a retry.
+        remaining = math.ceil((challenge.expires_at - _now()).total_seconds())
+        if remaining > 0:
+            self.secondary_storage.set(key, challenge.model_dump_json(), ttl=remaining)
 
     def check_code(
         self,

@@ -445,6 +445,7 @@ class Issuer:
                 http_request,
                 context,
                 mfa_token,
+                kinds=("token",),
                 code=otp if isinstance(otp, str) else None,
                 recovery_code=recovery_code if isinstance(recovery_code, str) else None,
             )

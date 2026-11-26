@@ -36,6 +36,7 @@ class MFARequired(CrossAuthException):
         login_method: str | None,
         methods: list[str],
         challenge: str | None = None,
+        revoked_marker: str | None = None,
     ) -> None:
         super().__init__(
             "mfa_required",
@@ -46,3 +47,6 @@ class MFARequired(CrossAuthException):
         self.login_method = login_method
         self.methods = methods
         self.challenge = challenge
+        # Cross Auth's own: the user's 2FA revocation marker when the first
+        # factor passed, which the challenge keeps.
+        self.revoked_marker = revoked_marker

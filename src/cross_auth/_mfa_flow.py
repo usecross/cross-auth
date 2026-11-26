@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import secrets
+from collections.abc import Collection
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol, cast
@@ -28,6 +29,7 @@ from ._authorization_code import (
 from ._context import Context
 from ._issuer import _bearer_token
 from ._login import (
+    AfterIssue,
     BrowserLogin,
     issue_bearer_session,
     login_with_session,
@@ -53,6 +55,15 @@ from .utils._response import Response
 logger = logging.getLogger(__name__)
 
 _REAUTH_KEY = "mfa:reauth:{digest}"
+
+# What POST /mfa/verify finishes: the sign-ins a browser waits on. A bearer
+# challenge finishes through verify_mfa, and a password grant's through
+# /token, where that grant's own checks run.
+VERIFY_ROUTE_KINDS: tuple[ChallengeKind, ...] = (
+    "cookie",
+    "browser",
+    "authorization_code",
+)
 
 
 @dataclass(frozen=True)
@@ -338,17 +349,45 @@ def finish_challenge(
     context: Context,
     token: str,
     *,
+    kinds: Collection[ChallengeKind],
     code: str | None = None,
     recovery_code: str | None = None,
     login: BrowserLogin | None = None,
 ) -> Finished:
-    """Check the code and complete the sign-in the challenge was waiting for."""
+    """Check the code and complete the sign-in the challenge was waiting for.
+
+    ``kinds`` are the challenges this caller finishes; any other answers
+    ``invalid_challenge`` before its code is checked (see
+    ``MFA.verify_challenge``).
+    """
     mfa = require_mfa(context)
     challenge, method = mfa.verify_challenge(
-        token, code=code, recovery_code=recovery_code
+        token, kinds=kinds, code=code, recovery_code=recovery_code
     )
     finished = _complete(request, context, challenge, method, login=login)
     return replace(finished, challenge=challenge, mfa_method=method)
+
+
+def _unless_revoked(context: Context, mfa: MFA, challenge: Challenge) -> AfterIssue:
+    """End a sign-in whose user's sessions were revoked while its code was checked.
+
+    Asked once the credential is stored, not before: every revocation writes
+    the user's marker before it revokes their sessions, so either it finds
+    this session and revokes it, or this finds its marker. Asked before the
+    write, a revocation in between would do neither.
+    """
+
+    def check(record: SessionRecord | None) -> None:
+        if not mfa.revoked(challenge):
+            return
+        if record is not None and context.session_storage is not None:
+            # Only this session: the revocation may have kept another.
+            context.session_storage.revoke(
+                record.id, revoked_at=datetime.now(tz=timezone.utc)
+            )
+        raise _invalid_challenge()
+
+    return check
 
 
 def _complete(
@@ -362,6 +401,7 @@ def _complete(
     mfa = require_mfa(context)
     data = challenge.data
     clear = [challenge_cookie(request, context, "", max_age=0)]
+    unless_revoked = _unless_revoked(context, mfa, challenge)
 
     if challenge.kind == "bearer":
         assert context.session_storage is not None
@@ -376,6 +416,7 @@ def _complete(
             login_method=challenge.login_method,
             mfa=mfa,
             mfa_method=method,
+            after_issue=unless_revoked,
         )
         body = {
             "access_token": session_token,
@@ -409,7 +450,8 @@ def _complete(
                 username=data.get("username"),
                 login_method=challenge.login_method,
                 mfa_method=method,
-            )
+            ),
+            after_issue=unless_revoked,
         )
         token_data = _bearer_token(issued)
         # The token.password after hook a sign-in without 2FA would have run.
@@ -441,6 +483,18 @@ def _complete(
 
     if challenge.kind == "authorization_code":
         context.check_user_id_can_authenticate(challenge.user_id)
+        # The client's registration may have changed while the user found
+        # their code: as the callback does, send no code to a URI the client
+        # no longer registers.
+        if context.oauth_server is None:
+            raise CrossAuthException("invalid_request", "The OAuth server is disabled")
+        if not context.is_valid_redirect_uri(
+            data["redirect_uri"], client_id=data["client_id"]
+        ):
+            raise CrossAuthException(
+                "invalid_redirect_uri",
+                "Callback is no longer registered for this client",
+            )
         auth_code = secrets.token_urlsafe(32)
         grant = AuthorizationCodeGrantData(
             user_id=challenge.user_id,
@@ -452,11 +506,16 @@ def _complete(
             login_method=challenge.login_method,
             mfa_method=method,
         )
+        code_key = AUTH_CODE_KEY.format(code=auth_code)
         context.secondary_storage.set(
-            AUTH_CODE_KEY.format(code=auth_code),
+            code_key,
             grant.model_dump_json(),
             ttl=int(AUTH_CODE_TTL.total_seconds()),
         )
+        # As for a session: asked once the code is stored.
+        if mfa.revoked(challenge):
+            context.secondary_storage.delete(code_key)
+            raise _invalid_challenge()
         params = {"code": auth_code}
         if data.get("state"):
             params["state"] = data["state"]
@@ -511,6 +570,7 @@ def _complete(
             login_method=challenge.login_method,
             mfa=mfa,
             mfa_method=method,
+            after_issue=unless_revoked,
         ),
     )
     response.cookies = [*(response.cookies or []), *clear]
@@ -708,6 +768,7 @@ def verify_handler(
             request,
             context,
             token,
+            kinds=VERIFY_ROUTE_KINDS,
             code=_optional_str(fields, "code"),
             recovery_code=_optional_str(fields, "recovery_code"),
             login=login,
