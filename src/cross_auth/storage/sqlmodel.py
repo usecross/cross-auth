@@ -15,6 +15,7 @@ try:
         SmallInteger,
         and_,
         case,
+        delete,
         inspect,
         or_,
         update,
@@ -1635,16 +1636,21 @@ class SQLModelMFAStorage(
         if user_id is _NO_MATCH:
             return 0
         with self._open_session() as session:
+            self._lock_user(session, user_id)
             session.exec(
                 update(model)
                 .where(col(model.user_id) == user_id)
                 .values(failed_attempts=col(model.failed_attempts) + 1)
             )
-            session.commit()
-            row = session.exec(
-                select(model).where(col(model.user_id) == user_id).limit(1)
+            # Read in the same transaction: once it commits, a concurrent
+            # reset could make this report a count it did not produce.
+            count = session.exec(
+                select(col(model.failed_attempts))
+                .where(col(model.user_id) == user_id)
+                .limit(1)
             ).first()
-        return 0 if row is None else row.failed_attempts
+            session.commit()
+        return count or 0
 
     def lock(self, user_id: object, *, until: datetime) -> None:
         model = self.FactorModel
@@ -1652,6 +1658,8 @@ class SQLModelMFAStorage(
         if user_id is _NO_MATCH:
             return
         with self._open_session() as session:
+            # Under the user lock, as create_factor copies this state.
+            self._lock_user(session, user_id)
             session.exec(
                 update(model)
                 .where(col(model.user_id) == user_id)
@@ -1668,6 +1676,8 @@ class SQLModelMFAStorage(
         if user_id is _NO_MATCH:
             return
         with self._open_session() as session:
+            # Under the user lock, as create_factor copies this state.
+            self._lock_user(session, user_id)
             session.exec(
                 update(model)
                 .where(col(model.user_id) == user_id)
@@ -1711,10 +1721,10 @@ class SQLModelMFAStorage(
         created_at: datetime,
     ) -> None:
         model = self.RecoveryCodeModel
-        for row in session.exec(
-            select(model).where(col(model.user_id) == user_id)
-        ).all():
-            session.delete(row)
+        # A statement, run now: a deleted object waits for the flush, which
+        # inserts the new rows first, so a table unique on (user_id,
+        # code_hash) would refuse a hash the old batch has too.
+        session.exec(delete(model).where(col(model.user_id) == user_id))
         for code_hash in code_hashes:
             session.add(
                 _construct_record(

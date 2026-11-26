@@ -547,9 +547,12 @@ class MFAStorage(Protocol):
     Cross Auth's ``_mfa`` module decides everything; a storage only reads and
     writes rows. Each method commits before it returns.
 
-    ``create_factor``, ``delete_factor``, and ``replace_recovery_codes`` each
-    run in one transaction that first locks something per user, such as the
-    user row, so that two of them for the same user run one after the other.
+    ``create_factor``, ``delete_factor``, ``replace_recovery_codes``,
+    ``record_failure``, ``lock`` and ``reset_failures`` each run in one
+    transaction that first locks something per user, such as the user row,
+    so that two of them for the same user run one after the other. A new
+    factor copies the lockout state, so changing that state under the same
+    lock keeps every factor's copy alike.
     """
 
     def list_factors(self, user_id: Any) -> Sequence[MFAFactor]: ...

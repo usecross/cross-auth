@@ -6,7 +6,9 @@ held back by the ``user_logged_in`` guard; provider sign-ins by core.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -16,6 +18,8 @@ from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.base_user import AbstractBaseUser
+from django.db import OperationalError, connection, connections, models, transaction
+from django.db.models import QuerySet
 from django.dispatch import Signal
 from django.test import AsyncClient, Client, override_settings
 from django.utils import timezone as django_timezone
@@ -719,3 +723,114 @@ def test_verify_works_with_atomic_requests(
 
     assert verified.status_code == 302
     assert whoami(client)["user_id"] == str(user.pk)
+
+
+# The user lock ---------------------------------------------------------------
+
+
+@contextmanager
+def _user_row_locked(user: AbstractBaseUser) -> Iterator[None]:
+    """Hold the user's row lock from another connection, as a concurrent 2FA
+    change of theirs does."""
+    held = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        try:
+            with transaction.atomic():
+                get_user_model()._base_manager.select_for_update().get(pk=user.pk)
+                held.set()
+                release.wait(timeout=10)
+        finally:
+            connections.close_all()
+
+    thread = threading.Thread(target=hold)
+    thread.start()
+    assert held.wait(timeout=10), "the lock was never taken"
+    try:
+        yield
+    finally:
+        release.set()
+        thread.join(timeout=10)
+
+
+def _waits_for_the_user_lock(operation: Callable[[], object]) -> bool:
+    """Whether ``operation`` blocks on the user's row lock (PostgreSQL)."""
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute("SET LOCAL lock_timeout = '200ms'")
+        try:
+            with transaction.atomic():
+                operation()
+        except OperationalError:
+            return True
+    return False
+
+
+def _record_failure(store: DjangoMFAStorage, user: AbstractBaseUser) -> object:
+    return store.record_failure(user.pk)
+
+
+def _lock(store: DjangoMFAStorage, user: AbstractBaseUser) -> object:
+    return store.lock(user.pk, until=datetime.now(tz=timezone.utc))
+
+
+def _reset_failures(store: DjangoMFAStorage, user: AbstractBaseUser) -> object:
+    return store.reset_failures(user.pk)
+
+
+@pytest.mark.parametrize("change", [_record_failure, _lock, _reset_failures])
+def test_lockout_changes_wait_for_the_user_lock(
+    change: Callable[[DjangoMFAStorage, AbstractBaseUser], object], is_postgres: bool
+) -> None:
+    """A new factor copies the lockout state under the user lock, so changing
+    that state must wait for it too, or the new factor keeps a stale copy."""
+    if not is_postgres:
+        pytest.skip("SQLite locks the whole database for every write")
+    user = make_user()
+    add_totp(user)
+    store = DjangoMFAStorage()
+
+    with _user_row_locked(user):
+        assert _waits_for_the_user_lock(lambda: change(store, user))
+
+
+class _HidesEveryone(models.Manager):
+    """A default manager that shows no one, as an admin-only one might."""
+
+    def get_queryset(self) -> QuerySet[Any]:
+        return super().get_queryset().none()
+
+
+def test_a_user_the_default_manager_hides_is_locked_too(
+    is_postgres: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if not is_postgres:
+        pytest.skip("SQLite locks the whole database for every write")
+    user = make_user()
+    user_model = get_user_model()
+    hiding = _HidesEveryone()
+    hiding.model = user_model
+    monkeypatch.setattr(user_model._meta, "default_manager", hiding)
+    store = DjangoMFAStorage()
+
+    with _user_row_locked(user):
+        assert _waits_for_the_user_lock(
+            lambda: store.create_factor(
+                user_id=user.pk,
+                type="totp",
+                name="Phone",
+                data={},
+                created_at=datetime.now(tz=timezone.utc),
+            )
+        )
+
+
+def test_lockout_changes_for_a_missing_user_change_nothing() -> None:
+    """Without a user row there are no factors: no lock, and no error."""
+    store = DjangoMFAStorage()
+    missing = 10**9
+
+    assert store.record_failure(missing) == 0
+    store.lock(missing, until=datetime.now(tz=timezone.utc))
+    store.reset_failures(missing)

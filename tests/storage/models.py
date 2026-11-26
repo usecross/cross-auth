@@ -367,3 +367,12 @@ class UnlinkedMFAFactor(SQLModelMFAFactor, table=True):
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(index=True)
     data: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class UniqueRecoveryCode(SQLModelRecoveryCode, table=True):
+    """An application's recovery-code table that refuses a repeated hash."""
+
+    __tablename__ = "unique_recovery_code"
+    __table_args__ = (UniqueConstraint("user_id", "code_hash"),)
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)

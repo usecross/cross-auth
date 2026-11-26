@@ -19,7 +19,11 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 from django.contrib.auth import get_user_model
 from django.contrib.sessions.backends.base import VALID_KEY_CHARS
-from django.core.exceptions import ImproperlyConfigured, ValidationError
+from django.core.exceptions import (
+    ImproperlyConfigured,
+    ObjectDoesNotExist,
+    ValidationError,
+)
 from django.db import DatabaseError, IntegrityError, router, transaction
 from django.db.models import Case, F, Q, Value, When
 from django.utils import timezone
@@ -921,8 +925,8 @@ class DjangoMFAStorage:
     It only stores rows: every 2FA rule is core's. The checks that must not
     let two requests both pass (a TOTP step, a recovery code, the failure
     count) are single conditional ``UPDATE`` statements. Adding and deleting
-    factors and replacing recovery codes first lock the user row, as
-    ``DjangoStorage.disconnect_social_account`` does.
+    factors, replacing recovery codes and changing the lockout state first
+    lock the user row, as ``DjangoStorage.disconnect_social_account`` does.
     """
 
     def __init__(self) -> None:
@@ -945,19 +949,24 @@ class DjangoMFAStorage:
         codes = RecoveryCode.objects.using(self.alias)
         return codes.none() if user_id is _NO_MATCH else codes.filter(user_id=user_id)
 
-    def _lock_user(self, user_id: object) -> None:
+    def _lock_user(self, user_id: object) -> bool:
         """Hold the user row until the surrounding transaction ends.
 
-        A no-op update: PostgreSQL keeps the row lock until commit, and SQLite
-        takes its write lock before anything is read.
+        Returns whether there is one: without it, nothing is locked. A no-op
+        update: PostgreSQL keeps the row lock until commit, and SQLite takes
+        its write lock before anything is read. Through the base manager, so
+        a default manager that hides some users still locks theirs.
         """
         user_pk = _coerce_pk(self._user_model, user_id)
         if user_pk is _NO_MATCH:
-            return
+            return False
         pk_name = self._user_model._meta.pk.name
-        self._user_model._default_manager.using(self.alias).filter(pk=user_pk).update(
-            **{pk_name: F(pk_name)}
+        locked = (
+            self._user_model._base_manager.using(self.alias)
+            .filter(pk=user_pk)
+            .update(**{pk_name: F(pk_name)})
         )
+        return locked > 0
 
     def list_factors(self, user_id: Any) -> list[MFAFactor]:
         return list(self._factors(user_id).order_by("created_at", "id"))
@@ -974,7 +983,8 @@ class DjangoMFAStorage:
         recovery_code_hashes: Sequence[str] = (),
     ) -> tuple[MFAFactor, bool]:
         with transaction.atomic(using=self.alias):
-            self._lock_user(user_id)
+            if not self._lock_user(user_id):
+                raise ObjectDoesNotExist(f"No user {user_id!r} to add a factor to")
             # A new factor starts with the user's current lockout state.
             existing = self._factors(user_id).first()
             factor = MFAFactor(
@@ -997,7 +1007,8 @@ class DjangoMFAStorage:
         if factor_id is _NO_MATCH:
             return None
         with transaction.atomic(using=self.alias):
-            self._lock_user(user_id)
+            if not self._lock_user(user_id):
+                return None
             deleted, _ = self._factors(user_id).filter(pk=factor_id).delete()
             if not deleted:
                 return None
@@ -1025,18 +1036,28 @@ class DjangoMFAStorage:
             > 0
         )
 
+    # The lockout state lives on every factor row, and a new factor copies it:
+    # changing it under the user lock means a factor created at the same time
+    # gets the state from before or after, on every row alike. Without a user
+    # row there are no factors, and nothing to do.
+
     def record_failure(self, user_id: Any) -> int:
         factors = self._factors(user_id)
         with transaction.atomic(using=self.alias):
+            self._lock_user(user_id)
             factors.update(failed_attempts=F("failed_attempts") + 1)
             count = factors.values_list("failed_attempts", flat=True).first()
         return count or 0
 
     def lock(self, user_id: Any, *, until: datetime) -> None:
-        self._factors(user_id).update(failed_attempts=0, locked_until=until)
+        with transaction.atomic(using=self.alias):
+            self._lock_user(user_id)
+            self._factors(user_id).update(failed_attempts=0, locked_until=until)
 
     def reset_failures(self, user_id: Any) -> None:
-        self._factors(user_id).update(failed_attempts=0, locked_until=None)
+        with transaction.atomic(using=self.alias):
+            self._lock_user(user_id)
+            self._factors(user_id).update(failed_attempts=0, locked_until=None)
 
     def count_recovery_codes(self, user_id: Any) -> int:
         return self._codes(user_id).filter(used_at__isnull=True).count()
@@ -1045,8 +1066,7 @@ class DjangoMFAStorage:
         self, user_id: Any, code_hashes: Sequence[str], *, created_at: datetime
     ) -> bool:
         with transaction.atomic(using=self.alias):
-            self._lock_user(user_id)
-            if not self._factors(user_id).exists():
+            if not self._lock_user(user_id) or not self._factors(user_id).exists():
                 return False
             self._store_codes(user_id, code_hashes, created_at)
         return True
