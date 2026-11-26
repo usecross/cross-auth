@@ -924,9 +924,10 @@ class DjangoMFAStorage:
 
     It only stores rows: every 2FA rule is core's. The checks that must not
     let two requests both pass (a TOTP step, a recovery code, the failure
-    count) are single conditional ``UPDATE`` statements. Adding and deleting
-    factors, replacing recovery codes and changing the lockout state first
-    lock the user row, as ``DjangoStorage.disconnect_social_account`` does.
+    count) are single conditional ``UPDATE`` statements. Every write first
+    locks the user row, as ``DjangoStorage.disconnect_social_account`` does,
+    and only then the factor or code rows, so writes for one user inside an
+    application transaction wait for each other instead of deadlocking.
     """
 
     def __init__(self) -> None:
@@ -1026,15 +1027,24 @@ class DjangoMFAStorage:
         factor_id = _coerce_pk(MFAFactor, factor_id)
         if factor_id is _NO_MATCH:
             return False
-        return (
-            MFAFactor.objects.using(self.alias)
-            .filter(
-                Q(last_used_step__isnull=True) | Q(last_used_step__lt=step),
-                pk=factor_id,
+        factors = MFAFactor.objects.using(self.alias)
+        user_id = factors.filter(pk=factor_id).values_list("user_id", flat=True).first()
+        if user_id is None:
+            return False
+        with transaction.atomic(using=self.alias):
+            # The user row before the factor's, as every write here. Inside an
+            # application transaction a passing code goes on to reset the
+            # failures under the user lock; holding its factor row first would
+            # deadlock with a wrong code that holds the user lock.
+            if not self._lock_user(user_id):
+                return False
+            return (
+                factors.filter(
+                    Q(last_used_step__isnull=True) | Q(last_used_step__lt=step),
+                    pk=factor_id,
+                ).update(last_used_step=step, last_used_at=used_at)
+                > 0
             )
-            .update(last_used_step=step, last_used_at=used_at)
-            > 0
-        )
 
     # The lockout state lives on every factor row, and a new factor copies it:
     # changing it under the user lock means a factor created at the same time
@@ -1083,19 +1093,24 @@ class DjangoMFAStorage:
     def use_recovery_code(
         self, user_id: Any, code_hash: str, *, used_at: datetime
     ) -> bool:
-        # One code at a time: two requests with the same code both match the
-        # row, but only the first UPDATE still finds it unused.
-        code = (
-            self._codes(user_id)
-            .filter(code_hash=code_hash, used_at__isnull=True)
-            .values_list("pk", flat=True)
-            .first()
-        )
-        if code is None:
-            return False
-        return (
-            RecoveryCode.objects.using(self.alias)
-            .filter(pk=code, used_at__isnull=True)
-            .update(used_at=used_at)
-            > 0
-        )
+        with transaction.atomic(using=self.alias):
+            # The user row before the code's, as in claim_totp_step: replacing
+            # the codes holds the user lock while it deletes this row.
+            if not self._lock_user(user_id):
+                return False
+            # One code at a time: two requests with the same code both match
+            # the row, but only the first UPDATE still finds it unused.
+            code = (
+                self._codes(user_id)
+                .filter(code_hash=code_hash, used_at__isnull=True)
+                .values_list("pk", flat=True)
+                .first()
+            )
+            if code is None:
+                return False
+            return (
+                RecoveryCode.objects.using(self.alias)
+                .filter(pk=code, used_at__isnull=True)
+                .update(used_at=used_at)
+                > 0
+            )

@@ -834,3 +834,108 @@ def test_lockout_changes_for_a_missing_user_change_nothing() -> None:
     assert store.record_failure(missing) == 0
     store.lock(missing, until=datetime.now(tz=timezone.utc))
     store.reset_failures(missing)
+
+
+def _blocked_on_a_lock(pid: int) -> bool:
+    """Whether the PostgreSQL backend ``pid`` is waiting for a lock."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT wait_event_type FROM pg_stat_activity WHERE pid = %s", [pid]
+        )
+        row = cursor.fetchone()
+    return row is not None and row[0] == "Lock"
+
+
+def _correct_totp_code(store: DjangoMFAStorage, user: AbstractBaseUser) -> object:
+    factor = MFAFactor.objects.get(user=user)
+    return store.claim_totp_step(
+        factor.pk,
+        step=_totp.time_step(datetime.now(tz=timezone.utc)),
+        used_at=datetime.now(tz=timezone.utc),
+    )
+
+
+def _correct_recovery_code(store: DjangoMFAStorage, user: AbstractBaseUser) -> object:
+    return store.use_recovery_code(
+        user.pk,
+        hash_recovery_code("abcde-fghjk"),
+        used_at=datetime.now(tz=timezone.utc),
+    )
+
+
+def _regenerate_codes(store: DjangoMFAStorage, user: AbstractBaseUser) -> object:
+    return store.replace_recovery_codes(
+        user.pk,
+        [hash_recovery_code("mnpqr-stuvw")],
+        created_at=datetime.now(tz=timezone.utc),
+    )
+
+
+@pytest.mark.parametrize(
+    ("passing", "competing"),
+    [
+        (_correct_totp_code, _record_failure),
+        (_correct_recovery_code, _regenerate_codes),
+    ],
+    ids=["code-and-wrong-code", "recovery-code-and-regenerate"],
+)
+def test_a_code_checked_in_a_transaction_does_not_deadlock_another_change(
+    passing: Callable[[DjangoMFAStorage, AbstractBaseUser], object],
+    competing: Callable[[DjangoMFAStorage, AbstractBaseUser], object],
+    is_postgres: bool,
+) -> None:
+    """A code that passes inside the app's transaction (ATOMIC_REQUESTS)
+    resets the failures next, under the user lock. Every write takes that
+    lock before its factor or code rows, so a concurrent change waits instead
+    of holding the user lock while it waits for a row this one holds."""
+    if not is_postgres:
+        pytest.skip("SQLite locks the whole database for every write")
+    user = make_user()
+    add_totp(user, codes=["abcde-fghjk"])
+    MFAFactor.objects.update(failed_attempts=3)
+    store = DjangoMFAStorage()
+    competitor_pid: list[int] = []
+    started = threading.Event()
+    passed = threading.Event()
+    outcomes: dict[str, str] = {}
+
+    def check_the_code() -> None:
+        try:
+            with transaction.atomic():
+                passing(store, user)
+                passed.set()
+                assert started.wait(timeout=10)
+                deadline = datetime.now(tz=timezone.utc) + timedelta(seconds=10)
+                while not _blocked_on_a_lock(competitor_pid[0]):
+                    assert datetime.now(tz=timezone.utc) < deadline, "never blocked"
+                store.reset_failures(user.pk)
+            outcomes["code"] = "ok"
+        except Exception as error:  # noqa: BLE001 - reported below
+            outcomes["code"] = str(error)
+        finally:
+            connections.close_all()
+
+    def compete() -> None:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_backend_pid()")
+                competitor_pid.append(cursor.fetchone()[0])
+            assert passed.wait(timeout=10)
+            started.set()
+            competing(store, user)
+            outcomes["competitor"] = "ok"
+        except Exception as error:  # noqa: BLE001 - reported below
+            outcomes["competitor"] = str(error)
+        finally:
+            connections.close_all()
+
+    threads = [
+        threading.Thread(target=check_the_code),
+        threading.Thread(target=compete),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert outcomes == {"code": "ok", "competitor": "ok"}

@@ -61,8 +61,9 @@ regenerate recovery codes or remove a factor.
   how many factors are left (`None` if none was deleted) and removes the
   recovery codes with the last one, and `replace_recovery_codes` returns `False`
   without a factor. Each runs under a per-user lock, as do `record_failure`,
-  `lock` and `reset_failures`. The new `on_commit` delivers the 2FA after hooks
-  once the change is committed.
+  `lock`, `reset_failures`, `claim_totp_step` and `use_recovery_code`; take it
+  before any factor or recovery-code row. The new `on_commit` delivers the 2FA
+  after hooks once the change is committed.
 - With the password grant on, the `/token` schema documents the MFA grant and
   its 403 and 429 answers. The MFA grant is refused once `password_grant` is
   off.

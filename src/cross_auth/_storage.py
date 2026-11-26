@@ -556,6 +556,13 @@ class MFAStorage(Protocol):
     so that two of them for the same user run one after the other. A new
     factor copies the lockout state, so changing that state under the same
     lock keeps every factor's copy alike.
+
+    Take that user lock before any factor or recovery-code row, in every
+    method that writes them, ``claim_totp_step`` and ``use_recovery_code``
+    included, whenever the write may hold its row locks past the call, as in
+    an application's transaction. A passing code resets the failures next,
+    under the user lock, so a write that held a factor or code row first
+    could deadlock with one that holds the user lock and waits for that row.
     """
 
     def list_factors(self, user_id: Any) -> Sequence[MFAFactor]: ...
