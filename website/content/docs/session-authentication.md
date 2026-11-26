@@ -245,7 +245,7 @@ a user's sessions when you delete the user.
 
 Pass `user_can_authenticate` to refuse a user at every point Cross-Auth lets
 them in: each login, and each use of a session. It takes the user and returns
-whether they may sign in:
+whether they may sign in, or the error that tells them why not:
 
 ```python
 def user_can_authenticate(user: User) -> bool:
@@ -281,26 +281,55 @@ returns `None`, so nobody learns whether an account may sign in without its
 password. In the same way, `auth.resolve_id_token_user()` checks once the token
 is verified, and browser sign-in once the provider has confirmed the identity.
 
-To answer with your own error, raise `CrossAuthException` instead of returning
-`False`. Cross-Auth uses it in place of its own, at login and on each use:
+To tell the user why, return a `CrossAuthException` instead of `False`. A login
+raises it in place of `access_denied`, and a use of a session counts it as
+`False`:
 
 ```python
 from cross_auth.exceptions import CrossAuthException
 
 
-def user_can_authenticate(user: User) -> bool:
+def user_can_authenticate(user: User) -> bool | CrossAuthException:
     if user.deleted_at is not None:
-        return False
+        return CrossAuthException(
+            "account_deleted",
+            "This account was deleted. Contact support to restore it.",
+            status_code=403,
+        )
     if user.suspended_at is not None:
-        raise CrossAuthException("account_suspended", "Account suspended", 403)
+        return CrossAuthException(
+            "account_suspended",
+            "This account is suspended. Contact support.",
+            status_code=403,
+        )
     return True
 ```
 
-Cross-Auth's routes answer with that error and status. `/token` answers it as a
-400 OAuth error, as it does for hook errors, and browser sign-in for an OAuth
-client redirects to the client with it. Your own calls raise it, including
-`get_current_user` and `require_current_user` used as dependencies, so register
-an exception handler:
+Each login answers with it as it answers its other errors:
+
+- Browser sign-in, and connecting or linking a provider with `allow_login`,
+  answer with its `error`, `error_description` and `status_code`.
+- Browser sign-in for an OAuth client redirects to the client's `redirect_uri`
+  with its `error` and `error_description`, as OAuth errors do.
+- `/token` answers it as a 400 OAuth error, as it does for hook errors.
+- `auth.authenticate()`, `auth.login()`, `auth.issue_session_token()`,
+  `auth.sign_in_with_id_token()` and `auth.resolve_id_token_user()` raise it.
+
+On a use of a session nothing is raised: `get_current_user` returns `None`, the
+session routes answer `401 unauthorized`, and so on, as for `False`. A user
+whose account was suspended while signed in finds themselves signed out, and
+their next sign-in tells them why.
+
+You can also raise the `CrossAuthException`. Then it propagates from every
+check, also on each use of a session, so `get_current_user` and
+`require_current_user` used as dependencies raise it too. Return it unless you
+want that.
+
+`user_can_authenticate` must return `True`, `False` or a `CrossAuthException`.
+Any other exception it returns, such as FastAPI's `HTTPException`, raises
+`TypeError` rather than letting the user in.
+
+Register an exception handler for the errors your own calls raise:
 
 ```python
 from fastapi import Request
@@ -342,6 +371,26 @@ API keys, yourself.
 Without `user_can_authenticate`, every user may sign in, and logins do not load
 the user to ask.
 
+#### Soft-Deleted Users
+
+Keep soft-deleted users where the accounts storage finds them, and refuse them
+in `user_can_authenticate`. Hiding them from the storage, for example with a
+SQLModel [`filter_user_query`](/docs/storage#adapter-customization), breaks
+sign-in. Their provider identity still points at them, so signing in with it
+answers `server_error`, and their email looks unused, so signing up with it
+creates a second user with the same email.
+
+A user the storage finds is refused with your error wherever they sign in: with
+their password, their provider identity, an ID token, or a new provider identity
+for their email that auto-linking would link to them. That identity is not
+attached. A new identity that cannot be linked automatically gets
+`account_not_linked` without `user_can_authenticate` being asked, since it has
+not shown that it owns the account. And the user's sessions count as no session.
+
+A soft-deleted user keeps their email, so nobody can sign up with it again. If
+your application allows that, change the deleted user's email when you delete
+them.
+
 ### Change a Password
 
 `auth.change_password()` changes the password of the user the request's session
@@ -376,12 +425,12 @@ one `user_can_authenticate` refuses, with `401 unauthorized`. Then:
    raises `400 invalid_password` and changes nothing. It is `None` only for a
    user without a password, such as one who signed up with a provider and sets a
    first password.
-2. The accounts storage hashes and stores `new_password` with its
+2. The accounts storage hashes `new_password` with the
+   [password hasher](#password-hashing) and stores it, in its
    [`set_password` method](/docs/storage#accountsstorage); an accounts storage
-   without one raises `TypeError`. The SQLModel storage stores a bcrypt hash and
-   refuses a password longer than bcrypt's 72 bytes with
-   `400 password_too_long`. Check your own rules, such as a minimum length,
-   before you call `change_password`.
+   without one raises `TypeError`. The default bcrypt hasher refuses a password
+   longer than bcrypt's 72 bytes with `400 password_too_long`. Check your own
+   rules, such as a minimum length, before you call `change_password`.
 3. The user's other sessions are revoked through the
    [`session.revoke` hooks](/docs/hooks#sessionrevoke), with `scope="others"`.
    The session that made the change stays signed in, and its token does not
@@ -409,6 +458,113 @@ should:
 ```python
 auth.revoke_all_sessions(user_id=user.id)
 ```
+
+### Password Hashing
+
+`auth.authenticate()`, `auth.change_password()` and the OAuth password grant
+verify passwords with one password hasher, and `change_password()` hashes the
+new password with it too. The default hashes with bcrypt. Pass `password_hasher`
+to use another:
+
+```python
+from pwdlib import PasswordHash
+
+auth = CrossAuth(
+    providers=[],
+    storage=secondary_storage,
+    accounts_storage=accounts_storage,
+    session_storage=session_storage,
+    password_hasher=PasswordHash.recommended(),
+)
+```
+
+A hasher is any object with the two methods of the `cross_auth.PasswordHasher`
+protocol. Cross-Auth passes their arguments by position, so the parameters can
+have any name:
+
+```python
+class PasswordHasher(Protocol):
+    def hash(self, password: str, /) -> str: ...
+
+    def verify(self, password: str, hash: str, /) -> bool: ...
+```
+
+pwdlib's `PasswordHash` and passlib's `CryptContext` have both methods, so they
+work as they are. List more than one scheme to move users to a new one: new
+hashes use the first, and the hashes your users already have keep verifying.
+
+```python
+from pwdlib import PasswordHash
+from pwdlib.hashers.argon2 import Argon2Hasher
+from pwdlib.hashers.bcrypt import BcryptHasher
+
+password_hasher = PasswordHash((Argon2Hasher(), BcryptHasher()))
+```
+
+When several instances serve your app, switch in two deploys. First deploy,
+everywhere, a hasher that verifies both schemes but still hashes with the old
+one, `PasswordHash((BcryptHasher(), Argon2Hasher()))`. Once no instance runs the
+old hasher, deploy the new scheme first. Otherwise an instance still on the old
+hasher can't read the hashes the new one writes, and those users fail to sign in
+there until it's replaced.
+
+```python
+from passlib.context import CryptContext
+
+password_hasher = CryptContext(schemes=["argon2", "bcrypt"])
+```
+
+passlib has no type hints, so type checkers don't check a `CryptContext` against
+the protocol. argon2-cffi's own `PasswordHasher` doesn't fit: its `verify` takes
+the hash first and raises for a wrong password. Use argon2 through pwdlib or
+passlib.
+
+Hash the passwords you store yourself, such as at signup, with the same hasher,
+so that `authenticate()` can verify them:
+
+```python
+hashed_password = auth.password_hasher.hash(password)
+```
+
+**Hashes the hasher can't read.** A stored hash the hasher doesn't recognize,
+such as one another library made, never matches: whatever `verify` raises counts
+as a wrong password. `authenticate()` returns `None`, `change_password()` raises
+`400 invalid_password`, and the password grant answers `invalid_grant`.
+Cross-Auth logs it on the `cross_auth._password` logger with the error's type,
+never the hash: a warning the first time each hasher raises each type of error,
+then at debug level, so repeated sign-ins can't flood the log. A user whose hash
+can't be read can't sign in with a password, so list every scheme your users'
+hashes use.
+
+**Timing.** Each check costs one verification. An unknown email, a user without
+a password and a hash the hasher can't read each verify a dummy hash, which the
+hasher makes the first time it checks a password, from a random 64-character
+ASCII password. `hash` must accept that password: while it refuses it, every
+check raises `RuntimeError`.
+
+The dummy evens out the time of checks against hashes of the hasher's current
+scheme and cost, the ones it writes. It doesn't make checks take the same time
+across schemes or costs. While users move to a new scheme, or after you raise
+the cost, accounts that still have an older hash verify in that hash's time, so
+an attacker can tell them from unknown emails until they're rehashed. Cross-Auth
+doesn't rehash on sign-in yet.
+
+For the dummy to keep the cost at one verification, `verify` returns `False`
+only for a wrong password. For a hash it can't read, it raises, and before doing
+a verification's work, as bcrypt, pwdlib and passlib do. A hasher that returns
+`False` for such a hash answers faster for those users, and one that raises
+after the work answers slower.
+
+**The default** is `BcryptPasswordHasher`, with bcrypt's default cost. bcrypt
+reads only the first 72 bytes of a password. It refuses to hash a longer one,
+raising `CrossAuthException("password_too_long")`, rather than cut it short. It
+verifies the first 72 bytes, so users whose hash another library made from a
+longer password, as passlib did, keep signing in. pwdlib's and passlib's bcrypt
+refuse to verify a password that long with bcrypt 5, which counts as a wrong
+password.
+
+Cross-Auth doesn't rehash a password on sign-in when the hasher's settings or
+schemes change, so an older hash stays until the user changes their password.
 
 ### Sliding Sessions
 
@@ -536,20 +692,11 @@ if user is None:
     ...
 ```
 
-This function uses **constant-time verification** -- it always runs bcrypt even
-for non-existent users, preventing timing attacks that could enumerate valid
-email addresses.
-
-Cross-Auth verifies passwords. [`change_password`](#change-a-password) hashes a
-new password through the accounts storage; elsewhere, such as at signup, your
-application hashes them. Store a bcrypt hash (the `$2b$` format produced by
-`cross_auth._password.hash_password`, the `bcrypt` package or passlib) in
-`hashed_password`. bcrypt uses only the first 72 bytes of a password, so any
-password that shares those bytes verifies against the hash. Decide how to handle
-longer passwords when hashing: reject them, as `bcrypt.hashpw` does from bcrypt
-5, or hash them with SHA-256 first and bcrypt the digest. Verification compares
-the first 72 bytes either way, so users whose hash was made from a longer
-password keep signing in.
+It verifies with bcrypt by default; pass `password_hasher=` to verify with the
+[password hasher](#password-hashing) you give `CrossAuth`. It always runs one
+verification, even for an email with no account, so response times don't tell
+which emails have accounts, as long as stored hashes use the hasher's current
+scheme and cost. See [Password Hashing](#password-hashing) for when they don't.
 
 ### Creating Sessions
 

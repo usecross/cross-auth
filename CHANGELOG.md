@@ -1,6 +1,115 @@
 CHANGELOG
 =========
 
+0.62.0 - 2026-11-26
+-------------------
+
+`user_can_authenticate` can now say why it refuses a user. Return a
+`CrossAuthException` instead of `False`, and a sign-in answers with that error
+in place of the generic `access_denied` ("Sign-in is not allowed"), while a use
+of a session treats it like `False`: the session counts as no session, it is not
+extended, and nothing is raised.
+
+```python
+from cross_auth.exceptions import CrossAuthException
+
+
+def user_can_authenticate(user: User) -> bool | CrossAuthException:
+    if user.suspended_at is not None:
+        return CrossAuthException(
+            "account_suspended",
+            "This account is suspended. Contact support.",
+            status_code=403,
+        )
+    return True
+```
+
+- Every sign-in answers with the returned error as it answers a raised one:
+  browser sign-in, connecting and linking with `allow_login`, the OAuth client's
+  redirect, `/token` (as a 400 OAuth error), `authenticate()`, `login()`,
+  `issue_session_token()`, `sign_in_with_id_token()` and
+  `resolve_id_token_user()`.
+- Raising a `CrossAuthException` from `user_can_authenticate` works as before:
+  it propagates from every check, on each use of a session too.
+- Returning any other exception, such as FastAPI's `HTTPException`, raises
+  `TypeError` instead of letting the user in.
+- A provider sign-in that auto-links a new identity to an existing user found by
+  email now checks the user before it attaches the identity, so a refused user
+  gains no new way to sign in. The `oauth.id_token` after hooks no longer run
+  for a refused user.
+- Other `CrossAuthException`s raised while browser sign-in finds or creates the
+  user, for example by a `user.create` or `social_account.create` before hook,
+  now answer with their own `status_code` instead of always 400.
+
+Apps that suspend or soft-delete accounts should keep those users visible to the
+accounts storage and refuse them in `user_can_authenticate`. A SQLModel
+`filter_user_query` that hides them breaks sign-in: their provider identity
+answers `server_error`, and their email can sign up a second user. The docs no
+longer suggest `filter_user_query` for soft deletes. See "Soft-Deleted Users" in
+the session authentication guide.
+
+This release was contributed by [@patrick91](https://github.com/patrick91) in [#132](https://github.com/usecross/cross-auth/pull/132)
+
+0.61.0 - 2026-11-26
+-------------------
+
+Cross-Auth can now verify and hash passwords with any password hasher, not only
+bcrypt, so apps that store argon2 or other hashes can use `auth.authenticate()`,
+`auth.change_password()` and the password grant. Pass `password_hasher` to
+`CrossAuth`, or to `AuthRouter`:
+
+```python
+from pwdlib import PasswordHash
+from pwdlib.hashers.argon2 import Argon2Hasher
+from pwdlib.hashers.bcrypt import BcryptHasher
+
+auth = CrossAuth(
+    providers=providers,
+    storage=storage,
+    accounts_storage=accounts_storage,
+    session_storage=session_storage,
+    # New hashes are argon2; the bcrypt hashes users have keep verifying.
+    password_hasher=PasswordHash((Argon2Hasher(), BcryptHasher())),
+)
+```
+
+With several instances, switch in two deploys: first a hasher that verifies both
+schemes but still writes the old one, then the new scheme first. Otherwise
+instances still on the old hasher can't read the new hashes.
+
+- A hasher has `hash(password) -> str` and `verify(password, hash) -> bool`, the
+  new `cross_auth.PasswordHasher` protocol. pwdlib's `PasswordHash` and
+  passlib's `CryptContext` fit as they are.
+- The default, the new `cross_auth.BcryptPasswordHasher`, behaves as before: it
+  verifies the first 72 bytes of a password and refuses to hash a longer one
+  with `password_too_long`.
+- A stored hash the hasher can't read never matches: whatever `verify` raises
+  counts as a wrong password. Cross-Auth logs the error's type on the
+  `cross_auth._password` logger, as a warning once per hasher and error type and
+  then at debug level.
+- Unknown users, users without a password and users whose hash can't be read
+  each verify a dummy hash, which the hasher makes once from a random
+  64-character ASCII password, so each check costs one verification. That evens
+  out timing for hashes of the hasher's current scheme and cost, not across
+  schemes or costs: an account with an older hash verifies in that hash's time
+  until it's rehashed, and Cross-Auth doesn't rehash on sign-in.
+- `verify` should return `False` only for a wrong password, and raise for a hash
+  it can't read before doing the work, as bcrypt, pwdlib and passlib do. `hash`
+  must accept the dummy password, or every check raises `RuntimeError`.
+- `auth.password_hasher` is the hasher in use. Hash the passwords you store
+  yourself, such as at signup, with `auth.password_hasher.hash(password)`.
+- `cross_auth._password.authenticate()` takes `password_hasher=` too.
+
+`PasswordStorage.set_password` now receives the hasher as a required keyword,
+`set_password(user_id, password, *, password_hasher)`, and stores
+`password_hasher.hash(password)`. `change_password` passes its own, so the hash
+it stores is always one its checks read. Custom accounts storages with a
+`set_password` method need the new parameter; without it `change_password`
+raises `TypeError`. Code that calls the SQLModel storage's `set_password` itself
+passes `password_hasher=auth.password_hasher`.
+
+This release was contributed by [@patrick91](https://github.com/patrick91) in [#130](https://github.com/usecross/cross-auth/pull/130)
+
 0.60.0 - 2026-11-20
 -------------------
 

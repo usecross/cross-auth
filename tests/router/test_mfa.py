@@ -13,7 +13,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-import bcrypt
 import pytest
 import respx
 import time_machine
@@ -26,7 +25,7 @@ from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 from cross_web import Response as CrossWebResponse
 
-from cross_auth import TokenIssueRequest, _totp
+from cross_auth import PasswordHasher, TokenIssueRequest, _totp
 from cross_auth.exceptions import CrossAuthException, MFARequired
 from cross_auth.fastapi import CrossAuth
 from cross_auth.hooks import BeforeLoginEvent
@@ -198,13 +197,13 @@ def app_for(auth: CrossAuth) -> TestClient:
 class PasswordAccountsStorage(MemoryAccountsStorage):
     """The memory accounts storage, able to store new passwords."""
 
-    def set_password(self, user_id: Any, password: str) -> MemoryUser | None:
+    def set_password(
+        self, user_id: Any, password: str, *, password_hasher: PasswordHasher
+    ) -> MemoryUser | None:
         user = self.find_user_by_id(user_id)
         if user is None:
             return None
-        # Low cost, as for the test password: nothing checks this hash.
-        salt = bcrypt.gensalt(rounds=4)
-        user.hashed_password = bcrypt.hashpw(password.encode(), salt).decode()
+        user.hashed_password = password_hasher.hash(password)
         return user
 
 

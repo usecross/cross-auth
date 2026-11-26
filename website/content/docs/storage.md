@@ -267,8 +267,12 @@ the adapter.
 
 Override these methods instead of reimplementing whole protocol methods:
 
-- `filter_user_query(statement)` - refine user lookups, e.g. exclude
-  soft-deleted users. (`create_user` deliberately skips this filter.)
+- `filter_user_query(statement)` - refine user lookups, e.g. scope users to a
+  tenant. (`create_user` deliberately skips this filter.) Do not use it to hide
+  soft-deleted or suspended users: sign-in needs to find them, to refuse them
+  with
+  [`user_can_authenticate`](/docs/session-authentication#soft-deleted-users)
+  rather than sign up a second user with their email.
 - `filter_social_account_query(statement)` - scope social accounts, e.g. by
   tenant. Applied to reads **and** writes, so a scoped store can't be made to
   update or delete rows its lookups would never return. This filter does not
@@ -288,8 +292,8 @@ class AccountsStore(SQLModelAccountsStorage[User, SocialAccount]):
     SocialAccountModel = SocialAccount
 
     def filter_user_query(self, statement):
-        # Assumes your User model adds a deleted_at column.
-        return statement.where(User.deleted_at == None)  # noqa: E711
+        # Assumes your User model adds a tenant_id column.
+        return statement.where(User.tenant_id == current_tenant_id())
 ```
 
 Custom social-account columns do not require subclass methods. The
@@ -559,7 +563,7 @@ schema that enforces both rules before supporting sharing.
 Provider IDs must consistently identify a provider configuration and its subject
 namespace. Do not reuse an ID for different issuers whose subjects can overlap.
 Ownership is global within the social-account table, even when an adapter
-applies query filters for tenants or soft deletion. Tenant filters do not create
+applies query filters, such as for tenants. Tenant filters do not create
 separate login ownership.
 
 #### Migrating existing tables
@@ -766,17 +770,22 @@ need not implement it, and `change_password` raises `TypeError` for one without
 it:
 
 ```python
-def set_password(self, user_id: Any, password: str) -> User | None: ...
+def set_password(
+    self, user_id: Any, password: str, *, password_hasher: PasswordHasher
+) -> User | None: ...
 ```
 
 It stores a new password and returns the updated user, or `None` without writing
-anything when the user is not found. It receives the password itself, so hash it
-the way your password check reads it: Cross-Auth's `authenticate` reads a bcrypt
-hash from `hashed_password`, as `cross_auth._password.hash_password` makes. The
+anything when the user is not found. Store `password_hasher.hash(password)` in
+`hashed_password`: `change_password` passes the
+[password hasher](/docs/session-authentication#password-hashing) Cross-Auth
+verifies passwords with, so the checks read the hash. Let what `hash` raises
+propagate before writing, such as the default bcrypt hasher's
+`CrossAuthException("password_too_long")` for a password over 72 bytes. The
 SQLModel adapter has one: it stores that hash and applies `filter_user_query`,
-so a user it hides is not found, and refuses a password longer than bcrypt's 72
-bytes with `CrossAuthException("password_too_long")` before writing. The Django
-adapter has none: Django projects change passwords with Django's own views and
+so a user it hides is not found. Pass `password_hasher=auth.password_hasher`
+when you call it yourself, for example from a password reset. The Django adapter
+has none: Django projects change passwords with Django's own views and
 `update_session_auth_hash`.
 
 Identity lookups should specify `user_id` for a user's connection or

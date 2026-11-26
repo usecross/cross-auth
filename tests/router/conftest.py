@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from cross_auth import OAuthClient, OAuthServer
 from cross_auth._auth_flow import AuthRequest
 from cross_auth._config import Config
+from cross_auth._session import UserCanAuthenticate
 from cross_auth._storage import AccountsStorage, SecondaryStorage, SessionStorage, User
 from cross_auth.fastapi import CrossAuth
 from cross_auth.social_providers.oauth import OAuth2Provider
@@ -75,7 +76,7 @@ def _build_auth(
     default_next_url: str = "/",
     normalize_email: Callable[[str], str] | None = None,
     oauth_server: OAuthServer | None = None,
-    user_can_authenticate: Callable[[User], bool] | None = None,
+    user_can_authenticate: UserCanAuthenticate | None = None,
 ) -> CrossAuth:
     if config is None:
         config = {"session": {"cookies": {"auth": True}}}

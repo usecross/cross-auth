@@ -283,10 +283,12 @@ With
 [`user_can_authenticate`](/docs/session-authentication#refuse-suspended-or-deleted-users),
 the provider callback checks the user before it issues an authorization code: a
 refused user is sent back to the client's `redirect_uri` with
-`error=access_denied` (or your own error) and the client's `state`, and no code
+`error=access_denied`, or the `error` and `error_description` of the
+`CrossAuthException` it returns or raises, and the client's `state`, and no code
 is issued. Redeeming a code at `/token` checks the user again, so a user
 suspended in between gets no token. `/token` answers a refusal as a 400 OAuth
-error with `access_denied` or your error's `error` and `error_description`.
+error with `access_denied` or your error's `error` and `error_description`,
+whatever its `status_code`.
 
 ### Custom token issuers
 

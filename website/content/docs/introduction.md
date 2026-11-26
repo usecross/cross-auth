@@ -24,8 +24,9 @@ framework-specific decorators or middleware.
   manage sessions via secure cookies.
 - **OAuth 2.0** -- Full authorization code flow with PKCE support.
 - **Social login** -- Connect with providers like GitHub, Google, and more.
-- **Secure by default** -- Constant-time password verification, HttpOnly
-  cookies, and SameSite protection out of the box.
+- **Secure by default** -- Password checks that cost one verification whether or
+  not the account exists, HttpOnly cookies, and SameSite protection out of the
+  box.
 - **Storage agnostic** -- Bring your own database. Implement the storage
   protocol with SQLAlchemy, Django ORM, MongoDB, or anything else.
 

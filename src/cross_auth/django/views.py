@@ -558,15 +558,17 @@ class _Bridge(Protocol):
     hooks: HookRegistry
 
 
-def _may_sign_in(user: User) -> bool:
+def _may_sign_in(user: User) -> bool | CrossAuthException:
     """Refuse a user Django's backend refuses, with the login's own error.
 
     The cookie login checks the same rule itself. A sign-in for a bearer
     token never gets there, so the context checks it for both: before an
-    authorization code is issued, and again before its token is.
+    authorization code is issued, and again before its token is. The error is
+    returned, not raised, so core raises it at sign-in only; a session use
+    would count the user as signed out, as ``authenticate_bearer`` does.
     """
     if not _can_authenticate(user):
-        raise CrossAuthException("access_denied", _INACTIVE, status_code=403)
+        return CrossAuthException("access_denied", _INACTIVE, status_code=403)
     return True
 
 

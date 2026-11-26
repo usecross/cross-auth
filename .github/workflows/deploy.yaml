@@ -53,11 +53,3 @@ jobs:
 
       - name: Sync website Python environment
         run: uv sync --frozen --package cross-auth-website
-
-      - name: Deploy to production
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-        working-directory: website
-        run: uv run --frozen --package cross-auth-website fastapi deploy
-        env:
-          FASTAPI_CLOUD_TOKEN: ${{ secrets.FASTAPI_CLOUD_TOKEN }}
-          FASTAPI_CLOUD_APP_ID: ${{ secrets.FASTAPI_CLOUD_APP_ID }}

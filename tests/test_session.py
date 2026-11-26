@@ -9,8 +9,9 @@ from cross_web import HTTPRequest, TestingHTTPRequestAdapter
 
 from cross_auth import AccountsStorage, SessionStorage
 from cross_auth._password import (
-    DUMMY_PASSWORD_HASH,
+    DEFAULT_PASSWORD_HASHER,
     _check_password,
+    _dummy_hash,
     _verify_password,
     authenticate,
     hash_password,
@@ -33,6 +34,8 @@ from cross_auth._token_format import is_well_formed
 from cross_auth.exceptions import CrossAuthException
 
 TEST_PASSWORD = "password123"  # noqa: S105
+# Stands for the default hasher's dummy hash, which is made on first use.
+DUMMY_PASSWORD_HASH = "dummy-hash"  # noqa: S105
 
 
 @pytest.mark.parametrize(
@@ -58,15 +61,19 @@ def test_verify_password_once(
     expected_validity: bool,
 ):
     user = cast(User, Mock(hashed_password=password_hash)) if user_exists else None
+    if expected_hash == DUMMY_PASSWORD_HASH:
+        expected_hash = _dummy_hash(DEFAULT_PASSWORD_HASHER)
 
     with patch(
         "cross_auth._password._check_password",
         return_value=verification_result,
     ) as verify:
-        valid = _verify_password(user, TEST_PASSWORD)
+        valid = _verify_password(user, TEST_PASSWORD, DEFAULT_PASSWORD_HASHER)
 
     assert valid is expected_validity
-    verify.assert_called_once_with(TEST_PASSWORD, expected_hash)
+    verify.assert_called_once_with(
+        TEST_PASSWORD, expected_hash, DEFAULT_PASSWORD_HASHER
+    )
 
 
 def test_verify_password_uses_the_first_72_bytes_like_passlib_did():
@@ -75,27 +82,27 @@ def test_verify_password_uses_the_first_72_bytes_like_passlib_did():
     hashed = bcrypt.hashpw(password.encode()[:72], bcrypt.gensalt(rounds=4)).decode()
     user = cast(User, Mock(hashed_password=hashed))
 
-    assert _verify_password(user, password) is True
-    assert _verify_password(user, "p" * 72) is True
-    assert _verify_password(user, "p" * 71) is False
+    assert _verify_password(user, password, DEFAULT_PASSWORD_HASHER) is True
+    assert _verify_password(user, "p" * 72, DEFAULT_PASSWORD_HASHER) is True
+    assert _verify_password(user, "p" * 71, DEFAULT_PASSWORD_HASHER) is False
 
 
 def test_verify_password_rejects_a_hash_bcrypt_cannot_read():
     foreign = "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHQ$aGFzaGhhc2hoYXNo"
     user = cast(User, Mock(hashed_password=foreign))
 
-    assert _verify_password(user, TEST_PASSWORD) is False
+    assert _verify_password(user, TEST_PASSWORD, DEFAULT_PASSWORD_HASHER) is False
 
 
 def test_hash_password_makes_a_hash_authenticate_verifies():
     hashed = hash_password("a new password")
 
-    assert _check_password("a new password", hashed)
-    assert not _check_password("another password", hashed)
+    assert _check_password("a new password", hashed, DEFAULT_PASSWORD_HASHER)
+    assert not _check_password("another password", hashed, DEFAULT_PASSWORD_HASHER)
 
 
 def test_hash_password_takes_72_bytes_and_refuses_more():
-    assert _check_password("x" * 72, hash_password("x" * 72))
+    assert _check_password("x" * 72, hash_password("x" * 72), DEFAULT_PASSWORD_HASHER)
 
     with pytest.raises(CrossAuthException) as exc:
         hash_password("é" * 36 + "x")

@@ -30,7 +30,7 @@ except ImportError as exc:  # pragma: no cover - exercised only without the extr
         "Install it with: pip install 'cross-auth[sqlmodel]'"
     ) from exc
 
-from cross_auth._password import hash_password
+from cross_auth._password import PasswordHasher
 from cross_auth._storage import (
     CommitCallback,
     DisconnectResult,
@@ -741,8 +741,7 @@ class SQLModelAccountsStorage(
     Use CrossAuth's typed ``user.create``, ``social_account.create``, and
     ``social_account.update`` hooks for lifecycle policy, side effects, and
     mapping provider-specific values onto extra columns. Override the query
-    extension methods for behaviour such as
-    excluding soft-deleted users or tenant scoping.
+    extension methods for behaviour such as tenant scoping.
     ``filter_social_account_query`` is applied to reads
     and writes alike. Go through ``list_social_accounts`` for account reads;
     relationship loading remains application-configured. Model attributes and
@@ -880,20 +879,24 @@ class SQLModelAccountsStorage(
             return None
         return self._find_user(col(self.UserModel.id) == id)
 
-    def set_password(self, user_id: object, password: str) -> UserModelT | None:
-        """Store a bcrypt hash of ``password`` for the user and return them.
+    def set_password(
+        self, user_id: object, password: str, *, password_hasher: PasswordHasher
+    ) -> UserModelT | None:
+        """Store ``password_hasher``'s hash of ``password`` and return the user.
 
         This makes the storage a ``PasswordStorage`` for
-        ``CrossAuth.change_password``; ``authenticate`` verifies the hash. A password longer than bcrypt's 72
-        bytes raises ``CrossAuthException`` before anything is written. Like
-        ``find_user_by_id`` this applies ``filter_user_query``, so a user it
-        hides is not found.
+        ``CrossAuth.change_password``, which passes its own hasher, so
+        ``authenticate`` verifies the hash. Pass ``auth.password_hasher`` when
+        you call it yourself. What the hasher raises, such as the default
+        bcrypt hasher's ``password_too_long`` for a password over 72 bytes,
+        propagates before anything is written. Like ``find_user_by_id`` this
+        applies ``filter_user_query``, so a user it hides is not found.
         """
         model = self.UserModel
         user_id = _coerce_id(model, "id", user_id)
         if user_id is _NO_MATCH:
             return None
-        hashed_password = hash_password(password)
+        hashed_password = password_hasher.hash(password)
         statement = self.filter_user_query(
             select(model).where(col(model.id) == user_id)
         )
@@ -1398,7 +1401,13 @@ class SQLModelAccountsStorage(
     def filter_user_query(
         self, statement: SelectOfScalar[UserModelT]
     ) -> SelectOfScalar[UserModelT]:
-        """Customize user lookups, e.g. exclude soft-deleted users."""
+        """Customize user lookups, e.g. scope them to a tenant.
+
+        Not for soft-deleted or suspended users: sign-in must find them to
+        refuse them. A hidden user's social account points at a user that is
+        not found, and their email looks free for a second sign-up. Return a
+        ``CrossAuthException`` from ``user_can_authenticate`` instead.
+        """
         return statement
 
     def filter_social_account_query(

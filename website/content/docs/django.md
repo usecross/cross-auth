@@ -1316,8 +1316,10 @@ and has to sign in and connect the provider instead.
   [`user_can_authenticate`](/docs/session-authentication#refuse-suspended-or-deleted-users),
   which Django projects do not set: to refuse suspended or deleted users, make
   `is_active` false for them, with a field or a property on your user model.
-  Refusing does not delete their sessions, so making the user active again lets
-  those sessions work again.
+  Keep them in the user model's default manager, which Cross Auth looks users up
+  with: a user it hides is not found, so their email could sign up a second
+  user. Refusing does not delete their sessions, so making the user active again
+  lets those sessions work again.
 - **Transactions.** Each step commits on its own. Cross Auth's views opt out of
   `ATOMIC_REQUESTS`, and raise `ImproperlyConfigured` if they run inside another
   transaction, such as one opened by middleware. Accounts storage captures the

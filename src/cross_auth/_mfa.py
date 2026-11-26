@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from pydantic import AwareDatetime, BaseModel, ValidationError
 
 from . import _totp
+from ._password import DEFAULT_PASSWORD_HASHER, PasswordHasher, _verify_password
 from ._storage import AccountsStorage, MFAFactor, MFAStorage, SecondaryStorage, User
 from .exceptions import CrossAuthException, MFARequired
 from .hooks import (
@@ -328,12 +329,6 @@ def _invalid_code() -> CrossAuthException:
     return CrossAuthException("invalid_code", "The code is not correct")
 
 
-def _default_password_verifier(user: User, password: str) -> bool:
-    from ._password import _verify_password
-
-    return _verify_password(user, password)
-
-
 def resolve_config(config: MFAConfig) -> dict[str, Any]:
     """Check ``config['mfa']`` and fill in its defaults; raise ``ValueError``."""
     unknown = config.keys() - MFAConfig.__optional_keys__
@@ -380,6 +375,7 @@ class MFA:
         hooks: HookRegistry,
         provider_ids: frozenset[str] = frozenset(),
         requires_mfa: RequiresMFA | None = None,
+        password_hasher: PasswordHasher = DEFAULT_PASSWORD_HASHER,
         verify_password: PasswordVerifier | None = None,
         has_password: UserPredicate | None = None,
         email_verified: UserPredicate | None = None,
@@ -394,7 +390,12 @@ class MFA:
         self.hooks = hooks
         self.provider_ids = provider_ids
         self.requires_mfa = requires_mfa
-        self.verify_password = verify_password or _default_password_verifier
+        # Reauthenticating checks a password with the hasher sign-in uses, so
+        # an application that changes it needs nothing else for 2FA. A
+        # framework that checks passwords itself, as Django does, passes its own.
+        self.verify_password = verify_password or (
+            lambda user, password: _verify_password(user, password, password_hasher)
+        )
         self.has_password = has_password or (
             lambda user: user.hashed_password is not None
         )

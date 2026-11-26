@@ -10,6 +10,7 @@ from ._email import normalize_email as _default_normalize_email
 from ._login import issue_bearer_session, run_login, run_now
 from ._mfa import MFA, PasswordVerifier, RequiresMFA, UserPredicate
 from ._oauth_server import OAuthServer
+from ._password import DEFAULT_PASSWORD_HASHER, PasswordHasher
 from ._session import (
     AuthenticatedSession,
     ResolvedSession,
@@ -22,6 +23,8 @@ from ._session import (
     request_metadata,
     resolve_config,
     resolve_current_session,
+    sign_in_refused,
+    user_refusal,
     validate_activity_interval,
 )
 from ._storage import (
@@ -40,13 +43,6 @@ from .hooks import BeforeLoginEvent, HookRegistry
 StorageT = TypeVar("StorageT")
 
 
-def _sign_in_refused() -> CrossAuthException:
-    """The error for a user ``user_can_authenticate`` returned False for."""
-    return CrossAuthException(
-        "access_denied", error_description="Sign-in is not allowed", status_code=403
-    )
-
-
 class Context:
     def __init__(
         self,
@@ -61,6 +57,7 @@ class Context:
         hooks: HookRegistry | None = None,
         normalize_email: Callable[[str], str] | None = None,
         oauth_server: OAuthServer | None = None,
+        password_hasher: PasswordHasher | None = None,
         user_can_authenticate: UserCanAuthenticate | None = None,
         mfa_storage: MFAStorage | None = None,
         requires_mfa: RequiresMFA | None = None,
@@ -83,6 +80,11 @@ class Context:
         # provider_email stored on social accounts).
         self.normalize_email = (
             normalize_email if normalize_email is not None else _default_normalize_email
+        )
+        # The one hasher for every password core verifies or hashes; it also
+        # hashes what change_password stores, so the checks read those hashes.
+        self.password_hasher: PasswordHasher = (
+            password_hasher if password_hasher is not None else DEFAULT_PASSWORD_HASHER
         )
         self.config: Config = config if config is not None else {}
         unknown = self.config.keys() - Config.__optional_keys__
@@ -119,6 +121,7 @@ class Context:
                 hooks=self.hooks,
                 provider_ids=provider_ids,
                 requires_mfa=requires_mfa,
+                password_hasher=self.password_hasher,
                 verify_password=mfa_password_verifier,
                 has_password=mfa_has_password,
                 email_verified=mfa_email_verified,
@@ -138,13 +141,18 @@ class Context:
     def check_user_can_authenticate(self, user: User) -> None:
         """Raise ``CrossAuthException`` unless ``user`` may sign in.
 
-        ``user_can_authenticate`` returning False raises ``access_denied``; an
-        exception it raises propagates. Call it only once the user's identity
-        is verified, so nobody learns an account's state without credentials.
+        ``user_can_authenticate`` returning False raises ``access_denied``, and
+        returning a ``CrossAuthException`` raises that one; an exception it
+        raises propagates. Call it only once the user's identity is verified,
+        so nobody learns an account's state without credentials.
         """
-        user_can_authenticate = self.user_can_authenticate
-        if user_can_authenticate is not None and not user_can_authenticate(user):
-            raise _sign_in_refused()
+        if self.user_can_authenticate is None:
+            return
+        refusal = user_refusal(self.user_can_authenticate, user)
+        if refusal is not None:
+            # Rules may return one shared instance, such as a module constant;
+            # raising it again would add to the traceback it kept last time.
+            raise refusal.with_traceback(None)
 
     def check_user_id_can_authenticate(self, user_id: str) -> None:
         """``check_user_can_authenticate`` for the user with ``user_id``.
@@ -156,7 +164,7 @@ class Context:
             return
         user = self.accounts_storage.find_user_by_id(user_id)
         if user is None:
-            raise _sign_in_refused()
+            raise sign_in_refused()
         self.check_user_can_authenticate(user)
 
     def resolve_current_session(
@@ -166,8 +174,9 @@ class Context:
 
         With ``load_user``, or with ``user_can_authenticate``, the session's
         user is loaded before any sliding refresh: a session whose user is not
-        found or refused counts as unknown and is not extended. A
-        ``CrossAuthException`` from ``user_can_authenticate`` propagates.
+        found or refused counts as unknown and is not extended, also when
+        ``user_can_authenticate`` returns a ``CrossAuthException``. One it
+        raises propagates.
         """
         session_storage = self.session_storage
         if session_storage is None:
@@ -227,9 +236,9 @@ class Context:
 
         Returns ``None`` when the token is unknown, revoked or expired, when
         the accounts storage does not return its user, or when
-        ``user_can_authenticate`` returns False for it; an exception it raises
-        propagates. Sliding sessions are refreshed as they are for requests,
-        once the user is checked.
+        ``user_can_authenticate`` returns False or a ``CrossAuthException`` for
+        it; an exception it raises propagates. Sliding sessions are refreshed
+        as they are for requests, once the user is checked.
 
         Pass ``db_session`` to load the user in your own database session, so
         the returned user belongs to it. The accounts storage must have a

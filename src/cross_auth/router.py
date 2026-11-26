@@ -21,6 +21,7 @@ from ._config import Config
 from ._context import AccountsStorage, Context, SecondaryStorage, User
 from ._issuer import Issuer
 from ._oauth_server import OAuthServer
+from ._password import PasswordHasher
 from ._route import Route
 from ._mfa import RequiresMFA
 from ._mfa_routes import mfa_routes
@@ -170,6 +171,7 @@ class AuthRouter(APIRouter):
         hooks: HookRegistry | None = None,
         normalize_email: Callable[[str], str] | None = None,
         oauth_server: OAuthServer | None = None,
+        password_hasher: PasswordHasher | None = None,
         user_can_authenticate: UserCanAuthenticate | None = None,
         mfa_storage: MFAStorage | None = None,
         requires_mfa: RequiresMFA | None = None,
@@ -190,6 +192,7 @@ class AuthRouter(APIRouter):
             hooks=hooks,
             normalize_email=normalize_email,
             oauth_server=oauth_server,
+            password_hasher=password_hasher,
             user_can_authenticate=user_can_authenticate,
             mfa_storage=mfa_storage,
             requires_mfa=requires_mfa,

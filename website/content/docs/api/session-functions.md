@@ -11,17 +11,46 @@ The FastAPI `CrossAuth` class provides these public methods for session
 management. See [Session Authentication](/docs/session-authentication) for usage
 examples.
 
+### `CrossAuth(..., user_can_authenticate=...)`
+
+`Callable[[User], bool | CrossAuthException]`, called with the user at every
+login, once their credentials are verified, and on every use of a session. What
+it answers decides what happens:
+
+| Answer                         | At a login                    | On a use of a session |
+| ------------------------------ | ----------------------------- | --------------------- |
+| `True`                         | Signs in.                     | Uses the session.     |
+| `False`                        | Raises `access_denied` (403). | Counts as no session. |
+| Returns a `CrossAuthException` | Raises it.                    | Counts as no session. |
+| Raises a `CrossAuthException`  | Raises it.                    | Raises it.            |
+
+Cross-Auth's routes answer a raised error with its `error`, `error_description`
+and `status_code`, except that `/token` answers 400 and browser sign-in for an
+OAuth client redirects to the client. Any other exception it returns raises
+`TypeError`. See
+[Refuse Suspended or Deleted Users](/docs/session-authentication#refuse-suspended-or-deleted-users).
+
 ### `authenticate(email, password)`
 
-Verifies email/password credentials. Returns the `User` or `None`. Once the
-password matches, raises `CrossAuthException` for a user `user_can_authenticate`
-refuses.
+Verifies email/password credentials with `password_hasher`. Returns the `User`
+or `None`. Once the password matches, raises `CrossAuthException` for a user
+`user_can_authenticate` refuses: `access_denied`, or the one it returns or
+raises.
+
+### `password_hasher`
+
+The [password hasher](/docs/session-authentication#password-hashing) passed to
+`CrossAuth`, or the default `BcryptPasswordHasher`. `authenticate`,
+`change_password` and the password grant verify passwords with it, and
+`change_password` hashes the new one with it. Hash the passwords you store
+yourself with its `hash` method.
 
 ### `login(user_id, response=...)`
 
 Creates a session and sets the session cookie directly on the provided FastAPI
 `Response`. Raises `CrossAuthException` for a user `user_can_authenticate`
-refuses, before the `login` hooks run.
+refuses, before the `login` hooks run: `access_denied`, or the one it returns or
+raises.
 
 ### `logout(request, response=...)`
 
@@ -40,7 +69,8 @@ Registers a typed hook that runs after a Cross-Auth lifecycle event succeeds.
 
 A bound method usable as a FastAPI dependency. Resolves the current user from
 the session cookie or `Authorization: Bearer ...` header. Returns `User | None`;
-`None` also for a user `user_can_authenticate` refuses.
+`None` also for a user `user_can_authenticate` refuses, with `False` or a
+returned `CrossAuthException`; one it raises propagates.
 
 ### `require_current_user(request)`
 
@@ -76,13 +106,14 @@ sessions.
 
 Changes the password of the user the request's session signs in, once
 `current_password` matches (`None` only for a user without a password), and
-returns the updated user. The accounts storage hashes and stores the new
-password. Then it revokes the user's other sessions, keeping the request's own,
-unless `revoke_other_sessions` is `False`. Raises `CrossAuthException`:
-`unauthorized` (401) without a session, `invalid_password` (400) for a wrong
-current password, and `password_too_long` (400) from the SQLModel storage for a
-password over bcrypt's 72 bytes. The accounts storage needs a `set_password`
-method, as the SQLModel one has; without one it raises `TypeError`. See
+returns the updated user. The accounts storage hashes the new password with
+`password_hasher` and stores it. Then it revokes the user's other sessions,
+keeping the request's own, unless `revoke_other_sessions` is `False`. Raises
+`CrossAuthException`: `unauthorized` (401) without a session, `invalid_password`
+(400) for a wrong current password, and `password_too_long` (400) from the
+default bcrypt hasher for a password over 72 bytes. The accounts storage needs a
+`set_password` method, as the SQLModel one has; without one it raises
+`TypeError`. See
 [Change a Password](/docs/session-authentication#change-a-password).
 
 The three revoke methods run the

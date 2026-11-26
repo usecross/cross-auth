@@ -2,6 +2,7 @@ from cross_auth._clients import ClientResolver, OAuthClient
 from cross_auth._context import Context
 from cross_auth._email import normalize_email
 from cross_auth._oauth_server import OAuthServer
+from cross_auth._password import BcryptPasswordHasher, PasswordHasher
 from cross_auth._session import (
     AuthenticatedSession,
     SessionConfig,
@@ -71,6 +72,7 @@ from cross_auth.social_providers.oidc import OIDCProvider
 __all__ = [
     "AccountsStorage",
     "AuthenticatedSession",
+    "BcryptPasswordHasher",
     "CommitCallback",
     "DisconnectResult",
     "CallbackData",
@@ -112,6 +114,7 @@ __all__ = [
     "OAuth2Provider",
     "OAuth2TimeoutException",
     "OIDCProvider",
+    "PasswordHasher",
     "SecondaryStorage",
     "SessionConfig",
     "SessionCookieConfig",

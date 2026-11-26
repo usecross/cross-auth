@@ -16,8 +16,9 @@ from cross_web import HTTPRequest
 from ._config import Config
 from ._context import Context
 from ._issuer import Issuer
-from ._oauth_server import OAuthServer
 from ._mfa import RequiresMFA
+from ._oauth_server import OAuthServer
+from ._password import PasswordHasher
 from ._session import UserCanAuthenticate
 from ._storage import (
     AccountsStorage,
@@ -53,6 +54,7 @@ def build_auth_setup(
     hooks: HookRegistry | None = None,
     normalize_email: Callable[[str], str] | None = None,
     oauth_server: OAuthServer | None = None,
+    password_hasher: PasswordHasher | None = None,
     user_can_authenticate: UserCanAuthenticate | None = None,
     mfa_storage: MFAStorage | None = None,
     requires_mfa: RequiresMFA | None = None,
@@ -69,6 +71,7 @@ def build_auth_setup(
         hooks=hooks,
         normalize_email=normalize_email,
         oauth_server=oauth_server,
+        password_hasher=password_hasher,
         user_can_authenticate=user_can_authenticate,
         mfa_storage=mfa_storage,
         requires_mfa=requires_mfa,

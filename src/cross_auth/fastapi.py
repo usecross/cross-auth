@@ -46,7 +46,7 @@ from ._login import (
 )
 from ._native import resolve_id_token_user as _resolve_id_token_user
 from ._oauth_server import OAuthServer
-from ._password import _verify_password, authenticate
+from ._password import PasswordHasher, _verify_password, authenticate
 from ._request import make_http_request
 from ._session import (
     AuthenticatedSession,
@@ -197,6 +197,7 @@ class CrossAuth:
         default_next_url: str = "/",
         normalize_email: Callable[[str], str] | None = None,
         oauth_server: OAuthServer | None = None,
+        password_hasher: PasswordHasher | None = None,
         user_can_authenticate: UserCanAuthenticate | None = None,
         mfa_storage: MFAStorage | None = None,
         requires_mfa: RequiresMFA | None = None,
@@ -223,6 +224,7 @@ class CrossAuth:
             hooks=HookRegistry(),
             normalize_email=normalize_email,
             oauth_server=oauth_server,
+            password_hasher=password_hasher,
             user_can_authenticate=user_can_authenticate,
             mfa_storage=mfa_storage,
             requires_mfa=requires_mfa,
@@ -233,6 +235,15 @@ class CrossAuth:
     @property
     def router(self) -> AuthRouter:
         return self._router
+
+    @property
+    def password_hasher(self) -> PasswordHasher:
+        """The hasher that verifies and hashes every password, bcrypt by default.
+
+        Hash the passwords you store yourself, such as at signup, with its
+        ``hash`` method, so that ``authenticate`` can verify them.
+        """
+        return self._context.password_hasher
 
     def _require_session_storage(self) -> SessionStorage:
         session_storage = self._context.session_storage
@@ -258,9 +269,9 @@ class CrossAuth:
         builders, GraphQL resolvers, template helpers). With sliding sessions
         (``update_age``) the stored record refreshes on read; install
         ``SessionCookieMiddleware`` so the rolled cookie also reaches the
-        browser. A user ``user_can_authenticate`` refuses resolves to ``None``
-        and their session is not refreshed; a ``CrossAuthException`` it raises
-        propagates.
+        browser. A user ``user_can_authenticate`` refuses, with False or a
+        returned ``CrossAuthException``, resolves to ``None`` and their session
+        is not refreshed; a ``CrossAuthException`` it raises propagates.
         """
         if self._context.get_user_from_request != self._default_get_user_from_request:
             # Preserve the custom-resolver contract: sliding sessions refresh,
@@ -323,8 +334,9 @@ class CrossAuth:
 
         Returns ``None`` when the token is unknown, revoked or expired, when
         the accounts storage does not return its user, or when
-        ``user_can_authenticate`` returns False for it; a ``CrossAuthException``
-        it raises propagates. Unlike ``get_current_user``, this never calls
+        ``user_can_authenticate`` returns False or a ``CrossAuthException`` for
+        it; a ``CrossAuthException`` it raises propagates. Unlike
+        ``get_current_user``, this never calls
         ``get_user_from_request``, so a custom resolver can use it for session
         tokens.
 
@@ -438,8 +450,9 @@ class CrossAuth:
         without one this raises ``unauthorized`` (401). ``current_password`` must match the user's password, and is
         ``None`` only for a user without one, who sets a first password.
         Otherwise this raises ``invalid_password`` (400) and changes nothing.
-        The accounts storage hashes and stores ``new_password``; the SQLModel
-        one refuses a password longer than bcrypt's 72 bytes with
+        The accounts storage hashes ``new_password`` with ``password_hasher``
+        and stores it. What the hasher raises propagates and changes nothing:
+        the default bcrypt hasher refuses a password over 72 bytes with
         ``password_too_long`` (400).
 
         Then, with ``revoke_other_sessions``, the user's other sessions are
@@ -477,13 +490,17 @@ class CrossAuth:
             # Only a user without a password may set one without proving it.
             correct = user.hashed_password is None
         else:
-            correct = _verify_password(user, current_password)
+            correct = _verify_password(
+                user, current_password, self._context.password_hasher
+            )
         if not correct:
             raise CrossAuthException(
                 "invalid_password", "The current password is not correct"
             )
 
-        updated = accounts_storage.set_password(user.id, new_password)
+        updated = accounts_storage.set_password(
+            user.id, new_password, password_hasher=self._context.password_hasher
+        )
         if updated is None:
             raise CrossAuthException("unauthorized", "Not logged in", status_code=401)
         if revoke_other_sessions:
@@ -543,7 +560,9 @@ class CrossAuth:
         login attempt and prevent reuse; this comparison does not consume it.
         Runs the ``oauth.id_token`` hooks, then the ``login`` hooks. A user
         ``user_can_authenticate`` refuses raises ``CrossAuthException`` once
-        the token is verified, before the ``login`` hooks and the session.
+        the token is verified, before the ``login`` hooks and the session:
+        ``access_denied``, or the ``CrossAuthException`` the rule returns or
+        raises.
         """
         session_storage = self._require_session_storage()
         require_committed_accounts(self._context)
@@ -587,6 +606,8 @@ class CrossAuth:
         verified, a user ``user_can_authenticate`` refuses raises
         ``CrossAuthException``, as for ``sign_in_with_id_token``.
         """
+        # This checks user_can_authenticate, before auto-linking attaches an
+        # identity and before the oauth.id_token after hooks.
         resolved_user, _ = _resolve_id_token_user(
             context=self._context,
             providers=self._setup.providers_by_id,
@@ -595,16 +616,15 @@ class CrossAuth:
             user_info=user_info,
             nonce=nonce,
         )
-        self._context.check_user_can_authenticate(resolved_user.user)
         return resolved_user.user, resolved_user.created
 
     def authenticate(self, email: str, password: str) -> User | None:
         """Return the user ``email`` and ``password`` belong to, or ``None``.
 
         Once the password matches, a user ``user_can_authenticate`` refuses
-        raises ``CrossAuthException`` (``access_denied``, or the rule's own
-        error) and the ``authenticate`` after hooks do not run. A wrong
-        password returns ``None`` without asking the rule.
+        raises ``CrossAuthException`` (``access_denied``, or the one the rule
+        returns or raises) and the ``authenticate`` after hooks do not run. A
+        wrong password returns ``None`` without asking the rule.
         """
         event = self._context.hooks.run_before(
             "authenticate",
@@ -617,6 +637,7 @@ class CrossAuth:
             self._context.normalize_email(event.email),
             event.password,
             self._context.accounts_storage,
+            password_hasher=self._context.password_hasher,
         )
         # Only once the password matched, so a wrong password cannot tell
         # whether the account may sign in.
@@ -1068,7 +1089,8 @@ class CrossAuth:
         the user approved from a browser where they are signed in, which the
         default 2FA rule does not challenge. A user
         ``user_can_authenticate`` refuses, or one it cannot find, raises
-        ``CrossAuthException`` before the ``login`` hooks and creates nothing.
+        ``CrossAuthException`` before the ``login`` hooks and creates nothing:
+        ``access_denied``, or the one the rule returns or raises.
 
         ``mfa_method`` is the second factor this sign-in has already passed,
         for a ``token_issuer`` that issues sessions with this: pass on its
@@ -1107,10 +1129,10 @@ class CrossAuth:
         Runs the ``login`` hooks with ``credential="cookie"``. A user
         ``user_can_authenticate`` refuses, or one it cannot find, raises
         ``CrossAuthException`` before the hooks and leaves ``response`` as it
-        was. With two-factor authentication, a user who needs a second
-        factor raises ``MFARequired`` instead, with a ``challenge`` to pass to
-        ``complete_mfa_login`` (or post to ``/mfa/verify``); no session is
-        created until then.
+        was, as for ``issue_session_token``. With two-factor authentication, a
+        user who needs a second factor raises ``MFARequired`` instead, with a
+        ``challenge`` to pass to ``complete_mfa_login`` (or post to
+        ``/mfa/verify``); no session is created until then.
         """
         session_storage = self._require_session_storage()
         try:
