@@ -788,6 +788,24 @@ when you call it yourself, for example from a password reset. The Django adapter
 has none: Django projects change passwords with Django's own views and
 `update_session_auth_hash`.
 
+To store the upgraded hash of an outdated one (see
+[Password Hashing](/docs/session-authentication#password-hashing)),
+`authenticate()` and the password grant need the accounts storage to have a
+`replace_password_hash` method; without one, hashes stay as they are:
+
+```python
+def replace_password_hash(
+    self, user_id: Any, *, old_hash: str, new_hash: str
+) -> bool: ...
+```
+
+It stores `new_hash` if the user's `hashed_password` is still `old_hash`, and
+returns whether it did. Compare and write in one statement, such as
+`UPDATE ... WHERE hashed_password = :old_hash`: a password changed since the
+sign-in read `old_hash` must keep its new hash. The SQLModel adapter has one: it
+applies `filter_user_query` and leaves the user's `onupdate` columns, such as an
+`updated_at` timestamp, as they were. The Django adapter has none.
+
 Identity lookups should specify `user_id` for a user's connection or
 `is_login_method=True` for the login owner. An unfiltered identity lookup that
 matches multiple rows raises rather than selecting an arbitrary user.

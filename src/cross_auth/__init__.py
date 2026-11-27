@@ -2,7 +2,11 @@ from cross_auth._clients import ClientResolver, OAuthClient
 from cross_auth._context import Context
 from cross_auth._email import normalize_email
 from cross_auth._oauth_server import OAuthServer
-from cross_auth._password import BcryptPasswordHasher, PasswordHasher
+from cross_auth._password import (
+    BcryptPasswordHasher,
+    PasswordHasher,
+    RehashingPasswordHasher,
+)
 from cross_auth._session import (
     AuthenticatedSession,
     SessionConfig,
@@ -13,6 +17,7 @@ from cross_auth._storage import (
     AccountsStorage,
     CommitCallback,
     DisconnectResult,
+    PasswordHashStorage,
     SecondaryStorage,
     SessionListOrder,
     SessionListResult,
@@ -25,7 +30,7 @@ from cross_auth._storage import (
     UserCreate,
     session_status,
 )
-from cross_auth._tokens import TokenIssueRequest, TokenIssuer, TokenKind
+from cross_auth._tokens import TokenIssuer, TokenIssueRequest, TokenKind
 from cross_auth.hooks import (
     AfterAuthenticateEvent,
     AfterLoginEvent,
@@ -114,7 +119,9 @@ __all__ = [
     "OAuth2Provider",
     "OAuth2TimeoutException",
     "OIDCProvider",
+    "PasswordHashStorage",
     "PasswordHasher",
+    "RehashingPasswordHasher",
     "SecondaryStorage",
     "SessionConfig",
     "SessionCookieConfig",

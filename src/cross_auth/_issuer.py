@@ -19,7 +19,7 @@ from ._authorization_code import (
     AuthorizationCodeGrantData,
 )
 from ._context import Context
-from ._password import _verify_password
+from ._password import _verify_and_upgrade
 from ._route import Route
 from ._tokens import IssuedToken, TokenIssueRequest
 from .exceptions import CrossAuthException
@@ -327,8 +327,10 @@ class Issuer:
         except CrossAuthException as e:
             return self._error_response(e.error, e.error_description)
 
-        valid = _verify_password(user, request.password, context.password_hasher)
-        if not valid or user is None:
+        matched_hash = _verify_and_upgrade(
+            user, request.password, context.password_hasher, context.accounts_storage
+        )
+        if matched_hash is None or user is None:
             return self._error_response("invalid_grant", "Invalid username or password")
 
         try:

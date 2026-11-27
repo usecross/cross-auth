@@ -109,6 +109,30 @@ class PasswordStorage(Protocol):
         ...
 
 
+@runtime_checkable
+class PasswordHashStorage(Protocol):
+    """An accounts storage that can replace a password hash it still stores.
+
+    With a ``RehashingPasswordHasher``, ``authenticate`` and the password grant
+    store the upgraded hash of a password that matched an outdated one. Other
+    accounts storages need not implement it; their hashes are left as they are.
+    """
+
+    def replace_password_hash(
+        self, user_id: Any, *, old_hash: str, new_hash: str
+    ) -> bool:
+        """Store ``new_hash`` as the user's ``hashed_password`` if it is still
+        ``old_hash``, and return whether it did.
+
+        Compare and write in one statement, such as ``UPDATE ... WHERE
+        hashed_password = :old_hash``: a password changed since the sign-in
+        read ``old_hash`` must keep its new hash. Return ``False`` without
+        writing when the user is not found or the hash differs. Commit before
+        returning, or join the application transaction ``on_commit`` follows.
+        """
+        ...
+
+
 class SecondaryStorage(Protocol):
     def set(self, key: str, value: str, ttl: int | None = None) -> None:
         """Store a value.

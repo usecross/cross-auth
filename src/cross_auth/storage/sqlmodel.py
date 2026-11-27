@@ -873,6 +873,51 @@ class SQLModelAccountsStorage(
             return None
         return self._find_user(col(self.UserModel.id) == id)
 
+    def replace_password_hash(
+        self, user_id: object, *, old_hash: str, new_hash: str
+    ) -> bool:
+        """Store ``new_hash`` if the user's hash is still ``old_hash``.
+
+        This makes the storage a ``PasswordHashStorage``, so ``authenticate``
+        and the password grant store the upgraded hash of an outdated one. It is
+        one conditional
+        ``UPDATE``: a password changed since ``old_hash`` was read keeps its
+        hash. Like ``set_password`` this applies ``filter_user_query``, so a
+        user it hides is not updated. The user's ``onupdate`` columns, such as
+        an ``updated_at`` timestamp, keep their values: the password is the
+        same.
+        """
+        model = self.UserModel
+        user_id = _coerce_id(model, "id", user_id)
+        if user_id is _NO_MATCH:
+            return False
+
+        eligible_user_ids = self.filter_user_query(
+            select(model).where(col(model.id) == user_id)
+        ).with_only_columns(col(model.id))
+        # The password is the same, so the user's onupdate columns keep their
+        # values: each is set to itself.
+        preserved = {
+            attribute.key: attribute.columns[0]
+            for attribute in inspect(model).column_attrs
+            if attribute.columns[0].onupdate is not None
+            and attribute.key != "hashed_password"
+        }
+        statement = (
+            update(model)
+            .where(
+                col(model.id).in_(eligible_user_ids),
+                col(model.hashed_password) == old_hash,
+            )
+            .values(**preserved, hashed_password=new_hash)
+            # The session is new: it holds no users to keep in step.
+            .execution_options(synchronize_session=False)
+        )
+        with self._open_session() as session:
+            result = session.exec(statement)  # type: ignore[call-overload]
+            session.commit()
+        return result.rowcount == 1
+
     def set_password(
         self, user_id: object, password: str, *, password_hasher: PasswordHasher
     ) -> UserModelT | None:
