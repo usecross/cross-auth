@@ -37,6 +37,28 @@ or `None`. Once the password matches, raises `CrossAuthException` for a user
 `user_can_authenticate` refuses: `access_denied`, or the one it returns or
 raises.
 
+### `sign_in_with_password(email, password, max_age=None, metadata=None)`
+
+Checks the credentials as `authenticate` does, then issues a bearer session with
+`login_method="password"`, and returns a `PasswordSignIn` with the `token`, the
+`session_record` and the `user`. Returns `None` when the email and password
+don't match. `max_age` and `metadata` are as for `issue_session_token`.
+
+Once the session is stored, it checks the password again, so a password change
+made while it signs in is not left with a session it meant to end: it then
+revokes the session and returns `None`. Raises `CrossAuthException` for a user
+`user_can_authenticate` refuses, and `RuntimeError` without `session_storage` or
+while the session or accounts storage defers its commits. See
+[Password Changes During Sign-In](/docs/security#password-changes-during-sign-in).
+
+### `login_with_password(email, password, response=..., metadata=None)`
+
+The cookie version of `sign_in_with_password`: checks the credentials, creates a
+session with `login_method="password"` and sets its cookie on the FastAPI
+`Response`. Returns the `User`, or `None` when the email and password don't
+match or the password changed while it signed in, leaving `response` as it was.
+Raises as `sign_in_with_password` does.
+
 ### `password_hasher`
 
 The [password hasher](/docs/session-authentication#password-hashing) passed to

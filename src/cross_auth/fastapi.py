@@ -25,6 +25,7 @@ from ._config import Config
 from ._fastapi_session import SessionCookieMiddleware as SessionCookieMiddleware
 from ._fastapi_session import queue_rolled_cookie, set_cookie
 from ._login import (
+    AfterIssue,
     issue_bearer_session,
     login_with_session,
     logout_session,
@@ -34,7 +35,13 @@ from ._login import (
 )
 from ._native import resolve_id_token_user as _resolve_id_token_user
 from ._oauth_server import OAuthServer
-from ._password import PasswordHasher, _verify_password, authenticate
+from ._password import (
+    PasswordChanged,
+    PasswordHasher,
+    _verify_password,
+    authenticate,
+    unless_password_changed,
+)
 from ._request import make_http_request
 from ._session import (
     AuthenticatedSession,
@@ -160,6 +167,15 @@ class IdTokenSignIn(NamedTuple):
     session_record: SessionRecord
     user: User
     created: bool
+
+
+class PasswordSignIn(NamedTuple):
+    """What ``CrossAuth.sign_in_with_password`` returns: the bearer session it
+    issued and the user it signed in."""
+
+    token: str
+    session_record: SessionRecord
+    user: User
 
 
 class CrossAuth:
@@ -587,7 +603,157 @@ class CrossAuth:
         raises ``CrossAuthException`` (``access_denied``, or the one the rule
         returns or raises) and the ``authenticate`` after hooks do not run. A
         wrong password returns ``None`` without asking the rule.
+
+        To sign the user in, use ``sign_in_with_password`` for a bearer session
+        or ``login_with_password`` for a cookie: they also refuse a sign-in
+        whose password changes before its session is stored. A session you
+        create after this returns gets no such check.
         """
+        user, _ = self._authenticate(email, password)
+        return user
+
+    def sign_in_with_password(
+        self,
+        email: str,
+        password: str,
+        *,
+        max_age: int | None = None,
+        metadata: SessionMetadata | None = None,
+    ) -> PasswordSignIn | None:
+        """Check ``email`` and ``password`` and sign the user in with a bearer
+        session.
+
+        ``authenticate`` followed by ``issue_session_token``, for your own
+        sign-in endpoint: the ``authenticate`` hooks run around the check, then
+        the ``login`` hooks around a new session whose ``login_method`` is
+        ``"password"``. ``max_age`` and ``metadata`` are as for
+        ``issue_session_token``. Returns the token, the session record and the
+        user, or ``None`` when the email and password don't match.
+
+        Once the session is stored, the password is checked again. A password
+        change that stored its new hash after the first check, and revoked the
+        user's sessions before this one existed, would otherwise leave it
+        signed in. When the stored hash changed and the password no longer
+        matches it, this revokes the session and returns ``None``, as for a
+        wrong password; the ``login`` after hooks do not run. This relies on a
+        password change storing the new hash before it revokes the sessions,
+        as ``change_password`` does.
+
+        A user ``user_can_authenticate`` refuses raises ``CrossAuthException``,
+        as for ``authenticate``. Like ``sign_in_with_id_token``, it refuses
+        (``RuntimeError``) before checking anything when there is no
+        ``session_storage``, or while the session or accounts storage defers
+        its commits, as one that joined an application transaction does: the
+        second check needs the session stored and the user read in committed
+        transactions.
+        """
+        session_storage = self._require_password_sign_in("sign_in_with_password")
+        user, checked = self._authenticate(email, password)
+        if user is None or checked is None:
+            return None
+
+        try:
+            token, record, _ = issue_bearer_session(
+                str(user.id),
+                hooks=self._context.hooks,
+                session_storage=session_storage,
+                session_config=self._context.session_config,
+                # _authenticate has just checked this user.
+                check_user=None,
+                max_age=max_age,
+                metadata=metadata,
+                login_method="password",
+                after_issue=self._unless_password_changed(user, checked),
+            )
+        except PasswordChanged:
+            return None
+        return PasswordSignIn(token, record, user)
+
+    def login_with_password(
+        self,
+        email: str,
+        password: str,
+        *,
+        response: FastAPIResponse,
+        metadata: SessionMetadata | None = None,
+    ) -> User | None:
+        """Check ``email`` and ``password`` and sign the user in with a session
+        cookie set on ``response``.
+
+        ``authenticate`` followed by ``login``, for your own sign-in endpoint:
+        the ``authenticate`` hooks run around the check, then the ``login``
+        hooks around a new session whose ``login_method`` is ``"password"``.
+        Returns the user, or ``None`` when the email and password don't match,
+        leaving ``response`` as it was.
+
+        Once the session is stored, the password is checked again, as
+        ``sign_in_with_password`` does. When the stored hash changed and the
+        password no longer matches it, this revokes the session, leaves
+        ``response`` as it was and returns ``None``; the ``login`` after hooks
+        do not run.
+
+        A user ``user_can_authenticate`` refuses raises ``CrossAuthException``,
+        as for ``authenticate``. Like ``sign_in_with_password``, it refuses
+        (``RuntimeError``) before checking anything when there is no
+        ``session_storage``, or while the session or accounts storage defers
+        its commits.
+        """
+        session_storage = self._require_password_sign_in("login_with_password")
+        user, checked = self._authenticate(email, password)
+        if user is None or checked is None:
+            return None
+
+        try:
+            hook_response = login_with_session(
+                str(user.id),
+                response=self._make_hook_response(response),
+                hooks=self._context.hooks,
+                session_storage=session_storage,
+                session_config=self._context.session_config,
+                # _authenticate has just checked this user.
+                check_user=None,
+                metadata=metadata,
+                login_method="password",
+                after_issue=self._unless_password_changed(user, checked),
+            )
+        except PasswordChanged:
+            return None
+        self._apply_hook_response(hook_response, response)
+        return user
+
+    def _require_password_sign_in(self, name: str) -> SessionStorage:
+        """Return the session storage, refusing as the password sign-ins do.
+
+        Their second password check needs the session stored and the user read
+        in committed transactions.
+        """
+        session_storage = self._require_session_storage()
+        require_committed_accounts(self._context)
+        require_immediate_commit(
+            session_storage.on_commit,
+            f"{name} needs a session storage whose writes commit before it "
+            "returns; do not run it inside an application transaction",
+        )
+        return session_storage
+
+    def _unless_password_changed(
+        self, user: User, checked: tuple[str, str]
+    ) -> AfterIssue:
+        checked_password, checked_hash = checked
+        return unless_password_changed(
+            self._context.accounts_storage,
+            self._context.session_storage,
+            user_id=str(user.id),
+            password=checked_password,
+            checked_hash=checked_hash,
+            password_hasher=self._context.password_hasher,
+        )
+
+    def _authenticate(
+        self, email: str, password: str
+    ) -> tuple[User | None, tuple[str, str] | None]:
+        """``authenticate``, also returning the password the ``authenticate``
+        before hooks passed on and the hash it matched, for a matching one."""
         event = self._context.hooks.run_before(
             "authenticate",
             BeforeAuthenticateEvent(email=email, password=password),
@@ -601,6 +767,9 @@ class CrossAuth:
             self._context.accounts_storage,
             password_hasher=self._context.password_hasher,
         )
+        checked = None
+        if user is not None and user.hashed_password is not None:
+            checked = (event.password, user.hashed_password)
         # Only once the password matched, so a wrong password cannot tell
         # whether the account may sign in.
         if user is not None:
@@ -611,7 +780,7 @@ class CrossAuth:
             AfterAuthenticateEvent(email=event.email, user=user),
         )
 
-        return user
+        return user, checked
 
     @overload
     def before(

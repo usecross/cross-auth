@@ -19,7 +19,7 @@ from ._authorization_code import (
     AuthorizationCodeGrantData,
 )
 from ._context import Context
-from ._password import _verify_password
+from ._password import _verify_password, unless_password_changed
 from ._route import Route
 from ._tokens import IssuedToken, TokenIssueRequest
 from .exceptions import CrossAuthException
@@ -327,8 +327,9 @@ class Issuer:
         except CrossAuthException as e:
             return self._error_response(e.error, e.error_description)
 
+        checked_hash = None if user is None else user.hashed_password
         valid = _verify_password(user, request.password, context.password_hasher)
-        if not valid or user is None:
+        if not valid or user is None or checked_hash is None:
             return self._error_response("invalid_grant", "Invalid username or password")
 
         try:
@@ -341,7 +342,18 @@ class Issuer:
                     http_request=http_request,
                     grant_type="password",
                     login_method="password",
-                )
+                ),
+                # A password change between the check above and the token
+                # must still end it. A failed check answers like a wrong
+                # password.
+                after_issue=unless_password_changed(
+                    context.accounts_storage,
+                    context.session_storage,
+                    user_id=str(user.id),
+                    password=request.password,
+                    checked_hash=checked_hash,
+                    password_hasher=context.password_hasher,
+                ),
             )
         except CrossAuthException as e:
             return self._error_response(e.error, e.error_description)

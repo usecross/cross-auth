@@ -35,16 +35,32 @@ auth = CrossAuth(
     session_storage=session_storage,
 )
 
-# Verify credentials
-user = auth.authenticate(email, password)
+# Verify credentials, create a session and set its cookie in one step
+response = JSONResponse({})
+user = auth.login_with_password(email, password, response=response)
 if user is None:
+    # Invalid credentials; response has no cookie
+    ...
+```
+
+`auth.login_with_password()` is `auth.authenticate()` followed by
+`auth.login(str(user.id), response=response)`, which you can also call yourself,
+for example after a sign-in of your own.
+
+For a bearer token, `auth.sign_in_with_password()` checks the credentials and
+issues the session in one call. It returns `None` for a wrong email or password:
+
+```python
+signed_in = auth.sign_in_with_password(email, password)
+if signed_in is None:
     # Invalid credentials
     ...
 
-# Create session + set cookie in one step
-response = JSONResponse({"user": user.id})
-auth.login(str(user.id), response=response)
+return {"access_token": signed_in.token, "user": signed_in.user.id}
 ```
+
+Both also refuse a sign-in whose password changed while it signed in. See
+[Password Changes During Sign-In](/docs/security#password-changes-during-sign-in).
 
 ### Logout
 
@@ -264,6 +280,7 @@ auth = CrossAuth(
 When it returns `False`, logins are refused with `403 access_denied` ("Sign-in
 is not allowed") before the `login` hooks run and before anything is issued.
 That covers `auth.login()`, `auth.issue_session_token()`,
+`auth.sign_in_with_password()`, `auth.login_with_password()`,
 `auth.sign_in_with_id_token()`, browser sign-in and `/token`, including a custom
 `token_issuer`. A user ID the accounts storage does not find is refused the same
 way. A session of a refused user counts as no session:
@@ -313,6 +330,7 @@ Each login answers with it as it answers its other errors:
   with its `error` and `error_description`, as OAuth errors do.
 - `/token` answers it as a 400 OAuth error, as it does for hook errors.
 - `auth.authenticate()`, `auth.login()`, `auth.issue_session_token()`,
+  `auth.sign_in_with_password()`, `auth.login_with_password()`,
   `auth.sign_in_with_id_token()` and `auth.resolve_id_token_user()` raise it.
 
 On a use of a session nothing is raised: `get_current_user` returns `None`, the

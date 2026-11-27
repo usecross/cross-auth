@@ -375,10 +375,11 @@ the endpoint and the authorization code grant are not deprecated.
 To migrate:
 
 - SPA and native clients: use the authorization code grant with PKCE above.
-- First-party password sign-in: post the password to your own endpoint, check it
-  with `auth.authenticate()`, then call `auth.login()` for a cookie session or
-  `auth.issue_session_token()` for a bearer token. Django projects use Django's
-  own login views. Your endpoint owns its CSRF protection and rate limits.
+- First-party password sign-in: post the password to your own endpoint. For a
+  bearer token, `auth.sign_in_with_password()` checks it and issues the session;
+  for a cookie session, `auth.login_with_password()` checks it and sets the
+  cookie. Django projects use Django's own login views. Your endpoint owns its
+  CSRF protection and rate limits.
 
 Password sign-in through your own endpoint is not deprecated. Only the OAuth
 password grant at `/token` is.

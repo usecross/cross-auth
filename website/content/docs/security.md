@@ -10,9 +10,10 @@ section: Guides
 
 Cross-Auth does not install general CSRF protection or rate limiting. Apply both
 at your application's HTTP boundary, including routes you write around
-`authenticate()`, `sign_in_with_id_token()`, `resolve_id_token_user()`,
-`login()`, `logout()`, `change_password()`, and session revocation.
-`SessionCookieMiddleware` only delivers refreshed session cookies.
+`authenticate()`, `sign_in_with_password()`, `login_with_password()`,
+`sign_in_with_id_token()`, `resolve_id_token_user()`, `login()`, `logout()`,
+`change_password()`, and session revocation. `SessionCookieMiddleware` only
+delivers refreshed session cookies.
 
 Browser OAuth callbacks have their own protection: expiring, single-use state,
 an initiating-browser binding cookie, provider binding, PKCE where supported,
@@ -223,6 +224,26 @@ other changes that should sign devices out, such as a new email address or a
 reset second factor: call
 `auth.revoke_other_sessions(user_id=..., keep_session_id=...)` or
 `auth.revoke_all_sessions(user_id=...)`.
+
+### Password Changes During Sign-In
+
+A password sign-in that checks the old password just before a change, and stores
+its session just after the change revoked the user's sessions, would keep a
+session the change meant to end. `auth.sign_in_with_password()`,
+`auth.login_with_password()` and the `/token` password grant check the stored
+password hash again once the session is stored. When it changed and the password
+no longer matches it, they revoke the session and answer as for a wrong
+password; `login_with_password()` sets no cookie. A hash that changed while the
+password still matches it, such as the same password stored with a new salt,
+passes.
+
+This relies on the change storing the new hash before it revokes the sessions,
+as `change_password()` does. Do the same when you set a password yourself: store
+it, then call `auth.revoke_all_sessions(user_id=...)`. For a `/token` grant
+whose `token_issuer` mints the token, a sign-in that fails the check gets no
+token, but Cross-Auth cannot revoke what the issuer stored.
+`auth.authenticate()` followed by `auth.login()` or `auth.issue_session_token()`
+does not check again: use the password sign-ins instead.
 
 ## Refuse suspended and deleted users
 

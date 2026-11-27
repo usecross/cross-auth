@@ -177,8 +177,10 @@ knows which user is being signed in:
 | Entry point                                     | `credential` | Credential issued                                 |
 | ----------------------------------------------- | ------------ | ------------------------------------------------- |
 | Browser OAuth session callback, `auth.login()`  | `"cookie"`   | A session and its cookie on `response`            |
+| `auth.login_with_password()`                    | `"cookie"`   | A session and its cookie on `response`            |
 | `auth.issue_session_token()`                    | `"bearer"`   | A session; its token is returned to your code     |
 | `auth.sign_in_with_id_token()`                  | `"bearer"`   | A session; its token is returned to your code     |
+| `auth.sign_in_with_password()`                  | `"bearer"`   | A session; its token is returned to your code     |
 | `/token` password and authorization-code grants | `"bearer"`   | A session, or the token your `token_issuer` mints |
 
 For `/token`, the `login` hooks run inside the `token.password` or
@@ -200,12 +202,12 @@ issuer is called.
 
 `login_method` says how the user signed in: the provider id for a browser OAuth
 sign-in, an authorization code or `sign_in_with_id_token`, `"password"` for the
-password grant, or what your code passed to `auth.login()` or
-`auth.issue_session_token()` (`None` if nothing). It is set on every login,
-including those a `token_issuer` mints. The value a `before` hook approves is
-what the session records, or what the issuer receives as
-`TokenIssueRequest.login_method`, and what `AfterLoginEvent.login_method`
-reports.
+password grant, `sign_in_with_password` and `login_with_password`, or what your
+code passed to `auth.login()` or `auth.issue_session_token()` (`None` if
+nothing). It is set on every login, including those a `token_issuer` mints. The
+value a `before` hook approves is what the session records, or what the issuer
+receives as `TokenIssueRequest.login_method`, and what
+`AfterLoginEvent.login_method` reports.
 
 To refuse suspended or deleted users, pass
 [`user_can_authenticate`](/docs/session-authentication#refuse-suspended-or-deleted-users)

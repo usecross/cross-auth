@@ -5,6 +5,7 @@ import logging
 import secrets
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol
 
 import bcrypt
@@ -12,7 +13,8 @@ import bcrypt
 from .exceptions import CrossAuthException
 
 if TYPE_CHECKING:
-    from ._storage import AccountsStorage, User
+    from ._login import AfterIssue
+    from ._storage import AccountsStorage, SessionRecord, SessionStorage, User
 
 logger = logging.getLogger(__name__)
 
@@ -244,3 +246,56 @@ def authenticate(
         return None
 
     return user
+
+
+class PasswordChanged(CrossAuthException):
+    """A password sign-in whose password changed while it signed in.
+
+    It answers as a wrong password does.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("invalid_grant", "Invalid username or password")
+
+
+def unless_password_changed(
+    accounts_storage: AccountsStorage,
+    session_storage: SessionStorage | None,
+    *,
+    user_id: str,
+    password: str,
+    checked_hash: str,
+    password_hasher: PasswordHasher,
+) -> AfterIssue:
+    """End a password sign-in whose password changed while it signed in.
+
+    ``checked_hash`` is the hash the sign-in checked ``password`` against. A
+    password change stores the new hash before it revokes the user's
+    sessions, as ``change_password`` does. Asked once the credential is
+    stored, not before, this either finds the new hash, or the change comes
+    later and its revocation finds this session. Asked before the write, a
+    change in between would do neither. That holds when the session's write
+    has committed by the time this reads the user.
+
+    A changed hash still passes when ``password`` matches it, as when the same
+    password is stored again with a new salt. Otherwise this revokes the
+    session, if Cross Auth stored one, and raises ``PasswordChanged``. A
+    credential a ``token_issuer`` minted is not revoked; it is never handed
+    out.
+    """
+
+    def check(record: SessionRecord | None) -> None:
+        user = accounts_storage.find_user_by_id(user_id)
+        current_hash = None if user is None else user.hashed_password
+        if current_hash == checked_hash:
+            return
+        if current_hash is not None and _check_password(
+            password, current_hash, password_hasher
+        ):
+            return
+        if record is not None and session_storage is not None:
+            # Only this session: the change revoked the others.
+            session_storage.revoke(record.id, revoked_at=datetime.now(tz=timezone.utc))
+        raise PasswordChanged()
+
+    return check

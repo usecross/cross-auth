@@ -31,6 +31,10 @@ _IssuedT = TypeVar("_IssuedT")
 
 # Raises CrossAuthException unless the user with this id may sign in.
 UserCheck = Callable[[str], None]
+# Called with the session a login just stored (None for a credential a
+# token_issuer minted), before its after hook is scheduled. Raising undoes the
+# login: it revokes the session itself first.
+AfterIssue = Callable[[SessionRecord | None], None]
 
 
 def run_login(
@@ -40,6 +44,7 @@ def run_login(
     issue: Callable[[BeforeLoginEvent], tuple[_IssuedT, SessionRecord | None]],
     on_commit: Callable[[CommitCallback], None],
     check_user: UserCheck | None,
+    after_issue: AfterIssue | None = None,
 ) -> tuple[_IssuedT, BeforeLoginEvent]:
     """Run one ``login`` lifecycle around issuing a credential.
 
@@ -50,7 +55,8 @@ def run_login(
     belongs to whatever stores the credential and schedules the after hook
     once it is committed. Hook exceptions propagate: a before-hook failure
     issues nothing; an after-hook failure leaves the issued credential in
-    place.
+    place. ``after_issue`` runs once the credential is stored, before the
+    after hook is scheduled; what it raises propagates and no after hook runs.
     """
     if check_user is not None:
         check_user(event.user_id)
@@ -58,6 +64,8 @@ def run_login(
     _check_login_rewrite(event, approved)
 
     issued, session_record = issue(approved)
+    if after_issue is not None:
+        after_issue(session_record)
 
     after_event = AfterLoginEvent(
         user_id=approved.user_id,
@@ -153,11 +161,13 @@ def login_with_session(
     check_user: UserCheck | None,
     metadata: SessionMetadata | None = None,
     login_method: str | None = None,
+    after_issue: AfterIssue | None = None,
 ) -> Response:
     """Log in with one new session and its cookie appended to ``response``.
 
-    ``check_user`` is as for ``run_login``. Returns the hook response;
-    adapters decide how to send it and how to surface hook exceptions.
+    ``check_user`` and ``after_issue`` are as for ``run_login``. Returns the
+    hook response; adapters decide how to send it and how to surface hook
+    exceptions.
     """
     require_immediate_commit(
         session_storage.on_commit,
@@ -198,6 +208,7 @@ def login_with_session(
         issue=issue,
         on_commit=session_storage.on_commit,
         check_user=check_user,
+        after_issue=after_issue,
     )
     return hook_response
 
@@ -212,10 +223,11 @@ def issue_bearer_session(
     max_age: int | None = None,
     metadata: SessionMetadata | None = None,
     login_method: str | None = None,
+    after_issue: AfterIssue | None = None,
 ) -> tuple[str, SessionRecord, int]:
     """Log in with one new session; return its bearer token, record and max_age.
 
-    ``check_user`` is as for ``run_login``.
+    ``check_user`` and ``after_issue`` are as for ``run_login``.
     """
     resolved = resolve_config(session_config)
 
@@ -247,6 +259,7 @@ def issue_bearer_session(
         issue=issue,
         on_commit=session_storage.on_commit,
         check_user=check_user,
+        after_issue=after_issue,
     )
     assert approved.max_age is not None
     return session_token, session_record, approved.max_age
