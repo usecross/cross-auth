@@ -43,7 +43,9 @@ The [password hasher](/docs/session-authentication#password-hashing) passed to
 `CrossAuth`, or the default `BcryptPasswordHasher`. `authenticate`,
 `change_password` and the password grant verify passwords with it, and
 `change_password` hashes the new one with it. Hash the passwords you store
-yourself with its `hash` method.
+yourself with its `hash` method. A hasher with `verify_and_update`, such as
+pwdlib's or passlib's, also upgrades outdated hashes as `authenticate` and the
+password grant check them, when the accounts storage can replace them.
 
 ### `login(user_id, response=...)`
 

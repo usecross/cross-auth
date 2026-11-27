@@ -501,6 +501,17 @@ from pwdlib.hashers.bcrypt import BcryptHasher
 password_hasher = PasswordHash((Argon2Hasher(), BcryptHasher()))
 ```
 
+Users move to the first scheme as they sign in. Both libraries also have
+`verify_and_update`, the method the `cross_auth.RehashingPasswordHasher`
+protocol adds. With such a hasher and an accounts storage that can replace a
+hash, as the SQLModel adapter can, `authenticate()` and the OAuth password grant
+store a new hash for a matching password whose hash is outdated: from another
+scheme, or made with older settings. The storage replaces it only if it still
+holds the hash that was checked, so a password changed in the meantime keeps its
+own. When the replacement fails, the old hash stays and the user still signs in.
+Because sign-ins write hashes in the new scheme, follow the two deploys below
+when several instances serve your app.
+
 When several instances serve your app, switch in two deploys. First deploy,
 everywhere, a hasher that verifies both schemes but still hashes with the old
 one, `PasswordHash((BcryptHasher(), Argon2Hasher()))`. Once no instance runs the
@@ -546,8 +557,9 @@ The dummy evens out the time of checks against hashes of the hasher's current
 scheme and cost, the ones it writes. It doesn't make checks take the same time
 across schemes or costs. While users move to a new scheme, or after you raise
 the cost, accounts that still have an older hash verify in that hash's time, so
-an attacker can tell them from unknown emails until they're rehashed. Cross-Auth
-doesn't rehash on sign-in yet.
+an attacker can tell them from unknown emails until they're rehashed, which
+happens as they sign in when the hasher and the accounts storage can upgrade
+hashes.
 
 For the dummy to keep the cost at one verification, `verify` returns `False`
 only for a wrong password. For a hash it can't read, it raises, and before doing
@@ -563,8 +575,10 @@ longer password, as passlib did, keep signing in. pwdlib's and passlib's bcrypt
 refuse to verify a password that long with bcrypt 5, which counts as a wrong
 password.
 
-Cross-Auth doesn't rehash a password on sign-in when the hasher's settings or
-schemes change, so an older hash stays until the user changes their password.
+When the hasher's settings or schemes change, an older hash is replaced the next
+time the user signs in, if the hasher has `verify_and_update` and the accounts
+storage can replace hashes. Otherwise it stays until the user changes their
+password.
 
 ### Sliding Sessions
 

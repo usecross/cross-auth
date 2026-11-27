@@ -573,7 +573,7 @@ def test_password_grant_preserves_unknown_hook_error_type(
         reject_request,
     )
 
-    with mock.patch("cross_auth._issuer._verify_password") as verify_password:
+    with mock.patch("cross_auth._issuer._verify_and_upgrade") as verify_password:
         with legacy_password_grant():
             response = issuer.token(
                 HTTPRequest.from_form_data(

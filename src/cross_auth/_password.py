@@ -5,7 +5,7 @@ import logging
 import secrets
 import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import bcrypt
 
@@ -47,6 +47,26 @@ class PasswordHasher(Protocol):
         hash instead, so the check still costs one verification. A hasher that
         returns ``False`` for such a hash answers faster for those users, and
         one that raises after the work answers slower.
+        """
+        ...
+
+
+@runtime_checkable
+class RehashingPasswordHasher(PasswordHasher, Protocol):
+    """A ``PasswordHasher`` that can also say when a stored hash is outdated.
+
+    pwdlib's ``PasswordHash`` and passlib's ``CryptContext`` are ones as they
+    are. When the accounts storage can replace a hash (``PasswordHashStorage``),
+    a password check that matches an outdated hash stores the new one, so users
+    move to the hasher's current scheme and settings as they sign in.
+    """
+
+    def verify_and_update(self, password: str, hash: str, /) -> tuple[bool, str | None]:
+        """Return whether ``password`` matches ``hash``, and a new hash to store
+        for an outdated one.
+
+        The new hash is ``None`` for a wrong password or a current hash. For a
+        hash you cannot read, raise, as ``verify`` does.
         """
         ...
 
@@ -236,11 +256,76 @@ def authenticate(
     """Return the user ``email`` and ``password`` belong to, or ``None``.
 
     ``password_hasher`` verifies the user's stored hash; pass the one you give
-    ``CrossAuth``, which defaults to bcrypt as this does.
+    ``CrossAuth``, which defaults to bcrypt as this does. With a
+    ``RehashingPasswordHasher`` and a ``PasswordHashStorage``, a matching
+    password whose hash is outdated is stored with a new hash.
     """
     user = accounts_storage.find_user_by_email(email)
 
-    if not _verify_password(user, password, password_hasher):
+    if _verify_and_upgrade(user, password, password_hasher, accounts_storage) is None:
         return None
 
     return user
+
+
+def _verify_and_upgrade(
+    user: User | None,
+    password: str,
+    password_hasher: PasswordHasher,
+    accounts_storage: AccountsStorage,
+) -> str | None:
+    """Verify ``password`` as ``_verify_password`` does, upgrading an outdated
+    hash; return the stored hash it matches, or ``None`` for no match.
+
+    With a ``RehashingPasswordHasher`` and an accounts storage that can replace
+    a hash, a matching password whose hash the hasher calls outdated is stored
+    with the new hash, and that is the one returned. The storage replaces it
+    only if the stored hash is still the one checked, so a password changed in
+    between keeps its new hash. A replacement that fails or loses to such a
+    change, or a ``verify_and_update`` that raises, never refuses a matching
+    password: the hash that matched is returned. Unknown users, users without
+    a password and unreadable hashes are verified as ``_verify_password`` does,
+    and nothing is written for them.
+    """
+    # Imported here: _storage imports this module.
+    from ._storage import PasswordHashStorage
+
+    password_hash = user.hashed_password if user is not None else None
+    if (
+        user is None
+        or password_hash is None
+        or not isinstance(password_hasher, RehashingPasswordHasher)
+        or not isinstance(accounts_storage, PasswordHashStorage)
+    ):
+        return (
+            password_hash if _verify_password(user, password, password_hasher) else None
+        )
+
+    # Made before verifying, as _verify_password does.
+    _dummy_hash(password_hasher)
+    try:
+        valid, new_hash = password_hasher.verify_and_update(password, password_hash)
+    except Exception:
+        # An unreadable hash raises before verifying, as verify does; making the
+        # new hash can raise after the password matched. Either way, check as a
+        # hasher that cannot upgrade, which counts an unreadable hash as no
+        # match and still costs one verification.
+        valid = _check_password(password, password_hash, password_hasher)
+        return password_hash if valid else None
+    if not valid:
+        return None
+    if new_hash is None:
+        return password_hash
+
+    try:
+        replaced = accounts_storage.replace_password_hash(
+            user.id, old_hash=password_hash, new_hash=new_hash
+        )
+    except Exception as error:
+        # Only the error's type: a database error can quote both hashes.
+        logger.warning(
+            "Could not store an upgraded password hash (%s); the old one stays",
+            type(error).__name__,
+        )
+        replaced = False
+    return new_hash if replaced else password_hash
