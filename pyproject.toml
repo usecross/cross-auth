@@ -57,9 +57,10 @@ dev = [
     "jinja2>=3.1.0",
     # Tests plug its PasswordHash in as CrossAuth's password_hasher.
     "pwdlib[argon2]>=0.4.2",
-    # The example apps render their pages with it; tests/django/test_example.py
-    # and ty check run them in this environment.
+    # The example apps render their pages and 2FA QR codes with these;
+    # tests/django/test_example.py and ty check run them in this environment.
     "cross-inertia>=0.22.3",
+    "qrcode>=8.0",
 ]
 
 

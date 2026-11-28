@@ -846,7 +846,10 @@ Cross-Auth sets it on the sessions it creates:
 | `auth.sign_in_with_id_token(provider, ...)` | `provider`                      |
 
 For sessions your code creates, pass `login_method`. The value is free-form, so
-you can also use your own, such as `"passkey"`:
+you can also use your own, such as `"passkey"`. `"device"` marks a device, such
+as a CLI, that the user approved from a browser where they are signed in;
+[two-factor authentication](/docs/two-factor#which-sign-ins-are-challenged) does
+not challenge it by default:
 
 ```python
 user = auth.authenticate(email, password)

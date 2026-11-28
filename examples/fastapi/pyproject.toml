@@ -11,6 +11,7 @@ dependencies = [
     "bcrypt>=4.0.0",
     "python-multipart>=0.0.20",
     "PyJWT[crypto]>=2.8.0",
+    "qrcode>=8.0",
 ]
 
 [tool.uv.sources]

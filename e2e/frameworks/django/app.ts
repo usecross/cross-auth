@@ -56,6 +56,7 @@ export const django: Framework = {
         routes: {
           signIn: "/accounts/login/?next=/profile/",
           profile: "/profile/",
+          twoFactor: "/settings/2fa/",
         },
         googleSignIn: { role: "button", name: "Sign in with Google" },
         password: { identifierLabel: "Username", submitName: "Sign in" },

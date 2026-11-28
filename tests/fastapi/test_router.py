@@ -253,6 +253,50 @@ def test_router(test_app: FastAPI):
                                                 "title": "PasswordGrantRequest",
                                                 "deprecated": True,
                                             },
+                                            {
+                                                "properties": {
+                                                    "grant_type": {
+                                                        "type": "string",
+                                                        "const": "urn:cross-auth:grant-type:mfa",
+                                                        "title": "Grant Type",
+                                                        "description": "The Cross Auth MFA grant type",
+                                                    },
+                                                    "client_id": {
+                                                        "type": "string",
+                                                        "title": "Client Id",
+                                                        "description": "The client of the password grant",
+                                                    },
+                                                    "mfa_token": {
+                                                        "type": "string",
+                                                        "title": "Mfa Token",
+                                                        "description": "The mfa_token the password grant returned",
+                                                    },
+                                                    "otp": {
+                                                        "anyOf": [
+                                                            {"type": "string"},
+                                                            {"type": "null"},
+                                                        ],
+                                                        "title": "Otp",
+                                                        "description": "A code from the authenticator app; or recovery_code",
+                                                    },
+                                                    "recovery_code": {
+                                                        "anyOf": [
+                                                            {"type": "string"},
+                                                            {"type": "null"},
+                                                        ],
+                                                        "title": "Recovery Code",
+                                                        "description": "A recovery code; or otp",
+                                                    },
+                                                },
+                                                "type": "object",
+                                                "required": [
+                                                    "grant_type",
+                                                    "client_id",
+                                                    "mfa_token",
+                                                ],
+                                                "title": "MFAGrantRequest",
+                                                "description": "Finishes a password grant that answered 403 mfa_required.",
+                                            },
                                         ],
                                         "title": "Request",
                                     }
@@ -283,6 +327,95 @@ def test_router(test_app: FastAPI):
                             },
                             "400": {
                                 "description": "Bad request - invalid parameters or grant",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "properties": {
+                                                "error": {
+                                                    "anyOf": [
+                                                        {
+                                                            "type": "string",
+                                                            "enum": [
+                                                                "invalid_request",
+                                                                "invalid_client",
+                                                                "invalid_grant",
+                                                                "unauthorized_client",
+                                                                "unsupported_grant_type",
+                                                                "invalid_scope",
+                                                            ],
+                                                        },
+                                                        {"type": "string"},
+                                                    ],
+                                                    "title": "Error",
+                                                    "description": "Error code as per OAuth 2.0 specification",
+                                                },
+                                                "error_description": {
+                                                    "anyOf": [
+                                                        {"type": "string"},
+                                                        {"type": "null"},
+                                                    ],
+                                                    "title": "Error Description",
+                                                    "description": "Human-readable explanation of the error",
+                                                },
+                                                "error_uri": {
+                                                    "anyOf": [
+                                                        {"type": "string"},
+                                                        {"type": "null"},
+                                                    ],
+                                                    "title": "Error Uri",
+                                                    "description": "URI to a web page with more information about the error",
+                                                },
+                                            },
+                                            "type": "object",
+                                            "required": ["error"],
+                                            "title": "TokenErrorResponse",
+                                        }
+                                    }
+                                },
+                            },
+                            "403": {
+                                "description": "The user needs a second factor: send the MFA grant with mfa_token",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "properties": {
+                                                "error": {
+                                                    "type": "string",
+                                                    "const": "mfa_required",
+                                                    "title": "Error",
+                                                },
+                                                "error_description": {
+                                                    "anyOf": [
+                                                        {"type": "string"},
+                                                        {"type": "null"},
+                                                    ],
+                                                    "title": "Error Description",
+                                                },
+                                                "mfa_token": {
+                                                    "type": "string",
+                                                    "title": "Mfa Token",
+                                                    "description": "Send it back with the MFA grant",
+                                                },
+                                                "methods": {
+                                                    "items": {"type": "string"},
+                                                    "type": "array",
+                                                    "title": "Methods",
+                                                    "description": "Proofs the MFA grant accepts",
+                                                },
+                                            },
+                                            "type": "object",
+                                            "required": [
+                                                "error",
+                                                "mfa_token",
+                                                "methods",
+                                            ],
+                                            "title": "MFARequiredResponse",
+                                        }
+                                    }
+                                },
+                            },
+                            "429": {
+                                "description": "Too many wrong codes; try again later",
                                 "content": {
                                     "application/json": {
                                         "schema": {
@@ -613,6 +746,42 @@ def test_router(test_app: FastAPI):
                         "type": "object",
                         "required": ["token_type", "access_token"],
                         "title": "TokenResponse",
+                    },
+                    "MFAGrantRequest": {
+                        "description": "Finishes a password grant that answered 403 mfa_required.",
+                        "properties": {
+                            "grant_type": {
+                                "const": "urn:cross-auth:grant-type:mfa",
+                                "description": "The Cross Auth MFA grant type",
+                                "title": "Grant Type",
+                                "type": "string",
+                            },
+                            "client_id": {
+                                "description": "The client of the password grant",
+                                "title": "Client Id",
+                                "type": "string",
+                            },
+                            "mfa_token": {
+                                "description": "The mfa_token the password grant returned",
+                                "title": "Mfa Token",
+                                "type": "string",
+                            },
+                            "otp": {
+                                "anyOf": [{"type": "string"}, {"type": "null"}],
+                                "default": None,
+                                "description": "A code from the authenticator app; or recovery_code",
+                                "title": "Otp",
+                            },
+                            "recovery_code": {
+                                "anyOf": [{"type": "string"}, {"type": "null"}],
+                                "default": None,
+                                "description": "A recovery code; or otp",
+                                "title": "Recovery Code",
+                            },
+                        },
+                        "required": ["grant_type", "client_id", "mfa_token"],
+                        "title": "MFAGrantRequest",
+                        "type": "object",
                     },
                     "TokenErrorResponse": {
                         "properties": {

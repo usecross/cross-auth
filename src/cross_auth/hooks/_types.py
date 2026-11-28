@@ -19,6 +19,11 @@ HookEventName: TypeAlias = Literal[
     "oauth.disconnect",
     "token.password",
     "token.authorization_code",
+    "mfa.challenge",
+    "mfa.verify",
+    "mfa.factor.create",
+    "mfa.factor.delete",
+    "mfa.recovery_codes.regenerate",
 ]
 
 _ALL_EVENT_NAMES: frozenset[str] = frozenset(get_args(HookEventName))

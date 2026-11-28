@@ -24,6 +24,18 @@ from ._accounts import require_committed_accounts
 from ._config import Config
 from ._fastapi_session import SessionCookieMiddleware as SessionCookieMiddleware
 from ._fastapi_session import queue_rolled_cookie, set_cookie
+from ._mfa import MFAStatus, RequiresMFA, TotpConfirmation, TotpEnrollment
+from ._mfa_flow import (
+    MFASession,
+    finish_challenge,
+)
+from ._mfa_flow import confirm_totp_enrollment as _confirm_totp_enrollment
+from ._mfa_flow import get_status as _get_mfa_status
+from ._mfa_flow import reauthenticate as _reauthenticate
+from ._mfa_flow import regenerate_recovery_codes as _regenerate_recovery_codes
+from ._mfa_flow import remove_mfa_factor as _remove_mfa_factor
+from ._mfa_flow import require_mfa
+from ._mfa_flow import start_totp_enrollment as _start_totp_enrollment
 from ._login import (
     issue_bearer_session,
     login_with_session,
@@ -48,6 +60,7 @@ from ._session import (
 from ._setup import build_auth_setup
 from ._storage import (
     AccountsStorage,
+    MFAStorage,
     PasswordStorage,
     SecondaryStorage,
     SessionActivityStorage,
@@ -59,11 +72,16 @@ from ._storage import (
     User,
 )
 from ._tokens import TokenKind
-from .exceptions import CrossAuthException
+from .exceptions import CrossAuthException, MFARequired
 from .hooks import (
     AfterAuthenticateEvent,
     AfterLoginEvent,
     AfterLogoutEvent,
+    AfterMFAChallengeEvent,
+    AfterMFAFactorCreateEvent,
+    AfterMFAFactorDeleteEvent,
+    AfterMFARecoveryCodesRegenerateEvent,
+    AfterMFAVerifyEvent,
     AfterOAuthAuthorizeEvent,
     AfterOAuthCallbackEvent,
     AfterOAuthDisconnectEvent,
@@ -79,6 +97,8 @@ from .hooks import (
     BeforeAuthenticateEvent,
     BeforeLoginEvent,
     BeforeLogoutEvent,
+    BeforeMFAFactorCreateEvent,
+    BeforeMFAFactorDeleteEvent,
     BeforeOAuthAuthorizeEvent,
     BeforeOAuthCallbackEvent,
     BeforeOAuthDisconnectEvent,
@@ -96,6 +116,7 @@ from .hooks import (
 )
 from .hooks._types import HookEventName
 from .router import _TRUSTED_ORIGINS_DEPRECATION, AuthRouter
+from .utils._response import Response as FlowResponse
 from .social_providers.oauth import OAuth2Provider
 
 _P = ParamSpec("_P")
@@ -179,6 +200,8 @@ class CrossAuth:
         oauth_server: OAuthServer | None = None,
         password_hasher: PasswordHasher | None = None,
         user_can_authenticate: UserCanAuthenticate | None = None,
+        mfa_storage: MFAStorage | None = None,
+        requires_mfa: RequiresMFA | None = None,
     ):
         if trusted_origins is not None:
             warnings.warn(
@@ -204,6 +227,8 @@ class CrossAuth:
             oauth_server=oauth_server,
             password_hasher=password_hasher,
             user_can_authenticate=user_can_authenticate,
+            mfa_storage=mfa_storage,
+            requires_mfa=requires_mfa,
         )
         self._context = self._setup.context
         self._router = AuthRouter._from_setup(self._setup)
@@ -384,23 +409,30 @@ class CrossAuth:
         """Revoke the user's active sessions except ``keep_session_id``.
 
         Runs the ``session.revoke`` hooks and returns how many were revoked.
+        With two-factor authentication, the user's sign-ins that are waiting
+        for their code end too, also when no session was active.
         """
         return revoke_user_sessions(
             user_id,
             keep_session_id=keep_session_id,
             hooks=self._context.hooks,
             session_storage=self._require_session_storage(),
+            mfa=self._context.mfa,
         )
 
     def revoke_all_sessions(self, *, user_id: Any) -> int:
         """Revoke all the user's active sessions.
 
         Runs the ``session.revoke`` hooks and returns how many were revoked.
+        With two-factor authentication, the user's sign-ins that are waiting
+        for their code end too, also when no session was active: call it after
+        a password reset.
         """
         return revoke_user_sessions(
             user_id,
             hooks=self._context.hooks,
             session_storage=self._require_session_storage(),
+            mfa=self._context.mfa,
         )
 
     def change_password(
@@ -426,7 +458,9 @@ class CrossAuth:
 
         Then, with ``revoke_other_sessions``, the user's other sessions are
         revoked through the ``session.revoke`` hooks, with scope ``"others"``,
-        and the request's session stays signed in. A hook that refuses raises
+        and the request's session stays signed in. With two-factor
+        authentication, the user's sign-ins that are waiting for their code
+        end too: they passed the old password. A hook that refuses raises
         once the password has changed. Revoking needs an accounts storage whose
         writes commit before it returns, as the SQLModel one's do; with one
         that joined an application transaction, this raises ``RuntimeError``
@@ -477,6 +511,7 @@ class CrossAuth:
                 hooks=self._context.hooks,
                 session_storage=session_storage,
                 request=make_http_request(AsyncHTTPRequest.from_fastapi(request)),
+                mfa=self._context.mfa,
             )
         return updated
 
@@ -502,6 +537,13 @@ class CrossAuth:
         ``login_method`` is ``provider``; ``max_age`` and ``metadata`` are as
         for ``issue_session_token``. Returns the token, the session record, the
         user and whether it was just created.
+
+        With two-factor authentication, a user who needs a code raises
+        ``MFARequired`` once the provider identity is verified and the account
+        resolved, and no session is created. That is not a failed provider
+        sign-in: pass its ``challenge`` and the user's code to ``verify_mfa``,
+        which returns the token and the session record, not an
+        ``IdTokenSignIn``.
 
         Like the browser callback, it refuses (``RuntimeError``) before
         verifying anything when there is no ``session_storage`` or while the
@@ -535,17 +577,21 @@ class CrossAuth:
         user, created = self.resolve_id_token_user(
             provider, id_token, user_info=user_info, nonce=nonce
         )
-        token, record, _ = issue_bearer_session(
-            str(user.id),
-            hooks=self._context.hooks,
-            session_storage=session_storage,
-            session_config=self._context.session_config,
-            # resolve_id_token_user has just checked this user.
-            check_user=None,
-            max_age=max_age,
-            metadata=metadata,
-            login_method=provider,
-        )
+        try:
+            token, record, _ = issue_bearer_session(
+                str(user.id),
+                hooks=self._context.hooks,
+                session_storage=session_storage,
+                session_config=self._context.session_config,
+                # resolve_id_token_user has just checked this user.
+                check_user=None,
+                max_age=max_age,
+                metadata=metadata,
+                login_method=provider,
+                mfa=self._context.mfa,
+            )
+        except MFARequired as required:
+            raise self._bearer_challenge(required, max_age, metadata) from None
         return IdTokenSignIn(token, record, user, created)
 
     def resolve_id_token_user(
@@ -702,6 +748,16 @@ class CrossAuth:
         self, event: Literal["token.authorization_code"]
     ) -> _HookDecorator[BeforeTokenAuthorizationCodeEvent, None]: ...
 
+    @overload
+    def before(
+        self, event: Literal["mfa.factor.create"]
+    ) -> _HookDecorator[BeforeMFAFactorCreateEvent, None]: ...
+
+    @overload
+    def before(
+        self, event: Literal["mfa.factor.delete"]
+    ) -> _HookDecorator[BeforeMFAFactorDeleteEvent, None]: ...
+
     def before(
         self, event: HookEventName
     ) -> Callable[[Callable[..., object]], Callable[..., object]]:
@@ -796,6 +852,31 @@ class CrossAuth:
         self, event: Literal["token.authorization_code"]
     ) -> _HookDecorator[AfterTokenAuthorizationCodeEvent, None]: ...
 
+    @overload
+    def after(
+        self, event: Literal["mfa.challenge"]
+    ) -> _HookDecorator[AfterMFAChallengeEvent, None]: ...
+
+    @overload
+    def after(
+        self, event: Literal["mfa.verify"]
+    ) -> _HookDecorator[AfterMFAVerifyEvent, None]: ...
+
+    @overload
+    def after(
+        self, event: Literal["mfa.factor.create"]
+    ) -> _HookDecorator[AfterMFAFactorCreateEvent, None]: ...
+
+    @overload
+    def after(
+        self, event: Literal["mfa.factor.delete"]
+    ) -> _HookDecorator[AfterMFAFactorDeleteEvent, None]: ...
+
+    @overload
+    def after(
+        self, event: Literal["mfa.recovery_codes.regenerate"]
+    ) -> _HookDecorator[AfterMFARecoveryCodesRegenerateEvent, None]: ...
+
     def after(
         self, event: HookEventName
     ) -> Callable[[Callable[..., object]], Callable[..., object]]:
@@ -805,8 +886,175 @@ class CrossAuth:
 
         return decorator
 
-    def _make_hook_response(self, response: FastAPIResponse) -> CrossWebResponse:
-        return CrossWebResponse(
+    # Two-factor authentication --------------------------------------------
+
+    def _bearer_challenge(
+        self,
+        required: MFARequired,
+        max_age: int | None,
+        metadata: SessionMetadata | None,
+    ) -> MFARequired:
+        return require_mfa(self._context).start_challenge(
+            required, kind="bearer", data={"max_age": max_age, "metadata": metadata}
+        )
+
+    def _mfa_session(self, request: FastAPIRequest) -> MFASession:
+        require_mfa(self._context)
+        current = self._resolve_session(request, load_user=True)
+        if current is None or current.user is None:
+            raise CrossAuthException("unauthorized", "Not logged in", status_code=401)
+        return MFASession(
+            user=current.user,
+            session_id=str(current.record.id),
+            signed_in_at=current.record.created_at,
+            record=current.record,
+            login_method=current.record.login_method,
+        )
+
+    def get_mfa_status(self, request: FastAPIRequest) -> MFAStatus:
+        """The signed-in user's factors and how many recovery codes are left."""
+        return _get_mfa_status(self._context, self._mfa_session(request))
+
+    def get_mfa_status_for(self, user_id: Any) -> MFAStatus:
+        """``get_mfa_status`` for any user, such as inside ``requires_mfa``."""
+        return require_mfa(self._context).status(user_id)
+
+    def reauthenticate(
+        self,
+        request: FastAPIRequest,
+        *,
+        password: str | None = None,
+        code: str | None = None,
+        recovery_code: str | None = None,
+    ) -> datetime:
+        """Confirm the signed-in user's identity with exactly one proof.
+
+        Changes to 2FA are then allowed until the returned time
+        (``reauthentication_max_age`` after now). A fresh sign-in allows them
+        too, so a user who has just signed in need not call this, except in a
+        device login's session, whose sign-in proved nothing.
+        """
+        return _reauthenticate(
+            self._context,
+            self._mfa_session(request),
+            password=password,
+            code=code,
+            recovery_code=recovery_code,
+        )
+
+    def start_totp_enrollment(
+        self, request: FastAPIRequest, *, name: str | None = None
+    ) -> TotpEnrollment:
+        """Start setting up an authenticator app for the signed-in user.
+
+        Needs recent authentication (``reauthentication_required``, 403) and
+        a verified email (``email_not_verified``). Nothing is stored for the
+        user until ``confirm_totp_enrollment`` checks the first code.
+        """
+        return _start_totp_enrollment(
+            self._context, self._mfa_session(request), name=name
+        )
+
+    def confirm_totp_enrollment(
+        self,
+        request: FastAPIRequest,
+        *,
+        enrollment_id: str,
+        code: str,
+        revoke_other_sessions: bool = True,
+    ) -> TotpConfirmation:
+        """Store the authenticator once ``code`` checks out.
+
+        For a user's first factor this turns 2FA on, returns 10 recovery codes
+        (shown once; only hashes are kept) and, with
+        ``revoke_other_sessions``, revokes the user's other sessions through
+        the ``session.revoke`` hooks.
+        """
+        from ._mfa_flow import CrossAuthSessions
+
+        return _confirm_totp_enrollment(
+            make_http_request(AsyncHTTPRequest.from_fastapi(request)),
+            self._context,
+            CrossAuthSessions(),
+            self._mfa_session(request),
+            enrollment_id=enrollment_id,
+            code=code,
+            revoke_other_sessions=revoke_other_sessions,
+        )
+
+    def regenerate_recovery_codes(self, request: FastAPIRequest) -> list[str]:
+        """Replace the signed-in user's recovery codes and return the new ones."""
+        return _regenerate_recovery_codes(self._context, self._mfa_session(request))
+
+    def remove_mfa_factor(self, request: FastAPIRequest, factor_id: str) -> MFAStatus:
+        """Remove one of the signed-in user's factors.
+
+        Removing the last one also deletes the recovery codes: 2FA is off.
+        """
+        return _remove_mfa_factor(self._context, self._mfa_session(request), factor_id)
+
+    def complete_mfa_login(
+        self,
+        request: FastAPIRequest,
+        challenge: str,
+        *,
+        response: FastAPIResponse,
+        code: str | None = None,
+        recovery_code: str | None = None,
+    ) -> None:
+        """Finish a cookie sign-in ``login`` paused, setting its cookie.
+
+        Give exactly one of ``code`` (from the authenticator app) and
+        ``recovery_code``. A wrong code raises ``invalid_code``; the sign-in
+        may try again until its attempts run out.
+        """
+        mfa = require_mfa(self._context)
+        pending = mfa.load_challenge(challenge)
+        if pending is None or pending.kind not in ("cookie", "browser"):
+            raise CrossAuthException(
+                "invalid_challenge", "This sign-in has expired; sign in again"
+            )
+        finished = finish_challenge(
+            make_http_request(AsyncHTTPRequest.from_fastapi(request)),
+            self._context,
+            challenge,
+            kinds=("cookie", "browser"),
+            code=code,
+            recovery_code=recovery_code,
+            # As login() does, so the login hooks' changes reach the client.
+            response=self._make_hook_response(response),
+        )
+        self._apply_hook_response(finished.response, response)
+
+    def verify_mfa(
+        self,
+        challenge: str,
+        *,
+        code: str | None = None,
+        recovery_code: str | None = None,
+    ) -> tuple[str, SessionRecord]:
+        """Finish a bearer sign-in that ``issue_session_token`` or
+        ``sign_in_with_id_token`` paused; return its token and record."""
+        mfa = require_mfa(self._context)
+        pending = mfa.load_challenge(challenge)
+        if pending is None or pending.kind != "bearer":
+            raise CrossAuthException(
+                "invalid_challenge", "This sign-in has expired; sign in again"
+            )
+        finished = finish_challenge(
+            HTTPRequest.from_form_data({}),
+            self._context,
+            challenge,
+            kinds=("bearer",),
+            code=code,
+            recovery_code=recovery_code,
+        )
+        assert finished.token is not None and finished.record is not None
+        return finished.token, finished.record
+
+    def _make_hook_response(self, response: FastAPIResponse) -> FlowResponse:
+        # Cross Auth's own response class, which the 2FA flow returns too.
+        return FlowResponse(
             status_code=response.status_code,
             headers={
                 name: value
@@ -836,6 +1084,7 @@ class CrossAuth:
         max_age: int | None = None,
         metadata: SessionMetadata | None = None,
         login_method: str | None = None,
+        mfa_method: str | None = None,
     ) -> tuple[str, SessionRecord]:
         """Create a session and return its bearer token with the record.
 
@@ -848,21 +1097,35 @@ class CrossAuth:
         cookies). No cookie is set; the ``login`` hooks run around the
         creation with ``credential="bearer"``, and the raw token is never
         exposed to them. ``login_method`` records how the user signed in, e.g.
-        ``"password"`` after ``authenticate()``. A user
+        ``"password"`` after ``authenticate()``, or ``"device"`` for a device
+        the user approved from a browser where they are signed in, which the
+        default 2FA rule does not challenge. A user
         ``user_can_authenticate`` refuses, or one it cannot find, raises
         ``CrossAuthException`` before the ``login`` hooks and creates nothing:
         ``access_denied``, or the one the rule returns or raises.
+
+        ``mfa_method`` is the second factor this sign-in has already passed,
+        for a ``token_issuer`` that issues sessions with this: pass on its
+        ``TokenIssueRequest.mfa_method``, so the session records it and the
+        user is not asked for another code. Cross Auth sets that field only
+        once it has checked the code. Never pass a value the client sent: it
+        would skip the second factor.
         """
-        token, record, _ = issue_bearer_session(
-            user_id,
-            hooks=self._context.hooks,
-            session_storage=self._require_session_storage(),
-            session_config=self._context.session_config,
-            check_user=self._context.check_user_id_can_authenticate,
-            max_age=max_age,
-            metadata=metadata,
-            login_method=login_method,
-        )
+        try:
+            token, record, _ = issue_bearer_session(
+                user_id,
+                hooks=self._context.hooks,
+                session_storage=self._require_session_storage(),
+                session_config=self._context.session_config,
+                check_user=self._context.check_user_id_can_authenticate,
+                max_age=max_age,
+                metadata=metadata,
+                login_method=login_method,
+                mfa=self._context.mfa,
+                mfa_method=mfa_method,
+            )
+        except MFARequired as required:
+            raise self._bearer_challenge(required, max_age, metadata) from None
         return token, record
 
     def login(
@@ -878,19 +1141,29 @@ class CrossAuth:
         Runs the ``login`` hooks with ``credential="cookie"``. A user
         ``user_can_authenticate`` refuses, or one it cannot find, raises
         ``CrossAuthException`` before the hooks and leaves ``response`` as it
-        was, as for ``issue_session_token``.
+        was, as for ``issue_session_token``. With two-factor authentication, a
+        user who needs a second factor raises ``MFARequired`` instead, with a
+        ``challenge`` to pass to ``complete_mfa_login`` (or post to
+        ``/mfa/verify``); no session is created until then.
         """
         session_storage = self._require_session_storage()
-        hook_response = login_with_session(
-            user_id,
-            response=self._make_hook_response(response),
-            hooks=self._context.hooks,
-            session_storage=session_storage,
-            session_config=self._context.session_config,
-            check_user=self._context.check_user_id_can_authenticate,
-            metadata=metadata,
-            login_method=login_method,
-        )
+        try:
+            hook_response = login_with_session(
+                user_id,
+                response=self._make_hook_response(response),
+                hooks=self._context.hooks,
+                session_storage=session_storage,
+                session_config=self._context.session_config,
+                check_user=self._context.check_user_id_can_authenticate,
+                metadata=metadata,
+                login_method=login_method,
+                mfa=self._context.mfa,
+            )
+        except MFARequired as required:
+            mfa = require_mfa(self._context)
+            raise mfa.start_challenge(
+                required, kind="cookie", data={"metadata": metadata, "next_url": None}
+            ) from None
         self._apply_hook_response(hook_response, response)
 
     def logout(
@@ -913,5 +1186,6 @@ class CrossAuth:
             session_storage=self._require_session_storage(),
             session_config=self._context.session_config,
             scope=scope,
+            mfa=self._context.mfa,
         )
         self._apply_hook_response(hook_response, response)

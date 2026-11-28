@@ -191,6 +191,12 @@ class SessionRecord(Protocol):
         ...
 
     @property
+    def mfa_method(self) -> str | None:
+        """The second factor the sign-in passed: ``"totp"``, ``"recovery_code"``
+        or ``None`` when it needed none."""
+        ...
+
+    @property
     def status(self) -> SessionStatus: ...
 
 
@@ -245,6 +251,7 @@ class SessionStorage(Protocol):
         ip: str | None = None,
         last_active_at: AwareDatetime | None = None,
         login_method: str | None = None,
+        mfa_method: str | None = None,
     ) -> SessionRecord: ...
 
     def get(
@@ -514,5 +521,155 @@ class AccountsStorage(Protocol):
         calls it after the outermost transaction commits (not after an inner
         savepoint) and drops it if that transaction rolls back. Let callback
         exceptions propagate; they cannot undo the committed write.
+        """
+        ...
+
+
+class MFAFactor(Protocol):
+    """A second factor a user has confirmed, such as an authenticator app."""
+
+    @property
+    def id(self) -> Any: ...
+
+    @property
+    def user_id(self) -> Any: ...
+
+    @property
+    def type(self) -> str:
+        """``"totp"``; later also ``"webauthn"``."""
+        ...
+
+    @property
+    def name(self) -> str | None: ...
+
+    @property
+    def data(self) -> Mapping[str, Any]:
+        """The type's own fields. TOTP keeps its encrypted ``secret`` here."""
+        ...
+
+    @property
+    def last_used_step(self) -> int | None:
+        """The last TOTP time step accepted, so a code is never used twice."""
+        ...
+
+    @property
+    def created_at(self) -> AwareDatetime: ...
+
+    @property
+    def last_used_at(self) -> AwareDatetime | None: ...
+
+    @property
+    def failed_attempts(self) -> int: ...
+
+    @property
+    def locked_until(self) -> AwareDatetime | None: ...
+
+
+class MFAStorage(Protocol):
+    """Stores second factors and recovery codes. It holds no 2FA rules.
+
+    Cross Auth's ``_mfa`` module decides everything; a storage only reads and
+    writes rows. Each method commits before it returns, or joins the
+    application's transaction, as Django's storage does inside ``atomic()``:
+    then a successful return is not durable until that transaction commits,
+    and a rollback undoes it, a new factor and its recovery codes included.
+
+    ``create_factor``, ``delete_factor``, ``replace_recovery_codes``,
+    ``record_failure``, ``lock`` and ``reset_failures`` each run in one
+    transaction that first locks something per user, such as the user row,
+    so that two of them for the same user run one after the other. A new
+    factor copies the lockout state, so changing that state under the same
+    lock keeps every factor's copy alike.
+
+    Take that user lock before any factor or recovery-code row, in every
+    method that writes them, ``claim_totp_step`` and ``use_recovery_code``
+    included, whenever the write may hold its row locks past the call, as in
+    an application's transaction. A passing code resets the failures next,
+    under the user lock, so a write that held a factor or code row first
+    could deadlock with one that holds the user lock and waits for that row.
+    """
+
+    def list_factors(self, user_id: Any) -> Sequence[MFAFactor]: ...
+
+    def create_factor(
+        self,
+        *,
+        user_id: Any,
+        type: str,
+        name: str | None,
+        data: Mapping[str, Any],
+        created_at: AwareDatetime,
+        last_used_step: int | None = None,
+        recovery_code_hashes: Sequence[str] = (),
+    ) -> tuple[MFAFactor, bool]:
+        """Add a factor; return it and whether it is the user's first.
+
+        For the first factor, also replace the user's recovery codes with
+        ``recovery_code_hashes``, in the same transaction.
+        """
+        ...
+
+    def delete_factor(self, *, user_id: Any, factor_id: Any) -> int | None:
+        """Delete the user's factor; return how many factors they have left.
+
+        ``None`` if no such factor is theirs. Deleting the last factor deletes
+        the user's recovery codes with it.
+        """
+        ...
+
+    def claim_totp_step(
+        self, factor_id: Any, *, step: int, used_at: AwareDatetime
+    ) -> bool:
+        """Atomically record ``step`` as used, if it is later than the stored one.
+
+        Set ``last_used_step`` and ``last_used_at`` only when ``last_used_step``
+        is null or less than ``step``. Return whether the row changed, so two
+        requests with the same code cannot both succeed.
+        """
+        ...
+
+    def record_failure(self, user_id: Any) -> int:
+        """Atomically add one to the user's failed attempts and return the count.
+
+        The count is kept on every factor row of the user.
+        """
+        ...
+
+    def lock(self, user_id: Any, *, until: AwareDatetime) -> None:
+        """Set ``locked_until`` on the user's factors and reset the count."""
+        ...
+
+    def reset_failures(self, user_id: Any) -> None:
+        """Reset the failed attempts and clear ``locked_until``."""
+        ...
+
+    def count_recovery_codes(self, user_id: Any) -> int:
+        """How many of the user's recovery codes are unused."""
+        ...
+
+    def replace_recovery_codes(
+        self, user_id: Any, code_hashes: Sequence[str], *, created_at: AwareDatetime
+    ) -> bool:
+        """Delete the user's recovery codes and store these hashes instead.
+
+        Change nothing and return ``False`` when the user has no factor.
+        """
+        ...
+
+    def use_recovery_code(
+        self, user_id: Any, code_hash: str, *, used_at: AwareDatetime
+    ) -> bool:
+        """Atomically mark an unused code as used; return whether one was."""
+        ...
+
+    def on_commit(self, callback: CommitCallback) -> None:
+        """Run callback once the writes this storage just returned are committed.
+
+        Core delivers the after hooks of factor and recovery-code changes this
+        way. A storage whose operations commit before returning calls it now.
+        One that joins an application transaction calls it after the outermost
+        transaction commits (not after an inner savepoint) and drops it if
+        that transaction rolls back, so no after hook reports a change that
+        did not last.
         """
         ...

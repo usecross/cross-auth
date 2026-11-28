@@ -172,3 +172,49 @@ sessions were signed out. ``user`` is ``request.user``, as Django's
 ``user_logged_out`` sends it; from the logout view, where ``request.user`` is
 not signed in, it is the token's user. No ``provider``.
 """
+
+mfa_verified = Signal()
+"""Sent once a sign-in that needed two-factor authentication passed it and
+the user is logged in: the full sign-in, where ``user_logged_in`` marks only
+the first factor for users with 2FA.
+
+Arguments: ``user``, the native user, and ``method``, ``"totp"`` or
+``"recovery_code"``. Not sent for an OAuth client's sign-in, which logs no one
+in; its ``after_login`` comes from the token view.
+"""
+
+mfa_verification_failed = Signal()
+"""Sent for each wrong or refused second-factor code.
+
+Arguments: ``user_id``, ``purpose`` (``"sign_in"``, ``"reauthenticate"`` or
+``"enrollment"``), ``method`` and ``reason`` (``"invalid_code"`` or
+``"locked"``, or ``"invalid_password"`` when reauthenticating).
+"""
+
+mfa_factor_added = Signal()
+"""Sent once a new authenticator is stored, after its first code checked out.
+
+Arguments: ``factor``, the ``cross_auth.MFAFactor``, and ``enabled_mfa``,
+True when it is the user's first factor and so turned 2FA on.
+"""
+
+mfa_factor_removed = Signal()
+"""Sent once a factor is deleted.
+
+Arguments: ``user_id``, ``factor_id``, ``type`` and ``mfa_enabled``, False
+when it was the user's last factor and so turned 2FA off.
+"""
+
+recovery_codes_regenerated = Signal()
+"""Sent once a user's recovery codes were replaced.
+
+Arguments: ``user_id`` and ``count``.
+"""
+
+recovery_code_used = Signal()
+"""Sent when a recovery code passed a sign-in or a reauthentication.
+
+Arguments: ``user_id`` and ``remaining``, how many unused codes are left.
+Send the user an email from here: a code they did not use means someone else
+has their password and their codes.
+"""

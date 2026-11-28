@@ -70,6 +70,8 @@ else:
 # Framework-owned session keys start with an underscore, like Django's own
 # ``_auth_user_id``. Cross Auth's login stores the provider here.
 LOGIN_METHOD_SESSION_KEY = "_cross_auth_login_method"
+# The second factor the session's login passed, set once 2FA is verified.
+MFA_METHOD_SESSION_KEY = "_cross_auth_mfa_method"
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +153,12 @@ class SessionStore(_DatabaseSessionStore):
                 login_method
                 if data.get(BACKEND_SESSION_KEY) == BACKEND
                 and isinstance(login_method, str)
+                else None
+            ),
+            mfa_method=(
+                mfa_method
+                if user_id is not None
+                and isinstance(mfa_method := data.get(MFA_METHOD_SESSION_KEY), str)
                 else None
             ),
             created_at=now,
@@ -258,6 +266,7 @@ class SessionStore(_DatabaseSessionStore):
             "expire_date": session.expire_date,
             "user_id": session.user_id,
             "login_method": session.login_method,
+            "mfa_method": session.mfa_method,
             "last_activity": session.last_activity,
             "updated_at": session.updated_at,
         }

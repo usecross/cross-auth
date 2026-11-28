@@ -8,6 +8,7 @@ example's views, templates, signals and middleware stay as they are.
 import os
 
 from config.settings import *  # noqa: F403
+from config.settings import CROSS_AUTH as EXAMPLE_CROSS_AUTH
 from config.settings import DATABASES
 from config.settings import INSTALLED_APPS as EXAMPLE_INSTALLED_APPS
 
@@ -26,6 +27,7 @@ DATABASES["default"]["NAME"] = os.environ["E2E_DATABASE"]
 INSTALLED_APPS = [*EXAMPLE_INSTALLED_APPS, "e2e_support"]
 
 CROSS_AUTH = {
+    **EXAMPLE_CROSS_AUTH,
     "PROVIDERS": [
         EmulatedGoogleProvider(
             client_id=os.environ["GOOGLE_CLIENT_ID"],

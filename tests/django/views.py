@@ -1,5 +1,7 @@
 from dataclasses import asdict
 
+from django.contrib.auth import aauthenticate, alogin, authenticate, login
+from django.http import HttpResponseRedirect
 from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse, HttpResponseNotAllowed, JsonResponse
 from django.middleware.csrf import get_token
@@ -8,6 +10,11 @@ from cross_auth.django.sessions import (
     list_sessions,
     revoke_other_sessions,
     revoke_session,
+)
+from cross_auth.django.mfa import (
+    get_pending_mfa,
+    mfa_required,
+    reauthentication_required,
 )
 from cross_auth.django.tokens import authenticate_bearer
 
@@ -62,3 +69,52 @@ def me(request: HttpRequest) -> HttpResponse:
             "django_user": request.user.is_authenticated,
         }
     )
+
+
+def api_login(request: HttpRequest) -> HttpResponse:
+    """A JSON password login, as a single-page app's backend writes one."""
+    user = authenticate(
+        request,
+        username=request.POST.get("username"),
+        password=request.POST.get("password"),
+    )
+    if user is None:
+        return JsonResponse({"error": "invalid_credentials"}, status=400)
+    login(request, user)
+    return JsonResponse({"user_id": str(user.pk)})
+
+
+@mfa_required
+def two_factor_only(request: HttpRequest) -> HttpResponse:
+    return HttpResponse("verified")
+
+
+@reauthentication_required("/confirm-identity/")
+def recently_authenticated(request: HttpRequest) -> HttpResponse:
+    """A settings page that needs a recent sign-in or reauthentication."""
+    return HttpResponse("recent")
+
+
+def own_verify_page(request: HttpRequest) -> HttpResponse:
+    """An application's verify page (CROSS_AUTH["MFA"]["verify_url"])."""
+    get_token(request)
+    pending = get_pending_mfa(request)
+    return JsonResponse(
+        {
+            "methods": None if pending is None else pending.methods,
+            "error": request.GET.get("error"),
+            "next": request.GET.get("next"),
+        }
+    )
+
+
+async def async_login(request: HttpRequest) -> HttpResponse:
+    """An async password login view."""
+    user = await aauthenticate(
+        request,
+        username=request.POST.get("username"),
+        password=request.POST.get("password"),
+    )
+    assert user is not None
+    await alogin(request, user)
+    return HttpResponseRedirect("/private/")

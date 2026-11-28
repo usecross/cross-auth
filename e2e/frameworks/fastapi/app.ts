@@ -60,7 +60,7 @@ export const fastapi: Framework = {
 
     const app: App & { stop(): Promise<void> } = {
       ...createBrowserApp(baseURL, {
-        routes: { signIn: "/", profile: "/profile" },
+        routes: { signIn: "/", profile: "/profile", twoFactor: "/settings/2fa" },
         googleSignIn: { role: "link", name: "Continue with Google" },
         password: {
           identifierLabel: "Email",

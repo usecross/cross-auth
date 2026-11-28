@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from datetime import timezone as dt_timezone
@@ -19,7 +19,11 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 from django.contrib.auth import get_user_model
 from django.contrib.sessions.backends.base import VALID_KEY_CHARS
-from django.core.exceptions import ImproperlyConfigured, ValidationError
+from django.core.exceptions import (
+    ImproperlyConfigured,
+    ObjectDoesNotExist,
+    ValidationError,
+)
 from django.db import DatabaseError, IntegrityError, router, transaction
 from django.db.models import Case, F, Q, Value, When
 from django.utils import timezone
@@ -40,7 +44,7 @@ from cross_auth.storage._cursor import decode_cursor, encode_cursor
 
 from ._session_management import end_sessions
 from .conf import get_settings
-from .models import ExpiringValue, Session, SocialAccount
+from .models import ExpiringValue, MFAFactor, RecoveryCode, Session, SocialAccount
 
 logger = logging.getLogger(__name__)
 
@@ -577,6 +581,10 @@ class DjangoSessionRecord:
         return self.native.login_method
 
     @property
+    def mfa_method(self) -> str | None:
+        return self.native.mfa_method
+
+    @property
     def status(self) -> SessionStatus:
         return session_status(self)
 
@@ -690,6 +698,7 @@ class DjangoSessionStorage:
         ip: str | None = None,
         last_active_at: datetime | None = None,
         login_method: str | None = None,
+        mfa_method: str | None = None,
     ) -> DjangoSessionRecord:
         store = Session.get_session_store_class()()
         session = Session(
@@ -708,6 +717,7 @@ class DjangoSessionStorage:
             user_agent=user_agent,
             ip=ip,
             login_method=login_method,
+            mfa_method=mfa_method,
         )
         session.save(force_insert=True, using=self.alias)
 
@@ -907,3 +917,200 @@ class DjangoSessionStorage:
         """
         deleted, _ = self._tokens().filter(expire_date__lt=timezone.now()).delete()
         return deleted
+
+
+class DjangoMFAStorage:
+    """Implements ``cross_auth.MFAStorage`` on ``MFAFactor`` and ``RecoveryCode``.
+
+    It only stores rows: every 2FA rule is core's. The checks that must not
+    let two requests both pass (a TOTP step, a recovery code, the failure
+    count) are single conditional ``UPDATE`` statements. Every write first
+    locks the user row, as ``DjangoStorage.disconnect_social_account`` does,
+    and only then the factor or code rows, so writes for one user inside an
+    application transaction wait for each other instead of deadlocking.
+    """
+
+    def __init__(self) -> None:
+        self.alias = router.db_for_write(MFAFactor)
+        if router.db_for_write(RecoveryCode) != self.alias:
+            raise ImproperlyConfigured(
+                "Cross Auth's MFAFactor and RecoveryCode must share a write database"
+            )
+        self._user_model = get_user_model()
+
+    def _factors(self, user_id: object) -> QuerySet[MFAFactor]:
+        user_id = _coerce_pk(self._user_model, user_id)
+        factors = MFAFactor.objects.using(self.alias)
+        return (
+            factors.none() if user_id is _NO_MATCH else factors.filter(user_id=user_id)
+        )
+
+    def _codes(self, user_id: object) -> QuerySet[RecoveryCode]:
+        user_id = _coerce_pk(self._user_model, user_id)
+        codes = RecoveryCode.objects.using(self.alias)
+        return codes.none() if user_id is _NO_MATCH else codes.filter(user_id=user_id)
+
+    def _lock_user(self, user_id: object) -> bool:
+        """Hold the user row until the surrounding transaction ends.
+
+        Returns whether there is one: without it, nothing is locked. A no-op
+        update: PostgreSQL keeps the row lock until commit, and SQLite takes
+        its write lock before anything is read. Through the base manager, so
+        a default manager that hides some users still locks theirs.
+        """
+        user_pk = _coerce_pk(self._user_model, user_id)
+        if user_pk is _NO_MATCH:
+            return False
+        pk_name = self._user_model._meta.pk.name
+        locked = (
+            self._user_model._base_manager.using(self.alias)
+            .filter(pk=user_pk)
+            .update(**{pk_name: F(pk_name)})
+        )
+        return locked > 0
+
+    def list_factors(self, user_id: Any) -> list[MFAFactor]:
+        return list(self._factors(user_id).order_by("created_at", "id"))
+
+    def create_factor(
+        self,
+        *,
+        user_id: Any,
+        type: str,
+        name: str | None,
+        data: Mapping[str, Any],
+        created_at: datetime,
+        last_used_step: int | None = None,
+        recovery_code_hashes: Sequence[str] = (),
+    ) -> tuple[MFAFactor, bool]:
+        with transaction.atomic(using=self.alias):
+            if not self._lock_user(user_id):
+                raise ObjectDoesNotExist(f"No user {user_id!r} to add a factor to")
+            # A new factor starts with the user's current lockout state.
+            existing = self._factors(user_id).first()
+            factor = MFAFactor(
+                user_id=user_id,
+                type=type,
+                name=name,
+                data=dict(data),
+                created_at=created_at,
+                last_used_step=last_used_step,
+                failed_attempts=existing.failed_attempts if existing else 0,
+                locked_until=existing.locked_until if existing else None,
+            )
+            factor.save(using=self.alias, force_insert=True)
+            if existing is None:
+                self._store_codes(user_id, recovery_code_hashes, created_at)
+        return factor, existing is None
+
+    def delete_factor(self, *, user_id: Any, factor_id: Any) -> int | None:
+        factor_id = _coerce_pk(MFAFactor, factor_id)
+        if factor_id is _NO_MATCH:
+            return None
+        with transaction.atomic(using=self.alias):
+            if not self._lock_user(user_id):
+                return None
+            deleted, _ = self._factors(user_id).filter(pk=factor_id).delete()
+            if not deleted:
+                return None
+            left = self._factors(user_id).count()
+            if not left:
+                self._codes(user_id).delete()
+        return left
+
+    def on_commit(self, callback: CommitCallback) -> None:
+        # Inside ATOMIC_REQUESTS or the app's atomic(), after hooks wait for
+        # the outermost commit, so a rollback sends no signal.
+        transaction.on_commit(callback, using=self.alias, robust=False)
+
+    def claim_totp_step(self, factor_id: Any, *, step: int, used_at: datetime) -> bool:
+        factor_id = _coerce_pk(MFAFactor, factor_id)
+        if factor_id is _NO_MATCH:
+            return False
+        factors = MFAFactor.objects.using(self.alias)
+        user_id = factors.filter(pk=factor_id).values_list("user_id", flat=True).first()
+        if user_id is None:
+            return False
+        with transaction.atomic(using=self.alias):
+            # The user row before the factor's, as every write here. Inside an
+            # application transaction a passing code goes on to reset the
+            # failures under the user lock; holding its factor row first would
+            # deadlock with a wrong code that holds the user lock.
+            if not self._lock_user(user_id):
+                return False
+            return (
+                factors.filter(
+                    Q(last_used_step__isnull=True) | Q(last_used_step__lt=step),
+                    pk=factor_id,
+                ).update(last_used_step=step, last_used_at=used_at)
+                > 0
+            )
+
+    # The lockout state lives on every factor row, and a new factor copies it:
+    # changing it under the user lock means a factor created at the same time
+    # gets the state from before or after, on every row alike. Without a user
+    # row there are no factors, and nothing to do.
+
+    def record_failure(self, user_id: Any) -> int:
+        factors = self._factors(user_id)
+        with transaction.atomic(using=self.alias):
+            self._lock_user(user_id)
+            factors.update(failed_attempts=F("failed_attempts") + 1)
+            count = factors.values_list("failed_attempts", flat=True).first()
+        return count or 0
+
+    def lock(self, user_id: Any, *, until: datetime) -> None:
+        with transaction.atomic(using=self.alias):
+            self._lock_user(user_id)
+            self._factors(user_id).update(failed_attempts=0, locked_until=until)
+
+    def reset_failures(self, user_id: Any) -> None:
+        with transaction.atomic(using=self.alias):
+            self._lock_user(user_id)
+            self._factors(user_id).update(failed_attempts=0, locked_until=None)
+
+    def count_recovery_codes(self, user_id: Any) -> int:
+        return self._codes(user_id).filter(used_at__isnull=True).count()
+
+    def replace_recovery_codes(
+        self, user_id: Any, code_hashes: Sequence[str], *, created_at: datetime
+    ) -> bool:
+        with transaction.atomic(using=self.alias):
+            if not self._lock_user(user_id) or not self._factors(user_id).exists():
+                return False
+            self._store_codes(user_id, code_hashes, created_at)
+        return True
+
+    def _store_codes(
+        self, user_id: Any, code_hashes: Sequence[str], created_at: datetime
+    ) -> None:
+        self._codes(user_id).delete()
+        RecoveryCode.objects.using(self.alias).bulk_create(
+            RecoveryCode(user_id=user_id, code_hash=code_hash, created_at=created_at)
+            for code_hash in code_hashes
+        )
+
+    def use_recovery_code(
+        self, user_id: Any, code_hash: str, *, used_at: datetime
+    ) -> bool:
+        with transaction.atomic(using=self.alias):
+            # The user row before the code's, as in claim_totp_step: replacing
+            # the codes holds the user lock while it deletes this row.
+            if not self._lock_user(user_id):
+                return False
+            # One code at a time: two requests with the same code both match
+            # the row, but only the first UPDATE still finds it unused.
+            code = (
+                self._codes(user_id)
+                .filter(code_hash=code_hash, used_at__isnull=True)
+                .values_list("pk", flat=True)
+                .first()
+            )
+            if code is None:
+                return False
+            return (
+                RecoveryCode.objects.using(self.alias)
+                .filter(pk=code, used_at__isnull=True)
+                .update(used_at=used_at)
+                > 0
+            )

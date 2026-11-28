@@ -26,8 +26,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from contextvars import ContextVar
 from functools import wraps
-from typing import Concatenate, Literal, ParamSpec, Protocol
+from typing import Any, Concatenate, Literal, ParamSpec, Protocol
 
 from cross_web import HTTPRequest
 from cross_web import Response as CrossWebResponse
@@ -42,6 +43,7 @@ from django.db import connections, router, transaction
 from django.dispatch import Signal
 from django.http import Http404, HttpRequest, HttpResponse, HttpResponseNotAllowed
 from django.shortcuts import render, resolve_url
+from django.urls import reverse
 from django.utils.cache import add_never_cache_headers
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.csrf import csrf_exempt
@@ -59,12 +61,17 @@ from cross_auth._config import Config
 from cross_auth._context import Context
 from cross_auth._issuer import Issuer
 from cross_auth._login import require_immediate_commit, run_login
+from cross_auth._mfa import MFA
 from cross_auth._oauth_server import OAuthServer
 from cross_auth._storage import CommitCallback, SocialAccount, User
 from cross_auth.exceptions import CrossAuthException
 from cross_auth.hooks import (
     AfterLoginEvent,
     AfterLogoutEvent,
+    AfterMFAFactorCreateEvent,
+    AfterMFAFactorDeleteEvent,
+    AfterMFARecoveryCodesRegenerateEvent,
+    AfterMFAVerifyEvent,
     AfterOAuthAuthorizeEvent,
     AfterOAuthDisconnectEvent,
     AfterSocialAccountCreateEvent,
@@ -84,10 +91,11 @@ from cross_auth.utils._response import Response as FlowResponse
 
 from . import models, signals
 from .backends import BACKEND, CrossAuthBackend
-from .conf import get_settings
-from .sessions import LOGIN_METHOD_SESSION_KEY, SessionStore
+from .conf import CrossAuthSettings, get_settings
+from .sessions import LOGIN_METHOD_SESSION_KEY, MFA_METHOD_SESSION_KEY, SessionStore
 from .storage import (
     DjangoAccountsStorage,
+    DjangoMFAStorage,
     DjangoSecondaryStorage,
     DjangoSessionRecord,
     DjangoSessionStorage,
@@ -100,6 +108,10 @@ _SAMESITE: dict[str, Literal["Lax", "Strict", "None"]] = {
     "strict": "Strict",
     "none": "None",
 }
+
+# Set while Cross Auth logs in a user whose sign-in already passed its 2FA
+# check, so the user_logged_in guard (cross_auth.django.mfa) lets it through.
+mfa_checked: ContextVar[bool] = ContextVar("cross_auth_mfa_checked", default=False)
 
 _P = ParamSpec("_P")
 _View = Callable[Concatenate[HttpRequest, _P], HttpResponse]
@@ -416,12 +428,25 @@ class _LogoutSignals:
         )
 
 
-class DjangoLogin:
-    """Completes a verified provider sign-in with ``django.contrib.auth``."""
+class _LoginBridge(Protocol):
+    def login_hooks(self, user: DjangoUser) -> HookRegistry: ...
 
-    def __init__(self, request: HttpRequest, bridge: _Signals) -> None:
+
+class DjangoLogin:
+    """Completes a verified provider sign-in with ``django.contrib.auth``.
+
+    With 2FA on (``mfa``), a user who needs a second factor is not logged in:
+    ``run_login`` raises ``MFARequired`` and the callback sends the browser
+    to the verify view, which logs in with ``mfa_method`` once the code
+    checks out.
+    """
+
+    def __init__(
+        self, request: HttpRequest, bridge: _LoginBridge, *, mfa: MFA | None = None
+    ) -> None:
         self.request = request
         self.bridge = bridge
+        self.mfa = mfa
         session = request.session
         if not isinstance(session, DatabaseSessionStore):
             raise ImproperlyConfigured(
@@ -439,7 +464,12 @@ class DjangoLogin:
         transaction.on_commit(callback, using=self.alias, robust=False)
 
     def login(
-        self, user: User, *, response: CrossWebResponse, login_method: str
+        self,
+        user: User,
+        *,
+        response: CrossWebResponse,
+        login_method: str,
+        mfa_method: str | None = None,
     ) -> CrossWebResponse:
         if not isinstance(user, DjangoUser):
             raise TypeError("DjangoLogin needs users from DjangoAccountsStorage")
@@ -455,10 +485,17 @@ class DjangoLogin:
 
         def issue(event: BeforeLoginEvent) -> tuple[CrossWebResponse, None]:
             assert event.response is not None
-            django_login(self.request, native, backend=BACKEND)
+            # run_login has just made the 2FA decision for this sign-in.
+            checked = mfa_checked.set(True)
+            try:
+                django_login(self.request, native, backend=BACKEND)
+            finally:
+                mfa_checked.reset(checked)
             # cross_auth.django.sessions records it as the session's login
             # method while the session stays logged in with BACKEND.
             self.session[LOGIN_METHOD_SESSION_KEY] = event.login_method
+            if event.mfa_method is not None:
+                self.session[MFA_METHOD_SESSION_KEY] = event.mfa_method
             # Persist the rotated session now, so after_login receivers see a
             # login that is stored rather than one waiting for SessionMiddleware.
             self.session.save()
@@ -472,6 +509,7 @@ class DjangoLogin:
                 metadata=None,
                 response=response,
                 login_method=login_method,
+                mfa_method=mfa_method,
             ),
             hooks=self.bridge.login_hooks(user),
             issue=issue,
@@ -479,6 +517,7 @@ class DjangoLogin:
             # Django's own rule, the backend's user_can_authenticate, is
             # checked above, and by the context before the callback gets here.
             check_user=None,
+            mfa=self.mfa,
         )
         return issued
 
@@ -533,7 +572,102 @@ def _may_sign_in(user: User) -> bool | CrossAuthException:
     return True
 
 
-def _context(request: HttpRequest, bridge: _Bridge) -> Context:
+def mfa_verify_url(conf: CrossAuthSettings) -> str:
+    """Where sign-ins that wait for a code go: the app's page or the library's."""
+    assert conf.mfa is not None
+    if conf.mfa.verify_url is not None:
+        return resolve_url(conf.mfa.verify_url)
+    return reverse("cross_auth:mfa_verify")
+
+
+def mfa_secret_keys() -> list[str]:
+    """The keys that encrypt TOTP secrets: derived from ``SECRET_KEY`` and
+    ``SECRET_KEY_FALLBACKS``, so rotating those rotates them."""
+    keys = [settings.SECRET_KEY, *getattr(settings, "SECRET_KEY_FALLBACKS", [])]
+    return [f"cross_auth.django.mfa:{key}" for key in keys]
+
+
+def _has_password(user: User) -> bool:
+    return _native(user).has_usable_password()
+
+
+def _check_password(user: User, password: str) -> bool:
+    return _native(user).check_password(password)
+
+
+def _email_verified(user: User) -> bool:
+    """Django has no verified-email flag: a connected identity whose provider
+    verified the user's own email address counts."""
+    native = _native(user)
+    if not user.email:
+        return False
+    return models.SocialAccount.objects.filter(
+        user=native, provider_email_verified=True, provider_email__iexact=user.email
+    ).exists()
+
+
+def _mfa_signal_hooks(hooks: HookRegistry, request: HttpRequest) -> None:
+    """Send the 2FA signals from core's ``mfa.*`` hooks."""
+    sender = get_user_model()
+
+    def verified(event: AfterMFAVerifyEvent) -> None:
+        if not event.success:
+            signals.mfa_verification_failed.send(
+                sender=sender,
+                request=request,
+                user_id=event.user_id,
+                purpose=event.purpose,
+                method=event.method,
+                reason=event.reason,
+            )
+        elif event.method == "recovery_code":
+            signals.recovery_code_used.send(
+                sender=sender,
+                request=request,
+                user_id=event.user_id,
+                remaining=event.recovery_codes_remaining,
+            )
+
+    def factor_added(event: AfterMFAFactorCreateEvent) -> None:
+        signals.mfa_factor_added.send(
+            sender=sender,
+            request=request,
+            factor=event.factor,
+            enabled_mfa=event.enabled_mfa,
+        )
+
+    def factor_removed(event: AfterMFAFactorDeleteEvent) -> None:
+        signals.mfa_factor_removed.send(
+            sender=sender,
+            request=request,
+            user_id=event.user_id,
+            factor_id=str(event.factor_id),
+            type=event.type,
+            mfa_enabled=event.mfa_enabled,
+        )
+
+    def regenerated(event: AfterMFARecoveryCodesRegenerateEvent) -> None:
+        signals.recovery_codes_regenerated.send(
+            sender=sender, request=request, user_id=event.user_id, count=event.count
+        )
+
+    hooks.register_after("mfa.verify", verified)
+    hooks.register_after("mfa.factor.create", factor_added)
+    hooks.register_after("mfa.factor.delete", factor_removed)
+    hooks.register_after("mfa.recovery_codes.regenerate", regenerated)
+
+
+def _requires_mfa(conf: CrossAuthSettings) -> Callable[[User, str | None], bool] | None:
+    assert conf.mfa is not None
+    rule = conf.mfa.requires_mfa
+    if rule is None:
+        return None
+    return lambda user, login_method: bool(rule(_native(user), login_method))
+
+
+def _context(
+    request: HttpRequest, bridge: _Bridge, *, check_atomic: bool = True
+) -> Context:
     """Build the core context, whose hooks send ``bridge``'s signals."""
     conf = get_settings()
     accounts = DjangoAccountsStorage()
@@ -550,7 +684,27 @@ def _context(request: HttpRequest, bridge: _Bridge) -> Context:
         aliases.add(sessions.alias)
         config["session"] = _session_config(conf)
         oauth_server = OAuthServer(get_client=conf.oauth_server.get_client)
-    for alias in aliases:
+    mfa_storage = None
+    mfa_options: dict[str, Any] = {}
+    if conf.mfa is not None:
+        mfa_storage = DjangoMFAStorage()
+        aliases.add(mfa_storage.alias)
+        config["mfa"] = {
+            **conf.mfa.config,
+            "verify_url": mfa_verify_url(conf),
+            **(
+                {} if conf.mfa.custom_encryption else {"secret_keys": mfa_secret_keys()}
+            ),
+        }
+        _mfa_signal_hooks(bridge.hooks, request)
+        mfa_options = {
+            "requires_mfa": _requires_mfa(conf),
+            "provider_ids": frozenset(conf.providers),
+            "mfa_password_verifier": _check_password,
+            "mfa_has_password": _has_password,
+            "mfa_email_verified": _email_verified,
+        }
+    for alias in aliases if check_atomic else ():
         if connections[alias].in_atomic_block:
             raise ImproperlyConfigured(
                 "Cross Auth's Django views must not run inside transaction.atomic"
@@ -566,6 +720,8 @@ def _context(request: HttpRequest, bridge: _Bridge) -> Context:
         hooks=bridge.hooks,
         oauth_server=oauth_server,
         user_can_authenticate=_may_sign_in,
+        mfa_storage=mfa_storage,
+        **mfa_options,
     )
 
 
@@ -736,11 +892,12 @@ def callback(request: HttpRequest, provider: str) -> HttpResponse:
     oauth_provider = _provider(provider)
     bridge = _Signals(request, oauth_provider)
     try:
+        context = _context(request, bridge)
         response = handle_callback(
             oauth_provider,
             HTTPRequest.from_django(request),
-            _context(request, bridge),
-            login=DjangoLogin(request, bridge),
+            context,
+            login=DjangoLogin(request, bridge, mfa=context.mfa),
             on_verified=bridge.verified,
         )
     except PermissionDenied as error:

@@ -255,6 +255,7 @@ def revoke_other_sessions(
             hooks=context.hooks,
             session_storage=_session_storage(context),
             request=request,
+            mfa=context.mfa,
         )
     except CrossAuthException as e:
         return _hook_error(e)

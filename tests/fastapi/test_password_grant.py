@@ -249,7 +249,12 @@ def test_legacy_schema_marks_only_the_password_variant_deprecated(
     assert _missing_refs(schema) == set()
     assert {
         _grant_type(variant): variant.get("deprecated") for variant in body["oneOf"]
-    } == {"authorization_code": None, "password": True}
+    } == {
+        "authorization_code": None,
+        "password": True,
+        # Finishes a password grant that asked for a second factor.
+        "urn:cross-auth:grant-type:mfa": None,
+    }
     assert router.extra_schemas["PasswordGrantRequest"]["deprecated"] is True
     assert "deprecated" not in router.extra_schemas["AuthorizationCodeGrantRequest"]
 

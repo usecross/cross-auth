@@ -7,12 +7,14 @@ Defined once at module level so every table is registered on
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Index, UniqueConstraint, text
+from sqlalchemy import JSON, Column, DateTime, Index, UniqueConstraint, text
 from sqlmodel import Field, Relationship, SQLModel
 from sqlmodel.sql.expression import SelectOfScalar
 
 from cross_auth.storage.sqlmodel import (
     SQLModelAccountsStorage,
+    SQLModelMFAFactor,
+    SQLModelRecoveryCode,
     SQLModelSession,
     SQLModelUser,
     SQLModelSocialAccount,
@@ -343,3 +345,34 @@ class PropertyExpiryAccountsStore(
     UserModel = User
     SocialAccountModel = PropertyExpirySocialAccount
     excluded_social_account_fields = LeanAccountsStore.excluded_social_account_fields
+
+
+class StoredMFAFactor(SQLModelMFAFactor, table=True):
+    __tablename__ = "stored_mfa_factor"
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    data: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class StoredRecoveryCode(SQLModelRecoveryCode, table=True):
+    __tablename__ = "stored_recovery_code"
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+
+
+class UnlinkedMFAFactor(SQLModelMFAFactor, table=True):
+    """A factor table whose user_id is not a foreign key."""
+
+    __tablename__ = "unlinked_mfa_factor"
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(index=True)
+    data: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class UniqueRecoveryCode(SQLModelRecoveryCode, table=True):
+    """An application's recovery-code table that refuses a repeated hash."""
+
+    __tablename__ = "unique_recovery_code"
+    __table_args__ = (UniqueConstraint("user_id", "code_hash"),)
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)

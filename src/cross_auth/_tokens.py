@@ -23,6 +23,10 @@ class TokenIssueRequest:
     # How the user authenticated: "password" or the social provider's id.
     # None for authorization codes stored by a version that did not record it.
     login_method: str | None = None
+    # The second factor the sign-in passed, or None when it needed none. Set
+    # only from a challenge Cross Auth checked, never from the token request;
+    # an issuer that calls issue_session_token passes it on as mfa_method.
+    mfa_method: str | None = None
 
 
 TokenIssuer = Callable[[TokenIssueRequest], tuple[str, int]]

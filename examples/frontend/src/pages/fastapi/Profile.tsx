@@ -197,6 +197,9 @@ export default function Profile({
             <Link className="button" href="/sessions">
               Manage sessions
             </Link>
+            <Link className="button" href="/settings/2fa">
+              Two-factor authentication
+            </Link>
             <a className="button" href="/api/me">
               /api/me
             </a>

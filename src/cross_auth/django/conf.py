@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cache
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -18,6 +18,7 @@ from django.utils.module_loading import import_string
 
 from cross_auth._clients import ClientResolver
 from cross_auth._config import AccountLinkingConfig
+from cross_auth._mfa import MFAConfig, resolve_config
 from cross_auth.social_providers.oauth import OAuth2Provider
 
 
@@ -93,6 +94,27 @@ class ProviderTokenSettings:
     decrypt: Callable[[str], str | None]
 
 
+# Decides whether a sign-in needs 2FA: the native user and the provider ID
+# of a Cross Auth sign-in, or None for Django's own logins.
+DjangoRequiresMFA = Callable[[AbstractBaseUser, "str | None"], bool]
+
+
+@dataclass(frozen=True)
+class MFASettings:
+    """``CROSS_AUTH["MFA"]``: two-factor authentication."""
+
+    # Core's config['mfa'], without the verify URL and the encryption keys,
+    # which are filled in for each request.
+    config: MFAConfig
+    # None: core's default rule, with require_for_providers.
+    requires_mfa: DjangoRequiresMFA | None
+    # Whether config has the application's own encrypt and decrypt.
+    custom_encryption: bool
+    # The application's own verify page: a URL name or path. None: the
+    # library's cross_auth:mfa_verify page.
+    verify_url: str | None = None
+
+
 @dataclass(frozen=True)
 class CrossAuthSettings:
     providers: Mapping[str, OAuth2Provider]
@@ -114,6 +136,8 @@ class CrossAuthSettings:
     oauth_server: OAuthServerSettings | None
     # None: providers' access and refresh tokens are not stored.
     provider_tokens: ProviderTokenSettings | None
+    # None: two-factor authentication is off.
+    mfa: MFASettings | None = None
 
 
 _KNOWN_KEYS = frozenset(
@@ -128,6 +152,7 @@ _KNOWN_KEYS = frozenset(
         "SESSION_STORE_IP",
         "OAUTH_SERVER",
         "PROVIDER_TOKENS",
+        "MFA",
     }
 )
 _ACCOUNT_LINKING_KEYS = frozenset({"enabled", "allow_different_emails"})
@@ -305,6 +330,95 @@ def _token_function(raw: Mapping[Any, object], key: str) -> Callable[[str], Any]
     return function
 
 
+_MFA_PATH_KEYS = ("encrypt", "decrypt", "requires_mfa")
+_MFA_KEYS = frozenset(
+    {
+        "issuer",
+        "require_for_providers",
+        "allow_unverified_email",
+        "challenge_ttl",
+        "max_attempts",
+        "lockout_failures",
+        "lockout_seconds",
+        "reauthentication_max_age",
+        "totp_tolerance",
+        "verify_url",
+        *_MFA_PATH_KEYS,
+    }
+)
+
+
+def _mfa(value: object) -> MFASettings | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ImproperlyConfigured("CROSS_AUTH['MFA'] must be a dict")
+    unknown = set(value) - _MFA_KEYS
+    if unknown:
+        raise ImproperlyConfigured(
+            "Unsupported CROSS_AUTH['MFA'] key(s): "
+            + ", ".join(sorted(map(str, unknown)))
+        )
+    if not settings.USE_TZ:
+        # Core compares stored times with the current time in UTC.
+        raise ImproperlyConfigured("CROSS_AUTH['MFA'] needs USE_TZ = True")
+    return _mfa_settings(value)
+
+
+def _mfa_settings(value: Mapping[Any, object]) -> MFASettings:
+    functions: dict[str, Callable[..., Any]] = {}
+    for key in _MFA_PATH_KEYS:
+        path = value.get(key)
+        if path is None:
+            continue
+        if not isinstance(path, str):
+            raise ImproperlyConfigured(
+                f"CROSS_AUTH['MFA']['{key}'] must be the dotted path of a function"
+            )
+        function = import_string(path)
+        if not callable(function):
+            raise ImproperlyConfigured(
+                f"CROSS_AUTH['MFA']['{key}'] {path!r} is not callable"
+            )
+        functions[key] = function
+    if ("encrypt" in functions) != ("decrypt" in functions):
+        raise ImproperlyConfigured(
+            "CROSS_AUTH['MFA'] needs both 'encrypt' and 'decrypt', or neither"
+        )
+    verify_url = value.get("verify_url")
+    if verify_url is not None and (not isinstance(verify_url, str) or not verify_url):
+        raise ImproperlyConfigured(
+            "CROSS_AUTH['MFA']['verify_url'] must be a URL name or path"
+        )
+    config: dict[str, object] = {
+        key: value[key]
+        for key in value
+        if key not in _MFA_PATH_KEYS and key != "verify_url"
+    }
+    config.setdefault("issuer", "")
+    custom = "encrypt" in functions
+    if custom:
+        config["encrypt"] = functions["encrypt"]
+        config["decrypt"] = functions["decrypt"]
+    try:
+        # Checked with stand-in keys: the real ones come from SECRET_KEY.
+        resolve_config(
+            cast(
+                MFAConfig, {**config, **({} if custom else {"secret_keys": ["check"]})}
+            )
+        )
+    except ValueError as error:
+        raise ImproperlyConfigured(
+            str(error).replace("config['mfa']", "CROSS_AUTH['MFA']")
+        ) from error
+    return MFASettings(
+        config=cast(MFAConfig, config),
+        requires_mfa=functions.get("requires_mfa"),
+        custom_encryption=custom,
+        verify_url=verify_url,
+    )
+
+
 @cache
 def get_settings() -> CrossAuthSettings:
     raw: Mapping[str, Any] = getattr(settings, "CROSS_AUTH", {})
@@ -351,6 +465,7 @@ def get_settings() -> CrossAuthSettings:
         session_store_ip=_bool(raw, "SESSION_STORE_IP", True),
         oauth_server=_oauth_server(raw.get("OAUTH_SERVER")),
         provider_tokens=_provider_tokens(raw.get("PROVIDER_TOKENS")),
+        mfa=_mfa(raw.get("MFA")),
     )
 
 

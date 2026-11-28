@@ -16,10 +16,17 @@ from cross_web import HTTPRequest
 from ._config import Config
 from ._context import Context
 from ._issuer import Issuer
+from ._mfa import RequiresMFA
 from ._oauth_server import OAuthServer
 from ._password import PasswordHasher
 from ._session import UserCanAuthenticate
-from ._storage import AccountsStorage, SecondaryStorage, SessionStorage, User
+from ._storage import (
+    AccountsStorage,
+    MFAStorage,
+    SecondaryStorage,
+    SessionStorage,
+    User,
+)
 from .hooks import HookRegistry
 from .social_providers.oauth import OAuth2Provider
 
@@ -49,7 +56,10 @@ def build_auth_setup(
     oauth_server: OAuthServer | None = None,
     password_hasher: PasswordHasher | None = None,
     user_can_authenticate: UserCanAuthenticate | None = None,
+    mfa_storage: MFAStorage | None = None,
+    requires_mfa: RequiresMFA | None = None,
 ) -> AuthSetup:
+    registered_providers = tuple(providers)
     context = Context(
         secondary_storage=secondary_storage,
         accounts_storage=accounts_storage,
@@ -63,8 +73,12 @@ def build_auth_setup(
         oauth_server=oauth_server,
         password_hasher=password_hasher,
         user_can_authenticate=user_can_authenticate,
+        mfa_storage=mfa_storage,
+        requires_mfa=requires_mfa,
+        provider_ids=frozenset(provider.id for provider in registered_providers),
     )
-    registered_providers = tuple(providers)
+    if context.mfa is not None and session_storage is None:
+        raise ValueError("Two-factor authentication needs a session_storage")
     return AuthSetup(
         context=context,
         providers=registered_providers,

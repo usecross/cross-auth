@@ -120,7 +120,11 @@ default bcrypt hasher for a password over 72 bytes. The accounts storage needs a
 
 The three revoke methods run the
 [`session.revoke` hooks](/docs/hooks#sessionrevoke) with `request` set to
-`None`. Expired sessions keep their `expired` status and are not counted.
+`None`. Expired sessions keep their `expired` status and are not counted. With
+two-factor authentication, `revoke_other_sessions`, `revoke_all_sessions` and
+`change_password` also end the user's sign-ins that are waiting for their code
+(see
+[Two-Factor Authentication](/docs/two-factor#revoking-sessions-ends-waiting-sign-ins)).
 
 Session methods require `session_storage` to be configured. `auth.router` serves
 the caller's own sessions over HTTP with the same storage; see

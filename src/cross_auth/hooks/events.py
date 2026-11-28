@@ -9,12 +9,9 @@ if TYPE_CHECKING:
 
     from .._authorization import AuthRequest, InitiateLinkRequest, LinkCodeData
     from .._authorization_code import AuthorizationCodeGrantData
-    from .._issuer import (
-        AuthorizationCodeGrantRequest,
-        PasswordGrantRequest,
-    )
+    from .._issuer import AuthorizationCodeGrantRequest
     from .._session import SessionMetadata
-    from .._storage import SessionRecord
+    from .._storage import MFAFactor, SessionRecord
     from .._storage import SocialAccount, User
     from ..models.oauth_token_response import TokenResponse
     from ..social_providers.oauth import (
@@ -127,6 +124,9 @@ class BeforeLoginEvent:
     metadata: SessionMetadata | None
     response: Response | None = None
     login_method: str | None = None
+    # The second factor this sign-in passed, or None when it needed none.
+    # Read-only: a hook cannot mark a sign-in as having passed 2FA.
+    mfa_method: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +139,7 @@ class AfterLoginEvent:
     session_record: SessionRecord | None
     response: Response | None = None
     login_method: str | None = None
+    mfa_method: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -420,10 +421,10 @@ class BeforeTokenPasswordEvent:
 
 @dataclass(frozen=True, slots=True)
 class AfterTokenPasswordEvent:
-    request: PasswordGrantRequest = field(repr=False)
     client_id: str
     username: str
     user: User
+    scope: str | None
     token_response: TokenResponse
 
 
@@ -480,3 +481,77 @@ __all__ = [
     "SocialAccountSnapshot",
     "UserSnapshot",
 ]
+
+
+# What a second factor was checked for: finishing a sign-in, confirming a new
+# authenticator, or recent authentication before a 2FA change.
+MFAVerifyPurpose = Literal["sign_in", "enrollment", "reauthenticate"]
+
+
+@dataclass(frozen=True, slots=True)
+class AfterMFAChallengeEvent:
+    """A sign-in passed its first factor and now waits for its second."""
+
+    user_id: str
+    login_method: str | None
+    methods: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class AfterMFAVerifyEvent:
+    """A code was checked. Runs for failures too, for audit logs.
+
+    ``method`` is ``"totp"``, ``"recovery_code"`` or, for reauthentication,
+    ``"password"``. ``reason`` is ``"invalid_code"`` or ``"locked"`` when
+    ``success`` is False. ``recovery_codes_remaining`` is set after a recovery
+    code is used, so the application can warn a user who is running out.
+    """
+
+    user_id: str
+    purpose: MFAVerifyPurpose
+    method: str
+    success: bool
+    reason: str | None = None
+    recovery_codes_remaining: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeMFAFactorCreateEvent:
+    """A confirmed factor about to be stored. Raise to refuse it."""
+
+    user: UserSnapshot
+    type: str
+    name: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class AfterMFAFactorCreateEvent:
+    user_id: str
+    factor: MFAFactor
+    # True when this was the user's first factor, so 2FA was just turned on
+    # and recovery codes were created.
+    enabled_mfa: bool
+
+
+@dataclass(frozen=True, slots=True)
+class BeforeMFAFactorDeleteEvent:
+    """A factor about to be removed. Raise to refuse it."""
+
+    user: UserSnapshot
+    factor_id: Any
+    type: str
+
+
+@dataclass(frozen=True, slots=True)
+class AfterMFAFactorDeleteEvent:
+    user_id: str
+    factor_id: Any
+    type: str
+    # False when this was the last factor, so 2FA is now off.
+    mfa_enabled: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AfterMFARecoveryCodesRegenerateEvent:
+    user_id: str
+    count: int

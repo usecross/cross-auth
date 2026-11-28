@@ -49,7 +49,7 @@ from ._login import (
 )
 from ._session import request_metadata
 from ._storage import CommitCallback, User
-from .exceptions import CrossAuthException
+from .exceptions import CrossAuthException, MFARequired
 from .hooks import (
     AfterOAuthAuthorizeEvent,
     AfterOAuthCallbackEvent,
@@ -149,6 +149,7 @@ def logout(request: HTTPRequest, context: Context) -> Response:
             session_storage=context.session_storage,
             session_config=context.session_config,
             scope=logout_request.scope,
+            mfa=context.mfa,
         )
     except CrossAuthException as e:
         return Response.error(
@@ -854,6 +855,20 @@ def _complete_sign_in(
                 request,
                 login=login,
             )
+        except MFARequired as required:
+            # The provider identity is verified and the account committed;
+            # the session waits for the second factor.
+            from ._mfa_flow import browser_challenge
+
+            response = browser_challenge(
+                request,
+                context,
+                required,
+                kind="browser",
+                data={"next_url": auth_request.next_url or context.default_next_url},
+            )
+            context.hooks.run_after("oauth.callback", after_event)
+            return response
         except CrossAuthException as e:
             return _flow_error(
                 auth_request,
@@ -867,6 +882,35 @@ def _complete_sign_in(
         return response
 
     if auth_request.flow == "token":
+        if context.mfa is not None:
+            try:
+                context.mfa.check_sign_in(
+                    str(resolved_user.user.id), auth_request.provider_id
+                )
+            except MFARequired as required:
+                from ._mfa_flow import browser_challenge
+
+                context.hooks.run_after("oauth.callback", after_event)
+                return browser_challenge(
+                    request,
+                    context,
+                    required,
+                    kind="authorization_code",
+                    data={
+                        "client_id": auth_request.client_id,
+                        "redirect_uri": auth_request.client_redirect_uri,
+                        "state": auth_request.client_state,
+                        "code_challenge": auth_request.client_code_challenge,
+                        "code_challenge_method": auth_request.client_code_challenge_method,
+                    },
+                )
+            except CrossAuthException as e:
+                return _flow_error(
+                    auth_request,
+                    error=e.error,
+                    error_description=e.error_description,
+                    status_code=e.status_code,
+                )
         code, response = _complete_token(auth_request, resolved_user.user, context)
         assert auth_request.client_redirect_uri is not None
 
@@ -999,6 +1043,7 @@ def _complete_session(
         check_user=None,
         metadata=request_metadata(request, context.session_config),
         login_method=auth_request.provider_id,
+        mfa=context.mfa,
     )
     return cast(Response, response), session_storage.on_commit
 

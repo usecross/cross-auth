@@ -42,6 +42,19 @@ guide, which give your Google user a password with
 outside `ALLOWED_EMAIL_DOMAIN`, before anything is written, when you set that
 variable in `.env`. Unset, everyone may sign in.
 
+Two-factor authentication is on: after signing in, open **Two-factor
+authentication** on the profile page to set up an authenticator app (the page
+shows a QR code), get recovery codes, regenerate them, or remove the
+authenticator. Every later sign-in, with Google or a password, then asks for a
+code at `/auth/mfa/verify`. The settings views in `core/views.py` are built on
+the functions in `cross_auth.django.mfa` and render the two-factor pages shared
+with the FastAPI example (`../frontend/src/pages/two-factor`). The code step at
+sign-in is the shared Verify page too: `CROSS_AUTH["MFA"]["verify_url"]` sends
+sign-ins there, `core.views.two_factor_verify` reads the methods with
+`get_pending_mfa`, and its forms post to Cross Auth's verify view. Turning on
+2FA needs a Google account connected with the user's email address, which counts
+as a verified email.
+
 The project uses SQLite (`db.sqlite3`, ignored by Git) and Django's development
 settings. See the guide's production checklist before deploying anything based
 on it.

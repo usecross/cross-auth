@@ -82,13 +82,70 @@ def check_login_setup(**kwargs: Any) -> list[checks.CheckMessage]:
     if mfa_apps:
         messages.append(
             checks.Warning(
-                "Provider sign-in logs users in without your multi-factor step.",
+                f"{', '.join(mfa_apps)} is installed: Cross Auth does not read "
+                "its devices.",
                 hint=(
-                    f"{', '.join(mfa_apps)} is installed. Do not enable Cross Auth "
-                    "sign-in where users must complete another factor; silence "
-                    "this with SILENCED_SYSTEM_CHECKS only if MFA is optional."
+                    "Provider sign-in does not ask for that app's second factor, "
+                    "and with CROSS_AUTH['MFA'] users would be asked for Cross "
+                    "Auth's own as well. Use one system: CROSS_AUTH['MFA'], or "
+                    "the other app without Cross Auth sign-in."
                 ),
                 id="cross_auth.W001",
+            )
+        )
+    return messages
+
+
+MFA_MIDDLEWARE = "cross_auth.django.mfa.MFAMiddleware"
+
+
+@checks.register(checks.Tags.security)
+def check_mfa_setup(**kwargs: Any) -> list[checks.CheckMessage]:
+    try:
+        mfa = get_settings().mfa
+    except (ImproperlyConfigured, ImportError):
+        return []  # cross_auth.E001
+    if mfa is None:
+        return []
+    messages: list[checks.CheckMessage] = []
+    middleware = list(settings.MIDDLEWARE)
+    sessions = [
+        name
+        for name in (
+            SESSION_MIDDLEWARE,
+            "django.contrib.sessions.middleware.SessionMiddleware",
+        )
+        if name in middleware
+    ]
+    if (
+        MFA_MIDDLEWARE not in middleware
+        or _AUTHENTICATION_MIDDLEWARE not in middleware
+        or middleware.index(MFA_MIDDLEWARE)
+        < middleware.index(_AUTHENTICATION_MIDDLEWARE)
+        or any(middleware.index(MFA_MIDDLEWARE) < middleware.index(s) for s in sessions)
+    ):
+        messages.append(
+            checks.Error(
+                f"CROSS_AUTH['MFA'] needs {MFA_MIDDLEWARE!r} in MIDDLEWARE, after "
+                f"{_AUTHENTICATION_MIDDLEWARE!r} and the session middleware.",
+                hint=(
+                    "Without it, a login that waits for its second factor "
+                    "answers with the login view's own response instead of "
+                    "the verify page."
+                ),
+                id="cross_auth.E006",
+            )
+        )
+    if settings.SESSION_ENGINE != SESSION_ENGINE:
+        messages.append(
+            checks.Error(
+                f"CROSS_AUTH['MFA'] needs SESSION_ENGINE = {SESSION_ENGINE!r}.",
+                hint=(
+                    "Turning on 2FA signs the user's other sessions out, and "
+                    "2FA changes need a recent sign-in: both read Cross Auth's "
+                    "sessions. Switching engines signs every user out once."
+                ),
+                id="cross_auth.E008",
             )
         )
     return messages

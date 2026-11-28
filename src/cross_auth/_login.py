@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from cross_web import HTTPRequest, Response
 
@@ -27,10 +27,17 @@ from .hooks import (
     LogoutScope,
 )
 
+if TYPE_CHECKING:
+    from ._mfa import MFA
+
 _IssuedT = TypeVar("_IssuedT")
 
 # Raises CrossAuthException unless the user with this id may sign in.
 UserCheck = Callable[[str], None]
+# Called with the session a login just stored (None for a credential a
+# token_issuer minted), before its after hook is scheduled. Raising undoes the
+# login: it revokes the session itself first.
+AfterIssue = Callable[[SessionRecord | None], None]
 
 
 def run_login(
@@ -40,24 +47,33 @@ def run_login(
     issue: Callable[[BeforeLoginEvent], tuple[_IssuedT, SessionRecord | None]],
     on_commit: Callable[[CommitCallback], None],
     check_user: UserCheck | None,
+    mfa: MFA | None = None,
+    after_issue: AfterIssue | None = None,
 ) -> tuple[_IssuedT, BeforeLoginEvent]:
     """Run one ``login`` lifecycle around issuing a credential.
 
     ``check_user`` refuses a user who may not sign in, before the before
     hooks run; pass ``None`` only when the caller has just checked the user
-    it logs in. ``issue`` creates the credential from the approved event and
+    it logs in. With ``mfa``, a sign-in that needs a second factor and has
+    not passed one (``event.mfa_method`` is None) raises ``MFARequired``
+    before the hooks run and issues nothing; the caller stores a challenge. ``issue`` creates the credential from the approved event and
     returns it with the Cross Auth session it created, if any. ``on_commit``
     belongs to whatever stores the credential and schedules the after hook
     once it is committed. Hook exceptions propagate: a before-hook failure
     issues nothing; an after-hook failure leaves the issued credential in
-    place.
+    place. ``after_issue`` runs once the credential is stored, before the
+    after hook is scheduled; what it raises propagates and no after hook runs.
     """
     if check_user is not None:
         check_user(event.user_id)
+    if mfa is not None and event.mfa_method is None:
+        mfa.check_sign_in(event.user_id, event.login_method)
     approved = hooks.run_before("login", event)
     _check_login_rewrite(event, approved)
 
     issued, session_record = issue(approved)
+    if after_issue is not None:
+        after_issue(session_record)
 
     after_event = AfterLoginEvent(
         user_id=approved.user_id,
@@ -65,6 +81,7 @@ def run_login(
         session_record=session_record,
         response=approved.response,
         login_method=approved.login_method,
+        mfa_method=approved.mfa_method,
     )
     on_commit(lambda: hooks.run_after("login", after_event))
     return issued, approved
@@ -77,10 +94,19 @@ class BrowserLogin(Protocol):
     provider identity is verified and the user's account changes committed.
     """
 
-    def login(self, user: User, *, response: Response, login_method: str) -> Response:
+    def login(
+        self,
+        user: User,
+        *,
+        response: Response,
+        login_method: str,
+        mfa_method: str | None = None,
+    ) -> Response:
         """Log ``user`` in through ``run_login`` and return the response.
 
-        ``login_method`` is the provider's id. Raise ``CrossAuthException`` to
+        ``login_method`` is the provider's id. ``mfa_method`` is the second
+        factor the sign-in already passed; without one, ``run_login`` raises
+        ``MFARequired`` for a user who needs it. Raise ``CrossAuthException`` to
         refuse a user the framework does not allow to sign in. The callback
         has already checked the context's ``user_can_authenticate``.
         """
@@ -131,6 +157,8 @@ def _check_login_rewrite(
         raise ValueError("login before hooks cannot change user_id")
     if approved.credential != original.credential:
         raise ValueError("login before hooks cannot change credential")
+    if approved.mfa_method != original.mfa_method:
+        raise ValueError("login before hooks cannot change mfa_method")
     if (approved.response is None) != (original.response is None):
         raise ValueError("login before hooks cannot add or remove the response")
     if original.max_age is None:
@@ -153,11 +181,15 @@ def login_with_session(
     check_user: UserCheck | None,
     metadata: SessionMetadata | None = None,
     login_method: str | None = None,
+    mfa: MFA | None = None,
+    mfa_method: str | None = None,
+    after_issue: AfterIssue | None = None,
 ) -> Response:
     """Log in with one new session and its cookie appended to ``response``.
 
-    ``check_user`` is as for ``run_login``. Returns the hook response;
-    adapters decide how to send it and how to surface hook exceptions.
+    ``check_user`` and ``after_issue`` are as for ``run_login``. Returns the
+    hook response; adapters decide how to send it and how to surface hook
+    exceptions.
     """
     require_immediate_commit(
         session_storage.on_commit,
@@ -177,6 +209,7 @@ def login_with_session(
             token_prefix=resolved["token_prefix"],
             login_method=event.login_method,
             store_ip=resolved["store_ip"],
+            mfa_method=event.mfa_method,
         )
         if event.response.cookies is None:
             event.response.cookies = []
@@ -193,11 +226,14 @@ def login_with_session(
             metadata=metadata,
             response=response,
             login_method=login_method,
+            mfa_method=mfa_method,
         ),
         hooks=hooks,
         issue=issue,
         on_commit=session_storage.on_commit,
         check_user=check_user,
+        mfa=mfa,
+        after_issue=after_issue,
     )
     return hook_response
 
@@ -212,10 +248,13 @@ def issue_bearer_session(
     max_age: int | None = None,
     metadata: SessionMetadata | None = None,
     login_method: str | None = None,
+    mfa: MFA | None = None,
+    mfa_method: str | None = None,
+    after_issue: AfterIssue | None = None,
 ) -> tuple[str, SessionRecord, int]:
     """Log in with one new session; return its bearer token, record and max_age.
 
-    ``check_user`` is as for ``run_login``.
+    ``check_user`` and ``after_issue`` are as for ``run_login``.
     """
     resolved = resolve_config(session_config)
 
@@ -232,6 +271,7 @@ def issue_bearer_session(
             token_prefix=resolved["token_prefix"],
             login_method=event.login_method,
             store_ip=resolved["store_ip"],
+            mfa_method=event.mfa_method,
         )
         return (session_token, session_record), session_record
 
@@ -242,11 +282,14 @@ def issue_bearer_session(
             max_age=max_age if max_age is not None else resolved["max_age"],
             metadata=metadata,
             login_method=login_method,
+            mfa_method=mfa_method,
         ),
         hooks=hooks,
         issue=issue,
         on_commit=session_storage.on_commit,
         check_user=check_user,
+        mfa=mfa,
+        after_issue=after_issue,
     )
     assert approved.max_age is not None
     return session_token, session_record, approved.max_age
@@ -260,12 +303,15 @@ def logout_session(
     session_storage: SessionStorage,
     session_config: SessionConfig | None,
     scope: LogoutScope = "current",
+    mfa: MFA | None = None,
 ) -> Response:
     """Revoke the request's session and clear the session cookie on ``response``.
 
     The session token comes from the session cookie, then from an
     ``Authorization: Bearer`` header. ``scope="all"`` revokes every session of that session's user. A
     missing, unknown, expired or already revoked token revokes nothing.
+    With ``mfa``, ``scope="all"`` also ends the user's sign-ins that are
+    waiting for their second factor, as ``revoke_user_sessions`` does.
     Returns the hook response; adapters decide how to send it and how to
     surface hook exceptions.
     """
@@ -295,6 +341,8 @@ def logout_session(
         )
         revoked_at = datetime.now(tz=timezone.utc)
         if event.scope == "all":
+            if mfa is not None:
+                mfa.revoke_challenges(revoked_record.user_id)
             revoked_count = session_storage.revoke_all_for_user(
                 revoked_record.user_id, revoked_at=revoked_at
             )
@@ -352,11 +400,17 @@ def revoke_user_sessions(
     session_storage: SessionStorage,
     keep_session_id: Any | None = None,
     request: HTTPRequest | None = None,
+    mfa: MFA | None = None,
 ) -> int:
     """Revoke the user's active sessions around the ``session.revoke`` hooks.
 
     ``keep_session_id`` is left alone (scope ``"others"``); without it every
     session is revoked (scope ``"all"``). Returns how many were revoked.
+
+    With ``mfa``, the user's sign-ins that are waiting for their second
+    factor end too, once the before hooks allow it, also when no session was
+    active: revoking sessions is how a user locks out someone who knows their
+    password, and that person's sign-in may be waiting for its code.
     """
     return _revoke_sessions(
         BeforeSessionRevokeEvent(
@@ -368,6 +422,7 @@ def revoke_user_sessions(
         ),
         hooks=hooks,
         session_storage=session_storage,
+        mfa=mfa,
     )
 
 
@@ -376,11 +431,14 @@ def _revoke_sessions(
     *,
     hooks: HookRegistry,
     session_storage: SessionStorage,
+    mfa: MFA | None = None,
 ) -> int:
     # Fix the target first: a hook may refuse the revocation, but changing
     # the live record must not make it revoke another session.
     session_id = None if event.session_record is None else event.session_record.id
     hooks.run_before("session.revoke", event)
+    if mfa is not None:
+        mfa.revoke_challenges(event.user_id)
 
     revoked_at = datetime.now(tz=timezone.utc)
     if session_id is not None:

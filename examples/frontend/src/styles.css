@@ -291,3 +291,7 @@ td code { white-space: nowrap; }
   h1 { font-size: 1.3rem; }
 }
 form.inline { display: inline; }
+.qr { width: 200px; margin: 0; }
+.qr svg { width: 100%; height: auto; }
+details summary { cursor: pointer; color: var(--accent); }
+details[open] summary { margin-bottom: 10px; }

@@ -21,6 +21,8 @@ class AuthorizationCodeGrantData(BaseModel):
     # How the user authenticated, e.g. the provider id. Codes stored by an
     # older version have no such field and parse with None.
     login_method: str | None = None
+    # The second factor the sign-in passed before the code was issued.
+    mfa_method: str | None = None
 
     @property
     def is_expired(self) -> bool:

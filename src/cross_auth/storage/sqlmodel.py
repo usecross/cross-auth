@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import logging
 import uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -15,6 +15,7 @@ try:
         SmallInteger,
         and_,
         case,
+        delete,
         inspect,
         or_,
         update,
@@ -43,6 +44,8 @@ from cross_auth._storage import (
 from cross_auth.exceptions import CrossAuthException, InvalidCursorError
 from cross_auth.storage._cursor import decode_cursor, encode_cursor
 from cross_auth.storage._sqlmodel_models import (
+    SQLModelMFAFactor,
+    SQLModelRecoveryCode,
     SQLModelSession,
     SQLModelSocialAccount,
     SQLModelUser,
@@ -54,6 +57,8 @@ SessionModelT = TypeVar("SessionModelT", bound=SQLModelSession)
 UserModelT = TypeVar("UserModelT", bound=SQLModelUser)
 SocialAccountModelT = TypeVar("SocialAccountModelT", bound=SQLModelSocialAccount)
 RecordT = TypeVar("RecordT", bound=SQLModel)
+MFAFactorModelT = TypeVar("MFAFactorModelT", bound=SQLModelMFAFactor)
+RecoveryCodeModelT = TypeVar("RecoveryCodeModelT", bound=SQLModelRecoveryCode)
 
 _ORDER_FIELDS: dict[SessionListOrder, tuple[str, bool]] = {
     # order_by -> (attribute name, descending?)
@@ -401,6 +406,7 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
         ip: str | None = None,
         last_active_at: datetime | None = None,
         login_method: str | None = None,
+        mfa_method: str | None = None,
     ) -> SessionModelT:
         model = self.SessionModel
         coerced_user_id = _coerce_id(model, "user_id", user_id)
@@ -417,6 +423,7 @@ class SQLModelSessionStorage(_SQLModelStorageBase, Generic[SessionModelT]):
             ip=ip,
             last_active_at=_bind_datetime(model, "last_active_at", last_active_at),
             login_method=login_method,
+            mfa_method=mfa_method,
         )
         with self._open_session() as session:
             session.add(record)
@@ -1458,3 +1465,337 @@ class SQLModelAccountsStorage(
         filtered reads must go through ``list_social_accounts``.
         """
         return statement
+
+
+def _prepare_factor(record: MFAFactorModelT) -> MFAFactorModelT:
+    for field in ("created_at", "last_used_at", "locked_until"):
+        value = getattr(record, field)
+        if value is not None and value.tzinfo is None:
+            set_committed_value(record, field, value.replace(tzinfo=timezone.utc))
+    return record
+
+
+class SQLModelMFAStorage(
+    _SQLModelStorageBase, Generic[MFAFactorModelT, RecoveryCodeModelT]
+):
+    """Implements ``cross_auth.MFAStorage`` for two SQLModel tables.
+
+    Subclass ``SQLModelMFAFactor`` and ``SQLModelRecoveryCode`` for your
+    tables, giving each an ``id`` and a ``user_id``, and the factor a JSON
+    ``data`` column. The factor's ``user_id`` must be a foreign key to your
+    user table::
+
+        class MFAFactor(SQLModelMFAFactor, table=True):
+            id: int | None = Field(default=None, primary_key=True)
+            user_id: int = Field(foreign_key="user.id", index=True)
+            data: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+        store = SQLModelMFAStorage(
+            MFAFactor, RecoveryCode, session_factory=lambda: Session(engine)
+        )
+
+    Every operation commits before it returns. Adding and deleting factors
+    and replacing recovery codes first lock the user row that the factor
+    table's ``user_id`` foreign key points to, so they run one at a time per
+    user. That row exists before any factor does, so the user's first factor
+    is serialized too.
+    """
+
+    FactorModel: type[MFAFactorModelT]
+    RecoveryCodeModel: type[RecoveryCodeModelT]
+
+    def __init__(
+        self,
+        factor_model: type[MFAFactorModelT],
+        recovery_code_model: type[RecoveryCodeModelT],
+        *,
+        session_factory: Callable[[], Session],
+    ):
+        self.FactorModel = factor_model
+        self.RecoveryCodeModel = recovery_code_model
+        super().__init__(session_factory=session_factory)
+        _validate_model(
+            factor_model, SQLModelMFAFactor, columns=("id", "user_id", "data")
+        )
+        _validate_model(
+            recovery_code_model, SQLModelRecoveryCode, columns=("id", "user_id")
+        )
+        if not _column(factor_model, "user_id").foreign_keys:
+            raise TypeError(
+                f"{factor_model.__name__}.user_id must be a foreign key to the "
+                "user table: SQLModelMFAStorage locks that row so a user's "
+                "factor and recovery-code changes run one at a time"
+            )
+
+    def _models(self) -> tuple[type[SQLModel], ...]:
+        return (self.FactorModel, self.RecoveryCodeModel)
+
+    def _lock_user(self, session: Session, user_id: object) -> None:
+        """Hold the user's lock until the session commits.
+
+        A no-op update, as the first statement: PostgreSQL keeps the row lock
+        until commit, and SQLite takes its write lock before anything is read.
+        It updates the row the factor table's ``user_id`` foreign key points
+        to, keeping onupdate columns as they are.
+        """
+        # One transaction for both tables, on the factor table's bind: a
+        # session may bind each model without a default bind.
+        factor_bind = session.get_bind(mapper=inspect(self.FactorModel))
+        if session.get_bind(mapper=inspect(self.RecoveryCodeModel)) is not factor_bind:
+            raise RuntimeError(
+                f"{type(self).__name__} needs {self.FactorModel.__name__} and "
+                f"{self.RecoveryCodeModel.__name__} in one database, so a "
+                "factor and its recovery codes commit together"
+            )
+        key = next(iter(_column(self.FactorModel, "user_id").foreign_keys)).column
+        session.connection(
+            bind_arguments={"mapper": inspect(self.FactorModel)}
+        ).execute(
+            update(key.table)
+            .where(key == user_id)
+            .values(
+                {
+                    column: column
+                    for column in key.table.columns
+                    if column.onupdate is not None or column is key
+                }
+            )
+        )
+
+    def list_factors(self, user_id: object) -> list[MFAFactorModelT]:
+        model = self.FactorModel
+        user_id = _coerce_id(model, "user_id", user_id)
+        if user_id is _NO_MATCH:
+            return []
+        with self._open_session() as session:
+            rows = session.exec(
+                select(model)
+                .where(col(model.user_id) == user_id)
+                .order_by(col(model.created_at), col(model.id))
+            ).all()
+        return [_prepare_factor(row) for row in rows]
+
+    def create_factor(
+        self,
+        *,
+        user_id: object,
+        type: str,
+        name: str | None,
+        data: Mapping[str, Any],
+        created_at: datetime,
+        last_used_step: int | None = None,
+        recovery_code_hashes: Sequence[str] = (),
+    ) -> tuple[MFAFactorModelT, bool]:
+        model = self.FactorModel
+        coerced = _coerce_id(model, "user_id", user_id)
+        record = _construct_record(
+            model,
+            user_id=user_id if coerced is _NO_MATCH else coerced,
+            type=type,
+            name=name,
+            data=dict(data),
+            created_at=_bind_datetime(model, "created_at", created_at),
+            last_used_step=last_used_step,
+        )
+        with self._open_session() as session:
+            self._lock_user(session, record.user_id)
+            # A new factor starts with the user's current lockout state.
+            existing = session.exec(
+                select(model).where(col(model.user_id) == record.user_id).limit(1)
+            ).first()
+            if existing is not None:
+                record.failed_attempts = existing.failed_attempts
+                record.locked_until = existing.locked_until
+            session.add(record)
+            if existing is None:
+                self._store_codes(
+                    session, record.user_id, recovery_code_hashes, created_at
+                )
+            session.commit()
+        return _prepare_factor(record), existing is None
+
+    def delete_factor(self, *, user_id: object, factor_id: object) -> int | None:
+        model = self.FactorModel
+        user_id = _coerce_id(model, "user_id", user_id)
+        factor_id = _coerce_id(model, "id", factor_id)
+        if user_id is _NO_MATCH or factor_id is _NO_MATCH:
+            return None
+        with self._open_session() as session:
+            self._lock_user(session, user_id)
+            row = session.exec(
+                select(model).where(
+                    col(model.id) == factor_id, col(model.user_id) == user_id
+                )
+            ).first()
+            if row is None:
+                return None
+            session.delete(row)
+            session.flush()
+            left = len(
+                session.exec(
+                    select(col(model.id)).where(col(model.user_id) == user_id)
+                ).all()
+            )
+            if not left:
+                self._store_codes(session, user_id, [], datetime.now(timezone.utc))
+            session.commit()
+        return left
+
+    def _has_factor(self, session: Session, user_id: object) -> bool:
+        model = self.FactorModel
+        return (
+            session.exec(
+                select(col(model.id)).where(col(model.user_id) == user_id).limit(1)
+            ).first()
+            is not None
+        )
+
+    def claim_totp_step(
+        self, factor_id: object, *, step: int, used_at: datetime
+    ) -> bool:
+        model = self.FactorModel
+        factor_id = _coerce_id(model, "id", factor_id)
+        if factor_id is _NO_MATCH:
+            return False
+        with self._open_session() as session:
+            result = session.exec(
+                update(model)
+                .where(
+                    col(model.id) == factor_id,
+                    or_(
+                        col(model.last_used_step) == None,  # noqa: E711
+                        col(model.last_used_step) < step,
+                    ),
+                )
+                .values(
+                    last_used_step=step,
+                    last_used_at=_bind_datetime(model, "last_used_at", used_at),
+                )
+            )
+            session.commit()
+        return result.rowcount > 0
+
+    def record_failure(self, user_id: object) -> int:
+        model = self.FactorModel
+        user_id = _coerce_id(model, "user_id", user_id)
+        if user_id is _NO_MATCH:
+            return 0
+        with self._open_session() as session:
+            self._lock_user(session, user_id)
+            session.exec(
+                update(model)
+                .where(col(model.user_id) == user_id)
+                .values(failed_attempts=col(model.failed_attempts) + 1)
+            )
+            # Read in the same transaction: once it commits, a concurrent
+            # reset could make this report a count it did not produce.
+            count = session.exec(
+                select(col(model.failed_attempts))
+                .where(col(model.user_id) == user_id)
+                .limit(1)
+            ).first()
+            session.commit()
+        return count or 0
+
+    def lock(self, user_id: object, *, until: datetime) -> None:
+        model = self.FactorModel
+        user_id = _coerce_id(model, "user_id", user_id)
+        if user_id is _NO_MATCH:
+            return
+        with self._open_session() as session:
+            # Under the user lock, as create_factor copies this state.
+            self._lock_user(session, user_id)
+            session.exec(
+                update(model)
+                .where(col(model.user_id) == user_id)
+                .values(
+                    failed_attempts=0,
+                    locked_until=_bind_datetime(model, "locked_until", until),
+                )
+            )
+            session.commit()
+
+    def reset_failures(self, user_id: object) -> None:
+        model = self.FactorModel
+        user_id = _coerce_id(model, "user_id", user_id)
+        if user_id is _NO_MATCH:
+            return
+        with self._open_session() as session:
+            # Under the user lock, as create_factor copies this state.
+            self._lock_user(session, user_id)
+            session.exec(
+                update(model)
+                .where(col(model.user_id) == user_id)
+                .values(failed_attempts=0, locked_until=None)
+            )
+            session.commit()
+
+    def count_recovery_codes(self, user_id: object) -> int:
+        model = self.RecoveryCodeModel
+        user_id = _coerce_id(model, "user_id", user_id)
+        if user_id is _NO_MATCH:
+            return 0
+        with self._open_session() as session:
+            rows = session.exec(
+                select(col(model.id)).where(
+                    col(model.user_id) == user_id,
+                    col(model.used_at) == None,  # noqa: E711
+                )
+            ).all()
+        return len(rows)
+
+    def replace_recovery_codes(
+        self, user_id: object, code_hashes: Sequence[str], *, created_at: datetime
+    ) -> bool:
+        coerced = _coerce_id(self.RecoveryCodeModel, "user_id", user_id)
+        if coerced is _NO_MATCH:
+            return False
+        with self._open_session() as session:
+            self._lock_user(session, coerced)
+            if not self._has_factor(session, coerced):
+                return False
+            self._store_codes(session, coerced, code_hashes, created_at)
+            session.commit()
+        return True
+
+    def _store_codes(
+        self,
+        session: Session,
+        user_id: object,
+        code_hashes: Sequence[str],
+        created_at: datetime,
+    ) -> None:
+        model = self.RecoveryCodeModel
+        # A statement, run now: a deleted object waits for the flush, which
+        # inserts the new rows first, so a table unique on (user_id,
+        # code_hash) would refuse a hash the old batch has too.
+        session.exec(delete(model).where(col(model.user_id) == user_id))
+        for code_hash in code_hashes:
+            session.add(
+                _construct_record(
+                    model,
+                    user_id=user_id,
+                    code_hash=code_hash,
+                    created_at=_bind_datetime(model, "created_at", created_at),
+                )
+            )
+
+    def use_recovery_code(
+        self, user_id: object, code_hash: str, *, used_at: datetime
+    ) -> bool:
+        model = self.RecoveryCodeModel
+        user_id = _coerce_id(model, "user_id", user_id)
+        if user_id is _NO_MATCH:
+            return False
+        with self._open_session() as session:
+            result = session.exec(
+                update(model)
+                .where(
+                    col(model.user_id) == user_id,
+                    col(model.code_hash) == code_hash,
+                    col(model.used_at) == None,  # noqa: E711
+                )
+                .values(used_at=_bind_datetime(model, "used_at", used_at))
+            )
+            session.commit()
+        return result.rowcount > 0

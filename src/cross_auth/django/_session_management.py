@@ -266,7 +266,8 @@ def revoke_session(request: HttpRequest, session_id: str) -> bool:
 def revoke_other_sessions(request: HttpRequest) -> int:
     """Sign out the signed-in user's other active sessions, keeping this one.
 
-    Their bearer tokens are revoked with their other browser sessions. Sends
+    Their bearer tokens are revoked with their other browser sessions, and
+    with 2FA the user's logins that are waiting for their code end too. Sends
     ``before_session_revoke`` and, if any session was signed out,
     ``session_revoked``. Returns how many were revoked: only sessions that
     ``list_sessions`` shows count. Expired ones are left for
@@ -285,6 +286,12 @@ def revoke_other_sessions(request: HttpRequest) -> int:
         scope="others",
         session_id=None,
     )
+    # Imported here: the 2FA module imports this one.
+    from .mfa import _revoke_challenges
+
+    # Signing out everywhere else is how a user locks out someone who knows
+    # their password, whose login may be waiting for its code with no session.
+    _revoke_challenges(request, str(user.pk))
 
     sessions = _unexpired(store, user)
     if store.session_key is not None:
